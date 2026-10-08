@@ -1,5 +1,6 @@
 #include "sat/afml/fracdiff.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
