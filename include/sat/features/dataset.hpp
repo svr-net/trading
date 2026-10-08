@@ -27,12 +27,18 @@ enum class LabelKind {
   /// of the centred window of `window` days (a buying point), 0 on a close that is its
   /// maximum (a selling point); other days carry no label and are left out of training.
   MinMax,
+  /// Triple-barrier method (Lopez de Prado, 2018): 1 if the price first rises by
+  /// `barrierWidth` times its recent daily volatility, 0 if it first falls by as much; when
+  /// neither happens within `horizon` days, the sign of the return at that date.
+  TripleBarrier,
 };
 
 struct LabelSpec {
   LabelKind kind = LabelKind::Direction;
-  std::size_t horizon = 1;  ///< Direction / ExcessDirection
+  std::size_t horizon = 1;  ///< Direction / ExcessDirection; maximum holding for TripleBarrier
   std::size_t window = 10;  ///< MinMax
+  double barrierWidth = 1.0;  ///< TripleBarrier: horizontal barriers at +- width x daily volatility
+  double volSpan = 50.0;      ///< TripleBarrier: span of the exponentially weighted volatility
 
   /// Number of future days a label at date t looks at; training data must end this many
   /// days before the first prediction date (purging).
@@ -58,7 +64,9 @@ struct FeatureSet {
 FeatureSet buildFeatures(const MarketData& data, const std::vector<int>& alphaIds, Normalisation norm);
 
 /// Label panel: 1, 0 or NaN (unlabelled, including the last dates whose future is unknown).
-Panel makeLabels(const MarketData& data, const LabelSpec& spec);
+/// With `ends`, also the last date each label depends on (its span is [t, ends(t, i)]),
+/// which sample-uniqueness weighting needs.
+Panel makeLabels(const MarketData& data, const LabelSpec& spec, Panel* ends = nullptr);
 
 /// A design matrix with one row per (date, stock) sample.
 struct Dataset {

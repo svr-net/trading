@@ -71,5 +71,15 @@ int main() {
   for (std::size_t s = 0; s < grid.size(); ++s) worst = std::max(worst, std::fabs(gg.selectors[s].sharpe - g.selectors[s].sharpe));
   std::printf("GPU kernels (f32 reference) vs CPU: largest Sharpe difference %.4f over %zu selectors x %zu candidates\n", worst,
               grid.size(), plan.numCandidates);
+
+  // Advances in Financial Machine Learning: how much of this survives the search?
+  const auto rep = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);
+  const double ann = std::sqrt(kTradingDaysPerYear);
+  std::printf("\nBacktest overfitting (%zu candidates = trials, %zu days)\n", rep.trials, rep.days);
+  std::printf("  expected maximum Sharpe ratio of %zu unskilled trials: %.2f (annualised)\n", rep.trials, rep.expectedMaxSharpe * ann);
+  std::printf("  best fixed:    Sharpe %.2f, PSR %.1f%%, deflated Sharpe %.1f%%\n", rep.best.annualSharpe, 100 * rep.best.psr, 100 * rep.best.dsr);
+  std::printf("  self-adaptive: Sharpe %.2f, PSR %.1f%%, deflated Sharpe %.1f%%\n", rep.adaptive.annualSharpe, 100 * rep.adaptive.psr,
+              100 * rep.adaptive.dsr);
+  std::printf("  probability of backtest overfitting (CSCV, %zu combinations): %.1f%%\n", rep.pbo.combinations, 100 * rep.pbo.pbo);
   return 0;
 }

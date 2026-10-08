@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "sat/adaptive/self_adaptive.hpp"
@@ -17,6 +18,11 @@ namespace sat {
 struct ExperimentSpec {
   std::vector<int> alphaIds;           ///< empty: the paper's 23 alphas
   Normalisation normalisation = Normalisation::Rank;
+  /// Extra features from Advances in Financial Machine Learning (afml::extraFeatureNames()).
+  std::vector<std::string> extraFeatures;
+  double ffdOrder = 0.4;               ///< order of the "ffd" feature
+  /// Train on CUSUM events only (threshold = multiple x median daily volatility; 0 = every day).
+  double cusumMultiple = 0.0;
   LabelSpec label;
   std::vector<ModelSpec> models;       ///< empty: defaultModels()
   WalkForwardSpec walkForward;
@@ -32,6 +38,8 @@ struct ExperimentSpec {
 struct PredictionSet {
   FeatureSet features;
   Panel labels;
+  Panel labelEnds;    ///< last date each label depends on
+  Panel trainMask;    ///< CUSUM events (empty when every day is used)
   Panel nextReturns;  ///< close-to-close return of the following day
   std::vector<ModelPredictions> models;
 };

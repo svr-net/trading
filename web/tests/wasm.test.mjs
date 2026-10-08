@@ -106,6 +106,51 @@ const badOut = sat.gpuAnalyse({ ...spec, analysis: 'adaptive', gpuOutputs: [{ st
 check(typeof badOut.error === 'string', 'gpuAnalyse rejects read-backs that do not match the plan');
 const bad = sat.models({ ...spec, models: [{ type: 'nonsense' }] });
 check(typeof bad.error === 'string', 'errors are reported, not thrown');
+// Advances in Financial Machine Learning entry points.
+const bars = run('afmlBars', () => sat.afmlBars({ ...spec, bars: { days: 40, tradesPerDay: 1500, barsPerDay: 20 } }));
+if (bars) {
+  const k = Object.fromEntries(bars.kinds.map((x) => [x.name, x.stats]));
+  check(k.time.jarqueBera > 2 * k.dollar.jarqueBera, `dollar bars closer to normal than time bars (JB ${k.time.jarqueBera} vs ${k.dollar.jarqueBera})`);
+  check(Math.abs(k.dollar.count - 800) < 100 && k['tick imbalance'].count > 50, 'bar counts');
+}
+const fd = run('afmlFracDiff', () => sat.afmlFracDiff(spec));
+if (fd) {
+  check(fd.minimumD > 0 && fd.minimumD <= 1 && fd.adf[fd.adf.length - 1] < fd.critical5, 'a d in (0, 1] makes the index stationary');
+  check(fd.correlation[0] > 0.999, 'd = 0 is the series itself');
+}
+const lab = run('afmlLabeling', () => sat.afmlLabeling({ ...spec, labeling: { cusumMultiple: 2, maxHolding: 10, metaHolding: 2, metaCusumMultiple: 1 } }));
+if (lab) {
+  check(lab.events.length > 20 && lab.events.every((e) => e.t1 > e.t0 && e.t1 <= e.t0 + 10), 'events within the vertical barrier');
+  check(lab.counts.upper + lab.counts.lower + lab.counts.vertical === lab.events.length, 'every event hits one barrier');
+  check(lab.uniqueness.every((u) => u > 0 && u <= 1), 'uniqueness in (0, 1]');
+  check(lab.meta.testEvents > 100 && lab.meta.filtered.bets <= lab.meta.primary.bets, 'meta-labels filter the primary bets');
+}
+const val = run('afmlValidation', () => sat.afmlValidation({ ...spec, validation: { horizon: 5, folds: 4, embargo: 5, trees: 20, maxRows: 2500, groups: 5, testGroups: 2 } }));
+if (val) {
+  check(val.cv.length === 3 && val.cv[0].trainRows > val.cv[2].trainRows, 'purging removes training rows');
+  check(val.cpcv.paths.length === 4 && val.cpcv.splits === 10, 'CPCV: C(5, 2) = 10 splits, k C(N, k) / N = 4 paths');
+  check(val.mdi.length === 23 && val.mda.length === 23 && val.sfi.length === 23, 'importance per feature');
+}
+const pf = run('afmlPortfolio', () => sat.afmlPortfolio({ ...spec, portfolio: { window: 200, rebalance: 21, trials: 20 } }));
+if (pf) {
+  near(Array.from(pf.hrp).reduce((a, b) => a + b, 0), 1, 1e-9, 'HRP weights sum to 1');
+  check(Array.from(pf.hrp).every((w) => w > 0), 'HRP is long-only');
+  check(pf.orderedTickers.length === 16 && new Set(pf.orderedTickers).size === 16, 'quasi-diagonal order is a permutation');
+  check(pf.backtest.length === 4 && pf.monteCarlo.hrp.length === 20, 'backtest and Monte Carlo');
+}
+const of = run('afmlOverfitting', () => sat.afmlOverfitting({ ...spec, overfitting: { blocks: 8 } }));
+if (of) {
+  check(of.trials === 3 * spec.strategies.length && of.pbo.combinations === 70, 'trials and CSCV combinations');
+  check(of.best.dsr <= of.best.psr + 1e-12 && of.pbo.pbo >= 0 && of.pbo.pbo <= 1, 'DSR <= PSR, PBO a probability');
+}
+const afmlModels = run('models (triple barrier, extra features, CUSUM, uniqueness)', () => sat.models({ ...spec,
+  label: { kind: 'triple', horizon: 5, barrierWidth: 1, volSpan: 50 }, extraFeatures: ['ffd', 'vol', 'amihud'], cusumMultiple: 1,
+  walkForward: { ...spec.walkForward, weighting: 'decay' } }));
+if (afmlModels) check(afmlModels.features.length === 26 && afmlModels.features[23] === 'ffd' && !afmlModels.cached, 'extra features retrain the models');
+const emuBet = run('gpuEmulate (bet-sized rule)', () => sat.gpuEmulate({ ...spec, analysis: 'strategies', strategies: [{ kind: 'betsize', param: 0.1, holding: 1 }] }));
+const cpuBet = sat.strategies({ ...spec, strategies: [{ kind: 'betsize', param: 0.1, holding: 1 }] });
+if (emuBet && !cpuBet.error) near(emuBet.candidates[0].metrics.sharpe, cpuBet.candidates[0].metrics.sharpe, 1e-3, 'bet-sized rule: kernels vs CPU');
+
 const csv = 'date,ticker,open,high,low,close,volume\n2024-01-02,A,1,1,1,1,1\n';
 check(typeof sat.marketData({ ...spec, csv }).error === 'string', 'a one-stock CSV is rejected');
 

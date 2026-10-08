@@ -10,6 +10,12 @@ const pages = {
   strategies: () => import('./pages/strategies.js'),
   adaptive: () => import('./pages/adaptive.js'),
   robustness: () => import('./pages/robustness.js'),
+  bars: () => import('./pages/bars.js'),
+  fracdiff: () => import('./pages/fracdiff.js'),
+  labeling: () => import('./pages/labeling.js'),
+  validation: () => import('./pages/validation.js'),
+  portfolio: () => import('./pages/portfolio.js'),
+  overfitting: () => import('./pages/overfitting.js'),
   gpu: () => import('./pages/gpu.js'),
 };
 

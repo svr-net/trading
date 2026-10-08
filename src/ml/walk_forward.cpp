@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 
+#include "sat/afml/sampling.hpp"
 #include "sat/core/random.hpp"
 
 namespace sat {
@@ -14,13 +16,55 @@ double nowMs() {
 }
 }  // namespace
 
+SampleWeighting parseSampleWeighting(const std::string& name) {
+  if (name == "none") return SampleWeighting::None;
+  if (name == "uniqueness") return SampleWeighting::Uniqueness;
+  if (name == "decay") return SampleWeighting::UniquenessDecay;
+  throw std::invalid_argument("unknown sample weighting '" + name + "' (none, uniqueness, decay)");
+}
+
+std::vector<double> trainingWeights(const Dataset& train, const Panel& labelEnds, SampleWeighting weighting, double decayOldest) {
+  const std::size_t n = train.X.rows();
+  std::vector<double> w(n, 1.0);
+  if (weighting == SampleWeighting::None || n == 0) return w;
+  // Uniqueness per stock: labels of different stocks do not share returns.
+  std::size_t lastDate = 0;
+  for (std::size_t r = 0; r < n; ++r) {
+    const double e = labelEnds(train.date[r], train.asset[r]);
+    lastDate = std::max(lastDate, std::isfinite(e) ? static_cast<std::size_t>(e) : train.date[r]);
+  }
+  std::vector<std::vector<std::size_t>> rowsOf(labelEnds.assets());
+  for (std::size_t r = 0; r < n; ++r) rowsOf[train.asset[r]].push_back(r);
+  for (const auto& rows : rowsOf) {
+    if (rows.empty()) continue;
+    std::vector<afml::Span> spans;
+    for (std::size_t r : rows) {
+      const double e = labelEnds(train.date[r], train.asset[r]);
+      spans.push_back({train.date[r], std::isfinite(e) ? std::max(train.date[r], static_cast<std::size_t>(e)) : train.date[r]});
+    }
+    const auto u = afml::averageUniqueness(spans, afml::concurrency(spans, lastDate + 1));
+    for (std::size_t k = 0; k < rows.size(); ++k) w[rows[k]] = u[k];
+  }
+  if (weighting == SampleWeighting::UniquenessDecay) {
+    std::vector<std::size_t> order(n);
+    for (std::size_t r = 0; r < n; ++r) order[r] = r;
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return train.date[a] < train.date[b]; });
+    std::vector<double> u;
+    for (std::size_t r : order) u.push_back(w[r]);
+    const auto d = afml::timeDecay(u, decayOldest);
+    for (std::size_t k = 0; k < n; ++k) w[order[k]] *= d[k];
+  }
+  return w;
+}
+
 std::size_t firstTestDate(const FeatureSet& features, const LabelSpec& label, const WalkForwardSpec& spec) {
   const std::size_t earliest = features.warmup + spec.trainWindow + label.lookahead();
   return std::max(spec.testStart, earliest);
 }
 
 ModelPredictions walkForward(const ModelSpec& model, const FeatureSet& features, const Panel& labels, const LabelSpec& label,
-                             const WalkForwardSpec& spec, std::size_t end) {
+                             const WalkForwardSpec& spec, std::size_t end, const Panel* labelEnds, const Panel* trainMask) {
+  if (spec.weighting != SampleWeighting::None && !labelEnds) throw std::invalid_argument("sample weighting needs the label ends");
   const std::size_t T = features.dates();
   if (spec.trainWindow < 2 || spec.retrainEvery < 1) throw std::invalid_argument("walk-forward window and step must be positive");
   if (end == 0 || end > T - 1) end = T - 1;
@@ -44,7 +88,37 @@ ModelPredictions walkForward(const ModelSpec& model, const FeatureSet& features,
     rec.trainTo = r - label.lookahead();
     rec.trainFrom = rec.trainTo > spec.trainWindow ? std::max(features.warmup, rec.trainTo - spec.trainWindow) : features.warmup;
     Dataset train = assemble(features, labels, rec.trainFrom, rec.trainTo, lags, true);
-    if (spec.maxTrainRows > 0 && train.X.rows() > spec.maxTrainRows) {
+    if (trainMask) {
+      std::vector<std::size_t> keep;
+      for (std::size_t k = 0; k < train.X.rows(); ++k)
+        if ((*trainMask)(train.date[k], train.asset[k]) > 0) keep.push_back(k);
+      std::vector<double> y;
+      std::vector<std::size_t> dates, assets;
+      for (std::size_t k : keep) {
+        y.push_back(train.y[k]);
+        dates.push_back(train.date[k]);
+        assets.push_back(train.asset[k]);
+      }
+      train.X = train.X.selectRows(keep);
+      train.y = std::move(y);
+      train.date = std::move(dates);
+      train.asset = std::move(assets);
+    }
+    if (spec.weighting != SampleWeighting::None && train.X.rows() > 0) {
+      // Weighted bootstrap in proportion to the sample weights.
+      const auto w = trainingWeights(train, *labelEnds, spec.weighting, spec.decayOldest);
+      std::vector<double> cum(w.size());
+      double total = 0;
+      for (std::size_t k = 0; k < w.size(); ++k) cum[k] = total += w[k];
+      const std::size_t draws = spec.maxTrainRows > 0 ? std::min(spec.maxTrainRows, w.size()) : w.size();
+      Rng rng(spec.seed + r);
+      std::vector<std::size_t> rows(draws);
+      for (auto& k : rows) k = std::min<std::size_t>(w.size() - 1, static_cast<std::size_t>(std::upper_bound(cum.begin(), cum.end(), rng.uniform() * total) - cum.begin()));
+      std::vector<double> y;
+      for (std::size_t k : rows) y.push_back(train.y[k]);
+      train.X = train.X.selectRows(rows);
+      train.y = std::move(y);
+    } else if (spec.maxTrainRows > 0 && train.X.rows() > spec.maxTrainRows) {
       std::vector<std::size_t> rows(train.X.rows());
       for (std::size_t k = 0; k < rows.size(); ++k) rows[k] = k;
       Rng rng(spec.seed + r);

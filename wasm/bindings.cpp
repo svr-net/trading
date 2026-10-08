@@ -208,7 +208,18 @@ Env parseEnv(const val& spec) {
     e.label.kind = parseLabelKind(str(l, "kind", "direction"));
     e.label.horizon = std::max<std::size_t>(1, count(l, "horizon", 1));
     e.label.window = std::max<std::size_t>(2, count(l, "window", 10));
+    e.label.barrierWidth = num(l, "barrierWidth", 1.0);
+    e.label.volSpan = num(l, "volSpan", 50.0);
+    if (!(e.label.barrierWidth > 0) || !(e.label.volSpan >= 2)) throw std::invalid_argument("triple barrier: width > 0 and volatility span >= 2");
   }
+  if (has(spec, "extraFeatures")) {
+    const val f = spec["extraFeatures"];
+    for (std::size_t k = 0; k < f["length"].as<std::size_t>(); ++k) e.extraFeatures.push_back(f[k].as<std::string>());
+  }
+  e.ffdOrder = num(spec, "ffdOrder", e.ffdOrder);
+  if (!(e.ffdOrder >= 0 && e.ffdOrder <= 1)) throw std::invalid_argument("the order of fractional differentiation must be in [0, 1]");
+  e.cusumMultiple = num(spec, "cusumMultiple", 0.0);
+  if (!(e.cusumMultiple >= 0)) throw std::invalid_argument("CUSUM multiple must be non-negative");
   if (has(spec, "models")) {
     const val m = spec["models"];
     for (std::size_t k = 0; k < m["length"].as<std::size_t>(); ++k) e.models.push_back(parseModel(m[k]));
@@ -222,6 +233,8 @@ Env parseEnv(const val& spec) {
     e.walkForward.retrainEvery = std::max<std::size_t>(1, count(w, "retrainEvery", e.walkForward.retrainEvery));
     e.walkForward.maxTrainRows = count(w, "maxTrainRows", e.walkForward.maxTrainRows);
     e.walkForward.seed = static_cast<std::uint64_t>(num(w, "seed", 11));
+    e.walkForward.weighting = parseSampleWeighting(str(w, "weighting", "none"));
+    e.walkForward.decayOldest = num(w, "decayOldest", 0.5);
   }
   if (has(spec, "strategies")) {
     const val s = spec["strategies"];
@@ -250,7 +263,8 @@ Env parseEnv(const val& spec) {
       if (lb < 2) throw std::invalid_argument("look-backs must be at least 2 days");
   }
   env.predictionKey = env.marketKey + "|" + stringify(spec["alphas"]) + "|" + str(spec, "normalisation", "rank") + "|" +
-                      stringify(spec["label"]) + "|" + stringify(spec["models"]) + "|" + stringify(spec["walkForward"]);
+                      stringify(spec["label"]) + "|" + stringify(spec["models"]) + "|" + stringify(spec["walkForward"]) + "|" +
+                      stringify(spec["extraFeatures"]) + "|" + std::to_string(e.ffdOrder) + "|" + std::to_string(e.cusumMultiple);
   return env;
 }
 
@@ -1263,6 +1277,631 @@ val gpuEmulate(val spec) {
   });
 }
 
+// ------------------------------------------------------------------ Advances in Financial Machine Learning
+//
+// One entry point per topic page. They reuse the cached market and predictions where the
+// topic builds on them (labels, validation, overfitting) and are otherwise self-contained.
+
+val metricsOfBars(const afml::BarStatistics& s) {
+  val o = val::object();
+  o.set("count", static_cast<double>(s.count));
+  o.set("barsPerDayMean", s.barsPerDayMean);
+  o.set("barsPerDaySd", s.barsPerDaySd);
+  o.set("returnSd", s.returnSd);
+  o.set("skewness", s.skewness);
+  o.set("kurtosis", s.kurtosis);
+  o.set("jarqueBera", s.jarqueBera);
+  o.set("serialCorrelation", s.serialCorrelation);
+  o.set("varianceOfVariance", s.varianceOfVariance);
+  return o;
+}
+
+// Information-driven bars on a synthetic trade stream.
+val afmlBars(val spec) {
+  return guarded([&] {
+    const val b = spec["bars"];
+    afml::TradeStreamSpec ts;
+    ts.days = count(b, "days", ts.days);
+    ts.tradesPerDay = num(b, "tradesPerDay", ts.tradesPerDay);
+    ts.activityDispersion = num(b, "activityDispersion", ts.activityDispersion);
+    ts.persistence = num(b, "persistence", ts.persistence);
+    ts.seed = static_cast<std::uint64_t>(num(b, "seed", 5));
+    const double perDay = std::max(1.0, num(b, "barsPerDay", 20));
+    if (ts.days > 400 || ts.tradesPerDay > 20000) throw std::invalid_argument("bars: at most 400 days and 20,000 trades a day in the browser");
+    const double t0 = nowMs();
+    const auto trades = afml::generateTrades(ts);
+    double volume = 0, dollars = 0;
+    for (const auto& t : trades) {
+      volume += t.volume;
+      dollars += t.volume * t.price;
+    }
+    const double target = static_cast<double>(ts.days) * perDay;
+    std::vector<std::pair<std::string, std::vector<afml::Bar>>> kinds = {
+        {"time", afml::timeBars(trades, 1.0 / perDay)},
+        {"tick", afml::tickBars(trades, std::max<std::size_t>(1, static_cast<std::size_t>(trades.size() / target)))},
+        {"volume", afml::volumeBars(trades, volume / target)},
+        {"dollar", afml::dollarBars(trades, dollars / target)},
+        {"tick imbalance", afml::tickImbalanceBars(trades, std::max<std::size_t>(10, static_cast<std::size_t>(trades.size() / target)))},
+    };
+    val list = val::array();
+    for (const auto& [name, bars] : kinds) {
+      val o = val::object();
+      o.set("name", name);
+      o.set("stats", metricsOfBars(afml::barStatistics(bars, ts.days)));
+      // Standardised returns for the distribution chart.
+      auto r = afml::barReturns(bars);
+      const double m = mean(r), sd = stdev(r);
+      for (auto& x : r) x = sd > 0 ? (x - m) / sd : 0.0;
+      if (r.size() > 6000) r.resize(6000);
+      o.set("standardised", arr(r));
+      std::vector<double> perDayCount(ts.days, 0.0);
+      for (const auto& bar : bars) perDayCount[std::min<std::size_t>(ts.days - 1, static_cast<std::size_t>(bar.timeClose))] += 1;
+      o.set("barsPerDay", arr(perDayCount));
+      list.call<void>("push", o);
+    }
+    std::vector<double> activity(ts.days, 0.0), dayClose(ts.days, 0.0);
+    for (const auto& t : trades) {
+      const auto d = std::min<std::size_t>(ts.days - 1, static_cast<std::size_t>(t.time));
+      activity[d] += 1;
+      dayClose[d] = t.price;
+    }
+    val out = val::object();
+    out.set("kinds", list);
+    out.set("tradesPerDay", arr(activity));
+    out.set("dailyClose", arr(dayClose));
+    out.set("trades", static_cast<double>(trades.size()));
+    out.set("days", static_cast<double>(ts.days));
+    out.set("elapsedMs", nowMs() - t0);
+    return out;
+  });
+}
+
+// Fractional differentiation of a log-price series and the stationarity / memory trade-off.
+val afmlFracDiff(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const auto data = market(spec, env);
+    const MarketData& d = *data;
+    const std::size_t T = d.numDates(), N = d.numAssets();
+    std::vector<double> series(T, 0.0);
+    const std::string which = str(spec, "fracdiffSeries", "index");
+    if (which == "index") {
+      double lw = 0;  // log of the equal-weight index
+      for (std::size_t t = 1; t < T; ++t) {
+        double s = 0;
+        for (std::size_t i = 0; i < N; ++i) s += (d.close(t, i) / d.close(t - 1, i) - 1.0) / N;
+        series[t] = lw += std::log1p(s);
+      }
+    } else {
+      for (std::size_t t = 0; t < T; ++t) series[t] = std::log(d.close(t, 0));
+    }
+    const double thr = num(spec, "fracdiffThreshold", 1e-3);
+    const auto scan = afml::scanFracDiff(series, 0.05, thr);
+    const double chosen = std::clamp(num(spec, "ffdOrder", scan.minimumD), 0.0, 1.0);
+    val out = val::object();
+    out.set("series", which == "index" ? std::string("equal-weight index") : d.tickers[0]);
+    out.set("dates", strings(d.dates));
+    out.set("logPrice", arr(series));
+    out.set("d", arr(scan.d));
+    out.set("adf", arr(scan.adf));
+    out.set("correlation", arr(scan.correlation));
+    std::vector<double> width(scan.width.begin(), scan.width.end());
+    out.set("width", arr(width));
+    out.set("minimumD", scan.minimumD);
+    out.set("critical5", afml::AdfResult::critical5);
+    out.set("critical1", afml::AdfResult::critical1);
+    out.set("chosenD", chosen);
+    out.set("ffdMinimum", arr(afml::fracDiff(series, scan.minimumD, thr)));
+    out.set("ffdChosen", arr(afml::fracDiff(series, chosen, thr)));
+    out.set("firstDifference", arr(afml::fracDiff(series, 1.0, thr)));
+    val weights = val::array();
+    for (double dd : {0.2, 0.4, 0.6, 0.8, 1.0}) {
+      auto w = afml::fracDiffWeights(dd, 1e-4, 60);
+      w.resize(std::min<std::size_t>(w.size(), 30));
+      val o = val::object();
+      o.set("d", dd);
+      o.set("weights", arr(w));
+      weights.call<void>("push", o);
+    }
+    out.set("weights", weights);
+    out.set("threshold", thr);
+    return out;
+  });
+}
+
+// Event sampling, triple-barrier labels, uniqueness and meta-labeling.
+val afmlLabeling(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const auto data = market(spec, env);
+    const MarketData& d = *data;
+    const std::size_t T = d.numDates(), N = d.numAssets();
+    const val L = spec["labeling"];
+    const double cusumMult = num(L, "cusumMultiple", 2.0);
+    afml::BarrierSpec bs;
+    bs.profitTaking = num(L, "profitTaking", 1.0);
+    bs.stopLoss = num(L, "stopLoss", 1.0);
+    bs.maxHolding = std::max<std::size_t>(1, count(L, "maxHolding", 10));
+    const double volSpan = num(L, "volSpan", 50.0);
+    const std::size_t momentum = std::max<std::size_t>(2, count(L, "momentum", 20));
+    // Stock 0 in detail.
+    const auto close0 = d.close.series(0);
+    std::vector<double> lp(T);
+    for (std::size_t t = 0; t < T; ++t) lp[t] = std::log(close0[t]);
+    const auto vol0 = afml::ewmVolatility(close0, volSpan);
+    std::vector<double> absr;
+    for (std::size_t t = 1; t < T; ++t) absr.push_back(std::fabs(close0[t] / close0[t - 1] - 1.0));
+    const double h0 = cusumMult * quantile(absr, 0.5) * 1.4826;
+    const auto ev0 = afml::cusumFilter(lp, h0);
+    // Barrier targets in returns over the holding horizon: daily volatility x sqrt(days).
+    std::vector<double> trg0(T);
+    for (std::size_t t = 0; t < T; ++t) trg0[t] = vol0[t] * std::sqrt(static_cast<double>(bs.maxHolding));
+    const auto lab0 = afml::tripleBarrier(close0, ev0, trg0, bs);
+    val out = val::object();
+    out.set("ticker", d.tickers[0]);
+    out.set("dates", strings(d.dates));
+    out.set("close", arr(close0));
+    out.set("cusumThreshold", h0);
+    val events = val::array();
+    double up = 0, down = 0, vert = 0, pos = 0;
+    std::vector<afml::Span> spans0;
+    for (const auto& e : lab0) {
+      val o = val::object();
+      o.set("t0", static_cast<double>(e.t0));
+      o.set("t1", static_cast<double>(e.t1));
+      o.set("barrier", e.barrier);
+      o.set("label", e.label);
+      o.set("ret", e.ret);
+      o.set("upper", close0[e.t0] * (1 + bs.profitTaking * e.target));
+      o.set("lower", close0[e.t0] * (1 - bs.stopLoss * e.target));
+      events.call<void>("push", o);
+      (e.barrier > 0 ? up : e.barrier < 0 ? down : vert) += 1;
+      pos += e.label > 0;
+      spans0.push_back({e.t0, e.t1});
+    }
+    out.set("events", events);
+    val counts = val::object();
+    counts.set("upper", up);
+    counts.set("lower", down);
+    counts.set("vertical", vert);
+    counts.set("positive", pos);
+    out.set("counts", counts);
+    const auto conc = afml::concurrency(spans0, T);
+    out.set("concurrency", arr(conc));
+    out.set("uniqueness", arr(afml::averageUniqueness(spans0, conc)));
+    // Sequential vs standard bootstrap on these spans.
+    {
+      Rng a(17), b(18);
+      std::vector<double> seq, plain;
+      const std::size_t draws = spans0.size();
+      for (int rep = 0; rep < 30 && draws > 1; ++rep) {
+        seq.push_back(afml::sampleUniqueness(spans0, afml::sequentialBootstrap(spans0, T, draws, a), T));
+        std::vector<std::size_t> s(draws);
+        for (auto& k : s) k = b.below(draws);
+        plain.push_back(afml::sampleUniqueness(spans0, s, T));
+      }
+      out.set("bootstrapSequential", arr(seq));
+      out.set("bootstrapStandard", arr(plain));
+    }
+    // Meta-labeling across all stocks: the primary model is a momentum rule (side = sign of
+    // the last `momentum` days' return) at CUSUM events, held to a short triple barrier; the
+    // secondary model learns from the alpha factors, signed by the side, whether to act on it.
+    // It is trained on the events of the first 60% of dates whose outcome is known by then.
+    const FeatureSet fs = buildFeatures(d, env.exp.alphaIds.empty() ? paperAlphaIds() : env.exp.alphaIds, env.exp.normalisation);
+    const Panel mask = afml::cusumEventMask(d, num(L, "metaCusumMultiple", 1.0));
+    afml::BarrierSpec ms = bs;
+    ms.maxHolding = std::max<std::size_t>(1, count(L, "metaHolding", 2));
+    struct Row {
+      std::size_t t0, t1, asset;
+      int side, label;
+      double ret, vol;
+    };
+    std::vector<Row> rows;
+    for (std::size_t i = 0; i < N; ++i) {
+      const auto c = d.close.series(i);
+      const auto v = afml::ewmVolatility(c, volSpan);
+      std::vector<double> trg(T);
+      for (std::size_t t = 0; t < T; ++t) trg[t] = v[t] * std::sqrt(static_cast<double>(ms.maxHolding));
+      std::vector<std::size_t> evs;
+      std::vector<int> sides;
+      for (std::size_t t = std::max(fs.warmup, momentum); t < T; ++t)
+        if (mask(t, i) > 0) {
+          evs.push_back(t);
+          sides.push_back(c[t] >= c[t - momentum] ? 1 : -1);
+        }
+      for (const auto& e : afml::tripleBarrier(c, evs, trg, ms, &sides)) rows.push_back({e.t0, e.t1, i, e.side, e.label, e.ret, v[e.t0]});
+    }
+    if (rows.size() < 100) throw std::invalid_argument("meta-labeling: fewer than 100 events; lower the CUSUM multiple");
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.t0 < b.t0 || (a.t0 == b.t0 && a.asset < b.asset); });
+    const std::size_t split = fs.warmup + (T - fs.warmup) * 6 / 10;
+    std::vector<std::size_t> trainIdx, testIdx;
+    for (std::size_t k = 0; k < rows.size(); ++k) {
+      if (rows[k].t1 < split) trainIdx.push_back(k);  // purged: the label is known before the test period
+      else if (rows[k].t0 >= split) testIdx.push_back(k);
+    }
+    if (trainIdx.size() < 30 || testIdx.size() < 30) throw std::invalid_argument("meta-labeling: too few events on one side of the split");
+    const std::size_t F = fs.size();
+    // Features in the direction of the bet, the side itself and the volatility.
+    auto rowOf = [&](const Row& r, double* x) {
+      for (std::size_t f = 0; f < F; ++f) x[f] = fs.panels[f](r.t0, r.asset) * r.side;
+      x[F] = r.side;
+      x[F + 1] = std::isfinite(r.vol) ? r.vol : 0.0;
+    };
+    Matrix Xtr(trainIdx.size(), F + 2), Xte(testIdx.size(), F + 2);
+    std::vector<double> ytr, yte;
+    for (std::size_t k = 0; k < trainIdx.size(); ++k) {
+      rowOf(rows[trainIdx[k]], Xtr.row(k));
+      ytr.push_back(rows[trainIdx[k]].label);
+    }
+    for (std::size_t k = 0; k < testIdx.size(); ++k) {
+      rowOf(rows[testIdx[k]], Xte.row(k));
+      yte.push_back(rows[testIdx[k]].label);
+    }
+    ModelSpec mm;
+    mm.type = str(L, "metaModel", "logistic");
+    mm.trees = 40;
+    auto model = makeClassifier(mm);
+    model->fit(Xtr, ytr);
+    const auto p = model->predictProba(Xte);
+    // Precision, recall and F1 of "the primary bet pays", before and after the filter.
+    auto scoreOf = [&](const std::vector<int>& act) {
+      double tp = 0, fp = 0, fn = 0, ret = 0, n = 0, sizedRet = 0;
+      for (std::size_t k = 0; k < yte.size(); ++k) {
+        const bool good = yte[k] > 0.5;
+        if (act[k]) {
+          tp += good;
+          fp += !good;
+          ret += rows[testIdx[k]].ret;
+          n += 1;
+        } else {
+          fn += good;
+        }
+        sizedRet += act[k] ? std::max(0.0, afml::betSize(p[k])) * rows[testIdx[k]].ret : 0.0;
+      }
+      val o = val::object();
+      const double prec = tp + fp > 0 ? tp / (tp + fp) : 0, rec = tp + fn > 0 ? tp / (tp + fn) : 0;
+      o.set("bets", n);
+      o.set("precision", prec);
+      o.set("recall", rec);
+      o.set("f1", prec + rec > 0 ? 2 * prec * rec / (prec + rec) : 0.0);
+      o.set("meanReturn", n > 0 ? ret / n : 0.0);
+      o.set("sizedMeanReturn", sizedRet / static_cast<double>(yte.size()));
+      return o;
+    };
+    std::vector<int> all(yte.size(), 1), filtered(yte.size());
+    for (std::size_t k = 0; k < yte.size(); ++k) filtered[k] = p[k] > 0.5;
+    val meta = val::object();
+    meta.set("events", static_cast<double>(rows.size()));
+    meta.set("trainEvents", static_cast<double>(trainIdx.size()));
+    meta.set("testEvents", static_cast<double>(testIdx.size()));
+    meta.set("splitDate", dateLabel(d, split));
+    meta.set("primary", scoreOf(all));
+    meta.set("filtered", scoreOf(filtered));
+    meta.set("auc", classificationMetrics(yte, p).auc);
+    meta.set("probabilities", arr(p));
+    meta.set("labels", arr(yte));
+    meta.set("model", mm.displayName());
+    meta.set("holding", static_cast<double>(ms.maxHolding));
+    meta.set("momentum", static_cast<double>(momentum));
+    out.set("meta", meta);
+    return out;
+  });
+}
+
+// Cross-validation with overlapping labels, combinatorial purged CV and feature importance.
+val afmlValidation(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const auto data = market(spec, env);
+    const MarketData& d = *data;
+    const val V = spec["validation"];
+    const std::size_t folds = std::max<std::size_t>(2, count(V, "folds", 5));
+    const std::size_t embargo = count(V, "embargo", 5);
+    const std::size_t maxRows = std::max<std::size_t>(500, count(V, "maxRows", 6000));
+    LabelSpec label = env.exp.label;
+    if (has(V, "horizon")) label.horizon = std::max<std::size_t>(1, count(V, "horizon", 5));
+    ModelSpec model;
+    model.type = str(V, "model", "xgboost");
+    model.trees = count(V, "trees", 40);
+    const double t0 = nowMs();
+    FeatureSet fs = buildFeatures(d, env.exp.alphaIds.empty() ? paperAlphaIds() : env.exp.alphaIds, env.exp.normalisation);
+    if (!env.exp.extraFeatures.empty()) afml::appendExtraFeatures(fs, d, env.exp.extraFeatures, env.exp.normalisation, env.exp.ffdOrder);
+    Panel ends;
+    const Panel y = makeLabels(d, label, &ends);
+    // Every k-th date so that the sample stays below maxRows; the dates stay contiguous blocks.
+    const std::size_t T = d.numDates(), N = d.numAssets();
+    const std::size_t usable = T - fs.warmup;
+    const std::size_t stride = std::max<std::size_t>(1, (usable * N + maxRows - 1) / maxRows);
+    Dataset all = assemble(fs, y, fs.warmup, T, 1, true);
+    std::vector<std::size_t> keep;
+    for (std::size_t r = 0; r < all.X.rows(); ++r)
+      if ((all.date[r] - fs.warmup) % stride == 0) keep.push_back(r);
+    Matrix X = all.X.selectRows(keep);
+    std::vector<double> yy;
+    std::vector<afml::Span> spans;
+    for (std::size_t r : keep) {
+      yy.push_back(all.y[r]);
+      const double e = ends(all.date[r], all.asset[r]);
+      spans.push_back({all.date[r], std::isfinite(e) ? static_cast<std::size_t>(e) : all.date[r]});
+    }
+    // Shuffled k-fold: rows assigned to folds at random, the textbook leak.
+    std::vector<afml::Split> shuffled(folds);
+    {
+      std::vector<std::size_t> idx(yy.size());
+      for (std::size_t k = 0; k < idx.size(); ++k) idx[k] = k;
+      Rng rng(23);
+      shuffle(idx, rng);
+      for (std::size_t k = 0; k < idx.size(); ++k) shuffled[k % folds].test.push_back(idx[k]);
+      for (auto& f : shuffled) {
+        std::sort(f.test.begin(), f.test.end());
+        std::vector<char> in(yy.size(), 0);
+        for (std::size_t k : f.test) in[k] = 1;
+        for (std::size_t k = 0; k < yy.size(); ++k)
+          if (!in[k]) f.train.push_back(k);
+      }
+    }
+    const auto blocked = afml::purgedKFold(spans, T, folds, 0, false);
+    const auto purged = afml::purgedKFold(spans, T, folds, embargo, true);
+    auto cvToJs = [&](const char* name, const std::vector<afml::Split>& splits) {
+      const auto s = afml::crossValidate(model, X, yy, splits);
+      double trainRows = 0;
+      for (const auto& f : splits) trainRows += static_cast<double>(f.train.size()) / splits.size();
+      val o = val::object();
+      o.set("name", std::string(name));
+      o.set("accuracy", s.accuracy);
+      o.set("auc", s.auc);
+      o.set("logLoss", s.logLoss);
+      o.set("foldAccuracy", arr(s.foldAccuracy));
+      o.set("trainRows", trainRows);
+      return o;
+    };
+    val cv = val::array();
+    cv.call<void>("push", cvToJs("shuffled k-fold", shuffled));
+    cv.call<void>("push", cvToJs("blocked k-fold", blocked));
+    cv.call<void>("push", cvToJs("purged k-fold + embargo", purged));
+    // Feature importance on the purged folds.
+    const auto mdi = afml::meanDecreaseImpurity(model, X, yy);
+    const auto mda = afml::meanDecreaseAccuracy(model, X, yy, purged);
+    ModelSpec single;
+    single.type = "logistic";
+    const auto sfi = afml::singleFeatureImportance(single, X, yy, purged);
+    // Combinatorial purged CV: per path, the out-of-sample accuracy and the Sharpe ratio of a
+    // long-short trade on the predictions (top fifth long, bottom fifth short, held one day).
+    const std::size_t groups = std::clamp<std::size_t>(count(V, "groups", 6), 3, 10);
+    const std::size_t testGroups = std::clamp<std::size_t>(count(V, "testGroups", 2), 1, groups - 1);
+    const auto cp = afml::combinatorialPurgedSplits(spans, T, groups, testGroups, embargo);
+    std::vector<std::vector<double>> predBySplit(cp.splits.size());
+    for (std::size_t s = 0; s < cp.splits.size(); ++s) {
+      const auto& sp = cp.splits[s];
+      std::vector<double> ytr;
+      for (std::size_t k : sp.train) ytr.push_back(yy[k]);
+      auto m = makeClassifier(model);
+      m->fit(X.selectRows(sp.train), ytr);
+      predBySplit[s] = m->predictProba(X.selectRows(sp.test));
+    }
+    const Panel next = d.forwardReturns(1);
+    val paths = val::array();
+    for (std::size_t p = 0; p < cp.paths; ++p) {
+      // Predictions of path p: each group's from the split assigned to it.
+      std::vector<double> prob(yy.size(), NAN);
+      for (std::size_t g = 0; g < groups; ++g) {
+        const std::size_t s = cp.pathSplit[p][g];
+        const auto& sp = cp.splits[s];
+        for (std::size_t k = 0; k < sp.test.size(); ++k)
+          if (cp.groupOfDate[spans[sp.test[k]].first] == g) prob[sp.test[k]] = predBySplit[s][k];
+      }
+      // Daily long-short returns on the sampled dates.
+      std::map<std::size_t, std::vector<std::pair<double, double>>> byDate;
+      for (std::size_t k = 0; k < yy.size(); ++k)
+        if (std::isfinite(prob[k]) && std::isfinite(next(spans[k].first, all.asset[keep[k]])))
+          byDate[spans[k].first].push_back({prob[k], next(spans[k].first, all.asset[keep[k]])});
+      std::vector<double> ret;
+      for (auto& [date, v] : byDate) {
+        if (v.size() < 5) continue;
+        std::sort(v.begin(), v.end());
+        const std::size_t q = v.size() / 5;
+        double r = 0;
+        for (std::size_t k = 0; k < q; ++k) r += (v[v.size() - 1 - k].second - v[k].second) / q;
+        ret.push_back(r);
+      }
+      const auto pm = evaluatePerformance(ret);
+      std::vector<double> yt, pt;
+      for (std::size_t k = 0; k < yy.size(); ++k)
+        if (std::isfinite(prob[k])) {
+          yt.push_back(yy[k]);
+          pt.push_back(prob[k]);
+        }
+      val o = val::object();
+      o.set("accuracy", classificationMetrics(yt, pt).accuracy);
+      o.set("sharpe", pm.sharpe / std::sqrt(static_cast<double>(stride)));  // dates are `stride` days apart
+      o.set("equity", arr(equityCurve(ret)));
+      paths.call<void>("push", o);
+    }
+    val cpcv = val::object();
+    cpcv.set("groups", static_cast<double>(groups));
+    cpcv.set("testGroups", static_cast<double>(testGroups));
+    cpcv.set("splits", static_cast<double>(cp.splits.size()));
+    cpcv.set("paths", paths);
+    val out = val::object();
+    out.set("rows", static_cast<double>(yy.size()));
+    out.set("stride", static_cast<double>(stride));
+    out.set("horizon", static_cast<double>(label.lookahead()));
+    out.set("folds", static_cast<double>(folds));
+    out.set("embargo", static_cast<double>(embargo));
+    out.set("model", model.displayName());
+    out.set("cv", cv);
+    out.set("features", strings(fs.names));
+    out.set("mdi", arr(mdi.mean));
+    out.set("mda", arr(mda.mean));
+    out.set("mdaSe", arr(mda.sd));
+    out.set("sfi", arr(sfi.mean));
+    out.set("cpcv", cpcv);
+    out.set("elapsedMs", nowMs() - t0);
+    return out;
+  });
+}
+
+// Hierarchical risk parity on the stock universe and in a Monte Carlo study.
+val afmlPortfolio(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const auto data = market(spec, env);
+    const MarketData& d = *data;
+    const val P = spec["portfolio"];
+    const std::size_t window = std::max<std::size_t>(30, count(P, "window", 252));
+    const std::size_t rebalance = std::max<std::size_t>(1, count(P, "rebalance", 21));
+    const std::size_t T = d.numDates(), N = d.numAssets();
+    if (T <= window + rebalance + 1) throw std::invalid_argument("portfolio: the estimation window is longer than the data");
+    const Panel ret = d.returns();
+    auto windowMatrix = [&](std::size_t from, std::size_t to) {
+      Matrix R(to - from, N);
+      for (std::size_t t = from; t < to; ++t)
+        for (std::size_t i = 0; i < N; ++i) R(t - from, i) = std::isfinite(ret(t, i)) ? ret(t, i) : 0.0;
+      return R;
+    };
+    // The last window in detail.
+    const Matrix cov = afml::covarianceMatrix(windowMatrix(T - window, T)), corr = afml::correlationFromCovariance(cov);
+    const auto L = afml::clusterAssets(corr);
+    const auto hrp = afml::hierarchicalRiskParity(cov, L.order), ivp = afml::inverseVarianceWeights(cov),
+               mv = afml::minimumVarianceWeights(cov);
+    std::vector<std::vector<double>> c0(N, std::vector<double>(N)), c1(N, std::vector<double>(N));
+    std::vector<std::string> orderedTickers;
+    for (std::size_t i = 0; i < N; ++i) {
+      orderedTickers.push_back(d.tickers[L.order[i]]);
+      for (std::size_t j = 0; j < N; ++j) {
+        c0[i][j] = corr(i, j);
+        c1[i][j] = corr(L.order[i], L.order[j]);
+      }
+    }
+    // Walk-forward backtest: weights re-estimated every `rebalance` days on the past window.
+    std::vector<std::vector<double>> daily(4);
+    for (std::size_t t = window + 1; t + 1 < T; t += rebalance) {
+      const Matrix c = afml::covarianceMatrix(windowMatrix(t - window, t));
+      const auto lk = afml::clusterAssets(afml::correlationFromCovariance(c));
+      const std::vector<std::vector<double>> ws = {afml::hierarchicalRiskParity(c, lk.order), afml::inverseVarianceWeights(c),
+                                                   afml::minimumVarianceWeights(c), std::vector<double>(N, 1.0 / N)};
+      for (std::size_t s = t; s < std::min(T, t + rebalance); ++s)
+        for (std::size_t m = 0; m < 4; ++m) {
+          double r = 0;
+          for (std::size_t i = 0; i < N; ++i) r += ws[m][i] * (std::isfinite(ret(s, i)) ? ret(s, i) : 0.0);
+          daily[m].push_back(r);
+        }
+    }
+    const char* names[] = {"HRP", "inverse variance", "minimum variance", "equal weight"};
+    val backtest = val::array();
+    for (std::size_t m = 0; m < 4; ++m) {
+      val o = val::object();
+      o.set("name", std::string(names[m]));
+      o.set("metrics", metricsToJs(evaluatePerformance(daily[m])));
+      o.set("equity", arr(equityCurve(daily[m])));
+      backtest.call<void>("push", o);
+    }
+    afml::AllocationTrial trial;
+    trial.trials = std::min<std::size_t>(500, count(P, "trials", 100));
+    trial.assets = std::clamp<std::size_t>(count(P, "simAssets", 10), 3, 50);
+    const auto cmp = afml::compareAllocations(trial);
+    val mc = val::object();
+    mc.set("hrp", arr(cmp.hrpVariance));
+    mc.set("ivp", arr(cmp.ivpVariance));
+    mc.set("minVar", arr(cmp.minVarVariance));
+    mc.set("longOnly", arr(cmp.longOnlyMinVarVariance));
+    mc.set("hrpMaxWeight", cmp.hrpMaxWeight);
+    mc.set("ivpMaxWeight", cmp.ivpMaxWeight);
+    mc.set("minVarMaxWeight", cmp.minVarMaxWeight);
+    mc.set("longOnlyMaxWeight", cmp.longOnlyMaxWeight);
+    mc.set("minVarGross", cmp.minVarGross);
+    mc.set("trials", static_cast<double>(trial.trials));
+    mc.set("assets", static_cast<double>(trial.assets));
+    val out = val::object();
+    out.set("tickers", strings(d.tickers));
+    out.set("orderedTickers", strings(orderedTickers));
+    out.set("correlation", arrOfArr(c0));
+    out.set("orderedCorrelation", arrOfArr(c1));
+    out.set("hrp", arr(hrp));
+    out.set("ivp", arr(ivp));
+    out.set("minVar", arr(mv));
+    std::vector<double> heights(L.height.begin(), L.height.end());
+    out.set("linkageHeights", arr(heights));
+    out.set("variances", arr({afml::portfolioVariance(cov, hrp) * 252, afml::portfolioVariance(cov, ivp) * 252,
+                              afml::portfolioVariance(cov, mv) * 252}));
+    out.set("backtest", backtest);
+    out.set("backtestDates", dateRange(d, window, window + daily[0].size() + 1));
+    out.set("monteCarlo", mc);
+    out.set("window", static_cast<double>(window));
+    out.set("rebalance", static_cast<double>(rebalance));
+    return out;
+  });
+}
+
+// Backtest overfitting of the candidate pool and the self-adaptive strategy.
+val afmlOverfitting(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const Predictions p = predictions(spec, env);
+    const CandidateBook book(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+    const std::size_t evalFrom = std::min(env.exp.selector.lookback, book.days() - 1);
+    const AdaptiveResult a = runSelector(book, env.exp.selector, evalFrom);
+    const std::size_t blocks = std::clamp<std::size_t>(count(spec["overfitting"], "blocks", 16), 2, 20) / 2 * 2;
+    const auto rep = afml::assessOverfitting(book, a.net, evalFrom, blocks);
+    auto assessment = [](const afml::StrategyAssessment& s) {
+      val o = val::object();
+      o.set("sharpe", s.sharpe);
+      o.set("annualSharpe", s.annualSharpe);
+      o.set("skew", s.skew);
+      o.set("kurtosis", s.kurt);
+      o.set("psr", s.psr);
+      o.set("dsr", s.dsr);
+      o.set("maxDrawdown", s.drawdown.maxDrawdown);
+      o.set("drawdown95", s.drawdown.drawdown95);
+      o.set("longestUnderWater", static_cast<double>(s.drawdown.longestUnderWater));
+      o.set("concentration", s.concentration);
+      return o;
+    };
+    val out = val::object();
+    out.set("trials", static_cast<double>(rep.trials));
+    out.set("days", static_cast<double>(rep.days));
+    out.set("trialVariance", rep.trialVariance);
+    out.set("expectedMaxSharpe", rep.expectedMaxSharpe);
+    out.set("candidateSharpe", arr(rep.candidateSharpe));
+    const std::size_t S = env.exp.strategies.size();
+    out.set("bestFixedLabel", p.set->models[rep.bestFixed / S].name + " · " + env.exp.strategies[rep.bestFixed % S].label());
+    out.set("best", assessment(rep.best));
+    out.set("adaptive", assessment(rep.adaptive));
+    out.set("adaptiveLabel", env.exp.selector.label());
+    val pbo = val::object();
+    pbo.set("pbo", rep.pbo.pbo);
+    pbo.set("combinations", static_cast<double>(rep.pbo.combinations));
+    pbo.set("logits", arr(rep.pbo.logits));
+    pbo.set("inSample", arr(rep.pbo.inSampleSharpe));
+    pbo.set("outOfSample", arr(rep.pbo.outOfSampleSharpe));
+    pbo.set("probabilityOfLoss", rep.pbo.probabilityOfLoss);
+    pbo.set("degradationSlope", rep.pbo.degradationSlope);
+    pbo.set("blocks", static_cast<double>(blocks));
+    out.set("pbo", pbo);
+    // Expected maximum Sharpe ratio of unskilled trials against their number.
+    std::vector<double> n, e;
+    for (double k : {1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0}) {
+      n.push_back(k);
+      e.push_back(afml::expectedMaxSharpe(k, rep.trialVariance) * std::sqrt(kTradingDaysPerYear));
+    }
+    out.set("trialCounts", arr(n));
+    out.set("expectedMaxAnnual", arr(e));
+    // Bet size as a function of the predicted probability.
+    std::vector<double> prob, size, step;
+    for (int k = 1; k < 100; ++k) {
+      prob.push_back(k / 100.0);
+      size.push_back(afml::betSize(k / 100.0));
+      step.push_back(afml::discretizeBet(size.back(), 0.1));
+    }
+    out.set("betProbability", arr(prob));
+    out.set("betSize", arr(size));
+    out.set("betDiscrete", arr(step));
+    out.set("trainMs", p.trainMs);
+    out.set("cachedPredictions", p.cached);
+    return out;
+  });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(sat) {
@@ -1279,4 +1918,10 @@ EMSCRIPTEN_BINDINGS(sat) {
   emscripten::function("gpuJobs", &gpuJobs);
   emscripten::function("gpuAnalyse", &gpuAnalyse);
   emscripten::function("gpuEmulate", &gpuEmulate);
+  emscripten::function("afmlBars", &afmlBars);
+  emscripten::function("afmlFracDiff", &afmlFracDiff);
+  emscripten::function("afmlLabeling", &afmlLabeling);
+  emscripten::function("afmlValidation", &afmlValidation);
+  emscripten::function("afmlPortfolio", &afmlPortfolio);
+  emscripten::function("afmlOverfitting", &afmlOverfitting);
 }

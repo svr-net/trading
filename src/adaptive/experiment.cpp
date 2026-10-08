@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "sat/afml/features.hpp"
 #include "sat/factors/alpha101.hpp"
 
 namespace sat {
@@ -35,6 +36,7 @@ std::vector<StrategySpec> ExperimentSpec::defaultStrategies() {
       {StrategyKind::LongTopK, 3, 1},       {StrategyKind::LongTopK, 5, 1},  {StrategyKind::LongTopK, 10, 5},
       {StrategyKind::LongShort, 3, 1},      {StrategyKind::LongShort, 5, 1}, {StrategyKind::Threshold, 0.52, 1},
       {StrategyKind::Threshold, 0.55, 1},   {StrategyKind::ProbabilityWeighted, 0.5, 1},
+      {StrategyKind::BetSized, 0.1, 1},
   };
 }
 
@@ -42,10 +44,14 @@ PredictionSet runPredictions(const MarketData& data, const ExperimentSpec& spec)
   data.validate();
   PredictionSet p;
   p.features = buildFeatures(data, spec.alphaIds.empty() ? paperAlphaIds() : spec.alphaIds, spec.normalisation);
-  p.labels = makeLabels(data, spec.label);
+  if (!spec.extraFeatures.empty()) afml::appendExtraFeatures(p.features, data, spec.extraFeatures, spec.normalisation, spec.ffdOrder);
+  p.labels = makeLabels(data, spec.label, &p.labelEnds);
   p.nextReturns = data.forwardReturns(1);
+  if (spec.cusumMultiple > 0) p.trainMask = afml::cusumEventMask(data, spec.cusumMultiple);
   const auto models = spec.models.empty() ? ExperimentSpec::defaultModels() : spec.models;
-  for (const auto& m : models) p.models.push_back(walkForward(m, p.features, p.labels, spec.label, spec.walkForward));
+  for (const auto& m : models)
+    p.models.push_back(walkForward(m, p.features, p.labels, spec.label, spec.walkForward, 0, &p.labelEnds,
+                                   p.trainMask.empty() ? nullptr : &p.trainMask));
   return p;
 }
 

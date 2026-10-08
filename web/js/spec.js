@@ -33,9 +33,12 @@ export function defaultSpec() {
     },
     alphas: [...PAPER_ALPHAS],
     normalisation: 'rank',
-    label: { kind: 'direction', horizon: 1, window: 10 },
+    extraFeatures: [],
+    ffdOrder: 0.4,
+    cusumMultiple: 0,
+    label: { kind: 'direction', horizon: 1, window: 10, barrierWidth: 1, volSpan: 50 },
     models: ['logistic', 'forest', 'xgboost', 'lightgbm', 'mlp', 'lstm'].map((t) => ({ ...MODEL_DEFAULTS[t] })),
-    walkForward: { trainWindow: 504, retrainEvery: 63, maxTrainRows: 8000, seed: 11 },
+    walkForward: { trainWindow: 504, retrainEvery: 63, maxTrainRows: 8000, seed: 11, weighting: 'none', decayOldest: 0.5 },
     strategies: [
       { kind: 'topk', param: 3, holding: 1 },
       { kind: 'topk', param: 5, holding: 1 },
@@ -45,12 +48,21 @@ export function defaultSpec() {
       { kind: 'threshold', param: 0.52, holding: 1 },
       { kind: 'threshold', param: 0.55, holding: 1 },
       { kind: 'probweighted', param: 0.5, holding: 1 },
+      { kind: 'betsize', param: 0.1, holding: 1 },
     ],
     costBps: 10,
     selector: { lookback: 63, adaptEvery: 21, metric: 'sharpe', topM: 1, allowCash: true, minScore: 0 },
     robustness: { lookbacks: [21, 42, 63, 126, 252], steps: [5, 10, 21, 42, 63], metrics: ['return', 'sharpe', 'sortino'], costs: [0, 5, 10, 20, 40] },
+    // Advances in Financial Machine Learning pages.
+    bars: { days: 60, tradesPerDay: 1500, activityDispersion: 0.6, persistence: 0.6, barsPerDay: 20, seed: 5 },
+    labeling: { cusumMultiple: 2, profitTaking: 1, stopLoss: 1, maxHolding: 10, volSpan: 50, momentum: 20, metaHolding: 2, metaCusumMultiple: 1, metaModel: 'logistic' },
+    validation: { model: 'xgboost', trees: 40, horizon: 5, folds: 5, embargo: 5, groups: 6, testGroups: 2, maxRows: 6000 },
+    portfolio: { window: 252, rebalance: 21, trials: 100, simAssets: 10 },
+    overfitting: { blocks: 16 },
   };
 }
+
+export const EXTRA_FEATURES = { ffd: 'fractionally differentiated log price', vol: 'EWM volatility', roll: 'Roll spread', corwin: 'Corwin-Schultz spread', amihud: 'Amihud illiquidity', kyle: "Kyle's lambda" };
 
 const STORAGE_KEY = 'sat-spec-v1';
 const CSV_KEY = 'sat-csv-v1';
@@ -59,7 +71,13 @@ export function loadSpec() {
   let spec = defaultSpec();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) spec = { ...spec, ...JSON.parse(raw) };
+    if (raw) {
+      // New sections added in later versions keep their defaults when an older spec is stored.
+      const stored = JSON.parse(raw);
+      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting'])
+        if (stored[k] && typeof stored[k] === 'object') stored[k] = { ...spec[k], ...stored[k] };
+      spec = { ...spec, ...stored };
+    }
   } catch (_) { /* storage unavailable: fall back to defaults */ }
   try {
     const csv = localStorage.getItem(CSV_KEY);
@@ -81,7 +99,7 @@ export function resetSpec() {
   return defaultSpec();
 }
 
-const STRATEGY_TEXT = { topk: (p) => `Top-${Math.round(p)}`, longshort: (p) => `Long-short ${Math.round(p)}`, threshold: (p) => `P>${p.toFixed(2)}`, probweighted: (p) => `P-weighted>${p.toFixed(2)}` };
+const STRATEGY_TEXT = { topk: (p) => `Top-${Math.round(p)}`, longshort: (p) => `Long-short ${Math.round(p)}`, threshold: (p) => `P>${p.toFixed(2)}`, probweighted: (p) => `P-weighted>${p.toFixed(2)}`, betsize: (p) => `Bet size>${p.toFixed(2)}` };
 /** Same text as StrategySpec::label in the library. */
 export function strategyLabel(s) {
   return STRATEGY_TEXT[s.kind](s.param) + (s.holding > 1 ? ` /${s.holding}d` : '');
