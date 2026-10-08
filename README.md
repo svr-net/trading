@@ -1,6 +1,9 @@
 # trading — self-adaptive machine-learning trading library
 
 [![CI](https://github.com/svr-net/trading/actions/workflows/ci.yml/badge.svg)](https://github.com/svr-net/trading/actions/workflows/ci.yml)
+[![Pages](https://github.com/svr-net/trading/actions/workflows/pages.yml/badge.svg)](https://github.com/svr-net/trading/actions/workflows/pages.yml)
+
+**Live demo: [svr-net.github.io/trading](https://svr-net.github.io/trading/)**: the whole method running in your browser (WebAssembly, and WebGPU where available).
 
 A C++17 library that models the method of
 
@@ -49,7 +52,7 @@ headers and a `sat::sat` CMake target.
 | `e2e` | Every page in headless Chromium (WebGPU on SwiftShader): dev site over HTTP, standalone from `file://` and over HTTP. Screenshots are uploaded as an artifact |
 | `docker` | `native` and `web` images with BuildKit layer caching, plus a smoke test of the nginx image |
 
-GitHub Pages: `.github/workflows/pages.yml` deploys the standalone site after CI passes on every push to `main`. Pages must be enabled once under *Settings → Pages* with **Source: GitHub Actions**.
+GitHub Pages: `.github/workflows/pages.yml` deploys the standalone site to https://svr-net.github.io/trading/ after CI passes on every push to `main`. Pages must be enabled once under *Settings → Pages* with **Source: GitHub Actions** (done for this repository).
 
 Releases: push a tag that matches the CMake project version (`git tag v0.1.0 && git push origin v0.1.0`), or run the **Release** workflow manually on `main`, which creates that tag itself. `.github/workflows/release.yml` runs the full CI, then publishes a GitHub release with `trading-sat-standalone-<tag>.zip` and its SHA-256.
 
@@ -112,7 +115,8 @@ If the network goes through a TLS-intercepting proxy, give the npm stages the pr
 ## Web front end (WebAssembly + WebGPU)
 
 `web/` contains one interactive page per library context. Each page runs the C++ library compiled to WebAssembly,
-and the strategy search also runs as WebGPU compute kernels.
+and the strategy search also runs as WebGPU compute kernels. The standalone build of these pages is deployed at
+**https://svr-net.github.io/trading/** on every push to `main`.
 
 ```sh
 python3 -m http.server -d web 8000      # any static server; file:// will not load WASM or module workers
