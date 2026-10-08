@@ -41,3 +41,11 @@
 #include "sat/afml/overfitting.hpp"
 #include "sat/afml/portfolio.hpp"
 #include "sat/afml/sampling.hpp"
+
+#include "sat/hedge/hedging.hpp"
+#include "sat/hedge/options.hpp"
+
+#include "sat/algo/execution.hpp"
+#include "sat/algo/pairs.hpp"
+#include "sat/algo/regimes.hpp"
+#include "sat/algo/trend.hpp"
