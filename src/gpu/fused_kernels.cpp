@@ -43,6 +43,20 @@ const MAXN : u32 = 128u;
 // Target weights of one date (strategyWeights in the library). loadProb / loadRank are
 // defined by each kernel: from workgroup memory or from the tables.
 const char* kWeights = R"wgsl(
+// Standard normal distribution function (Abramowitz-Stegun 7.1.26, error < 1.5e-7).
+fn ncdf(x : f32) -> f32 {
+  let z = abs(x) * 0.70710678;
+  let t = 1.0 / (1.0 + 0.3275911 * z);
+  let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+  let erfv = 1.0 - poly * exp(-z * z);
+  return select(0.5 * (1.0 - erfv), 0.5 * (1.0 + erfv), x >= 0.0);
+}
+
+fn betSize(prob : f32) -> f32 {
+  let p = clamp(prob, 1.0e-6, 1.0 - 1.0e-6);
+  return 2.0 * ncdf((p - 0.5) / sqrt(p * (1.0 - p))) - 1.0;
+}
+
 fn weights(kind : u32, param : f32, base : u32, n : u32, w : ptr<function, array<f32, 128>>) {
   for (var i = 0u; i < n; i++) { (*w)[i] = 0.0; }
   if (kind == 0u) {
@@ -58,11 +72,22 @@ fn weights(kind : u32, param : f32, base : u32, n : u32, w : ptr<function, array
     var c = 0u;
     for (var i = 0u; i < n; i++) { if (loadProb(base, i) > param) { c++; } }
     for (var i = 0u; i < n; i++) { if (loadProb(base, i) > param) { (*w)[i] = 1.0 / f32(c); } }
-  } else {
+  } else if (kind == 3u) {
     var total = 0.0;
     for (var i = 0u; i < n; i++) { let p = loadProb(base, i); if (p > param) { total += p - param; } }
     if (total > 0.0) {
       for (var i = 0u; i < n; i++) { let p = loadProb(base, i); if (p > param) { (*w)[i] = (p - param) / total; } }
+    }
+  } else {
+    // Bet sizing: signed size 2 N(z) - 1, z = (p - 1/2) / sqrt(p (1 - p)), sizes below the
+    // threshold dropped, gross exposure 1.
+    var gross = 0.0;
+    for (var i = 0u; i < n; i++) {
+      let m = betSize(loadProb(base, i));
+      if (abs(m) >= param && m != 0.0) { (*w)[i] = m; gross += abs(m); }
+    }
+    if (gross > 0.0) {
+      for (var i = 0u; i < n; i++) { (*w)[i] = (*w)[i] / gross; }
     }
   }
 }

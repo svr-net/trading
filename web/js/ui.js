@@ -1,6 +1,6 @@
 // Shared page scaffolding: navigation, environment status, cards, tiles, tables,
 // run buttons and the specification editor used by every page.
-import { MODEL_DEFAULTS, MODEL_NAMES, PAPER_ALPHAS, loadSpec, resetSpec, saveSpec, strategyLabel } from './spec.js';
+import { EXTRA_FEATURES, MODEL_DEFAULTS, MODEL_NAMES, PAPER_ALPHAS, loadSpec, resetSpec, saveSpec, strategyLabel } from './spec.js';
 import { fmt } from './charts.js';
 
 export const PAGES = [
@@ -21,6 +21,17 @@ export const PAGES = [
       { id: 'strategies', href: 'strategies.html', title: 'Fixed strategies' },
       { id: 'adaptive', href: 'adaptive.html', title: 'Self-adaptive strategy' },
       { id: 'robustness', href: 'robustness.html', title: 'Robustness' },
+    ],
+  },
+  {
+    group: 'Advances in Financial ML',
+    items: [
+      { id: 'bars', href: 'bars.html', title: 'Information-driven bars' },
+      { id: 'fracdiff', href: 'fracdiff.html', title: 'Fractional differentiation' },
+      { id: 'labeling', href: 'labeling.html', title: 'Triple barrier & meta-labels' },
+      { id: 'validation', href: 'validation.html', title: 'Purged CV & importance' },
+      { id: 'portfolio', href: 'portfolio.html', title: 'Hierarchical risk parity' },
+      { id: 'overfitting', href: 'overfitting.html', title: 'Backtest overfitting' },
     ],
   },
   { group: 'Acceleration', items: [{ id: 'gpu', href: 'gpu.html', title: 'WebGPU strategy search' }] },
@@ -199,11 +210,12 @@ const MODEL_FIELDS = {
   lstm: [['hidden', 'hidden'], ['seqLen', 'sequence (days)'], ['epochs', 'epochs']],
 };
 
-const STRATEGY_KINDS = { topk: 'Long top k', longshort: 'Long-short k', threshold: 'Long if P > θ', probweighted: 'P-weighted > θ' };
+const STRATEGY_KINDS = { topk: 'Long top k', longshort: 'Long-short k', threshold: 'Long if P > θ', probweighted: 'P-weighted > θ', betsize: 'Bet size ≥ m' };
 
 /**
  * Collapsible editor for the shared specification.
- * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness'].
+ * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness',
+ * 'bars','labeling','validation','portfolio','overfitting'].
  */
 export function specEditor(page, sections, { open = false } = {}) {
   page.spec = loadSpec();
@@ -257,13 +269,23 @@ export function specEditor(page, sections, { open = false } = {}) {
       }
       s.append(box);
       s.append(field('normalisation', selectInput(['rank', 'zscore', 'none'], () => spec.normalisation, (v) => { spec.normalisation = v; changed(); }, { rank: 'cross-sectional rank', zscore: 'cross-sectional z-score', none: 'raw' })));
+      const extra = el('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;margin-top:6px' }, el('span', { style: 'color:var(--text-secondary)', text: 'extra features:' }));
+      spec.extraFeatures = spec.extraFeatures || [];
+      for (const [k, label] of Object.entries(EXTRA_FEATURES)) {
+        const c = el('input', { type: 'checkbox', checked: spec.extraFeatures.includes(k) });
+        c.addEventListener('change', () => { spec.extraFeatures = Object.keys(EXTRA_FEATURES).filter((f) => (f === k ? c.checked : spec.extraFeatures.includes(f))); changed(); });
+        extra.append(el('label', { title: label }, c, ` ${k}`));
+      }
+      s.append(extra);
+      s.append(field('order d of the ffd feature', numInput(() => spec.ffdOrder ?? 0.4, (v) => { spec.ffdOrder = Math.min(1, Math.max(0, v)); changed(); }, { step: 0.05 })));
     }
     if (sections.includes('labels')) {
       const s = sec('Labels');
-      s.append(field('label', selectInput(['direction', 'excess', 'minmax'], () => spec.label.kind, (v) => { spec.label.kind = v; changed(); },
-        { direction: 'up/down over the horizon', excess: 'beats the median', minmax: 'N-period min-max' })));
-      s.append(field('horizon (days)', numInput(() => spec.label.horizon, (v) => { spec.label.horizon = Math.max(1, Math.round(v)); changed(); }, { step: 1 })));
+      s.append(field('label', selectInput(['direction', 'excess', 'minmax', 'triple'], () => spec.label.kind, (v) => { spec.label.kind = v; changed(); },
+        { direction: 'up/down over the horizon', excess: 'beats the median', minmax: 'N-period min-max', triple: 'triple barrier' })));
+      s.append(field('horizon / max holding (days)', numInput(() => spec.label.horizon, (v) => { spec.label.horizon = Math.max(1, Math.round(v)); changed(); }, { step: 1 })));
       s.append(field('min-max window (days)', numInput(() => spec.label.window, (v) => { spec.label.window = Math.max(2, Math.round(v)); changed(); }, { step: 1 })));
+      s.append(field('triple barrier width (× vol)', numInput(() => spec.label.barrierWidth, (v) => { spec.label.barrierWidth = Math.max(0.05, v); changed(); }, { step: 0.1 })));
     }
     if (sections.includes('walkForward')) {
       const s = sec('Walk-forward training');
@@ -271,6 +293,10 @@ export function specEditor(page, sections, { open = false } = {}) {
       s.append(field('training window (days)', numInput(() => w.trainWindow, (v) => { w.trainWindow = Math.round(v); changed(); }, { step: 1 })));
       s.append(field('re-fit every (days)', numInput(() => w.retrainEvery, (v) => { w.retrainEvery = Math.max(1, Math.round(v)); changed(); }, { step: 1 })));
       s.append(field('max training rows', numInput(() => w.maxTrainRows, (v) => { w.maxTrainRows = Math.round(v); changed(); }, { step: 500 })));
+      s.append(field('sample weights', selectInput(['none', 'uniqueness', 'decay'], () => w.weighting || 'none', (v) => { w.weighting = v; changed(); },
+        { none: 'equal', uniqueness: 'average uniqueness', decay: 'uniqueness + time decay' })));
+      s.append(field('oldest weight (decay)', numInput(() => w.decayOldest ?? 0.5, (v) => { w.decayOldest = v; changed(); }, { step: 0.1 })));
+      s.append(field('train on CUSUM events (× vol, 0 = all days)', numInput(() => spec.cusumMultiple || 0, (v) => { spec.cusumMultiple = Math.max(0, v); changed(); }, { step: 0.5 })));
     }
     if (sections.includes('models')) {
       const s = sec('Models', true);
@@ -290,7 +316,7 @@ export function specEditor(page, sections, { open = false } = {}) {
       const s = sec('Fixed strategies (the candidate pool, for every model)');
       const t = el('table', { class: 'edit' }, el('tr', {}, ['rule', 'k or θ', 'hold (days)', ''].map((h) => el('th', { text: h }))));
       spec.strategies.forEach((st, i) => t.append(el('tr', {},
-        el('td', {}, selectInput(Object.keys(STRATEGY_KINDS), () => st.kind, (v) => { st.kind = v; st.param = v === 'topk' || v === 'longshort' ? 5 : 0.55; rerender(); }, STRATEGY_KINDS)),
+        el('td', {}, selectInput(Object.keys(STRATEGY_KINDS), () => st.kind, (v) => { st.kind = v; st.param = v === 'topk' || v === 'longshort' ? 5 : v === 'betsize' ? 0.1 : 0.55; rerender(); }, STRATEGY_KINDS)),
         el('td', {}, numInput(() => st.param, (v) => { st.param = v; changed(); })),
         el('td', {}, numInput(() => st.holding, (v) => { st.holding = Math.max(1, Math.round(v)); changed(); }, { step: 1 })),
         el('td', {}, el('button', { text: '×', title: strategyLabel(st), onclick: () => { spec.strategies.splice(i, 1); rerender(); } })))));
@@ -317,6 +343,21 @@ export function specEditor(page, sections, { open = false } = {}) {
       list('look-backs (days)', 'lookbacks');
       list('adaptation steps (days)', 'steps');
       list('costs (bp)', 'costs');
+    }
+    const AFML_SECTIONS = {
+      bars: ['Synthetic trade stream', [['days', 'days'], ['tradesPerDay', 'trades per day (average)'], ['activityDispersion', 'activity dispersion (log sd)'], ['persistence', 'order-flow persistence'], ['barsPerDay', 'target bars per day'], ['seed', 'seed']]],
+      labeling: ['Events and barriers', [['cusumMultiple', 'CUSUM threshold (× median |return|)'], ['profitTaking', 'profit taking (× target)'], ['stopLoss', 'stop loss (× target)'], ['maxHolding', 'vertical barrier (days)'], ['volSpan', 'volatility span (days)'], ['momentum', 'primary: momentum look-back (days)'], ['metaHolding', 'meta-labels: holding (days)'], ['metaCusumMultiple', 'meta-labels: CUSUM multiple']]],
+      validation: ['Cross-validation', [['trees', 'trees'], ['horizon', 'label horizon (days)'], ['folds', 'folds k'], ['embargo', 'embargo (days)'], ['groups', 'CPCV groups N'], ['testGroups', 'CPCV test groups k'], ['maxRows', 'max samples']]],
+      portfolio: ['Allocation', [['window', 'estimation window (days)'], ['rebalance', 'rebalance every (days)'], ['trials', 'Monte Carlo trials'], ['simAssets', 'simulated assets']]],
+      overfitting: ['Overfitting', [['blocks', 'CSCV blocks S (even)']]],
+    };
+    for (const [key, [title, fields]] of Object.entries(AFML_SECTIONS)) {
+      if (!sections.includes(key)) continue;
+      const s = sec(title);
+      const o = spec[key];
+      for (const [f, label] of fields) s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); })));
+      if (key === 'validation') s.append(field('model', selectInput(['xgboost', 'lightgbm', 'forest', 'tree'], () => o.model, (v) => { o.model = v; changed(); }, MODEL_NAMES)));
+      if (key === 'labeling') s.append(field('meta-labels: secondary model', selectInput(['logistic', 'xgboost', 'forest'], () => o.metaModel, (v) => { o.metaModel = v; changed(); }, MODEL_NAMES)));
     }
     body.append(el('div', { class: 'spec-actions', style: 'grid-column:1/-1' },
       el('button', { text: 'Reset to defaults', onclick: () => { page.spec = resetSpec(); render(); } }),

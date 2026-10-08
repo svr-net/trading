@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <stdexcept>
 
+#include "sat/afml/bet_sizing.hpp"
 #include "sat/core/stats.hpp"
 
 namespace sat {
@@ -14,7 +15,8 @@ StrategyKind parseStrategyKind(const std::string& name) {
   if (name == "longshort") return StrategyKind::LongShort;
   if (name == "threshold") return StrategyKind::Threshold;
   if (name == "probweighted") return StrategyKind::ProbabilityWeighted;
-  throw std::invalid_argument("unknown strategy '" + name + "' (topk, longshort, threshold, probweighted)");
+  if (name == "betsize") return StrategyKind::BetSized;
+  throw std::invalid_argument("unknown strategy '" + name + "' (topk, longshort, threshold, probweighted, betsize)");
 }
 
 std::string strategyKindName(StrategyKind kind) {
@@ -23,6 +25,7 @@ std::string strategyKindName(StrategyKind kind) {
     case StrategyKind::LongShort: return "longshort";
     case StrategyKind::Threshold: return "threshold";
     case StrategyKind::ProbabilityWeighted: return "probweighted";
+    case StrategyKind::BetSized: return "betsize";
   }
   return "?";
 }
@@ -34,6 +37,7 @@ std::string StrategySpec::label() const {
     case StrategyKind::LongShort: std::snprintf(buf, sizeof buf, "Long-short %d", static_cast<int>(std::lround(param))); break;
     case StrategyKind::Threshold: std::snprintf(buf, sizeof buf, "P>%.2f", param); break;
     case StrategyKind::ProbabilityWeighted: std::snprintf(buf, sizeof buf, "P-weighted>%.2f", param); break;
+    case StrategyKind::BetSized: std::snprintf(buf, sizeof buf, "Bet size>%.2f", param); break;
   }
   std::string s = buf;
   if (holding > 1) s += " /" + std::to_string(holding) + "d";
@@ -86,6 +90,19 @@ void strategyWeights(const StrategySpec& s, const double* prob, const std::uint3
       if (total > 0.0)
         for (std::size_t i = 0; i < n; ++i)
           if (prob[i] > s.param) w[i] = (prob[i] - s.param) / total;
+      break;
+    }
+    case StrategyKind::BetSized: {
+      double gross = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        const double m = afml::betSize(prob[i]);
+        if (std::fabs(m) >= s.param && m != 0.0) {
+          w[i] = m;
+          gross += std::fabs(m);
+        }
+      }
+      if (gross > 0.0)
+        for (std::size_t i = 0; i < n; ++i) w[i] /= gross;
       break;
     }
   }

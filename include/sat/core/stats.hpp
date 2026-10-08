@@ -29,4 +29,17 @@ double quantile(std::vector<double> x, double q);
 /// Indices that sort x descending; ties keep the lower index first, NaN goes last.
 std::vector<std::size_t> argsortDescending(const double* x, std::size_t n);
 
+/// Sample skewness and (non-excess) kurtosis of the finite entries (normal: 0 and 3).
+double skewness(const std::vector<double>& x);
+double kurtosis(const std::vector<double>& x);
+
+/// Standard normal distribution function and its inverse (Acklam's rational approximation,
+/// refined by one Newton step; accurate to about 1e-12).
+double normalCdf(double x);
+double normalQuantile(double p);
+
+/// Ordinary least squares of y on the columns of X (no intercept is added). Returns the
+/// coefficients and, through `se`, their standard errors. Throws if X'X is singular.
+std::vector<double> ols(const std::vector<std::vector<double>>& X, const std::vector<double>& y, std::vector<double>* se = nullptr);
+
 }  // namespace sat

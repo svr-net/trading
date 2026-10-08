@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(trading_sat
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "Predicting stock prices with machine learning to build a self-adaptive trading strategy"
   LANGUAGES CXX)
 
@@ -35,6 +35,17 @@ add_library(sat
   src/strategy/strategy.cpp
   src/adaptive/self_adaptive.cpp
   src/adaptive/experiment.cpp
+  src/afml/bars.cpp
+  src/afml/fracdiff.cpp
+  src/afml/labeling.cpp
+  src/afml/sampling.cpp
+  src/afml/importance.cpp
+  src/afml/bet_sizing.cpp
+  src/afml/backtest_stats.cpp
+  src/afml/portfolio.cpp
+  src/afml/microstructure.cpp
+  src/afml/features.cpp
+  src/afml/overfitting.cpp
   src/gpu/fused_backtest.cpp
   src/gpu/fused_kernels.cpp
   src/gpu/fused_reference.cpp
@@ -83,6 +94,7 @@ if(SAT_BUILD_TESTS)
     tests/test_strategy.cpp
     tests/test_adaptive.cpp
     tests/test_gpu.cpp
+    tests/test_afml.cpp
   )
   target_link_libraries(sat_tests PRIVATE sat)
   add_test(NAME sat_tests COMMAND sat_tests)

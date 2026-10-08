@@ -39,6 +39,20 @@ Header readHeader(const FusedPlan& p) {
   return h;
 }
 
+// ncdf() and betSize() of the kernels.
+float ncdf(float x) {
+  const float z = std::fabs(x) * 0.70710678f;
+  const float t = 1.0f / (1.0f + 0.3275911f * z);
+  const float poly = ((((1.061405429f * t - 1.453152027f) * t + 1.421413741f) * t - 0.284496736f) * t + 0.254829592f) * t;
+  const float erfv = 1.0f - poly * std::exp(-z * z);
+  return x >= 0.0f ? 0.5f * (1.0f + erfv) : 0.5f * (1.0f - erfv);
+}
+
+float betSize(float prob) {
+  const float p = std::clamp(prob, 1.0e-6f, 1.0f - 1.0e-6f);
+  return 2.0f * ncdf((p - 0.5f) / std::sqrt(p * (1.0f - p))) - 1.0f;
+}
+
 // weights() of the kernels; prob/rank point at the date's row of the model.
 void weights(std::uint32_t kind, float param, const float* prob, const float* rank, std::uint32_t n, float* w) {
   for (std::uint32_t i = 0; i < n; ++i) w[i] = 0.0f;
@@ -59,13 +73,24 @@ void weights(std::uint32_t kind, float param, const float* prob, const float* ra
       if (prob[i] > param) ++c;
     for (std::uint32_t i = 0; i < n; ++i)
       if (prob[i] > param) w[i] = 1.0f / static_cast<float>(c);
-  } else {
+  } else if (kind == 3u) {
     float total = 0.0f;
     for (std::uint32_t i = 0; i < n; ++i)
       if (prob[i] > param) total += prob[i] - param;
     if (total > 0.0f)
       for (std::uint32_t i = 0; i < n; ++i)
         if (prob[i] > param) w[i] = (prob[i] - param) / total;
+  } else {
+    float gross = 0.0f;
+    for (std::uint32_t i = 0; i < n; ++i) {
+      const float m = betSize(prob[i]);
+      if (std::fabs(m) >= param && m != 0.0f) {
+        w[i] = m;
+        gross += std::fabs(m);
+      }
+    }
+    if (gross > 0.0f)
+      for (std::uint32_t i = 0; i < n; ++i) w[i] /= gross;
   }
 }
 

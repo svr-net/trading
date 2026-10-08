@@ -29,3 +29,15 @@
 #include "sat/adaptive/self_adaptive.hpp"
 
 #include "sat/gpu/fused_backtest.hpp"
+
+#include "sat/afml/backtest_stats.hpp"
+#include "sat/afml/bars.hpp"
+#include "sat/afml/bet_sizing.hpp"
+#include "sat/afml/features.hpp"
+#include "sat/afml/fracdiff.hpp"
+#include "sat/afml/importance.hpp"
+#include "sat/afml/labeling.hpp"
+#include "sat/afml/microstructure.hpp"
+#include "sat/afml/overfitting.hpp"
+#include "sat/afml/portfolio.hpp"
+#include "sat/afml/sampling.hpp"

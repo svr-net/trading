@@ -4,6 +4,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "sat/afml/labeling.hpp"
 #include "sat/core/stats.hpp"
 #include "sat/factors/alpha101.hpp"
 
@@ -22,7 +23,8 @@ LabelKind parseLabelKind(const std::string& name) {
   if (name == "direction") return LabelKind::Direction;
   if (name == "excess") return LabelKind::ExcessDirection;
   if (name == "minmax") return LabelKind::MinMax;
-  throw std::invalid_argument("unknown label kind '" + name + "' (direction, excess, minmax)");
+  if (name == "triple") return LabelKind::TripleBarrier;
+  throw std::invalid_argument("unknown label kind '" + name + "' (direction, excess, minmax, triple)");
 }
 
 namespace {
@@ -61,7 +63,9 @@ FeatureSet buildFeatures(const MarketData& data, const std::vector<int>& alphaId
   return fs;
 }
 
-Panel makeLabels(const MarketData& data, const LabelSpec& spec) {
+namespace {
+
+Panel labelsOnly(const MarketData& data, const LabelSpec& spec) {
   const std::size_t T = data.numDates(), N = data.numAssets();
   Panel y(T, N);
   if (spec.kind == LabelKind::MinMax) {
@@ -91,6 +95,27 @@ Panel makeLabels(const MarketData& data, const LabelSpec& spec) {
     }
     for (std::size_t i = 0; i < N; ++i)
       if (finite(fwd(t, i))) y(t, i) = fwd(t, i) > threshold ? 1.0 : 0.0;
+  }
+  return y;
+}
+
+}  // namespace
+
+Panel makeLabels(const MarketData& data, const LabelSpec& spec, Panel* ends) {
+  if (spec.kind == LabelKind::TripleBarrier) {
+    if (spec.horizon < 1 || !(spec.barrierWidth > 0)) throw std::invalid_argument("triple barrier needs a horizon >= 1 and a positive width");
+    afml::BarrierSpec b;
+    b.profitTaking = b.stopLoss = spec.barrierWidth;
+    b.maxHolding = spec.horizon;
+    return afml::tripleBarrierLabels(data.close, b, spec.volSpan, ends);
+  }
+  Panel y = labelsOnly(data, spec);
+  if (ends) {
+    *ends = y.like();
+    const std::size_t reach = spec.lookahead();
+    for (std::size_t t = 0; t < y.dates(); ++t)
+      for (std::size_t i = 0; i < y.assets(); ++i)
+        if (finite(y(t, i))) (*ends)(t, i) = static_cast<double>(t + reach);
   }
   return y;
 }

@@ -25,6 +25,27 @@ This library is an independent implementation of that pipeline. It does not repr
 Where the paper's exact settings are unknown (model hyper-parameters, rule set, re-scoring schedule, costs), the library
 makes them explicit, documented parameters with defaults. Every page of the web front end can change them.
 
+**Extended with *Advances in Financial Machine Learning*.** Version 0.2 adds the techniques of
+M. López de Prado, *Advances in Financial Machine Learning* (Wiley, 2018) as a second layer:
+- information-driven bars;
+- fractional differentiation;
+- event sampling with a CUSUM filter;
+- triple-barrier labels and meta-labeling;
+- sample uniqueness and the sequential bootstrap;
+- purged and combinatorial purged cross-validation;
+- MDI / MDA / SFI feature importance;
+- bet sizing;
+- the deflated Sharpe ratio and the probability of backtest overfitting;
+- hierarchical risk parity;
+- microstructure features.
+
+They are implemented from the published algorithms, in the library's own code. Most of them plug into the self-adaptive pipeline:
+- triple-barrier labels, uniqueness-weighted training, CUSUM-sampled training events, and fractional-differentiation and microstructure features are options of the experiment;
+- the bet-sized rule is part of the candidate pool, on both engines;
+- the overfitting statistics assess the pool and the self-adaptive strategy.
+
+See [How the library maps onto the AFML book](#how-the-library-maps-onto-advances-in-financial-machine-learning).
+
 The library has no dependencies beyond the C++17 standard library.
 
 ## Building
@@ -72,14 +93,14 @@ npm --prefix tools/standalone ci && node tools/standalone/build.mjs
 
 ```
 dist/standalone/
-  index.html, core.html, ... gpu.html      10 pages
-  assets/app.<hash>.js                     all pages (classic script, ~75 KiB)
-  assets/sat-runtime.<hash>.js             WASM worker with embedded library (~685 KiB)
+  index.html, core.html, ... gpu.html      16 pages
+  assets/app.<hash>.js                     all pages (classic script, ~95 KiB)
+  assets/sat-runtime.<hash>.js             WASM worker with embedded library (~900 KiB)
   assets/style.<hash>.css
   manifest.json, README.txt                build commit, file sizes and SHA-256
 ```
 
-The whole site is about 770 KiB (about 300 KiB zipped). `node web/tests/e2e.mjs --root dist/standalone --file` opens every page from
+The whole site is about 1 MiB (about 390 KiB zipped). `node web/tests/e2e.mjs --root dist/standalone --file` opens every page from
 disk. It checks that the pages make no network request at all, and that the WebGPU kernels still agree with WASM.
 
 ## Docker
@@ -133,12 +154,25 @@ python3 -m http.server -d web 8000      # any static server; file:// will not lo
 | `strategies.html` | Every model × rule candidate, and the winner of each quarter | `strategies` |
 | `adaptive.html` | The self-adaptive strategy against the best fixed rule and the market | `adaptive` |
 | `robustness.html` | Look-back × adaptation-period × score grid, transaction costs, year by year | `robustness` |
+| `bars.html` | Time, tick, volume, dollar and tick-imbalance bars on a synthetic trade stream; normality and stability of their returns | `afmlBars` |
+| `fracdiff.html` | Fixed-window fractional differentiation, ADF test, the minimum *d* for stationarity and the memory it keeps | `afmlFracDiff` |
+| `labeling.html` | CUSUM events, triple-barrier labels, concurrency and uniqueness, sequential bootstrap, meta-labeling | `afmlLabeling` |
+| `validation.html` | Shuffled vs blocked vs purged k-fold, combinatorial purged CV paths, MDI / MDA / SFI importance | `afmlValidation` |
+| `portfolio.html` | Hierarchical risk parity vs inverse-variance and minimum-variance: weights, quasi-diagonal correlation, backtest, Monte Carlo | `afmlPortfolio` |
+| `overfitting.html` | Deflated Sharpe ratio and PBO of the candidate pool and the self-adaptive strategy; bet sizing | `afmlOverfitting` |
 | `gpu.html` | WebGPU kernels validated against WASM, with a benchmark | `gpuJobs` · `gpuAnalyse` (`validation`) |
 
 The pages share one specification: market, factors, labels, models, walk-forward schedule, rules, costs, selector and
 robustness grid. You edit it on any page, and the browser's local storage keeps it. An uploaded CSV is stored separately.
 The WASM module runs in a module worker, so training and backtests don't block the page. The walk-forward predictions
 are cached in the worker, so a page re-runs its strategy analysis without training the models again.
+
+The specification also holds the AFML options of the pipeline, under *Alpha factors*, *Labels* and *Walk-forward training*:
+- extra features;
+- triple-barrier labels;
+- sample weights and CUSUM event sampling.
+
+It also holds the settings of the AFML pages.
 
 **Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector: **Auto** (the default) runs the WebGPU kernels whenever the browser supports WebGPU, on desktop and mobile alike, and WebAssembly otherwise; **WebGPU** or **WebAssembly** forces one. Unsupported settings (a selector that holds a mix of the top M candidates, more than 128 stocks or 8 models) and GPU errors fall back to WebAssembly, and the status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
 
@@ -187,6 +221,29 @@ node web/tests/e2e.mjs                   # every page in headless Chromium (Play
 | Robustness | `adaptive/self_adaptive.hpp` (`evaluateGrid`) | The selector over a grid of look-backs, adaptation periods and scores, and over transaction costs, all on the same evaluation days |
 | GPU strategy search | `gpu/fused_backtest.hpp` | Candidate backtests and the selector grid as WGSL kernels: plan compiler, kernel sources, read-back summary, and a CPU reference of the kernels |
 
+## How the library maps onto *Advances in Financial Machine Learning*
+
+| Chapter | Module | What is implemented |
+|---|---|---|
+| 2. Financial data structures | `afml/bars.hpp` | Synthetic trade stream with clustered activity and persistent order flow; time, tick, volume and dollar bars; tick imbalance bars with EWMA expectations (the threshold is floored at the imbalance an unremarkable flow reaches, which keeps bar lengths stable); normality (Jarque-Bera), serial correlation and variance stability of bar returns |
+| 2. Event sampling | `afml/labeling.hpp`, `afml/features.hpp` | Symmetric CUSUM filter. `ExperimentSpec::cusumMultiple` trains the models on CUSUM events only |
+| 3. Labeling | `afml/labeling.hpp`, `features/dataset.hpp` | EWM volatility targets; triple-barrier method (profit taking, stop loss, vertical barrier); meta-labels for a given side. `LabelKind::TripleBarrier` labels every stock and date for the pipeline |
+| 4. Sample weights | `afml/sampling.hpp`, `ml/walk_forward.hpp` | Concurrency, average uniqueness, return-attribution weights, time decay, the sequential bootstrap. `WalkForwardSpec::weighting` trains on a uniqueness-weighted (optionally decayed) bootstrap of each window |
+| 5. Fractional differentiation | `afml/fracdiff.hpp` | Fixed-width-window weights, fractional differences, augmented Dickey-Fuller test, the scan for the minimum stationary *d*; the `ffd` feature |
+| 7. Cross-validation | `afml/sampling.hpp`, `afml/importance.hpp` | Purged k-fold with embargo, compared with shuffled and blocked k-fold |
+| 8. Feature importance | `afml/importance.hpp` | Mean decrease impurity, mean decrease accuracy (permutation, log loss, on purged folds), single feature importance |
+| 10. Bet sizing | `afml/bet_sizing.hpp`, `strategy/strategy.hpp` | Size 2N(z) − 1 from the predicted probability, discretisation. `StrategyKind::BetSized` is a rule of the candidate pool, also in the GPU kernels |
+| 11. The dangers of backtesting | `afml/backtest_stats.hpp` | Probability of backtest overfitting by combinatorially symmetric cross-validation, with the performance degradation and the probability of loss of the in-sample winner |
+| 12. Backtesting through cross-validation | `afml/sampling.hpp` | Combinatorial purged cross-validation: C(N, k) splits assembled into k C(N, k) / N backtest paths |
+| 14. Backtest statistics | `afml/backtest_stats.hpp`, `afml/overfitting.hpp` | Probabilistic and deflated Sharpe ratios, expected maximum Sharpe ratio of unskilled trials, drawdown and time-under-water statistics, concentration of returns. The candidate pool is assessed as a multiple-testing problem |
+| 16. Asset allocation | `afml/portfolio.hpp` | Correlation-distance clustering, quasi-diagonalisation and recursive bisection (hierarchical risk parity); inverse-variance, unconstrained and long-only minimum-variance weights; out-of-sample Monte Carlo comparison |
+| 19. Microstructural features | `afml/microstructure.hpp` | Roll spread, Corwin-Schultz spread, Amihud illiquidity and Kyle's lambda from daily bars, as optional features |
+
+Notes on these implementations:
+- **Bars** need trades, which the daily data do not have, so the bars page runs on its own synthetic trade stream.
+- **HRP.** In the Monte Carlo of this library, minimum-variance portfolios reach a lower out-of-sample variance than HRP. HRP keeps far smaller single positions and no shorts. The book's comparison is with the critical line algorithm under different simulated conditions; the page reports what this simulation shows.
+- **The deflated Sharpe ratio** treats every candidate (model × rule) as a trial. The self-adaptive strategy is deflated by the same number of trials, which is conservative for a strategy that chooses out of sample.
+
 ## Conventions
 
 - Panels are date × stock tables (row-major by date). NaN marks a missing value.
@@ -210,6 +267,13 @@ Experiment e = runStrategies(p, spec);                              // every mod
 double adaptiveSharpe = e.adaptive.metrics.sharpe;
 double bestFixedSharpe = e.candidateMetrics[e.bestFixed].sharpe;    // chosen in hindsight
 double marketSharpe = e.benchmark.metrics.sharpe;
+
+// Advances in Financial Machine Learning options and diagnostics.
+spec.label.kind = LabelKind::TripleBarrier;                         // barriers at +- 1 daily vol, 10 days
+spec.label.horizon = 10;
+spec.extraFeatures = {"ffd", "vol", "amihud"};
+spec.walkForward.weighting = SampleWeighting::Uniqueness;
+auto report = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);  // DSR, PBO
 ```
 
 `examples/self_adaptive_trading_demo.cpp` runs the whole method on the synthetic market:
@@ -217,7 +281,8 @@ double marketSharpe = e.benchmark.metrics.sharpe;
 - the best fixed rules;
 - the self-adaptive strategy against the best fixed rule (chosen in hindsight) and the market;
 - a grid of selector settings;
-- the same grid on the GPU kernels' CPU reference.
+- the same grid on the GPU kernels' CPU reference;
+- the deflated Sharpe ratios and the probability of backtest overfitting.
 
 ## Modelling notes and limitations
 

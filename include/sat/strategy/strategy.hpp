@@ -22,13 +22,17 @@ enum class StrategyKind : int {
   Threshold = 2,
   /// Long weights proportional to P(up) - threshold where positive, summing to 1.
   ProbabilityWeighted = 3,
+  /// Bet sizing from the forecast's confidence (Lopez de Prado, 2018, ch. 10): each stock's
+  /// signed size 2 N(z) - 1 with z = (p - 1/2) / sqrt(p (1 - p)); sizes smaller in absolute
+  /// value than the threshold are dropped, the rest scaled to a gross exposure of 1.
+  BetSized = 4,
 };
 
 /// A fixed trading rule. Weights are set on rebalance dates (every `holding` dates from the
 /// start of the backtest) from that date's predictions and held until the next rebalance.
 struct StrategySpec {
   StrategyKind kind = StrategyKind::LongTopK;
-  double param = 5.0;  ///< k (stocks per leg) or the probability threshold
+  double param = 5.0;  ///< k (stocks per leg), the probability threshold, or the minimum bet size
   std::size_t holding = 1;
   std::string label() const;
 };
