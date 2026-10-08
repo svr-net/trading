@@ -1,0 +1,41 @@
+name: Pages
+
+# Deploys the standalone site to GitHub Pages on every push to main (and on demand), after the
+# full CI passes. The site published is the same tested build that ships in releases: plain HTML
+# and classic scripts with the WebAssembly embedded, so Pages needs no special configuration.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: trading-sat-standalone
+          path: dist
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/standalone
+      - id: deployment
+        uses: actions/deploy-pages@v4

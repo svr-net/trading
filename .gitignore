@@ -66,3 +66,7 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Web build outputs
+node_modules/
+dist/

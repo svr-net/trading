@@ -1,0 +1,12 @@
+{
+  "name": "trading-sat-standalone-build",
+  "private": true,
+  "description": "Bundles web/ into a copy-deployable standalone site (no server, no build on the target).",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
