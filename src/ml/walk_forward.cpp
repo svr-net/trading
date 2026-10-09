@@ -88,7 +88,15 @@ ModelPredictions walkForward(const ModelSpec& model, const FeatureSet& features,
     rec.trainTo = r - label.lookahead();
     rec.trainFrom = rec.trainTo > spec.trainWindow ? std::max(features.warmup, rec.trainTo - spec.trainWindow) : features.warmup;
     Dataset train = assemble(features, labels, rec.trainFrom, rec.trainTo, lags, true);
-    if (trainMask) {
+    // A mask that leaves too few samples (e.g. a market state not yet seen) falls back to
+    // the whole window rather than failing.
+    bool masked = trainMask != nullptr;
+    if (masked) {
+      std::size_t inMask = 0;
+      for (std::size_t k = 0; k < train.X.rows(); ++k) inMask += (*trainMask)(train.date[k], train.asset[k]) > 0 ? 1 : 0;
+      masked = inMask >= 10;
+    }
+    if (masked) {
       std::vector<std::size_t> keep;
       for (std::size_t k = 0; k < train.X.rows(); ++k)
         if ((*trainMask)(train.date[k], train.asset[k]) > 0) keep.push_back(k);

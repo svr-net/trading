@@ -42,6 +42,19 @@ PredictionSet runPredictions(const MarketData& data, const ExperimentSpec& spec)
   for (const auto& m : models)
     p.models.push_back(walkForward(m, p.features, p.labels, spec.label, spec.walkForward, 0, &p.labelEnds,
                                    p.trainMask.empty() ? nullptr : &p.trainMask));
+  if (spec.stateSpecialists) {
+    for (auto side : {StateSide::Calm, StateSide::Turbulent, StateSide::Rising, StateSide::Falling}) {
+      Panel mask = marketStateMask(p.nextReturns, side);
+      if (!p.trainMask.empty())  // CUSUM events within the state
+        for (std::size_t k = 0; k < mask.data().size(); ++k) mask.data()[k] *= p.trainMask.data()[k] > 0 ? 1.0 : 0.0;
+      ModelSpec logistic;
+      logistic.type = "logistic";
+      logistic.name = "Logistic (" + stateSideName(side) + ")";
+      auto mp = walkForward(logistic, p.features, p.labels, spec.label, spec.walkForward, 0, &p.labelEnds, &mask);
+      mp.name = logistic.name;
+      p.models.push_back(std::move(mp));
+    }
+  }
   if (spec.composite.method != CompositeMethod::None) {
     auto c = compositePredictions(p.models, p.labels, p.labelEnds, spec.composite, &p.nextReturns);
     if (!spec.composite.keepMembers) p.models.clear();

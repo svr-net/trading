@@ -249,6 +249,25 @@ TEST(similar_state_memory_uses_each_model_in_its_own_state) {
   CHECK(parseScoringWindow("similar-state") == ScoringWindow::SimilarState);
 }
 
+TEST(market_state_masks_use_only_the_past) {
+  RegimeWorld w(400, 0, 200);
+  const auto st = marketState(w.next);
+  CHECK(std::isnan(st.volatility[62]) && std::isfinite(st.volatility[63]));
+  const Panel calm = marketStateMask(w.next, StateSide::Calm), storm = marketStateMask(w.next, StateSide::Turbulent);
+  double calmBefore = 0, stormAfter = 0;
+  for (std::size_t t = 100; t < 200; ++t) calmBefore += calm(t, 0) / 100.0;
+  for (std::size_t t = 230; t < 400; ++t) stormAfter += storm(t, 0) / 170.0;
+  CHECK(stormAfter > 0.9);   // the turbulent days are above the running median
+  CHECK(calmBefore > 0.3);   // about half of a calm stretch is below its own running median
+  for (std::size_t t = 63; t < 400; ++t) CHECK(calm(t, 3) + storm(t, 3) == 1.0);
+  // The mask of a date does not change when later returns change.
+  auto later = w.next;
+  for (std::size_t t = 300; t < 400; ++t)
+    for (std::size_t i = 0; i < 20; ++i) later(t, i) *= 3.0;
+  const Panel again = marketStateMask(later, StateSide::Calm);
+  for (std::size_t t = 0; t < 300; ++t) CHECK(again(t, 0) == calm(t, 0));
+}
+
 TEST(composite_rejects_bad_input) {
   Members w;
   CompositeSpec spec;
@@ -274,6 +293,11 @@ TEST(experiment_appends_the_composite_model) {
   CHECK(p.models.back().name == "Composite (self-adaptive)");
   CHECK(p.compositeMembers.size() == 2);
   CHECK(p.compositeWeights.size() == p.models.back().end - p.models.back().start);
+  exp.stateSpecialists = true;
+  const auto r = runPredictions(generateSyntheticMarket(ms), exp);
+  CHECK(r.models.size() == 2 + 4 + 1 && r.models[2].name == "Logistic (calm)" && r.models[5].name == "Logistic (falling)");
+  CHECK(r.compositeMembers.size() == 6);
+  exp.stateSpecialists = false;
   exp.composite.keepMembers = false;
   const auto q = runPredictions(generateSyntheticMarket(ms), exp);
   CHECK(q.models.size() == 1);

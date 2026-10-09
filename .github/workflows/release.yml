@@ -73,7 +73,7 @@ jobs:
             ### Standalone site: `trading-sat-standalone-${{ steps.tag.outputs.tag }}.zip`
             Unzip it anywhere and open `index.html`. It needs no server and no install, because the WebAssembly library is embedded in the bundle.
             The same folder can be uploaded unchanged to any static host (S3, GitHub Pages, nginx, IIS).
-            It has 10 pages, one per stage of the self-adaptive pipeline: core numerics, market data, alpha factors, labels, machine-learning models and their composite forecast, fixed strategies, the self-adaptive strategy, robustness, and the WebGPU strategy search. By default the selector trades the equal-weight average of the two models chosen by an ablation study, through five trading rules.
+            It has 10 pages, one per stage of the self-adaptive pipeline: core numerics, market data, alpha factors, labels, machine-learning models and their composite forecast, fixed strategies, the self-adaptive strategy, robustness, and the WebGPU strategy search. By default the selector trades a self-adaptive forecast, chosen among two models and four market-state specialists, through five trading rules.
             The strategy pages run the backtests and selectors on WebGPU kernels whenever the browser supports WebGPU (the *Auto* engine), and on WebAssembly otherwise.
             Verify the download with the attached `.sha256` file.
 

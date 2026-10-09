@@ -220,6 +220,7 @@ Env parseEnv(const val& spec) {
   e.ffdOrder = num(spec, "ffdOrder", e.ffdOrder);
   if (!(e.ffdOrder >= 0 && e.ffdOrder <= 1)) throw std::invalid_argument("the order of fractional differentiation must be in [0, 1]");
   e.cusumMultiple = num(spec, "cusumMultiple", 0.0);
+  e.stateSpecialists = flag(spec, "stateSpecialists", false);
   if (!(e.cusumMultiple >= 0)) throw std::invalid_argument("CUSUM multiple must be non-negative");
   if (has(spec, "models")) {
     const val m = spec["models"];
@@ -234,6 +235,16 @@ Env parseEnv(const val& spec) {
     e.composite.keepMembers = flag(c, "keepMembers", e.composite.keepMembers);
     e.composite.lookback = std::max<std::size_t>(5, count(c, "lookback", e.composite.lookback));
     e.composite.adaptEvery = std::max<std::size_t>(1, count(c, "adaptEvery", e.composite.adaptEvery));
+    e.composite.window = parseScoringWindow(str(c, "window", "fixed"));
+    const std::string decision = str(c, "decision", "best");
+    if (decision != "best" && decision != "evidence") throw std::invalid_argument("composite: decision is best or evidence");
+    e.composite.decision = decision == "evidence" ? ScoringDecision::Evidence : ScoringDecision::Best;
+    e.composite.halfLife = num(c, "halfLife", e.composite.halfLife);
+    e.composite.adwinDelta = num(c, "adwinDelta", e.composite.adwinDelta);
+    e.composite.minT = num(c, "minT", e.composite.minT);
+    e.composite.stateBandwidth = num(c, "stateBandwidth", e.composite.stateBandwidth);
+    if (!(e.composite.halfLife >= 0) || !(e.composite.adwinDelta > 0 && e.composite.adwinDelta < 1) || !(e.composite.stateBandwidth > 0))
+      throw std::invalid_argument("composite: half-life >= 0, ADWIN confidence in (0, 1), state bandwidth > 0");
   }
   if (has(spec, "walkForward")) {
     const val w = spec["walkForward"];
@@ -272,7 +283,8 @@ Env parseEnv(const val& spec) {
   }
   env.predictionKey = env.marketKey + "|" + stringify(spec["alphas"]) + "|" + str(spec, "normalisation", "rank") + "|" +
                       stringify(spec["label"]) + "|" + stringify(spec["models"]) + "|" + stringify(spec["walkForward"]) + "|" +
-                      stringify(spec["extraFeatures"]) + "|" + std::to_string(e.ffdOrder) + "|" + std::to_string(e.cusumMultiple);
+                      stringify(spec["extraFeatures"]) + "|" + std::to_string(e.ffdOrder) + "|" + std::to_string(e.cusumMultiple) + "|" +
+                      std::to_string(e.stateSpecialists);
   return env;
 }
 
@@ -345,7 +357,9 @@ Predictions predictions(const val& spec, const Env& env, bool allModels = false)
   if (allModels) cs.keepMembers = true;
   static PredictionCache composite;
   const std::string key = env.predictionKey + "|composite:" + compositeMethodName(cs.method) + "|" + std::to_string(cs.lookback) + "|" +
-                          std::to_string(cs.adaptEvery) + "|" + std::to_string(cs.keepMembers);
+                          std::to_string(cs.adaptEvery) + "|" + std::to_string(cs.keepMembers) + "|" + scoringWindowName(cs.window) + "|" +
+                          std::to_string(static_cast<int>(cs.decision)) + "|" + std::to_string(cs.halfLife) + "|" + std::to_string(cs.adwinDelta) +
+                          "|" + std::to_string(cs.minT) + "|" + std::to_string(cs.stateBandwidth);
   if (!(composite.set && composite.key == key)) {
     auto set = std::make_shared<PredictionSet>(*p.set);
     auto cp = compositePredictions(set->models, set->labels, set->labelEnds, cs, &set->nextReturns);

@@ -35,11 +35,17 @@ makes them explicit, documented parameters with defaults. Every page of the web 
 
 They are implemented from the published algorithms, in the library's own code.
 
-**Composite forecast.** By default, the models' forecasts are averaged into one composite forecast, and the selector
-trades that forecast through the rules. On synthetic validation markets this beat trading the models separately (Sharpe
-1.57 against 1.36). A *self-adaptive forecast* is also available: the paper's rule applied one level down, so every 21
-days it uses whichever model, or the average, has had the best recent rank correlation with the outcomes. See
-[Which forecast the selector trades](#which-forecast-the-selector-trades).
+**Self-adaptive forecast.** The paper's idea is applied one level down: the forecast the selector trades is itself
+chosen self-adaptively.
+- **Candidates.** Besides the two models, four *market-state specialists* are trained, each on calm, turbulent, rising
+  or falling market days only.
+- **Memory.** Each candidate's record grows day by day while the market stays in one state, and recedes to the start
+  of the new state when the market changes (an ADWIN change detector on the market's moves).
+- **Decision.** A specialist or model is used only while its lead over the average of all six is statistically
+  significant; otherwise the average is.
+
+On unseen synthetic markets this lifted the selector's Sharpe ratio from 1.57 to 2.00 and beat the previous default on
+all six markets. See [Which forecast the selector trades](#which-forecast-the-selector-trades).
 
 **Scope.** Version 0.6 keeps only the self-adaptive pipeline. Earlier versions also carried:
 - information-driven bars, purged cross-validation, feature importance and hierarchical risk parity pages;
@@ -169,8 +175,10 @@ The specification also holds the AFML options of the pipeline, under *Alpha fact
 - triple-barrier labels;
 - sample weights and CUSUM event sampling.
 
-The composite forecast is set under *Composite forecast*, next to the models: the separate models, the equal-weight
-average (the default) or the self-adaptive forecast, traded alone or alongside the models.
+The composite forecast is set under *Composite forecast*, next to the models:
+- the market-state specialists (on by default);
+- the forecast traded: the separate models, the equal-weight average, or the self-adaptive forecast (the default);
+- the self-adaptive forecast's memory and decision rule.
 
 **Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector:
 - **Auto**, the default, runs the WebGPU kernels whenever the browser has a usable WebGPU adapter, on desktop and mobile alike. Otherwise it runs the same kernels on the **emulated GPU**.
@@ -333,42 +341,74 @@ Run `pool_ablation [markets] [days]` to repeat the study, or `pool_ablation 0 --
 
 ## Which forecast the selector trades
 
-**The idea.** The paper makes the *trading rule* self-adaptive. The forecast can be chosen the same way:
-- `CompositeMethod::Adaptive` in `sat/adaptive/composite.hpp` uses the selector's own rule, one level down.
-- Every 21 days it scores each candidate forecast over the last 63 resolved days. The candidates are each model and the
-  equal-weight average of them; the score is the mean daily rank correlation (information coefficient) with the labels.
-- It then uses the best candidate until the next adaptation, or the average when nothing scores above zero.
-- It uses only labels that have resolved before each date. A unit test checks this by scrambling future labels.
+The paper makes the *trading rule* self-adaptive. `examples/forecast_study` asks whether the *forecast* can be chosen the
+same way, and what it needs to work. It trains the models on 6 ten-year synthetic markets (selection), 6 unseen ones
+(validation) and the 120 LSE stocks, and runs the self-adaptive selector, with its default rules and settings, on each
+forecast. Settings are chosen on the selection markets only.
 
-`CompositeMethod::Average` is the plain equal-weight average. Either composite is appended to the predictions as one more
-model (`ExperimentSpec::composite`), so every page and the GPU kernels can trade it. With `keepMembers = false` it trades
-in place of the separate models.
+### Step 1: the selector's own rule, one level down
 
-**How they compare.** `examples/forecast_study` trains the default models on 6 ten-year synthetic markets (selection),
-6 unseen ones (validation) and the 120 LSE stocks. It then runs the self-adaptive selector, with its default rules and
-settings, on each choice of forecast.
+`CompositeMethod::Adaptive` scores each candidate (each model, and their average) by its mean daily rank correlation
+with the outcomes (information coefficient) and uses the best. It uses only outcomes known before each date; a unit test
+checks this by scrambling future labels.
 
-| Selector Sharpe ratio | Selection | Validation | UK (LSE) |
-|---|---|---|---|
-| The models as separate candidates (the paper's pool) | 2.00 | 1.36 | −0.65 |
-| **Equal-weight average (default)** | **2.18** | **1.57** | −0.49 |
-| Self-adaptive forecast | 1.98 | 1.41 | −0.26 |
-| The models and the self-adaptive forecast | 1.92 | 1.37 | −0.32 |
+With the selector's settings (the last 63 days, every 21) it *lost* to the plain average: 1.41 against 1.57 on unseen
+markets. The two models' scores differ by about 0.005, a quarter of the noise in a 63-day estimate, so the choice
+followed noise.
 
-- **The average is the default.** It has the best AUC, log loss and information coefficient of every forecast, and it
-  wins on both synthetic sets. That is what the "forecast combination puzzle" predicts (Stock and Watson, 2004; Rapach,
-  Strauss and Zhou, 2010): estimated choices or weights rarely beat the simple average out of sample.
-- **Why the self-adaptive forecast falls short.** The candidates' information coefficients differ by about 0.005, far
-  less than the noise of a 63-day window. So the choice mostly follows noise: it picked the average about half the time,
-  logistic regression a third, and the forest the rest.
-- **Weighting instead of picking does not help.** Weighting the models by their positive recent IC instead of picking
-  one did no better on the selection markets (2.05), so it was not kept.
-- **On UK stocks** the self-adaptive forecast lost the least. But every forecast there has no skill (AUC 0.50 to 0.503,
-  IC about 0.003), so all three lose money, and over about 2½ years the differences are within noise.
+### Step 2: memory that grows, and recedes with the market
 
-Run `forecast_study [markets] [days]` to repeat the study, or `forecast_study 0 --csv data.csv` on real bars. The
-*Composite forecast* section of the specification, under the models, switches between the separate models, the
-average and the self-adaptive forecast.
+`ScoringWindow` sets how long a candidate's record is remembered:
+
+| Window | Memory |
+|---|---|
+| `Fixed` | the last 63 days, re-scored every 21 |
+| `Exponential` | every day, weighted towards recent ones (a half-life, or none: an expanding window); updated daily |
+| `Adwin` | grows day by day; recedes when the candidate's own record changes (ADWIN, Bifet and Gavaldà, 2007) |
+| `MarketAdwin` | as `Adwin`, and also recedes to the start of the market's new state when the market changes |
+| `SimilarState` | weights each past day by how much its market (volatility, trend) resembles today's |
+
+`ScoringDecision::Evidence` leaves the average only while a candidate's lead over it has a t-statistic above 2.
+
+**A bug found on the way.** The ADWIN bound in the paper assumes values between 0 and 1. With daily market moves (about
+0.01) or information coefficients, its range term is far larger than any real change, so it never cut. The library uses
+the scale-free form: two parts differ when their means differ by more than their standard error allows. The confidence
+(1e-4) and minimum segment (30 days) were fixed on simulated noise alone, before any market result. With them it caught
+an 8-fold volatility jump in about 19 days and a doubling in about 70, with no false cut in 25,000 days of noise.
+
+With only the two generalist models, the evidence rule recovered the average's result (about 1.56–1.58 on unseen
+markets) but could not beat it: the models never differ in a way worth switching for.
+
+### Step 3: candidates that differ by market state
+
+`ExperimentSpec::stateSpecialists` trains four more logistic regressions, each only on days of one market state:
+- calm or turbulent (21-day market volatility below or above its median so far);
+- rising or falling (63-day market trend above or below zero).
+
+`marketStateMask` builds the masks from information available each day. Until a state has enough history, a specialist
+trains on all days.
+
+| Selector Sharpe ratio | Selection | Validation (unseen) | Beats the old default (validation) | UK (LSE) |
+|---|---|---|---|---|
+| Old default: average of the two models | 2.18 | 1.57 | — | −0.49 |
+| Average of the six | 2.49 | 2.05 | 6 of 6 | −0.38 |
+| **Self-adaptive: market-state ADWIN, evidence (new default)** | **2.50** | **2.00** | **6 of 6** | **−0.32** |
+| Self-adaptive: similar state, evidence | 2.48 | 2.07 | 6 of 6 | −0.57 |
+| Self-adaptive: expanding, evidence | 2.48 | 2.03 | 6 of 6 | −0.38 |
+| Self-adaptive: market-state ADWIN, best | 2.20 | 1.56 | 4 of 6 | −0.52 |
+
+- **The specialists drive the gain.** Every forecast built from all six beats the old default on every unseen market,
+  by about 0.45 Sharpe.
+- **The default is chosen by the rule.** Market-state ADWIN with the evidence rule scored highest on the selection
+  markets, so it is the default. On unseen markets it is within noise of the average of the six (2.00 against 2.05), and
+  on UK stocks it lost the least of the evidence variants.
+- **Picking the best candidate outright is still worse.** It switches on noise; requiring evidence is what makes the
+  self-adaptive forecast work.
+- **UK.** No forecast has skill on these stocks (AUC about 0.50), so all of them lose money. The specialists improve the
+  information coefficient a little (0.007 for the calm one against 0.002), but over about 2½ years the differences are
+  within noise.
+
+Run `forecast_study [markets] [days]` to repeat the study, or `forecast_study 0 --csv data.csv` on real bars.
 
 **Tried and dropped (v0.5).**
 - **Stacking and online aggregation.** A stacked meta-learner and Bernstein Online Aggregation were worse than the
@@ -415,7 +455,10 @@ auto report = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);  // D
 The composite forecast:
 
 ```cpp
-spec.composite.method = CompositeMethod::Average;                   // or CompositeMethod::Adaptive
+spec.stateSpecialists = true;                                       // four market-state specialists
+spec.composite.method = CompositeMethod::Adaptive;                  // the self-adaptive forecast
+spec.composite.window = ScoringWindow::MarketAdwin;
+spec.composite.decision = ScoringDecision::Evidence;
 spec.composite.keepMembers = false;                                 // trade it in place of the models
 PredictionSet q = runPredictions(data, spec);                       // the composite comes last in q.models
 Experiment c = runStrategies(q, spec);

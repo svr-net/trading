@@ -67,8 +67,9 @@ struct ModelPredictions {
 /// Walk-forward training and prediction of one model for dates [start, end), where end
 /// defaults to the last date that has a next-day return (dates - 1).
 /// `labelEnds` (from makeLabels) is needed for uniqueness weighting; with `trainMask`, only
-/// samples whose mask entry is positive (e.g. CUSUM events) are used for training, while
-/// predictions are still made for every date and stock.
+/// samples whose mask entry is positive (e.g. CUSUM events, or one market state) are used for
+/// training, while predictions are still made for every date and stock. A window in which the
+/// mask keeps fewer than 10 samples trains on all of its samples instead.
 ModelPredictions walkForward(const ModelSpec& model, const FeatureSet& features, const Panel& labels, const LabelSpec& label,
                              const WalkForwardSpec& spec, std::size_t end = 0, const Panel* labelEnds = nullptr,
                              const Panel* trainMask = nullptr);

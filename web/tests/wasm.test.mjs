@@ -18,6 +18,7 @@ spec.models = ['logistic', 'xgboost', 'lstm'].map((t) => ({ ...MODEL_DEFAULTS[t]
 spec.robustness = { lookbacks: [21, 63], steps: [5, 21], metrics: ['return', 'sharpe'], costs: [0, 20] };
 // The models on their own (the default trades their composite alone; checked below).
 spec.composite = { ...spec.composite, method: 'none' };
+spec.stateSpecialists = false;
 
 function run(name, fn) {
   const t0 = performance.now();
@@ -55,8 +56,8 @@ if (labels) check(labels.kinds[3].labelled < 0.3 && labels.kinds[0].labelled > 0
 const models = run('models', () => sat.models(spec));
 if (models) {
   check(models.models.length === 3, 'three models');
-  const withComposite = sat.models({ ...spec, composite: defaultSpec().composite });
-  check(withComposite.models.length === 4 && withComposite.models[3].name === 'Composite (average)', 'the Models page shows the models and their composite');
+  const withAverage = sat.models({ ...spec, composite: { method: 'average', keepMembers: false } });
+  check(withAverage.models.length === 4 && withAverage.models[3].name === 'Composite (average)', 'the Models page shows the models and their composite');
   for (const m of models.models) check(m.oos.auc > 0.5 && m.oos.count > 1000, `${m.name} beats chance out of sample (AUC ${m.oos.auc.toFixed(3)})`);
   check(models.models[1].importance.length === 23, 'importance per feature');
 }
@@ -122,10 +123,15 @@ if (emuBet && !cpuBet.error) near(emuBet.candidates[0].metrics.sharpe, cpuBet.ca
 
 // The composite forecast: the web default trades the equal-weight average in place of the
 // models; the self-adaptive forecast picks the model or average with the best recent record.
-const withComposite = run('models (with the default composite)', () => sat.models({ ...spec, composite: defaultSpec().composite }));
+const withComposite = run('models (with the average composite)', () => sat.models({ ...spec, composite: { method: 'average', keepMembers: false } }));
 if (withComposite) check(withComposite.models.length === 4 && withComposite.models[3].name === 'Composite (average)', 'the Models page shows the models and their composite');
-const def = run('strategies (default composite pool)', () => sat.strategies({ ...spec, composite: defaultSpec().composite }));
-if (def) check(def.candidates.length === spec.strategies.length && def.candidates.every((c) => JSON.stringify(c).includes('Composite (average)')), 'the default pool trades the composite alone');
+const def = run('strategies (web default: specialists + self-adaptive forecast)', () => sat.strategies({ ...spec, stateSpecialists: true, composite: defaultSpec().composite }));
+if (def) check(def.candidates.length === spec.strategies.length && def.candidates.every((c) => JSON.stringify(c).includes('Composite (self-adaptive)')), 'the default pool trades the self-adaptive forecast alone');
+const six = run('models (state specialists)', () => sat.models({ ...spec, stateSpecialists: true, composite: defaultSpec().composite }));
+if (six) check(six.models.length === 3 + 4 + 1 && six.models.some((m) => m.name === 'Logistic (turbulent)') && six.models[7].name === 'Composite (self-adaptive)', 'three models, four state specialists and the composite');
+for (const window of ['fixed', 'exponential', 'adwin', 'market-adwin', 'similar-state'])
+  check(!sat.adaptive({ ...spec, composite: { method: 'adaptive', keepMembers: false, window, decision: 'evidence' } }).error, `self-adaptive forecast with ${window} memory runs`);
+check(typeof sat.adaptive({ ...spec, composite: { method: 'adaptive', window: 'weekly' } }).error === 'string', 'an unknown memory is rejected');
 const sa = run('adaptive (self-adaptive forecast, cached models)', () => sat.adaptive({ ...spec, composite: { method: 'adaptive', keepMembers: false } }));
 if (sa) check(sa.cachedPredictions !== false, 'changing only the composite never re-trains the models');
 const both = run('strategies (models + self-adaptive forecast)', () => sat.strategies({ ...spec, composite: { method: 'adaptive', keepMembers: true } }));

@@ -68,10 +68,14 @@ export function defaultSpec() {
     costBps: 10,
     selector: { lookback: 63, adaptEvery: 21, metric: 'sharpe', topM: 1, allowCash: true, minScore: 0 },
     robustness: { lookbacks: [21, 42, 63, 126, 252], steps: [5, 10, 21, 42, 63], metrics: ['return', 'sharpe', 'sortino'], costs: [0, 5, 10, 20, 40] },
+    // Four more logistic regressions, each trained only on calm, turbulent, rising or falling
+    // market days: diverse candidates for the composite forecast.
+    stateSpecialists: true,
     // Composite forecast: the models' forecasts combined into one (none | average | adaptive),
-    // traded in their place or, with keepMembers, alongside them. examples/forecast_study: the
-    // equal-weight average alone gave the selector the best Sharpe ratio.
-    composite: { method: 'average', keepMembers: false, lookback: 63, adaptEvery: 21 },
+    // traded in their place or, with keepMembers, alongside them. examples/forecast_study chose
+    // the self-adaptive forecast with market-state ADWIN memory and the evidence rule over the
+    // generalists and the state specialists.
+    composite: { method: 'adaptive', keepMembers: false, lookback: 63, adaptEvery: 21, window: 'market-adwin', decision: 'evidence', halfLife: 63, adwinDelta: 1e-4, minT: 2, stateBandwidth: 1 },
   };
 }
 
@@ -92,6 +96,8 @@ export function loadSpec() {
       if (isLegacyPool(stored)) { delete stored.models; delete stored.strategies; }
       // Combinations and sections removed in v0.6 fall back to the defaults.
       if (!['none', 'average', 'adaptive'].includes(stored.composite?.method)) stored.composite = { ...spec.composite };
+      // The v0.5 default (the average of the separate models, unedited) moves to the new default.
+      if (stored.composite?.method === 'average' && stored.composite.keepMembers === false && !('window' in stored.composite)) stored.composite = { ...spec.composite };
       for (const k of ['bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'multiSignal'])
         delete stored[k];
       spec = { ...spec, ...stored };

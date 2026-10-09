@@ -356,9 +356,14 @@ export function specEditor(page, sections, { open = false } = {}) {
     if (sections.includes('models')) {
       const s = sec('Composite forecast');
       const o = spec.composite;
+      s.append(checkField('market-state specialists (4 more logistic models)', checkInput(() => spec.stateSpecialists, (v) => { spec.stateSpecialists = v; changed(); })));
       s.append(field('forecast traded', selectInput(['none', 'average', 'adaptive'], () => o.method, (v) => { o.method = v; changed(); }, COMPOSITE_NAMES)));
       s.append(checkField('keep the separate models too', checkInput(() => o.keepMembers, (v) => { o.keepMembers = v; changed(); })));
-      for (const [f, label] of [['lookback', 'self-adaptive: look-back (days)'], ['adaptEvery', 'self-adaptive: re-choose every (days)']])
+      s.append(field('self-adaptive: memory', selectInput(['market-adwin', 'similar-state', 'adwin', 'exponential', 'fixed'], () => o.window, (v) => { o.window = v; changed(); }, SCORING_WINDOWS)));
+      s.append(field('self-adaptive: decision', selectInput(['evidence', 'best'], () => o.decision, (v) => { o.decision = v; changed(); },
+        { evidence: 'leave the average only on a significant lead', best: 'best recent record' })));
+      for (const [f, label] of [['minT', 'evidence: t-statistic'], ['halfLife', 'exponential: half-life (days, 0 = expanding)'], ['adwinDelta', 'ADWIN: confidence'],
+        ['stateBandwidth', 'similar state: kernel width'], ['lookback', 'fixed: look-back (days)'], ['adaptEvery', 'fixed: re-choose every (days)']])
         s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 6 })));
     }
     body.append(el('div', { class: 'spec-actions', style: 'grid-column:1/-1' },
@@ -375,5 +380,6 @@ export const argmax = (values) => values.reduce((b, v, i) => (v > values[b] ? i 
 /** One row of the standard performance table. */
 export const perfRow = (name, m) => [name, fmt.pct(m.annualReturn, 1), fmt.pct(m.annualVolatility, 1), fmt.ratio(m.sharpe), fmt.ratio(m.sortino),
   fmt.pct(m.maxDrawdown, 1), fmt.ratio(m.calmar), fmt.pct(m.winRate, 1), fmt.ratio(m.averageTurnover)];
+export const SCORING_WINDOWS = { 'market-adwin': 'grows, recedes when the market changes state', 'similar-state': 'days like today\'s market', adwin: 'grows, recedes when a record changes', exponential: 'exponential / expanding', fixed: 'fixed window' };
 export const COMPOSITE_NAMES = { none: 'the separate models', average: 'equal-weight average', adaptive: 'self-adaptive forecast' };
 export const PERF_HEADERS = ['strategy', 'ann. return', 'ann. vol', 'Sharpe', 'Sortino', 'max DD', 'Calmar', 'win rate', 'turnover/day'];

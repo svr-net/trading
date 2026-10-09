@@ -11,7 +11,7 @@ const page = initPage({
     '(Wang, Huang and Luo, <i>Computational Economics</i>, 2025). Formulaic alpha factors feed machine-learning models that forecast each stock\'s next move. ' +
     'Every model drives a pool of fixed trading rules, and the self-adaptive strategy keeps switching to the rule with the best recent record. ' +
     'The C++ library is compiled to WebAssembly and runs in a worker. The strategy search also runs as WebGPU compute kernels. Each page below exercises one part of the library on a shared, editable specification. ' +
-    'By default the models\' forecasts are averaged into one composite forecast before the rules trade it, which the forecast study found works better than trading the models separately.',
+    'The forecast the rules trade is itself chosen self-adaptively, among the models and four market-state specialists, with a memory that grows while the market stays in one state and recedes when it changes.',
 });
 
 const DESCRIPTIONS = {

@@ -10,7 +10,10 @@
 //  - the self-adaptive forecast: every 21 days, the model or average with the best rank
 //    correlation with the labels over the last 63 resolved days (the selector's own rule,
 //    one level down; nothing tuned),
-//  - the models and the self-adaptive forecast together.
+//  - the models and the self-adaptive forecast together;
+// then scoring variants of the self-adaptive forecast (fixed, exponential, expanding, ADWIN,
+// market-state ADWIN and similar-state memory; best or evidence decisions), and forecasts
+// built from the models plus four market-state specialists.
 // Forecast quality (AUC, log loss, information coefficient) and the selector's results are
 // reported on synthetic markets (selection), unseen ones (validation) and, with --csv, real bars.
 #include <algorithm>

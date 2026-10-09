@@ -26,6 +26,9 @@ struct ExperimentSpec {
   double cusumMultiple = 0.0;
   LabelSpec label;
   std::vector<ModelSpec> models;       ///< empty: defaultModels()
+  /// Also train a logistic regression on each market state (calm, turbulent, rising, falling
+  /// days; marketStateMask), as four more models: diverse candidates for the composite.
+  bool stateSpecialists = false;
   /// A composite model over `models`, appended to the predictions as one more model (or, with
   /// keepMembers = false, in their place).
   CompositeSpec composite;
