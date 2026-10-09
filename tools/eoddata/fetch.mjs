@@ -68,7 +68,7 @@ const symbols = asList(await get(`/Symbol/List/${exchange}`, {}, `symbols-${stam
 const typeOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'type', 'symbolType', 'typeCode') ?? '')]));
 const nameOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'name', 'description') ?? '')]));
 const currencyOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'currency', 'currencyCode') ?? '')]));
-const currency = opt('currency', exchange === 'LSE' ? 'GBX' : '');  // LSE: pence-quoted lines only (UK shares, not the international order book)
+const currency = opt('currency', exchange === 'LSE' ? 'GBP' : '');  // LSE: sterling lines only (UK shares, quoted in pence; not the international order book)
 const quotes = asList(await get(`/Quote/List/${exchange}`, {}, `quotes-${stamp}.json`));
 // The shapes (field names only) help diagnose a parse that finds nothing.
 console.log(`  fields: exchange [${Object.keys(exchangeInfo)}]; symbol [${Object.keys(symbols[0] || {})}]; quote [${Object.keys(quotes[0] || {})}]`);
