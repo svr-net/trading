@@ -177,6 +177,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "overlay_study 0 needs --csv\n");
     return 2;
   }
-  std::printf("\nGate 1 %s\n", gate ? "passed" : "failed");
+  if (markets == 0)
+    std::printf("\nUK part of gate 1 %s (the synthetic markets' part is not run here: overlay_study [markets])\n", gate ? "passed" : "failed");
+  else
+    std::printf("\nGate 1 %s\n", gate ? "passed" : "failed");
   return 0;
 }
