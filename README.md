@@ -379,9 +379,12 @@ This replaced the paper-style pool of six models × nine rules. The choice comes
 
 | Pool | Candidates | Validation Sharpe | Max drawdown | Training |
 |---|---|---|---|---|
-| 8 models × 9 rules (everything) | 72 | 0.70 | 55% | 11.8 s per market |
-| **2 models × 5 rules (default)** | **10** | **1.22** | **49%** | **1.6 s** |
-| 2 models × 1 rule | 2 | 1.52 | 46% | 1.6 s |
+| 8 models × 9 rules (everything) | 72 | 0.70 | 56% | 11.9 s per market |
+| 6 models × 9 rules (previous default) | 54 | 0.81 | 51% | 11.0 s |
+| **2 models × 5 rules (default)** | **10** | **1.22** | **49%** | **1.7 s** |
+| 2 models × 1 rule | 2 | 1.52 | 46% | 1.7 s |
+
+The deflated Sharpe ratio of the self-adaptive strategy rose from 41% with the previous pool to 72% with the default one, because there are fewer candidates and so fewer trials. The worst market's Sharpe ratio rose from −0.49 to −0.16.
 
 What the ablation showed:
 - **Logistic regression** has the best out-of-sample AUC (0.522), trains fastest, and costs the most when left out (−0.26 Sharpe).
@@ -392,7 +395,17 @@ What the ablation showed:
 - **Why stop at ten:** the two-candidate pool scores higher but leaves the selector almost nothing to choose from. The default stops where it still spans long-only and long-short rules, two horizons, and threshold and probability weighting.
 - **Fewer trials:** a smaller pool also means fewer trials for the deflated Sharpe ratio, so the result is more credible.
 
-Every family and rule kind is still in the editor. On real UK data the models showed no skill at all (AUC ≈ 0.50, see the UK section), so there the pool's makeup matters less than its cost.
+Every family and rule kind is still in the editor.
+
+**On real UK data** (`pool_ablation 0 --csv`, the 120 LSE shares, July 2023 to October 2026), no pool has value, because no model has skill: every family's AUC is 0.499 to 0.503.
+
+| Pool | Self-adaptive Sharpe | Max drawdown | Training |
+|---|---|---|---|
+| Everything | −0.38 | 37% | 5.2 s |
+| Previous default | −1.17 | 51% | 4.8 s |
+| Default | −0.65 | 34% | 0.8 s |
+
+The consolidated pool loses less than the previous default, with a smaller drawdown and 6× faster training. The model-and-rule approach still needs a market where the forecasts carry information.
 
 Run `pool_ablation [markets] [days]` to repeat the study, or `pool_ablation 0 --csv data.csv` to compare the full and default pools on real bars.
 
