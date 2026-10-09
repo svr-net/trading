@@ -23,30 +23,6 @@ export const PAGES = [
       { id: 'robustness', href: 'robustness.html', title: 'Robustness' },
     ],
   },
-  {
-    group: 'Advances in Financial ML',
-    items: [
-      { id: 'bars', href: 'bars.html', title: 'Information-driven bars' },
-      { id: 'fracdiff', href: 'fracdiff.html', title: 'Fractional differentiation' },
-      { id: 'labeling', href: 'labeling.html', title: 'Triple barrier & meta-labels' },
-      { id: 'validation', href: 'validation.html', title: 'Purged CV & importance' },
-      { id: 'portfolio', href: 'portfolio.html', title: 'Hierarchical risk parity' },
-      { id: 'overfitting', href: 'overfitting.html', title: 'Backtest overfitting' },
-    ],
-  },
-  {
-    group: 'Hedging & algorithmic trading',
-    items: [
-      { id: 'hedging', href: 'hedging.html', title: 'Beta hedging & sizing' },
-      { id: 'options', href: 'options.html', title: 'Option hedges' },
-      { id: 'pairs', href: 'pairs.html', title: 'Cointegrated pairs' },
-      { id: 'trend', href: 'trend.html', title: 'Trend following' },
-      { id: 'regimes', href: 'regimes.html', title: 'Regime switching' },
-      { id: 'execution', href: 'execution.html', title: 'Optimal execution' },
-      { id: 'tournament', href: 'tournament.html', title: 'Tournament & meta-allocation' },
-      { id: 'composite', href: 'composite.html', title: 'Composite model & strategy' },
-    ],
-  },
   { group: 'Acceleration', items: [{ id: 'gpu', href: 'gpu.html', title: 'WebGPU strategy search' }] },
 ];
 
@@ -242,15 +218,13 @@ const MODEL_FIELDS = {
 };
 
 /** Same names as sat::algo::allocationName. */
-export const ALLOCATION_NAMES = { exponential: 'exponential weights', best: 'follow the leader', sharpe: 'Sharpe-weighted', riskadjusted: 'Sharpe / volatility', inversevol: 'inverse volatility', equal: 'equal weight' };
 
 const STRATEGY_KINDS = { topk: 'Long top k', longshort: 'Long-short k', threshold: 'Long if P > θ', probweighted: 'P-weighted > θ', betsize: 'Bet size ≥ m' };
 
 /**
  * Collapsible editor for the shared specification.
- * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness',
- * 'bars','labeling','validation','portfolio','overfitting','hedging','options','pairs','trend','regimes','execution','tournament',
- * 'composite','multiSignal'].
+ * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness']
+ * ('models' includes the composite forecast).
  */
 export function specEditor(page, sections, { open = false } = {}) {
   page.spec = loadSpec();
@@ -379,59 +353,12 @@ export function specEditor(page, sections, { open = false } = {}) {
       list('adaptation steps (days)', 'steps');
       list('costs (bp)', 'costs');
     }
-    const AFML_SECTIONS = {
-      bars: ['Synthetic trade stream', [['days', 'days'], ['tradesPerDay', 'trades per day (average)'], ['activityDispersion', 'activity dispersion (log sd)'], ['persistence', 'order-flow persistence'], ['barsPerDay', 'target bars per day'], ['seed', 'seed']]],
-      labeling: ['Events and barriers', [['cusumMultiple', 'CUSUM threshold (× median |return|)'], ['profitTaking', 'profit taking (× target)'], ['stopLoss', 'stop loss (× target)'], ['maxHolding', 'vertical barrier (days)'], ['volSpan', 'volatility span (days)'], ['momentum', 'primary: momentum look-back (days)'], ['metaHolding', 'meta-labels: holding (days)'], ['metaCusumMultiple', 'meta-labels: CUSUM multiple']]],
-      validation: ['Cross-validation', [['trees', 'trees'], ['horizon', 'label horizon (days)'], ['folds', 'folds k'], ['embargo', 'embargo (days)'], ['groups', 'CPCV groups N'], ['testGroups', 'CPCV test groups k'], ['maxRows', 'max samples']]],
-      portfolio: ['Allocation', [['window', 'estimation window (days)'], ['rebalance', 'rebalance every (days)'], ['trials', 'Monte Carlo trials'], ['simAssets', 'simulated assets']]],
-      overfitting: ['Overfitting', [['blocks', 'CSCV blocks S (even)']]],
-    };
-    for (const [key, [title, fields]] of Object.entries(AFML_SECTIONS)) {
-      if (!sections.includes(key)) continue;
-      const s = sec(title);
-      const o = spec[key];
-      for (const [f, label] of fields) s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); })));
-      if (key === 'validation') s.append(field('model', selectInput(['xgboost', 'lightgbm', 'forest', 'tree'], () => o.model, (v) => { o.model = v; changed(); }, MODEL_NAMES)));
-      if (key === 'labeling') s.append(field('meta-labels: secondary model', selectInput(['logistic', 'xgboost', 'forest'], () => o.metaModel, (v) => { o.metaModel = v; changed(); }, MODEL_NAMES)));
-    }
-    const ALGO_SECTIONS = {
-      hedging: ['Hedges and sizing', [['betaWindow', 'rolling beta window (days)'], ['delta', 'Kalman state noise δ'], ['hedgeCostBps', 'hedge cost (bp)'], ['targetVol', 'volatility target (annual)'], ['volSpan', 'volatility span (days)'], ['maxLeverage', 'max leverage'], ['kellyFraction', 'Kelly fraction'], ['kellyWindow', 'Kelly window (days)']]],
-      options: ['Options', [['vol', 'true volatility'], ['impliedVol', 'implied (hedging) volatility'], ['years', 'option life (years)'], ['strike', 'strike / spot'], ['costBps', 'hedge cost (bp)'], ['paths', 'Monte Carlo paths'], ['seed', 'seed'], ['tenorDays', 'overlay tenor (days)'], ['putMoneyness', 'put strike / spot'], ['callMoneyness', 'call strike / spot'], ['volPremium', 'implied minus realised vol']]],
-      pairs: ['Pairs', [['days', 'generated days'], ['beta', 'true hedge ratio'], ['halfLife', 'spread half-life (days)'], ['spreadVol', 'spread volatility'], ['seed', 'seed'], ['delta', 'Kalman state noise δ'], ['observationVariance', 'observation variance'], ['entryZ', 'entry |z|'], ['exitZ', 'exit |z|'], ['costBps', 'cost (bp)']]],
-      trend: ['Trend following', [['targetVol', 'volatility target (annual)'], ['volSpan', 'volatility span (days)'], ['buffer', 'position buffer'], ['costBps', 'cost (bp)'], ['reweightEvery', 'reweight every (days)'], ['reweightWindow', 'reweight window (days)']]],
-      regimes: ['Regimes', [['states', 'HMM states'], ['window', 'estimation window (days)'], ['refitEvery', 'refit every (days)'], ['threshold', 'risk-off above P(volatile)'], ['riskOffExposure', 'risk-off exposure'], ['costBps', 'cost (bp)'], ['targetVol', 'comparison: vol target']]],
-      execution: ['Execution', [['shares', 'shares to sell'], ['price', 'price'], ['horizonDays', 'horizon (days)'], ['periods', 'trading periods'], ['sigma', 'volatility (per share per √day)'], ['epsilon', 'fixed cost ε (per share)'], ['eta', 'temporary impact η'], ['gamma', 'permanent impact γ'], ['riskAversion', 'risk aversion λ'], ['paths', 'Monte Carlo paths']]],
-      tournament: ['Meta-allocation', [['lookback', 'look-back (days)'], ['rebalanceEvery', 'rebalance every (days)'], ['eta', 'exponential weights: η'], ['topN', 'follow the leader: top N'], ['costBps', 'reallocation cost (bp)']]],
-    };
-    for (const [key, [title, fields]] of Object.entries(ALGO_SECTIONS)) {
-      if (!sections.includes(key)) continue;
-      const s = sec(title);
-      const o = spec[key];
-      for (const [f, label] of fields) s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 12 })));
-      if (key === 'trend') s.append(checkField('long only', checkInput(() => o.longOnly, (v) => { o.longOnly = v; changed(); })));
-      if (key === 'tournament') {
-        s.append(field('method', selectInput(['exponential', 'best', 'sharpe', 'riskadjusted', 'inversevol', 'equal'], () => o.method, (v) => { o.method = v; changed(); }, ALLOCATION_NAMES)));
-        s.append(checkField('cash when nothing scores > 0', checkInput(() => o.allowCash, (v) => { o.allowCash = v; changed(); })));
-      }
-    }
-    if (sections.includes('composite')) {
-      const s = sec('Composite model');
+    if (sections.includes('models')) {
+      const s = sec('Composite forecast');
       const o = spec.composite;
-      s.append(field('combination (added to every page\'s pool)', selectInput(['none', 'average', 'stacked', 'online'], () => o.method, (v) => { o.method = v; changed(); }, COMPOSITE_NAMES)));
+      s.append(field('forecast traded', selectInput(['none', 'average', 'adaptive'], () => o.method, (v) => { o.method = v; changed(); }, COMPOSITE_NAMES)));
       s.append(checkField('keep the separate models too', checkInput(() => o.keepMembers, (v) => { o.keepMembers = v; changed(); })));
-      for (const [f, label] of [['window', 'stacked: training dates'], ['refitEvery', 'stacked: refit every (days)'], ['ridge', 'stacked: ridge towards equal weights']])
-        s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 6 })));
-    }
-    if (sections.includes('multiSignal')) {
-      const s = sec('Stock-selection books');
-      const o = spec.multiSignal;
-      for (const [f, label] of [['useMl', 'signal: ML forecast'], ['useMomentum', 'signal: momentum'], ['useTrailingSharpe', 'signal: trailing Sharpe'], ['regimeGate', 'HMM regime gate'],
-        ['blendBook', 'sleeve: blended book'], ['mlBook', 'sleeve: ML-only book'], ['momentumBook', 'sleeve: momentum book'], ['trailingSharpeBook', 'sleeve: trailing-Sharpe book'],
-        ['marketSleeve', 'sleeve: equal-weight market']])
-        s.append(checkField(label, checkInput(() => o[f], (v) => { o[f] = v; changed(); })));
-      s.append(field('signal weights', selectInput(['adaptive', 'equal'], () => o.weighting, (v) => { o.weighting = v; changed(); }, { adaptive: 'adaptive (trailing IC)', equal: 'equal' })));
-      for (const [f, label] of [['holdings', 'stocks held'], ['rebalanceEvery', 'rebalance every (days)'], ['momentumLookback', 'momentum look-back (days)'], ['momentumSkip', 'momentum skip (days)'],
-        ['sharpeLookback', 'trailing Sharpe look-back (days)'], ['icLookback', 'IC look-back (days)'], ['eta', 'signal weights: η'], ['targetVol', 'volatility target (0 = off)'], ['maxLeverage', 'max leverage']])
+      for (const [f, label] of [['lookback', 'self-adaptive: look-back (days)'], ['adaptEvery', 'self-adaptive: re-choose every (days)']])
         s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 6 })));
     }
     body.append(el('div', { class: 'spec-actions', style: 'grid-column:1/-1' },
@@ -448,5 +375,5 @@ export const argmax = (values) => values.reduce((b, v, i) => (v > values[b] ? i 
 /** One row of the standard performance table. */
 export const perfRow = (name, m) => [name, fmt.pct(m.annualReturn, 1), fmt.pct(m.annualVolatility, 1), fmt.ratio(m.sharpe), fmt.ratio(m.sortino),
   fmt.pct(m.maxDrawdown, 1), fmt.ratio(m.calmar), fmt.pct(m.winRate, 1), fmt.ratio(m.averageTurnover)];
-export const COMPOSITE_NAMES = { none: 'none', average: 'equal-weight average', stacked: 'stacked meta-learner', online: 'online aggregation (BOA)' };
+export const COMPOSITE_NAMES = { none: 'the separate models', average: 'equal-weight average', adaptive: 'self-adaptive forecast' };
 export const PERF_HEADERS = ['strategy', 'ann. return', 'ann. vol', 'Sharpe', 'Sortino', 'max DD', 'Calmar', 'win rate', 'turnover/day'];

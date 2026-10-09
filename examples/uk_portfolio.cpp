@@ -327,27 +327,6 @@ int main(int argc, char** argv) try {
                 100 * m.maxDrawdown, 100 * m.averageTurnover * 252);
   }
 
-  // The library's composite strategy (sat/algo/composite): exponential weights across the
-  // self-adaptive selector on the composite forecast, the blended stock-selection book and the
-  // momentum book. Stamp duty is charged on purchases only, so half of it is added to the cost
-  // per unit of turnover.
-  ExperimentSpec compExp;
-  compExp.costBps = o.costBps + 0.5 * o.stampBps;
-  algo::CompositeStrategySpec compSpec;
-  for (auto& b : compSpec.books) b.costBps = compExp.costBps, b.holdings = o.stocks;
-  const auto comp = algo::runCompositeStrategy(d, p, compExp, compSpec);
-  const std::size_t compDays = comp.returns[0].size();
-  std::printf("\nComposite strategy %s .. %s (%zu days), %.0f bp per unit of turnover\n", d.dates[comp.start].c_str(),
-              d.dates[comp.start + compDays].c_str(), compDays, compExp.costBps);
-  std::printf("  %-52s %8s %8s %7s %8s %9s\n", "series", "CAGR", "vol", "Sharpe", "max DD", "weight now");
-  for (std::size_t k = 0; k < comp.names.size(); ++k) {
-    const auto& m = comp.metrics[k];
-    const std::string now = k < comp.sleeves ? std::to_string(static_cast<int>(std::lround(100 * comp.weights[k].back()))) + "%" : "";
-    std::printf("  %-52s %7.1f%% %7.1f%% %7.2f %7.1f%% %9s\n", comp.names[k].c_str(), 100 * m.annualReturn, 100 * m.annualVolatility, m.sharpe,
-                100 * m.maxDrawdown, now.c_str());
-  }
-  std::printf("  cash now %.0f%%\n", 100 * comp.cash.back());
-
   // Robustness of the selector: slower variants on common days (after the longest look-back).
   struct RobustRow {
     std::string name, kind;
@@ -464,36 +443,9 @@ int main(int argc, char** argv) try {
   };
   std::vector<Orders> orders;
   for (std::size_t c = 0; c < constructions.size(); ++c) orders.push_back(ordersFor(c));
-  // Composite strategy orders: its long positions as whole-share buys (short positions of the
-  // selector's long-short rules are listed but not bought).
-  auto ordersFromWeights = [&](const std::vector<double>& w, std::size_t at) {
-    std::vector<std::size_t> held;
-    for (std::size_t i = 0; i < N; ++i)
-      if (w[i] > 1e-9) held.push_back(i);
-    std::sort(held.begin(), held.end(), [&](std::size_t a, std::size_t b) { return w[a] > w[b]; });
-    Orders out;
-    for (std::size_t i : held) {
-      const double price = d.close(at, i) / o.divisor;
-      const double unitCost = price * (1 + (o.costBps + o.stampBps) * 1e-4);
-      const double shares = std::floor(w[i] * o.budget / unitCost);
-      const double value = shares * price, cost = value * (o.costBps + o.stampBps) * 1e-4;
-      out.trades.push_back({d.tickers[i], w[i], price, shares, value, cost});
-      out.spent += value + cost;
-      out.fees += cost;
-    }
-    return out;
-  };
-  const std::size_t compLast = comp.start + compDays - 1;  // the last date the strategy traded from
-  const Orders compOrders = ordersFromWeights(comp.target, compLast);
-  std::vector<std::pair<std::string, double>> compShorts;
-  for (std::size_t i = 0; i < N; ++i)
-    if (comp.target[i] < -1e-9) compShorts.push_back({d.tickers[i], comp.target[i]});
-
   printOrders("Portfolio for " + d.dates[last] + " close, chosen construction: " + constructions[pick].first, orders[pick]);
   for (std::size_t c = 0; c < constructions.size(); ++c)
     if (c != pick) printOrders("Orders if holding " + constructions[c].first + " instead", orders[c]);
-  printOrders("Composite strategy positions at the " + d.dates[compLast] + " close (long side)", compOrders);
-  for (const auto& [t, w] : compShorts) std::printf("  short %-10s %6.1f%% (not bought)\n", t.c_str(), 100 * w);
   const auto& trades = orders[pick].trades;
   const double spent = orders[pick].spent;
 
@@ -531,36 +483,6 @@ int main(int argc, char** argv) try {
       f << "]}";
     }
     f << "}";
-    f << ",\"composite\":{\"from\":" << json(d.dates[comp.start]) << ",\"to\":" << json(d.dates[comp.start + compDays])
-      << ",\"asOf\":" << json(d.dates[compLast]) << ",\"costBps\":" << compExp.costBps << ",\"sleeves\":" << comp.sleeves << ",\"dates\":[";
-    for (std::size_t t = comp.start; t <= comp.start + compDays; ++t) f << (t > comp.start ? "," : "") << json(d.dates[t]);
-    f << "],\"series\":[";
-    for (std::size_t k = 0; k < comp.names.size(); ++k) {
-      const auto& m = comp.metrics[k];
-      f << (k ? "," : "") << "{\"name\":" << json(comp.names[k]) << ",\"cagr\":" << m.annualReturn << ",\"vol\":" << m.annualVolatility
-        << ",\"sharpe\":" << m.sharpe << ",\"maxDrawdown\":" << m.maxDrawdown << ",\"equity\":[";
-      const auto eq = equityCurve(comp.returns[k]);
-      for (std::size_t j = 0; j < eq.size(); ++j) f << (j ? "," : "") << eq[j];
-      f << "]";
-      if (k < comp.sleeves) {
-        f << ",\"weights\":[";
-        for (std::size_t j = 0; j < comp.weights[k].size(); ++j) f << (j ? "," : "") << comp.weights[k][j];
-        f << "]";
-      }
-      f << "}";
-    }
-    f << "],\"cashWeights\":[";
-    for (std::size_t j = 0; j < comp.cash.size(); ++j) f << (j ? "," : "") << comp.cash[j];
-    f << "],\"trades\":[";
-    for (std::size_t k = 0; k < compOrders.trades.size(); ++k) {
-      const auto& t = compOrders.trades[k];
-      f << (k ? "," : "") << "{\"ticker\":" << json(t.ticker) << ",\"weight\":" << t.weight << ",\"price\":" << t.price << ",\"shares\":" << t.shares
-        << ",\"value\":" << t.value << ",\"cost\":" << t.cost << "}";
-    }
-    f << "],\"shorts\":[";
-    for (std::size_t k = 0; k < compShorts.size(); ++k)
-      f << (k ? "," : "") << "{\"ticker\":" << json(compShorts[k].first) << ",\"weight\":" << compShorts[k].second << "}";
-    f << "],\"cash\":" << o.budget - compOrders.spent << "}";
     if (!robust.empty()) {
       f << ",\"robustness\":{\"from\":" << json(d.dates[rStart]) << ",\"rows\":[";
       for (std::size_t k = 0; k < robust.size(); ++k) {

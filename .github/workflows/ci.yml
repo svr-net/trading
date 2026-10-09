@@ -51,7 +51,7 @@ jobs:
       - name: Example programs
         run: |
           ./build/self_adaptive_trading_demo
-          ./build/strategy_tournament 1 1260
+          ./build/forecast_study 1 1260
 
   sanitizers:
     name: native (ASan + UBSan)

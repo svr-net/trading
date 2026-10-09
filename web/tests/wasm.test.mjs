@@ -111,43 +111,7 @@ const badOut = sat.gpuAnalyse({ ...spec, analysis: 'adaptive', gpuOutputs: [{ st
 check(typeof badOut.error === 'string', 'gpuAnalyse rejects read-backs that do not match the plan');
 const bad = sat.models({ ...spec, models: [{ type: 'nonsense' }] });
 check(typeof bad.error === 'string', 'errors are reported, not thrown');
-// Advances in Financial Machine Learning entry points.
-const bars = run('afmlBars', () => sat.afmlBars({ ...spec, bars: { days: 40, tradesPerDay: 1500, barsPerDay: 20 } }));
-if (bars) {
-  const k = Object.fromEntries(bars.kinds.map((x) => [x.name, x.stats]));
-  check(k.time.jarqueBera > 2 * k.dollar.jarqueBera, `dollar bars closer to normal than time bars (JB ${k.time.jarqueBera} vs ${k.dollar.jarqueBera})`);
-  check(Math.abs(k.dollar.count - 800) < 100 && k['tick imbalance'].count > 50, 'bar counts');
-}
-const fd = run('afmlFracDiff', () => sat.afmlFracDiff(spec));
-if (fd) {
-  check(fd.minimumD > 0 && fd.minimumD <= 1 && fd.adf[fd.adf.length - 1] < fd.critical5, 'a d in (0, 1] makes the index stationary');
-  check(fd.correlation[0] > 0.999, 'd = 0 is the series itself');
-}
-const lab = run('afmlLabeling', () => sat.afmlLabeling({ ...spec, labeling: { cusumMultiple: 2, maxHolding: 10, metaHolding: 2, metaCusumMultiple: 1 } }));
-if (lab) {
-  check(lab.events.length > 20 && lab.events.every((e) => e.t1 > e.t0 && e.t1 <= e.t0 + 10), 'events within the vertical barrier');
-  check(lab.counts.upper + lab.counts.lower + lab.counts.vertical === lab.events.length, 'every event hits one barrier');
-  check(lab.uniqueness.every((u) => u > 0 && u <= 1), 'uniqueness in (0, 1]');
-  check(lab.meta.testEvents > 100 && lab.meta.filtered.bets <= lab.meta.primary.bets, 'meta-labels filter the primary bets');
-}
-const val = run('afmlValidation', () => sat.afmlValidation({ ...spec, validation: { horizon: 5, folds: 4, embargo: 5, trees: 20, maxRows: 2500, groups: 5, testGroups: 2 } }));
-if (val) {
-  check(val.cv.length === 3 && val.cv[0].trainRows > val.cv[2].trainRows, 'purging removes training rows');
-  check(val.cpcv.paths.length === 4 && val.cpcv.splits === 10, 'CPCV: C(5, 2) = 10 splits, k C(N, k) / N = 4 paths');
-  check(val.mdi.length === 23 && val.mda.length === 23 && val.sfi.length === 23, 'importance per feature');
-}
-const pf = run('afmlPortfolio', () => sat.afmlPortfolio({ ...spec, portfolio: { window: 200, rebalance: 21, trials: 20 } }));
-if (pf) {
-  near(Array.from(pf.hrp).reduce((a, b) => a + b, 0), 1, 1e-9, 'HRP weights sum to 1');
-  check(Array.from(pf.hrp).every((w) => w > 0), 'HRP is long-only');
-  check(pf.orderedTickers.length === 16 && new Set(pf.orderedTickers).size === 16, 'quasi-diagonal order is a permutation');
-  check(pf.backtest.length === 4 && pf.monteCarlo.hrp.length === 20, 'backtest and Monte Carlo');
-}
-const of = run('afmlOverfitting', () => sat.afmlOverfitting({ ...spec, overfitting: { blocks: 8 } }));
-if (of) {
-  check(of.trials === 3 * spec.strategies.length && of.pbo.combinations === 70, 'trials and CSCV combinations');
-  check(of.best.dsr <= of.best.psr + 1e-12 && of.pbo.pbo >= 0 && of.pbo.pbo <= 1, 'DSR <= PSR, PBO a probability');
-}
+// Pipeline options drawn from Advances in Financial Machine Learning.
 const afmlModels = run('models (triple barrier, extra features, CUSUM, uniqueness)', () => sat.models({ ...spec,
   label: { kind: 'triple', horizon: 5, barrierWidth: 1, volSpan: 50 }, extraFeatures: ['ffd', 'vol', 'amihud'], cusumMultiple: 1,
   walkForward: { ...spec.walkForward, weighting: 'decay' } }));
@@ -156,75 +120,17 @@ const emuBet = run('gpuEmulate (bet-sized rule)', () => sat.gpuEmulate({ ...spec
 const cpuBet = sat.strategies({ ...spec, strategies: [{ kind: 'betsize', param: 0.1, holding: 1 }] });
 if (emuBet && !cpuBet.error) near(emuBet.candidates[0].metrics.sharpe, cpuBet.candidates[0].metrics.sharpe, 1e-3, 'bet-sized rule: kernels vs CPU');
 
-// Hedging and algorithmic trading.
-const hd = run('hedgeOverlays', () => sat.hedgeOverlays(spec));
-if (hd) {
-  check(hd.series.length === 7 && hd.dates.length === hd.series[0].equity.length, 'one series per overlay, dates align with equity');
-  const vt = hd.series.find((s) => s.name === 'volatility target');
-  check(Math.abs(vt.metrics.annualVolatility - 0.10) < 0.05, `volatility target near 10%: ${vt.metrics.annualVolatility}`);
-  check(Math.abs(hd.marketCorrelation[2]) < Math.abs(hd.marketCorrelation[0]) + 0.05, 'the Kalman hedge does not add market exposure');
-}
-const op = run('hedgeOptions', () => sat.hedgeOptions({ ...spec, options: { paths: 400 } }));
-if (op) {
-  const f = op.frequencies;
-  check(f.length === 7 && f[0].sd < f[f.length - 1].sd, 'hedging error grows as rebalancing thins out');
-  check(op.overlays[1].metrics.maxDrawdown < op.overlays[0].metrics.maxDrawdown, 'the protective put cuts the drawdown');
-  check(op.histograms.daily.length === 400 && op.histograms.weekly.length === 400, 'P&L histograms');
-}
-const pr = run('algoPairs', () => sat.algoPairs(spec));
-if (pr) {
-  check(pr.synthetic.cointegration.cointegrated && pr.synthetic.strategy.metrics.sharpe > 0.5, 'the generated pair is cointegrated and tradable');
-  check(pr.pairsTested === 16 * 15 / 2 && pr.scan.length === 5, 'every pair of the universe is scanned');
-}
-const tr = run('algoTrend', () => sat.algoTrend(spec));
-if (tr) {
-  check(tr.series.length === 3 && tr.rules.length === 6, 'three series, six rules');
-  const last = tr.rules.reduce((s, r) => s + r.weights[r.weights.length - 1], 0);
-  near(last, 1, 1e-9, 'rule weights sum to 1');
-  check(tr.dates.length === tr.series[0].equity.length, 'dates align with equity');
-}
-const rg = run('algoRegimes', () => sat.algoRegimes({ ...spec, regimes: { window: 300, refitEvery: 63 } }));
-if (rg) {
-  check(rg.model.sd[1] > rg.model.sd[0] && rg.accuracy > 0.6, `HMM separates the volatile regime (accuracy ${rg.accuracy})`);
-  check(rg.probabilities.length === 2 && rg.probabilities[0].length === 759, 'filtered probabilities per state and day');
-}
-const ex = run('algoExecution', () => sat.algoExecution({ execution: { paths: 2000 } }));
-if (ex) {
-  const [twap, ac] = ex.plans;
-  check(ac.expectedCost > twap.expectedCost && ac.sd < twap.sd, 'risk aversion trades cost for risk');
-  near(ac.simMean, ac.expectedCost, 0.1 * ac.expectedCost, 'Monte Carlo mean matches the closed form');
-  check(ex.frontierCost.every((c, i) => i === 0 || c >= ex.frontierCost[i - 1] - 1e-6), 'frontier cost rises with risk aversion');
-}
-const tn = run('strategyTournament', () => sat.strategyTournament(spec));
-if (tn) {
-  check(tn.sleeves.length === 3 + 3 + 4 && tn.sleeves[tn.sleeves.length - 1].family === 'benchmark', 'three models, three self-adaptive variants, trend, pairs, regimes, benchmark');
-  check(tn.allocators.length === 6 && tn.chosen === 'exponential weights', 'six allocators, exponential weights by default');
-  const n = tn.sleeves[0].equity.length;
-  check(tn.sleeves.every((s) => s.equity.length === n) && tn.allocators.every((a) => a.equity.length === n) && tn.dates.length === n, 'every series on the same days');
-  const eq = tn.allocators.find((a) => a.name === 'equal weight');
-  const w = eq.weights.map((v) => v[10]);
-  near(w.reduce((a, b) => a + b, 0), 1, 1e-9, 'equal-weight allocator is fully invested');
-}
-const cs = run('compositeStrategy', () => sat.compositeStrategy({ ...spec, composite: { method: 'online' } }));
-if (cs) {
-  check(cs.members.length === 3 && cs.composites.length === 3 && cs.chosen === 'online', 'three members, three composites, the chosen one traded');
-  check(cs.composites.every((c) => c.weights.length === 3 && c.auc > 0.4), 'composite weights per member');
-  check(cs.sleeves === 3 && cs.series.length === 6 && cs.series[cs.sleeves].name === 'Composite strategy', 'selector, two books, composite, market, members selector');
-  const n = cs.series[0].equity.length;
-  check(cs.series.every((x) => x.equity.length === n) && cs.dates.length === n, 'every series on the same days');
-  const w = cs.cash.map((c, k) => c + cs.weights.reduce((a, x) => a + x[k], 0));
-  check(w.every((v) => Math.abs(v - 1) < 1e-9), 'allocation weights and cash sum to one');
-  const b = cs.books[0];
-  check(b.signals.length === 3 && b.signalWeights.length === 3 && b.holdings.length > 0, 'three signals and the current selection');
-  check(b.exposure.length === n - 1 + cs.allocationLookback, 'the book trades from the allocation look-back on');
-  const avg = run('compositeStrategy (average, cached models)', () => sat.compositeStrategy({ ...spec, composite: { method: 'none' } }));
-  if (avg) check(avg.chosen === 'average' && avg.cachedPredictions, 'no composite in the spec: the average is traded');
-  // The web default: the composite (equal-weight average) traded in place of the models.
-  const def = run('strategies (default composite pool)', () => sat.strategies({ ...spec, composite: defaultSpec().composite }));
-  if (def) check(def.candidates.length === spec.strategies.length && def.candidates.every((c) => JSON.stringify(c).includes('Composite (average)')), 'the default pool trades the composite alone');
-  const many = run('compositeStrategy (separate books + market)', () => sat.compositeStrategy({ ...spec, multiSignal: { mlBook: true, trailingSharpeBook: true, marketSleeve: true } }));
-  if (many) check(many.sleeves === 6 && many.weights.length === 6 && many.books.length === 4 && many.books[2].name === 'Momentum book', 'blend, three single-signal books and the market as sleeves');
-}
+// The composite forecast: the web default trades the equal-weight average in place of the
+// models; the self-adaptive forecast picks the model or average with the best recent record.
+const withComposite = run('models (with the default composite)', () => sat.models({ ...spec, composite: defaultSpec().composite }));
+if (withComposite) check(withComposite.models.length === 4 && withComposite.models[3].name === 'Composite (average)', 'the Models page shows the models and their composite');
+const def = run('strategies (default composite pool)', () => sat.strategies({ ...spec, composite: defaultSpec().composite }));
+if (def) check(def.candidates.length === spec.strategies.length && def.candidates.every((c) => JSON.stringify(c).includes('Composite (average)')), 'the default pool trades the composite alone');
+const sa = run('adaptive (self-adaptive forecast, cached models)', () => sat.adaptive({ ...spec, composite: { method: 'adaptive', keepMembers: false } }));
+if (sa) check(sa.cachedPredictions !== false, 'changing only the composite never re-trains the models');
+const both = run('strategies (models + self-adaptive forecast)', () => sat.strategies({ ...spec, composite: { method: 'adaptive', keepMembers: true } }));
+if (both) check(both.candidates.length === 4 * spec.strategies.length, 'three models and the self-adaptive forecast');
+check(typeof sat.strategies({ ...spec, composite: { method: 'stacked' } }).error === 'string', 'removed combinations are rejected');
 
 // The emulated GPU device: each plan of gpuJobs run through gpuRunPlan and handed to
 // gpuAnalyse must give exactly what gpuEmulate (compile + reference + analyse in one call) gives.
@@ -244,29 +150,13 @@ if (emuJobs && !emuJobs.unsupported) {
   check(typeof sat.gpuRunPlan({ header: plan.header.subarray(0, 4), tables: plan.tables }).error === 'string', 'a short header is rejected');
 }
 
-// Candidate backtests on the kernels: the 'book' plan read back through the emulated GPU feeds
-// the tournament, hedging and overfitting entry points, which must match their CPU runs.
+// Candidate backtests on the kernels: the 'book' plan read back through the emulated GPU.
 const bookJobs = run('gpuJobs (candidate book)', () => sat.gpuJobs({ ...spec, analysis: 'book' }));
 if (bookJobs && !bookJobs.unsupported) {
   const plan = bookJobs.plans[0];
   const out = sat.gpuRunPlan({ header: plan.header, tables: plan.tables, readBook: true });
   check(!out.error && out.book.length === plan.numCandidates * plan.numDays * 2, `kernel book size ${out.error || out.book?.length}`);
   check(plan.numSelectors === 0, 'the book plan has no selectors');
-  const kernelBook = out.book;
-  const pairs = [
-    ['strategyTournament', (r) => r.allocators[0].metrics.sharpe, {}],
-    ['hedgeOverlays', (r) => r.series[0].metrics.sharpe, {}],
-    ['afmlOverfitting', (r) => r.adaptive.sharpe, { overfitting: { blocks: 8 } }],
-  ];
-  for (const [fn, get, extra] of pairs) {
-    const k = run(`${fn} (kernel book)`, () => sat[fn]({ ...spec, ...extra, kernelBook }));
-    const c = sat[fn]({ ...spec, ...extra });
-    if (k && !c.error) {
-      check(k.candidateBacktests === 'kernels' && c.candidateBacktests === 'cpu', `${fn} reports where the candidates ran`);
-      near(get(k), get(c), 0.02, `${fn}: kernel book vs CPU`);
-    }
-  }
-  check(typeof sat.hedgeOverlays({ ...spec, kernelBook: kernelBook.subarray(0, 10) }).error === 'string', 'a kernel book of the wrong size is rejected');
 }
 
 const csv = 'date,ticker,open,high,low,close,volume\n2024-01-02,A,1,1,1,1,1\n';

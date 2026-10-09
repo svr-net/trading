@@ -54,35 +54,14 @@ const testSpec = {
   walkForward: { trainWindow: 300, retrainEvery: 63, maxTrainRows: 4000, seed: 11 },
   robustness: { lookbacks: [21, 42, 63], steps: [5, 21], metrics: ['return', 'sharpe'], costs: [0, 10, 30] },
 };
-// The AFML pages on the same small universe, with lighter workloads.
-const afmlSpec = {
-  ...testSpec,
-  bars: { days: 30, tradesPerDay: 1000, activityDispersion: 0.6, persistence: 0.6, barsPerDay: 20, seed: 5 },
-  validation: { model: 'xgboost', trees: 20, horizon: 5, folds: 4, embargo: 5, groups: 5, testGroups: 2, maxRows: 2500 },
-  portfolio: { window: 200, rebalance: 21, trials: 30, simAssets: 10 },
-  overfitting: { blocks: 8 },
-};
-// Hedging and algorithmic trading pages, lighter simulations.
-const algoSpec = {
-  ...testSpec,
-  options: { vol: 0.2, impliedVol: 0.2, years: 0.25, strike: 1, costBps: 0, paths: 400, seed: 13, tenorDays: 21, putMoneyness: 0.95, callMoneyness: 1.05, volPremium: 0.02 },
-  regimes: { states: 2, window: 300, refitEvery: 63, threshold: 0.5, riskOffExposure: 0, costBps: 5, targetVol: 0.12 },
-  execution: { shares: 1e6, price: 50, horizonDays: 5, periods: 25, sigma: 0.95, epsilon: 0.0625, eta: 2.5e-6, gamma: 2.5e-7, riskAversion: 1e-6, paths: 1000 },
-};
 // Pages with the engine selector. With no stored choice they run on Auto, which must pick the
 // WebGPU kernels on desktop too; some also run once forced onto WebAssembly.
 const enginePages = ['index', 'strategies', 'adaptive', 'robustness'];
 const cases = [
   ...['index', 'core', 'data', 'factors', 'labels', 'models', 'strategies', 'adaptive', 'robustness']
     .map((name) => ({ name, file: name, spec: testSpec, ...(enginePages.includes(name) ? { engine: 'auto', expectEngine: 'WebGPU' } : {}) })),
-  // Advances in Financial Machine Learning pages (WebAssembly only).
-  ...['bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'overfitting'].map((name) => ({ name, file: name, spec: afmlSpec, ...(name === 'overfitting' ? { expectEngine: 'WebGPU' } : {}) })),
-  // Hedging and algorithmic trading pages (WebAssembly only).
-  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'composite'].map((name) => ({ name, file: name, spec: algoSpec, ...(['hedging', 'tournament'].includes(name) ? { expectEngine: 'WebGPU' } : {}) })),
-  // The candidate backtests of the tournament, hedging and overfitting pages on every engine.
-  { name: 'tournament-emulator', file: 'tournament', spec: algoSpec, engine: 'emulator', expectEngine: 'Emulated GPU' },
-  { name: 'hedging-no-adapter', file: 'hedging', spec: algoSpec, engine: 'auto', gpuStub: 'no-adapter', expectEngine: 'Emulated GPU', expectReason: 'WebGPU unavailable' },
-  { name: 'overfitting-wasm', file: 'overfitting', spec: afmlSpec, engine: 'wasm', expectEngine: 'WebAssembly' },
+  // The self-adaptive forecast instead of the default average, on the kernels.
+  { name: 'adaptive-self-adaptive-forecast', file: 'adaptive', spec: { ...testSpec, composite: { method: 'adaptive', keepMembers: false, lookback: 63, adaptEvery: 21 } }, engine: 'auto', expectEngine: 'WebGPU' },
   ...['index', 'strategies'].map((name) => ({ name: `${name}-wasm`, file: name, spec: testSpec, engine: 'wasm', expectEngine: 'WebAssembly' })),
   // A first visit (nothing stored): the default is Auto, which must dispatch the kernels.
   { name: 'adaptive-first-visit', file: 'adaptive', spec: testSpec, expectEngine: 'WebGPU' },
@@ -107,7 +86,7 @@ const cases = [
   // A phone: Auto must pick WebGPU, and the collapsed menu must leave the page content in view.
   { name: 'adaptive-mobile', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', device: 'iPhone 14' },
 ];
-const NO_KERNEL_PAGES = ['core', 'data', 'factors', 'labels', 'models', 'bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'options', 'pairs', 'trend', 'regimes', 'execution', 'composite'];
+const NO_KERNEL_PAGES = ['core', 'data', 'factors', 'labels', 'models'];
 const pairs = {};
 let failures = 0;
 console.log(`testing ${root} ${fileMode ? 'from file:// (no server)' : `over ${base}`}`);

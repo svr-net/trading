@@ -4,11 +4,9 @@
 
 #include "sat/adaptive/experiment.hpp"
 #include "sat/afml/backtest_stats.hpp"
-#include "sat/afml/bars.hpp"
 #include "sat/afml/bet_sizing.hpp"
 #include "sat/afml/features.hpp"
 #include "sat/afml/fracdiff.hpp"
-#include "sat/afml/importance.hpp"
 #include "sat/afml/labeling.hpp"
 #include "sat/afml/microstructure.hpp"
 #include "sat/afml/overfitting.hpp"
@@ -40,36 +38,6 @@ TEST(normal_distribution_helpers) {
   CHECK_NEAR(b[0], 2.0, 0.01);
   CHECK_NEAR(b[1], 0.5, 0.001);
   CHECK(se[1] > 0 && se[1] < 1e-3);
-}
-
-TEST(information_bars_are_closer_to_normal_than_time_bars) {
-  TradeStreamSpec s;
-  s.days = 120;
-  const auto trades = generateTrades(s);
-  CHECK(trades.size() > 100000);
-  for (std::size_t k = 1; k < trades.size(); ++k) CHECK(trades[k].time >= trades[k - 1].time);
-  double dollars = 0;
-  for (const auto& t : trades) dollars += t.price * t.volume;
-  const std::size_t perDay = 20;
-  const auto time = timeBars(trades, 1.0 / perDay);
-  const auto ticks = tickBars(trades, trades.size() / (s.days * perDay));
-  const auto dollar = dollarBars(trades, dollars / (s.days * perDay));
-  const auto imb = tickImbalanceBars(trades, 50);
-  CHECK(std::fabs(static_cast<double>(time.size()) - s.days * perDay) < 5);
-  CHECK(std::fabs(static_cast<double>(dollar.size()) - s.days * perDay) < 0.1 * s.days * perDay);
-  CHECK(imb.size() > 100);
-  const auto st = barStatistics(time, s.days), sd = barStatistics(dollar, s.days), sk = barStatistics(ticks, s.days);
-  // Activity clustering fattens the tails of clock-time returns; trade-based sampling undoes it.
-  CHECK(st.jarqueBera > 5 * sd.jarqueBera);
-  CHECK(st.jarqueBera > 5 * sk.jarqueBera);
-  CHECK(sd.barsPerDaySd > st.barsPerDaySd);  // dollar bars follow activity
-  // Bars conserve volume.
-  double v = 0;
-  for (const auto& b : tickBars(trades, 100)) v += b.volume;
-  double all = 0;
-  for (std::size_t k = 0; k < trades.size() / 100 * 100; ++k) all += trades[k].volume;
-  CHECK_NEAR(v, all, 1e-6 * all);
-  CHECK_THROWS(dollarBars(trades, 0));
 }
 
 TEST(fractional_differentiation) {
@@ -158,65 +126,6 @@ TEST(uniqueness_and_sequential_bootstrap) {
     plain += sampleUniqueness(many, s, 110);
   }
   CHECK(seq > plain * 1.04);
-}
-
-TEST(purged_cross_validation_removes_leakage) {
-  std::vector<Span> spans;
-  for (std::size_t t = 0; t < 100; ++t) spans.push_back({t, std::min<std::size_t>(t + 5, 99)});
-  const auto folds = purgedKFold(spans, 100, 5, 2);
-  CHECK(folds.size() == 5);
-  for (const auto& f : folds) {
-    std::size_t lo = 1000, hi = 0;
-    for (std::size_t k : f.test) {
-      lo = std::min(lo, spans[k].first);
-      hi = std::max(hi, spans[k].second);
-    }
-    for (std::size_t k : f.train) {
-      CHECK(!(spans[k].first <= hi && spans[k].second >= lo));        // no overlap
-      CHECK(!(spans[k].first > hi && spans[k].first <= hi + 2));       // embargo
-    }
-    CHECK(f.test.size() == 20);
-  }
-  const auto plain = purgedKFold(spans, 100, 5, 0, false);
-  CHECK(plain[2].train.size() == 80 && folds[2].train.size() < 80);
-  const auto c = combinatorialPurgedSplits(spans, 100, 6, 2, 1);
-  CHECK(c.splits.size() == 15 && c.paths == 5);
-  // Every path covers every group exactly once, with a split that tests that group.
-  for (const auto& path : c.pathSplit)
-    for (std::size_t g = 0; g < 6; ++g) {
-      const auto& groups = c.testGroupsOf[path[g]];
-      CHECK(std::find(groups.begin(), groups.end(), g) != groups.end());
-    }
-  CHECK_THROWS(combinatorialPurgedSplits(spans, 100, 4, 4, 0));
-}
-
-TEST(feature_importance_and_cv) {
-  // Feature 0 drives the label, feature 1 is noise.
-  Rng rng(2);
-  const std::size_t n = 1200;
-  Matrix X(n, 2);
-  std::vector<double> y(n);
-  std::vector<Span> spans;
-  for (std::size_t r = 0; r < n; ++r) {
-    X(r, 0) = rng.normal();
-    X(r, 1) = rng.normal();
-    y[r] = X(r, 0) + 0.5 * rng.normal() > 0 ? 1 : 0;
-    spans.push_back({r, r});
-  }
-  const auto splits = purgedKFold(spans, n, 4, 0);
-  ModelSpec m;
-  m.type = "xgboost";
-  m.trees = 30;
-  const auto cv = crossValidate(m, X, y, splits);
-  CHECK(cv.accuracy > 0.75 && cv.foldAccuracy.size() == 4);
-  const auto mdi = meanDecreaseImpurity(m, X, y);
-  CHECK(mdi.mean[0] > mdi.mean[1]);
-  const auto mda = meanDecreaseAccuracy(m, X, y, splits);
-  CHECK(mda.mean[0] > 0.1 && std::fabs(mda.mean[1]) < 0.05);
-  ModelSpec lr;
-  lr.type = "logistic";
-  const auto sfi = singleFeatureImportance(lr, X, y, splits);
-  CHECK(sfi.mean[0] > 0.8 && std::fabs(sfi.mean[1] - 0.5) < 0.1);
 }
 
 TEST(bet_sizing) {

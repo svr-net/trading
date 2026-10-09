@@ -11,9 +11,7 @@ const page = initPage({
     '(Wang, Huang and Luo, <i>Computational Economics</i>, 2025). Formulaic alpha factors feed machine-learning models that forecast each stock\'s next move. ' +
     'Every model drives a pool of fixed trading rules, and the self-adaptive strategy keeps switching to the rule with the best recent record. ' +
     'The C++ library is compiled to WebAssembly and runs in a worker. The strategy search also runs as WebGPU compute kernels. Each page below exercises one part of the library on a shared, editable specification. ' +
-    'The <i>Advances in Financial ML</i> pages extend the method with the techniques of López de Prado\'s <i>Advances in Financial Machine Learning</i> (Wiley, 2018). ' +
-    'The <i>Hedging & algorithmic trading</i> pages add hedging (Hull), statistical arbitrage (Chan), systematic trend following (Carver), regime switching (Hamilton) and optimal execution (Almgren–Chriss), ' +
-    'and a tournament that backtests every approach on the same days and allocates across them adaptively.',
+    'By default the models\' forecasts are averaged into one composite forecast before the rules trade it, which the forecast study found works better than trading the models separately.',
 });
 
 const DESCRIPTIONS = {
@@ -21,24 +19,10 @@ const DESCRIPTIONS = {
   data: 'A regime-switching synthetic stock market (bull, bear, range-bound), or your own daily bars from a CSV file.',
   factors: 'The 23 formulaic alphas used as features: information coefficients, coverage and correlations.',
   labels: 'Next-day direction, excess over the median, and N-period min-max labels with their look-ahead.',
-  models: 'Logistic regression, SVM, trees, random forest, XGBoost, LightGBM, MLP and LSTM, trained walk-forward.',
+  models: 'Logistic regression, SVM, trees, random forest, XGBoost, LightGBM, MLP and LSTM, trained walk-forward, and their composite forecast.',
   strategies: 'Fixed rules (top-k, long-short, thresholds) on every model. The best one changes from period to period.',
   adaptive: 'The self-adaptive strategy: re-scores every candidate and switches to the best, or to cash.',
   robustness: 'Look-back and adaptation-period grid, score metrics, transaction costs and year-by-year results.',
-  bars: 'Time, tick, volume, dollar and imbalance bars on a synthetic trade stream, and their statistics.',
-  fracdiff: 'The smallest order of differentiation that makes prices stationary while keeping memory.',
-  labeling: 'CUSUM events, triple-barrier labels, sample uniqueness, the sequential bootstrap and meta-labeling.',
-  validation: 'Shuffled vs purged k-fold, combinatorial purged CV paths, and MDI / MDA / SFI importance.',
-  portfolio: 'Hierarchical risk parity against inverse-variance and minimum-variance allocations.',
-  overfitting: 'Deflated Sharpe ratio and probability of backtest overfitting of the candidate pool; bet sizing.',
-  hedging: 'Rolling and Kalman-filter beta hedges of the self-adaptive strategy; volatility targeting and fractional Kelly.',
-  options: 'Delta-hedging error against rebalancing frequency; protective puts and collars on the index.',
-  pairs: 'Engle–Granger cointegration, spread half-life and a Kalman-filter pairs strategy; a universe scan.',
-  trend: 'EWMAC trend rules with forecast scaling, volatility targeting and adaptive rule weights.',
-  regimes: 'A Gaussian hidden Markov model of market regimes, filtered in real time, and regime-switched exposure.',
-  execution: 'Almgren–Chriss optimal liquidation: trajectories, efficient frontier and simulated shortfall.',
-  tournament: 'Every approach backtested on the same days and a meta-allocator that adapts across them.',
-  composite: 'The models combined into one forecast (average, stacking, online aggregation) and a composite strategy across the selector and stock-selection books.',
   gpu: 'Candidate backtests and the selector grid as WebGPU kernels, validated against WASM and benchmarked.',
 };
 

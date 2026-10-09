@@ -36,26 +36,15 @@ add_library(sat
   src/adaptive/self_adaptive.cpp
   src/adaptive/experiment.cpp
   src/adaptive/composite.cpp
-  src/afml/bars.cpp
   src/afml/fracdiff.cpp
   src/afml/labeling.cpp
   src/afml/sampling.cpp
-  src/afml/importance.cpp
   src/afml/bet_sizing.cpp
   src/afml/backtest_stats.cpp
   src/afml/portfolio.cpp
   src/afml/microstructure.cpp
   src/afml/features.cpp
   src/afml/overfitting.cpp
-  src/hedge/hedging.cpp
-  src/hedge/options.cpp
-  src/algo/pairs.cpp
-  src/algo/trend.cpp
-  src/algo/regimes.cpp
-  src/algo/execution.cpp
-  src/algo/ensemble.cpp
-  src/algo/tournament.cpp
-  src/algo/composite.cpp
   src/gpu/fused_backtest.cpp
   src/gpu/fused_kernels.cpp
   src/gpu/fused_reference.cpp
@@ -105,8 +94,7 @@ if(SAT_BUILD_TESTS)
     tests/test_adaptive.cpp
     tests/test_gpu.cpp
     tests/test_afml.cpp
-    tests/test_hedge_algo.cpp
-    tests/test_composite.cpp
+      tests/test_composite.cpp
   )
   target_link_libraries(sat_tests PRIVATE sat)
   add_test(NAME sat_tests COMMAND sat_tests)
@@ -115,12 +103,10 @@ endif()
 if(SAT_BUILD_EXAMPLES)
   add_executable(self_adaptive_trading_demo examples/self_adaptive_trading_demo.cpp)
   target_link_libraries(self_adaptive_trading_demo PRIVATE sat)
-  add_executable(strategy_tournament examples/strategy_tournament.cpp)
-  target_link_libraries(strategy_tournament PRIVATE sat)
   add_executable(uk_portfolio examples/uk_portfolio.cpp)
   add_executable(pool_ablation examples/pool_ablation.cpp)
-  add_executable(composite_study examples/composite_study.cpp)
-  target_link_libraries(composite_study PRIVATE sat)
+  add_executable(forecast_study examples/forecast_study.cpp)
+  target_link_libraries(forecast_study PRIVATE sat)
   target_link_libraries(pool_ablation PRIVATE sat)
   target_link_libraries(uk_portfolio PRIVATE sat)
 endif()

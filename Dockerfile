@@ -38,7 +38,7 @@ RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 
 FROM ubuntu:24.04 AS native
 COPY --from=native-build /opt/sat /opt/sat
-COPY --from=native-build /src/build/self_adaptive_trading_demo /src/build/strategy_tournament /usr/local/bin/
+COPY --from=native-build /src/build/self_adaptive_trading_demo /usr/local/bin/
 COPY --from=native-build /src/build/sat_tests /usr/local/bin/
 CMD ["self_adaptive_trading_demo"]
 

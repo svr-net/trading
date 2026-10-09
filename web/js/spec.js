@@ -68,30 +68,10 @@ export function defaultSpec() {
     costBps: 10,
     selector: { lookback: 63, adaptEvery: 21, metric: 'sharpe', topM: 1, allowCash: true, minScore: 0 },
     robustness: { lookbacks: [21, 42, 63, 126, 252], steps: [5, 10, 21, 42, 63], metrics: ['return', 'sharpe', 'sortino'], costs: [0, 5, 10, 20, 40] },
-    // Advances in Financial Machine Learning pages.
-    bars: { days: 60, tradesPerDay: 1500, activityDispersion: 0.6, persistence: 0.6, barsPerDay: 20, seed: 5 },
-    labeling: { cusumMultiple: 2, profitTaking: 1, stopLoss: 1, maxHolding: 10, volSpan: 50, momentum: 20, metaHolding: 2, metaCusumMultiple: 1, metaModel: 'logistic' },
-    validation: { model: 'xgboost', trees: 40, horizon: 5, folds: 5, embargo: 5, groups: 6, testGroups: 2, maxRows: 6000 },
-    portfolio: { window: 252, rebalance: 21, trials: 100, simAssets: 10 },
-    overfitting: { blocks: 16 },
-    // Hedging and algorithmic trading pages.
-    hedging: { betaWindow: 63, delta: 1e-4, hedgeCostBps: 2, targetVol: 0.1, volSpan: 36, maxLeverage: 2, kellyFraction: 0.5, kellyWindow: 126 },
-    options: { vol: 0.2, impliedVol: 0.2, years: 0.25, strike: 1, costBps: 0, paths: 2000, seed: 13, tenorDays: 21, putMoneyness: 0.95, callMoneyness: 1.05, volPremium: 0.02 },
-    pairs: { days: 1000, beta: 1.5, halfLife: 10, spreadVol: 0.01, seed: 21, delta: 1e-7, observationVariance: 1, entryZ: 1, exitZ: 0, costBps: 5 },
-    trend: { targetVol: 0.15, volSpan: 36, buffer: 0.1, costBps: 5, reweightEvery: 63, reweightWindow: 252, longOnly: false },
-    regimes: { states: 2, window: 504, refitEvery: 63, threshold: 0.5, riskOffExposure: 0, costBps: 5, targetVol: 0.12 },
-    execution: { shares: 1e6, price: 50, horizonDays: 5, periods: 25, sigma: 0.95, epsilon: 0.0625, eta: 2.5e-6, gamma: 2.5e-7, riskAversion: 1e-6, paths: 5000 },
-    tournament: { method: 'exponential', lookback: 63, rebalanceEvery: 5, eta: 4, topN: 1, costBps: 2, allowCash: true },
-    // Composite model: the models' forecasts combined into one model (none | average | stacked |
-    // online), traded in their place or, with keepMembers, alongside them. The equal-weight
-    // average alone gave the selector the best Sharpe ratio in examples/composite_study.
-    composite: { method: 'average', window: 252, refitEvery: 21, ridge: 1, keepMembers: false },
-    // Stock-selection books of the composite strategy (examples/composite_study).
-    multiSignal: {
-      useMl: true, useMomentum: true, useTrailingSharpe: true, weighting: 'adaptive', holdings: 10, rebalanceEvery: 5,
-      momentumLookback: 252, momentumSkip: 21, sharpeLookback: 126, icLookback: 126, eta: 0.5, targetVol: 0.15, maxLeverage: 1.5,
-      regimeGate: true, blendBook: true, mlBook: false, momentumBook: true, trailingSharpeBook: false, marketSleeve: false,
-    },
+    // Composite forecast: the models' forecasts combined into one (none | average | adaptive),
+    // traded in their place or, with keepMembers, alongside them. examples/forecast_study: the
+    // equal-weight average alone gave the selector the best Sharpe ratio.
+    composite: { method: 'average', keepMembers: false, lookback: 63, adaptEvery: 21 },
   };
 }
 
@@ -107,9 +87,13 @@ export function loadSpec() {
     if (raw) {
       // New sections added in later versions keep their defaults when an older spec is stored.
       const stored = JSON.parse(raw);
-      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'composite', 'multiSignal'])
+      for (const k of ['label', 'walkForward', 'composite'])
         if (stored[k] && typeof stored[k] === 'object') stored[k] = { ...spec[k], ...stored[k] };
       if (isLegacyPool(stored)) { delete stored.models; delete stored.strategies; }
+      // Combinations and sections removed in v0.6 fall back to the defaults.
+      if (!['none', 'average', 'adaptive'].includes(stored.composite?.method)) stored.composite = { ...spec.composite };
+      for (const k of ['bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'multiSignal'])
+        delete stored[k];
       spec = { ...spec, ...stored };
     }
   } catch (_) { /* storage unavailable: fall back to defaults */ }
