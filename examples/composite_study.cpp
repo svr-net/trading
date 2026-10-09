@@ -228,26 +228,49 @@ int main(int argc, char** argv) {
       runs.push_back(r);
     }
   };
-  // The composite strategy (library defaults: runCompositeStrategy) against its parts, the
-  // library's default selector on the separate members, and the market, over the same days.
+  // Composite strategies: the selector on the composite model plus different sets of
+  // stock-selection books, allocated by exponential weights; against the parts, the library's
+  // default selector on the separate members and the market, over the same days.
+  auto single = [](bool ml, bool mom, bool ts) {
+    algo::MultiSignalSpec b;
+    b.useMl = ml, b.useMomentum = mom, b.useTrailingSharpe = ts;
+    b.costBps = kCostBps;
+    return b;
+  };
+  algo::MultiSignalSpec blend;
+  blend.costBps = kCostBps;
+  const std::vector<std::pair<std::string, algo::CompositeStrategySpec>> sleeveSets = {
+      {"A: selector + blend", {{blend}, false, {}}},
+      {"B: selector + blend + Mom", {{blend, single(false, true, false)}, false, {}}},
+      {"C: selector + ML + Mom + TS", {{single(true, false, false), single(false, true, false), single(false, false, true)}, false, {}}},
+      {"D: C + market", {{single(true, false, false), single(false, true, false), single(false, false, true)}, true, {}}},
+      {"E: selector + blend + ML + Mom + TS",
+       {{blend, single(true, false, false), single(false, true, false), single(false, false, true)}, false, {}}},
+  };
   auto references = [&](const std::vector<Market>& set, double tv) {
-    std::vector<std::vector<Run>> runs(5);
+    std::vector<std::vector<Run>> runs(4 + sleeveSets.size());
     for (const auto& m : set) {
       ExperimentSpec exp;
       exp.costBps = kCostBps;
-      const auto c = algo::runCompositeStrategy(m.data, m.p, exp, algo::CompositeStrategySpec{});
-      // The default selector on the members, trimmed to the composite strategy's days.
-      const auto s = selector(m, m.p.models);
-      const std::size_t skip = c.start - m.first;
-      const std::vector<double> members(s.net.begin() + static_cast<std::ptrdiff_t>(skip), s.net.end());
-      runs[0].push_back({c.metrics[3], c.returns[3]});
-      runs[1].push_back({evaluatePerformance(members), members});
-      for (std::size_t k = 0; k < 3; ++k) runs[2 + k].push_back({c.metrics[k], c.returns[k]});
+      for (std::size_t v = 0; v < sleeveSets.size(); ++v) {
+        const auto c = algo::runCompositeStrategy(m.data, m.p, exp, sleeveSets[v].second);
+        runs[4 + v].push_back({c.metrics[c.sleeves], c.returns[c.sleeves]});
+        if (v > 0) continue;
+        // The default selector on the members, trimmed to the composite strategy's days.
+        const auto s = selector(m, m.p.models);
+        const std::size_t skip = c.start - m.first;
+        const std::vector<double> members(s.net.begin() + static_cast<std::ptrdiff_t>(skip), s.net.end());
+        runs[0].push_back({c.metrics.back(), c.returns.back()});
+        runs[1].push_back({evaluatePerformance(members), members});
+        runs[2].push_back({c.metrics[0], c.returns[0]});
+        runs[3].push_back({c.metrics[1], c.returns[1]});
+      }
     }
-    return std::vector<Row>{summarise("equal-weight market", runs[0], 1, tv), summarise("default selector (members)", runs[1], 1, tv),
-                            summarise("selector on the composite model", runs[2], 1, tv),
-                            summarise("multi-signal selection (default)", runs[3], trials, tv),
-                            summarise("COMPOSITE STRATEGY", runs[4], trials, tv)};
+    std::vector<Row> rows = {summarise("equal-weight market", runs[0], 1, tv), summarise("default selector (members)", runs[1], 1, tv),
+                             summarise("selector on the composite model", runs[2], 1, tv), summarise("blend book (default)", runs[3], trials, tv)};
+    for (std::size_t v = 0; v < sleeveSets.size(); ++v)
+      rows.push_back(summarise("composite " + sleeveSets[v].first, runs[4 + v], trials + static_cast<double>(sleeveSets.size()), tv));
+    return rows;
   };
 
   if (markets == 0) {
@@ -261,7 +284,7 @@ int main(int argc, char** argv) {
     for (std::size_t k = 0; k < grid.size(); ++k) rows.push_back(summarise(grid[k].name, runs[k], trials, tv));
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.sharpe > b.sharpe; });
     print(("Real data: " + csv + ": composite strategies, best first").c_str(), rows);
-    print("Real data: composite strategy (library defaults) over the same days", references(real, tv));
+    print("Real data: composite strategies over the same days", references(real, tv));
     return 0;
   }
 
@@ -283,7 +306,7 @@ int main(int argc, char** argv) {
   print("Selection markets: composite strategies, best first", rows);
   const Variant& best = grid[order[0].second];
   std::printf("\nChosen on the selection markets: %s\n", best.name.c_str());
-  print("Selection markets: composite strategy (library defaults) over the same days", references(selection, selTv));
+  print("Selection markets: composite strategies over the same days", references(selection, selTv));
 
   std::fprintf(stderr, "validation markets\n");
   const auto validation = build(201);
@@ -304,7 +327,7 @@ int main(int argc, char** argv) {
     sel.push_back(a), val.push_back(b);
   }
   std::printf("\nRank correlation of variant Sharpe ratios, selection vs validation: %.2f\n", rankCorrelation(sel, val));
-  print("Validation markets: composite strategy (library defaults) over the same days", references(validation, valTv));
+  print("Validation markets: composite strategies over the same days", references(validation, valTv));
   if (!csv.empty()) {
     const std::vector<Market> real = {prepare(csv, readCsv())};
     compositeModels(("Real data: " + csv).c_str(), real);
@@ -315,7 +338,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < std::min<std::size_t>(10, order.size()); ++q)
       rows.push_back(summarise(std::to_string(q + 1) + ". " + grid[order[q].second].name, runs[order[q].second], trials, tv));
     print(("Real data: " + csv + ": the selection's top ten").c_str(), rows);
-    print("Real data: composite strategy (library defaults) over the same days", references(real, tv));
+    print("Real data: composite strategies over the same days", references(real, tv));
   }
   return 0;
 }

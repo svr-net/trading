@@ -61,6 +61,7 @@ struct MultiSignalResult {
   std::vector<double> gross, turnover, exposure;
   std::vector<std::vector<double>> signalWeights;  ///< [k][signal]
   std::vector<double> holdings;               ///< weights per stock held after the last date (with exposure)
+  std::vector<double> book;                   ///< the last selection's weights before exposure (sum 1)
   std::vector<double> lastScore;              ///< blended rank per stock on the last date
   std::size_t start = 0;
   PerformanceMetrics metrics;
@@ -73,26 +74,35 @@ MultiSignalResult multiSignalSelection(const MarketData& data, const Panel* prob
                                        std::size_t start, std::size_t end = 0);
 
 /// The composite strategy: exponential-weights allocation (the Hedge algorithm, as in the
-/// strategy tournament) between two low-correlated sleeves:
+/// strategy tournament) between low-correlated sleeves:
 ///  - the self-adaptive selector over the trading rules on the composite model's forecasts
 ///    (the experiment's composite model when it has one, otherwise the equal-weight average
 ///    of its models);
-///  - multi-signal stock selection on the same composite forecast, momentum and trailing
-///    Sharpe, with its volatility target and regime gate.
-/// The selector chases the short-horizon forecast; the multi-signal book holds slower signals
-/// and steps aside in turbulent regimes, so the allocator can lean on whichever is working.
+///  - one or more stock-selection books (multiSignalSelection) on the same composite
+///    forecast, momentum and trailing Sharpe, with their volatility target and regime gate;
+///  - optionally the equal-weight market itself.
+/// The selector chases the short-horizon forecast; the books hold slower signals and step
+/// aside in turbulent regimes, so the allocator can lean on whichever is working.
 struct CompositeStrategySpec {
-  MultiSignalSpec signals;
+  std::vector<MultiSignalSpec> books = {MultiSignalSpec{}};
+  bool marketSleeve = false;
   AllocationSpec allocation;
 };
 
+/// Name of a stock-selection book from its signals, e.g. "Momentum book" or
+/// "Multi-signal book (ML + momentum + trailing Sharpe)".
+std::string bookName(const MultiSignalSpec& spec);
+
 struct CompositeStrategyResult {
-  std::vector<std::string> names;              ///< selector, multi-signal, composite, benchmark
+  /// The sleeves (selector, books, market when allocated to), then the composite strategy
+  /// and the equal-weight market benchmark.
+  std::vector<std::string> names;
   std::vector<std::vector<double>> returns;    ///< per name, over the common evaluation days
   std::vector<PerformanceMetrics> metrics;
-  std::vector<std::vector<double>> weights;    ///< allocation to the two sleeves per day
+  std::size_t sleeves = 0;                     ///< the first `sleeves` names are allocated to
+  std::vector<std::vector<double>> weights;    ///< allocation to each sleeve per day
   std::vector<double> cash;
-  MultiSignalResult multiSignal;               ///< the sleeve's full result (holdings, signal weights)
+  std::vector<MultiSignalResult> books;        ///< each book's full result (holdings, signal weights)
   AdaptiveResult selector;
   std::vector<std::string> selectorCandidates;
   std::size_t start = 0;                       ///< date index of the first evaluated return

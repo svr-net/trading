@@ -1,6 +1,7 @@
 #include "sat/algo/composite.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -18,6 +19,21 @@ SignalWeighting parseSignalWeighting(const std::string& name) {
 }
 
 std::string signalWeightingName(SignalWeighting w) { return w == SignalWeighting::Adaptive ? "adaptive" : "equal"; }
+
+std::string bookName(const MultiSignalSpec& s) {
+  std::vector<std::string> parts;
+  if (s.useMl) parts.push_back("ML");
+  if (s.useMomentum) parts.push_back("momentum");
+  if (s.useTrailingSharpe) parts.push_back("trailing Sharpe");
+  if (parts.size() == 1) {
+    std::string n = parts[0] == "ML" ? "ML" : parts[0];
+    n[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(n[0])));
+    return n + " book";
+  }
+  std::string n = "Multi-signal book (";
+  for (std::size_t k = 0; k < parts.size(); ++k) n += (k ? " + " : "") + parts[k];
+  return n + ")";
+}
 
 namespace {
 
@@ -223,6 +239,7 @@ MultiSignalResult multiSignalSelection(const MarketData& data, const Panel* prob
     }
   }
   out.holdings = held;
+  out.book = base;
   out.metrics = evaluatePerformance(out.returns, out.turnover);
   return out;
 }
@@ -252,20 +269,33 @@ CompositeStrategyResult runCompositeStrategy(const MarketData& data, const Model
   const std::size_t L = spec.allocation.lookback;
   if (D <= evalFrom + L + 20) throw std::invalid_argument("composite strategy: too few out-of-sample days for the selector and allocation look-backs");
 
+  if (spec.books.empty() && !spec.marketSleeve) throw std::invalid_argument("composite strategy: no sleeve besides the selector");
   CompositeStrategyResult out;
   for (const auto& c : book.candidates()) out.selectorCandidates.push_back(c.label);
   out.selector = runSelector(book, experiment.selector, evalFrom);
   const std::size_t first = book.start() + evalFrom;
-  out.multiSignal = multiSignalSelection(data, &composite.probability, spec.signals, first, book.end());
-  const auto& a = out.selector.net;
-  const auto& b = out.multiSignal.returns;
-  if (a.size() != b.size()) throw std::logic_error("composite strategy: sleeves of different lengths");
-  const auto alloc = allocate({a, b}, spec.allocation);
+  std::vector<std::vector<double>> sleeves = {out.selector.net};
+  out.names = {"Self-adaptive selector (" + composite.name + ")"};
+  for (const auto& b : spec.books) {
+    out.books.push_back(multiSignalSelection(data, &composite.probability, b, first, book.end()));
+    sleeves.push_back(out.books.back().returns);
+    out.names.push_back(bookName(b));
+  }
+  const auto market = equalWeightBenchmark(nextReturns, first, book.end(), experiment.costBps).series.net;
+  if (spec.marketSleeve) {
+    sleeves.push_back(market);
+    out.names.push_back("Equal-weight market");
+  }
+  for (const auto& x : sleeves)
+    if (x.size() != sleeves[0].size()) throw std::logic_error("composite strategy: sleeves of different lengths");
+  const auto alloc = allocate(sleeves, spec.allocation);
+  out.sleeves = sleeves.size();
   out.start = first + L;
-  const auto bench = equalWeightBenchmark(nextReturns, out.start, book.end(), experiment.costBps);
-  out.names = {"Self-adaptive selector (" + composite.name + ")", "Multi-signal selection", "Composite strategy", "Equal-weight market"};
-  out.returns = {std::vector<double>(a.begin() + static_cast<std::ptrdiff_t>(L), a.end()),
-                 std::vector<double>(b.begin() + static_cast<std::ptrdiff_t>(L), b.end()), alloc.returns, bench.series.net};
+  for (const auto& x : sleeves) out.returns.emplace_back(x.begin() + static_cast<std::ptrdiff_t>(L), x.end());
+  out.returns.push_back(alloc.returns);
+  out.returns.emplace_back(market.begin() + static_cast<std::ptrdiff_t>(L), market.end());
+  out.names.push_back("Composite strategy");
+  out.names.push_back("Equal-weight market (benchmark)");
   for (const auto& r : out.returns) {
     if (r.size() != alloc.returns.size()) throw std::logic_error("composite strategy: series of different lengths");
     out.metrics.push_back(evaluatePerformance(r));

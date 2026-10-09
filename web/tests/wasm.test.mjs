@@ -201,6 +201,23 @@ if (tn) {
   const w = eq.weights.map((v) => v[10]);
   near(w.reduce((a, b) => a + b, 0), 1, 1e-9, 'equal-weight allocator is fully invested');
 }
+const cs = run('compositeStrategy', () => sat.compositeStrategy({ ...spec, composite: { method: 'online' } }));
+if (cs) {
+  check(cs.members.length === 3 && cs.composites.length === 3 && cs.chosen === 'online', 'three members, three composites, the chosen one traded');
+  check(cs.composites.every((c) => c.weights.length === 3 && c.auc > 0.4), 'composite weights per member');
+  check(cs.sleeves === 2 && cs.series.length === 5 && cs.series[2].name === 'Composite strategy', 'selector, book, composite, market, members selector');
+  const n = cs.series[0].equity.length;
+  check(cs.series.every((x) => x.equity.length === n) && cs.dates.length === n, 'every series on the same days');
+  const w = cs.weights[0].map((v, k) => v + cs.weights[1][k] + cs.cash[k]);
+  check(w.every((v) => Math.abs(v - 1) < 1e-9), 'allocation weights and cash sum to one');
+  const b = cs.books[0];
+  check(b.signals.length === 3 && b.signalWeights.length === 3 && b.holdings.length > 0, 'three signals and the current selection');
+  check(b.exposure.length === n - 1 + cs.allocationLookback, 'the book trades from the allocation look-back on');
+  const avg = run('compositeStrategy (average, cached models)', () => sat.compositeStrategy({ ...spec, composite: { method: 'none' } }));
+  if (avg) check(avg.chosen === 'average' && avg.cachedPredictions, 'no composite in the spec: the average is traded');
+  const many = run('compositeStrategy (separate books + market)', () => sat.compositeStrategy({ ...spec, multiSignal: { separateBooks: true, marketSleeve: true } }));
+  if (many) check(many.sleeves === 6 && many.weights.length === 6 && many.books.length === 4 && many.books[2].name === 'Momentum book', 'blend, three single-signal books and the market as sleeves');
+}
 
 // The emulated GPU device: each plan of gpuJobs run through gpuRunPlan and handed to
 // gpuAnalyse must give exactly what gpuEmulate (compile + reference + analyse in one call) gives.

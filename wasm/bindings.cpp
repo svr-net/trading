@@ -13,6 +13,7 @@
 #include <emscripten/val.h>
 
 #include <algorithm>
+#include <numeric>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -227,6 +228,15 @@ Env parseEnv(const val& spec) {
   } else {
     e.models = ExperimentSpec::defaultModels();
   }
+  if (has(spec, "composite")) {
+    const val c = spec["composite"];
+    e.composite.method = parseCompositeMethod(str(c, "method", "none"));
+    e.composite.window = std::max<std::size_t>(5, count(c, "window", e.composite.window));
+    e.composite.refitEvery = std::max<std::size_t>(1, count(c, "refitEvery", e.composite.refitEvery));
+    e.composite.ridge = num(c, "ridge", e.composite.ridge);
+    e.composite.keepMembers = flag(c, "keepMembers", e.composite.keepMembers);
+    if (!(e.composite.ridge >= 0)) throw std::invalid_argument("composite model: the ridge penalty must be non-negative");
+  }
   if (has(spec, "walkForward")) {
     const val w = spec["walkForward"];
     e.walkForward.trainWindow = count(w, "trainWindow", e.walkForward.trainWindow);
@@ -317,15 +327,35 @@ Predictions predictions(const val& spec, const Env& env) {
     p.set = c.set;
     p.trainMs = c.elapsedMs;
     p.cached = true;
-    return p;
+  } else {
+    // The members are trained without the composite, so changing only the composite model
+    // never re-trains them.
+    const double t0 = nowMs();
+    ExperimentSpec members = env.exp;
+    members.composite.method = CompositeMethod::None;
+    auto set = std::make_shared<PredictionSet>(runPredictions(*p.data, members));
+    c.key = env.predictionKey;
+    c.set = set;
+    c.elapsedMs = nowMs() - t0;
+    p.set = set;
+    p.trainMs = c.elapsedMs;
   }
-  const double t0 = nowMs();
-  auto set = std::make_shared<PredictionSet>(runPredictions(*p.data, env.exp));
-  c.key = env.predictionKey;
-  c.set = set;
-  c.elapsedMs = nowMs() - t0;
-  p.set = set;
-  p.trainMs = c.elapsedMs;
+  const CompositeSpec& cs = env.exp.composite;
+  if (cs.method == CompositeMethod::None) return p;
+  static PredictionCache composite;
+  const std::string key = env.predictionKey + "|composite:" + compositeMethodName(cs.method) + "|" + std::to_string(cs.window) + "|" +
+                          std::to_string(cs.refitEvery) + "|" + std::to_string(cs.ridge) + "|" + std::to_string(cs.keepMembers);
+  if (!(composite.set && composite.key == key)) {
+    auto set = std::make_shared<PredictionSet>(*p.set);
+    auto cp = compositePredictions(set->models, set->labels, set->labelEnds, cs);
+    if (!cs.keepMembers) set->models.clear();
+    set->models.push_back(std::move(cp.model));
+    set->compositeMembers = std::move(cp.members);
+    set->compositeWeights = std::move(cp.weights);
+    composite.key = key;
+    composite.set = set;
+  }
+  p.set = composite.set;
   return p;
 }
 
@@ -2454,6 +2484,156 @@ val strategyTournament(val spec) {
     return out;
   });
 }
+// Composite model (members' forecasts combined three ways) and the composite strategy.
+val compositeStrategy(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const Predictions p = predictions(spec, env);
+    const MarketData& d = *market(spec, env);
+    std::vector<ModelPredictions> members;
+    for (const auto& m : p.set->models)
+      if (m.spec.type != "composite") members.push_back(m);
+    CompositeSpec cs = env.exp.composite;
+    CompositeMethod chosen = cs.method == CompositeMethod::None ? CompositeMethod::Average : cs.method;
+    val mem = val::array();
+    auto quality = [](const std::string& name, const ClassificationMetrics& m) {
+      val o = val::object();
+      o.set("name", name);
+      o.set("auc", m.auc);
+      o.set("logLoss", m.logLoss);
+      o.set("accuracy", m.accuracy);
+      return o;
+    };
+    for (const auto& m : members) mem.call<void>("push", quality(m.name, m.oos));
+    val comps = val::array();
+    ModelPredictions forecast;
+    std::vector<std::string> memberNames;
+    if (members.size() > 1) {
+      for (auto method : {CompositeMethod::Average, CompositeMethod::Stacked, CompositeMethod::Online}) {
+        cs.method = method;
+        auto c = compositePredictions(members, p.set->labels, p.set->labelEnds, cs);
+        val o = quality(c.model.name, c.model.oos);
+        o.set("method", compositeMethodName(method));
+        std::vector<std::vector<double>> w(members.size());
+        for (std::size_t t = 0; t < c.weights.size(); t += 5)
+          for (std::size_t k = 0; k < members.size(); ++k) w[k].push_back(c.weights[t][k]);
+        o.set("weights", arrOfArr(w));
+        comps.call<void>("push", o);
+        memberNames = c.members;
+        if (method == chosen) forecast = std::move(c.model);
+      }
+    } else {
+      if (members.empty()) throw std::invalid_argument("composite: the composite model needs member models");
+      forecast = members[0];
+      memberNames = {members[0].name};
+    }
+    const val M = spec["multiSignal"];
+    algo::CompositeStrategySpec ss;
+    algo::MultiSignalSpec ms;
+    ms.useMl = flag(M, "useMl", ms.useMl);
+    ms.useMomentum = flag(M, "useMomentum", ms.useMomentum);
+    ms.useTrailingSharpe = flag(M, "useTrailingSharpe", ms.useTrailingSharpe);
+    ms.momentumLookback = count(M, "momentumLookback", ms.momentumLookback);
+    ms.momentumSkip = count(M, "momentumSkip", ms.momentumSkip);
+    ms.sharpeLookback = count(M, "sharpeLookback", ms.sharpeLookback);
+    if (has(M, "weighting")) ms.weighting = algo::parseSignalWeighting(str(M, "weighting", "adaptive"));
+    ms.icLookback = count(M, "icLookback", ms.icLookback);
+    ms.eta = num(M, "eta", ms.eta);
+    ms.holdings = count(M, "holdings", ms.holdings);
+    ms.rebalanceEvery = count(M, "rebalanceEvery", ms.rebalanceEvery);
+    ms.targetVol = num(M, "targetVol", ms.targetVol);
+    ms.maxLeverage = num(M, "maxLeverage", ms.maxLeverage);
+    ms.regimeGate = flag(M, "regimeGate", ms.regimeGate);
+    ms.costBps = env.exp.costBps;
+    ms.regimes.window = std::min<std::size_t>(ms.regimes.window, d.numDates() / 3);
+    if (ms.holdings < 1 || ms.rebalanceEvery < 1 || !(ms.targetVol >= 0) || !(ms.maxLeverage > 0))
+      throw std::invalid_argument("stock-selection books: holdings and rebalance >= 1, target volatility >= 0, leverage > 0");
+    ss.books.clear();
+    if (flag(M, "blendBook", true)) ss.books.push_back(ms);
+    if (flag(M, "separateBooks", false))
+      for (int k = 0; k < 3; ++k) {
+        algo::MultiSignalSpec one = ms;
+        one.useMl = k == 0, one.useMomentum = k == 1, one.useTrailingSharpe = k == 2;
+        ss.books.push_back(one);
+      }
+    ss.marketSleeve = flag(M, "marketSleeve", false);
+    const val Q = spec["tournament"];
+    algo::AllocationSpec& as = ss.allocation;
+    as.lookback = std::max<std::size_t>(5, count(Q, "lookback", as.lookback));
+    as.rebalanceEvery = std::max<std::size_t>(1, count(Q, "rebalanceEvery", as.rebalanceEvery));
+    as.topN = std::max<std::size_t>(1, count(Q, "topN", 1));
+    as.costBps = num(Q, "costBps", as.costBps);
+    as.eta = num(Q, "eta", as.eta);
+    if (has(Q, "method")) as.method = algo::parseAllocationMethod(str(Q, "method", ""));
+    as.allowCash = flag(Q, "allowCash", true);
+    if (!(as.costBps >= 0) || !(as.eta > 0)) throw std::invalid_argument("allocation: non-negative cost, positive eta");
+    const auto r = algo::runCompositeStrategy(d, forecast, p.set->nextReturns, env.exp, ss);
+    const std::size_t n = r.returns[0].size();
+    val series = val::array();
+    for (std::size_t k = 0; k < r.names.size(); ++k) series.call<void>("push", seriesToJs(r.names[k], r.returns[k]));
+    // The library's default: the selector on the separate members, over the same days.
+    if (members.size() > 1) {
+      const CandidateBook book(members, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+      const auto a = runSelector(book, env.exp.selector);
+      const std::size_t first = book.start() + a.evalFrom;  // a.net[0] is earned from this date
+      if (r.start >= first && r.start - first + n <= a.net.size()) {
+        const auto from = a.net.begin() + static_cast<std::ptrdiff_t>(r.start - first);
+        series.call<void>("push", seriesToJs("Self-adaptive selector (separate members)", std::vector<double>(from, from + static_cast<std::ptrdiff_t>(n))));
+      }
+    }
+    val books = val::array();
+    for (std::size_t q = 0; q < r.books.size(); ++q) {
+      const auto& msr = r.books[q];
+      std::vector<std::vector<double>> sw(msr.signals.size());
+      for (const auto& row : msr.signalWeights)
+        for (std::size_t k = 0; k < row.size(); ++k) sw[k].push_back(row[k]);
+      std::vector<std::size_t> order(d.numAssets());
+      std::iota(order.begin(), order.end(), 0);
+      std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return msr.book[a] > msr.book[b]; });
+      val holdings = val::array();
+      for (auto i : order) {
+        if (!(msr.book[i] > 0)) break;
+        val o = val::object();
+        o.set("ticker", d.tickers[i]);
+        o.set("weight", msr.book[i]);
+        o.set("held", msr.holdings[i]);
+        o.set("score", i < msr.lastScore.size() ? msr.lastScore[i] : Panel::kMissing);
+        holdings.call<void>("push", o);
+      }
+      val o = val::object();
+      o.set("name", r.names[1 + q]);
+      o.set("signals", strings(msr.signals));
+      o.set("signalWeights", arrOfArr(sw));
+      o.set("exposure", arr(msr.exposure));
+      o.set("holdings", holdings);
+      books.call<void>("push", o);
+    }
+    const std::size_t lb = as.lookback;
+    val out = val::object();
+    out.set("members", mem);
+    out.set("memberNames", strings(memberNames));
+    out.set("composites", comps);
+    out.set("chosen", compositeMethodName(chosen));
+    out.set("forecast", forecast.name);
+    out.set("series", series);
+    out.set("weights", arrOfArr(r.weights));
+    out.set("cash", arr(r.cash));
+    out.set("sleeves", static_cast<double>(r.sleeves));
+    out.set("books", books);
+    out.set("selectorCandidates", strings(r.selectorCandidates));
+    out.set("selectorShare", arr(r.selector.share));
+    out.set("selectorSwitches", static_cast<double>(r.selector.switches));
+    out.set("start", static_cast<double>(r.start));
+    out.set("allocationLookback", static_cast<double>(lb));
+    out.set("dates", dateRange(d, r.start, r.start + n + 1));
+    out.set("bookDates", dateRange(d, r.start - lb, r.start + n + 1));
+    out.set("regime", arr(regimeSlice(d, r.start + 1, r.start + n + 1)));
+    out.set("regimeNames", regimeNames(d));
+    out.set("trainMs", p.trainMs);
+    out.set("cachedPredictions", p.cached);
+    return out;
+  });
+}
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(sat) {
@@ -2484,4 +2664,5 @@ EMSCRIPTEN_BINDINGS(sat) {
   emscripten::function("algoRegimes", &algoRegimes);
   emscripten::function("algoExecution", &algoExecution);
   emscripten::function("strategyTournament", &strategyTournament);
+  emscripten::function("compositeStrategy", &compositeStrategy);
 }
