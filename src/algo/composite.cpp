@@ -308,6 +308,18 @@ CompositeStrategyResult runCompositeStrategy(const MarketData& data, const Model
   }
   out.weights = alloc.weights;
   out.cash = alloc.cash;
+  // Positions over the last day.
+  out.target.assign(nextReturns.assets(), 0.0);
+  if (!alloc.weights.empty() && !alloc.weights[0].empty()) {
+    std::vector<double> w(nextReturns.assets());
+    const int held = out.selector.selection.empty() ? -1 : out.selector.selection.back();
+    if (held >= 0) {
+      book.weights(static_cast<std::size_t>(held), D - 1, w.data());
+      for (std::size_t i = 0; i < w.size(); ++i) out.target[i] += alloc.weights[0].back() * w[i];
+    }
+    for (std::size_t b = 0; b < out.books.size(); ++b)
+      for (std::size_t i = 0; i < w.size(); ++i) out.target[i] += alloc.weights[1 + b].back() * out.books[b].holdings[i];
+  }
   return out;
 }
 

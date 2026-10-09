@@ -111,6 +111,10 @@ struct CompositeStrategyResult {
   AdaptiveResult selector;
   std::vector<std::string> selectorCandidates;
   std::size_t start = 0;                       ///< date index of the first evaluated return
+  /// Weights per stock the composite strategy holds over the last day: each sleeve's
+  /// positions scaled by its last allocation (the selector's long-short rules can make some
+  /// negative; with topM > 1 the selector's first pick stands for its mix).
+  std::vector<double> target;
 };
 
 /// The selector starts trading after its look-back on the composite model's out-of-sample

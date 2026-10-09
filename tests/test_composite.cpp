@@ -234,6 +234,12 @@ TEST(composite_strategy_allocates_between_the_sleeves) {
   for (std::size_t k = 0; k < r.cash.size(); k += 50) CHECK_NEAR(r.weights[0][k] + r.weights[1][k] + r.cash[k], 1.0, 1e-9);
   CHECK(r.selectorCandidates.size() == ExperimentSpec::defaultStrategies().size());
   CHECK(r.start + r.returns[0].size() == p.models[0].end);
+  // Current positions: sleeve positions scaled by the last allocation; gross at most the
+  // allocated capital times the books' maximum leverage (the selector's rules are at most 2 gross).
+  CHECK(r.target.size() == d.numAssets());
+  double gross = 0;
+  for (double v : r.target) gross += std::fabs(v);
+  CHECK(gross <= 2.0 * r.weights[0].back() + 1.5 * r.weights[1].back() + 1e-9);
   // More books and the market as sleeves.
   algo::MultiSignalSpec mom;
   mom.useMl = mom.useTrailingSharpe = false;
