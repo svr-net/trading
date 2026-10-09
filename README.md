@@ -314,6 +314,44 @@ Notes:
 - **Engle-Granger has little power** on a one-year window when the spread reverts slowly (half-life of 10 days or more). Expect missed pairs, and about 5% false discoveries among unrelated stocks.
 - **Kelly.** Kelly sizing magnifies the noise in the estimated mean. Even half Kelly sits at its leverage cap much of the time. The hedging page compares every overlay over the same days after the longest warm-up.
 
+## UK stocks from EODData
+
+`tools/eoddata/fetch.mjs` downloads daily bars from the [EODData API](https://api.eoddata.com) into the library's CSV
+format. The API key is read from the `EODDATA_API_KEY` environment variable and never written anywhere. For the London
+Stock Exchange it keeps:
+- the most traded company shares quoted in sterling (pence), so no warrants, ETFs, funds or international order-book lines;
+- split-adjusted prices;
+- only stocks with a long enough history and no unexplained daily jump above 60%.
+
+Responses are cached under `data/`, which git ignores: EODData's licence does not allow redistributing the data.
+
+`examples/uk_portfolio` builds a ten-stock portfolio from that file. Five constructions compete in a walk-forward backtest
+with monthly rebalancing:
+- the six models' ensemble forecast with HRP weights;
+- 12-1 momentum with inverse-volatility weights;
+- minimum variance;
+- trailing Sharpe ratio with HRP weights;
+- low correlation to the market with inverse-variance weights.
+
+Each holds ten names, between 4% and 20% each. Every trade pays 10 bp for spread and commission, and every purchase also
+pays 0.5% stamp duty. A selector holds the construction with the best trailing six-month Sharpe ratio. For each
+construction, the program prints whole-share orders for a budget at the last close.
+
+```sh
+EODDATA_API_KEY=... node tools/eoddata/fetch.mjs --exchange LSE --universe 120 --years 6 --out data/LSE.csv
+./build/uk_portfolio data/LSE.csv --stocks 10 --budget 100000 --report report.json
+```
+
+The **UK portfolio** workflow (`.github/workflows/uk-portfolio.yml`, run manually) does the same on GitHub Actions with
+the `EODDATA_API_KEY` repository secret. It publishes only the results: the job summary and a report artifact.
+
+On the 120 most traded LSE shares from July 2023 to October 2026, momentum had the best record (30.6% a year, Sharpe
+1.56), against 13.0% for the equal-weight universe. The selector reached 20.4%; its monthly switching costs stamp duty.
+The machine-learning forecasts had no skill on these stocks: AUC of 0.50 to 0.505.
+
+These results are for research, not investment advice. Returns exclude dividends, the history is short, and the
+universe is today's surviving stocks.
+
 ## Conventions
 
 - Panels are date × stock tables (row-major by date). NaN marks a missing value.

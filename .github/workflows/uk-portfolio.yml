@@ -9,9 +9,6 @@ on:
       stocks: { description: 'Portfolio size', default: '10' }
       budget: { description: 'Budget (GBP)', default: '100000' }
       universe: { description: 'Most traded shares to download', default: '120' }
-  push:
-    branches: [claude/stock-price-ml-strategy-3bm61v]
-    paths: [tools/eoddata/**, examples/uk_portfolio.cpp, .github/workflows/uk-portfolio.yml]
 
 permissions:
   contents: read
