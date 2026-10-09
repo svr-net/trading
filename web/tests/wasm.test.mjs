@@ -2,7 +2,7 @@
 // with sanity checks against the library's own invariants.
 //   node web/tests/wasm.test.mjs
 import createSatModule from '../wasm/sat.js';
-import { defaultSpec } from '../js/spec.js';
+import { MODEL_DEFAULTS, defaultSpec } from '../js/spec.js';
 
 const sat = await createSatModule();
 let failures = 0;
@@ -13,7 +13,8 @@ const near = (a, b, tol, msg) => check(Math.abs(a - b) <= tol, `${msg}: ${a} vs 
 const spec = defaultSpec();
 spec.market = { ...spec.market, numAssets: 16, numDates: 760 };
 spec.walkForward = { ...spec.walkForward, trainWindow: 300, retrainEvery: 63, maxTrainRows: 4000 };
-spec.models = spec.models.filter((m) => ['logistic', 'xgboost', 'lstm'].includes(m.type)).map((m) => ({ ...m, trees: 25, epochs: 1, maxSamples: 1500 }));
+// Three families of different kinds (linear, boosted trees, recurrent network), not only the default pool.
+spec.models = ['logistic', 'xgboost', 'lstm'].map((t) => ({ ...MODEL_DEFAULTS[t], trees: 25, epochs: 1, maxSamples: 1500 }));
 spec.robustness = { lookbacks: [21, 63], steps: [5, 21], metrics: ['return', 'sharpe'], costs: [0, 20] };
 
 function run(name, fn) {

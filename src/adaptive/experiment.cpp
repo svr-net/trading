@@ -8,35 +8,25 @@
 
 namespace sat {
 
+// The default pool is the one examples/pool_ablation kept: backward elimination of models and
+// rules on the self-adaptive strategy's Sharpe ratio over synthetic markets, confirmed on
+// unseen ones. The other families (XGBoost, LightGBM, MLP, LSTM, SVM, tree) and rules remain
+// available; on their own they added candidates the selector chased without adding value.
 std::vector<ModelSpec> ExperimentSpec::defaultModels() {
-  std::vector<ModelSpec> m(6);
+  std::vector<ModelSpec> m(2);
   m[0].type = "logistic";
   m[1].type = "forest";
   m[1].trees = 40;
   m[1].maxDepth = 6;
   m[1].colsample = 0.4;
   m[1].subsample = 0.7;
-  m[2].type = "xgboost";
-  m[3].type = "lightgbm";
-  m[3].maxDepth = 8;
-  m[3].maxLeaves = 12;
-  m[4].type = "mlp";
-  m[4].learningRate = 0.005;
-  m[4].maxSamples = 4000;
-  m[5].type = "lstm";
-  m[5].hidden = 8;
-  m[5].learningRate = 0.01;
-  m[5].epochs = 2;
-  m[5].maxSamples = 3000;
   return m;
 }
 
 std::vector<StrategySpec> ExperimentSpec::defaultStrategies() {
   return {
-      {StrategyKind::LongTopK, 3, 1},       {StrategyKind::LongTopK, 5, 1},  {StrategyKind::LongTopK, 10, 5},
-      {StrategyKind::LongShort, 3, 1},      {StrategyKind::LongShort, 5, 1}, {StrategyKind::Threshold, 0.52, 1},
-      {StrategyKind::Threshold, 0.55, 1},   {StrategyKind::ProbabilityWeighted, 0.5, 1},
-      {StrategyKind::BetSized, 0.1, 1},
+      {StrategyKind::LongTopK, 5, 1},  {StrategyKind::LongTopK, 10, 5}, {StrategyKind::LongShort, 3, 1},
+      {StrategyKind::Threshold, 0.52, 1}, {StrategyKind::ProbabilityWeighted, 0.5, 1},
   };
 }
 

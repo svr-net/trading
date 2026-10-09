@@ -6,7 +6,7 @@
 //
 // Five ways to pick and weight the stocks compete, each rebalanced every --rebalance days
 // with only the data available at that close:
-//   ML ensemble + HRP      highest mean next-day probability of the library's six models
+//   ML ensemble + HRP      highest mean next-day probability of the library's default models
 //                          (walk-forward, 23 alphas), hierarchical-risk-parity weights;
 //   momentum 12-1          highest 12-month return skipping the last month, inverse-volatility weights;
 //   minimum variance       lowest-volatility stocks, long-only minimum-variance weights;
