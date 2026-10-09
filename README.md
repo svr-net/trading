@@ -518,6 +518,17 @@ On the unseen markets the composite strategy lifts the Sharpe ratio from 1.40 to
 The library therefore keeps the momentum book as a sleeve, so the allocator can lean on it. It does not crown momentum,
 which the synthetic markets (where it earns nothing) would not support.
 
+**Tried and dropped: spherical (rotor) allocators.** Allocations were written as the squares of a unit vector and
+moved by geometric-algebra rotors, so weights and cash always summed to exactly one. Two variants were tested:
+- a geodesic gradient step on the expected trailing Sharpe ratio;
+- a partial rotation towards the exponential-weights allocation.
+
+Settings were chosen on the selection markets. Neither beat exponential weights on the unseen markets: composite strategy
+Sharpe 1.61 and 1.80 against 1.96. The glide variant matched exponential weights run on the same look-back and schedule
+(1.80 against 1.81), so the geometry added nothing. The gradient variant did better on UK stocks, 1.06 against 0.63 for
+its control, but that is a single sample of about 2½ years, too short to trust. The library keeps exponential weights.
+The code is in the git history (commit 2f468f3).
+
 Run `composite_study [markets] [days]` to repeat the study, or `composite_study 0 --csv data.csv` on real bars. The web
 page *Composite model & strategy* runs everything in the browser.
 
