@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -19,6 +20,7 @@ struct Candidate {
   std::size_t model = 0;
   StrategySpec strategy;
   std::string label;
+  std::size_t external = SIZE_MAX;  ///< index of its stored positions (addCandidate), else from a model
 };
 
 /// Out-of-sample backtests of every candidate over the common prediction range of the models.
@@ -30,8 +32,13 @@ struct Candidate {
 class CandidateBook {
  public:
   CandidateBook() = default;
+  /// `stampBps`: charged on purchases on top of `costBps` (UK stamp duty).
   CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
-                const Panel& nextReturns, double costBps);
+                const Panel& nextReturns, double costBps, double stampBps = 0.0);
+
+  /// Adds a candidate traded with positions of its own (dates x assets, rows start() .. end() - 1),
+  /// such as the overlay trader's.
+  void addCandidate(const std::string& label, const Panel& positions);
 
   /// The same book with the candidate backtests taken from the candidate-backtest kernel
   /// (WebGPU or its CPU emulation): `kernelBook` is its read-back, [candidate][day][2] of
@@ -46,6 +53,7 @@ class CandidateBook {
   std::size_t end() const { return end_; }
   std::size_t assets() const { return nextReturns_.assets(); }
   double costBps() const { return costBps_; }
+  double stampBps() const { return stampBps_; }
   const std::vector<Candidate>& candidates() const { return candidates_; }
   const std::vector<std::string>& modelNames() const { return modelNames_; }
   const std::vector<Panel>& probabilities() const { return probs_; }
@@ -54,7 +62,13 @@ class CandidateBook {
 
   double gross(std::size_t c, std::size_t d) const { return gross_(c, d); }
   double turnover(std::size_t c, std::size_t d) const { return turnover_(c, d); }
-  double net(std::size_t c, std::size_t d) const { return gross_(c, d) - costBps_ * 1e-4 * turnover_(c, d); }
+  /// Purchases (sum of positive weight changes) of candidate c on day d.
+  double buys(std::size_t c, std::size_t d) const {
+    return std::max(0.0, 0.5 * (turnover_(c, d) + exposure_(c, d) - (d > 0 ? exposure_(c, d - 1) : 0.0)));
+  }
+  double net(std::size_t c, std::size_t d) const {
+    return gross_(c, d) - costBps_ * 1e-4 * turnover_(c, d) - (stampBps_ > 0 ? stampBps_ * 1e-4 * buys(c, d) : 0.0);
+  }
   std::vector<double> netSeries(std::size_t c, std::size_t from = 0) const;
   std::vector<double> turnoverSeries(std::size_t c, std::size_t from = 0) const;
 
@@ -68,8 +82,9 @@ class CandidateBook {
   std::vector<std::vector<std::uint32_t>> ranks_;
   Panel nextReturns_;
   std::size_t start_ = 0, end_ = 0;
-  double costBps_ = 0.0;
-  Matrix gross_, turnover_;  // candidates x days
+  double costBps_ = 0.0, stampBps_ = 0.0;
+  Matrix gross_, turnover_, exposure_;  // candidates x days
+  std::vector<Panel> external_;
 
   void setUp(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies);
 };

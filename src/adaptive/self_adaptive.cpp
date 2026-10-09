@@ -32,17 +32,46 @@ void CandidateBook::setUp(const std::vector<ModelPredictions>& models, const std
   }
   gross_ = Matrix(candidates_.size(), days());
   turnover_ = Matrix(candidates_.size(), days());
+  exposure_ = Matrix(candidates_.size(), days());
 }
 
 CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
-                             const Panel& nextReturns, double costBps)
-    : nextReturns_(nextReturns), costBps_(costBps) {
+                             const Panel& nextReturns, double costBps, double stampBps)
+    : nextReturns_(nextReturns), costBps_(costBps), stampBps_(stampBps) {
+  if (stampBps < 0) throw std::invalid_argument("stamp duty must be >= 0");
   setUp(models, strategies);
   for (std::size_t c = 0; c < candidates_.size(); ++c) {
     const auto& cand = candidates_[c];
     const auto r = backtest(cand.strategy, probs_[cand.model], ranks_[cand.model], nextReturns_, start_, end_, costBps_);
     std::copy(r.series.gross.begin(), r.series.gross.end(), gross_.row(c));
     std::copy(r.series.turnover.begin(), r.series.turnover.end(), turnover_.row(c));
+    std::copy(r.series.netExposure.begin(), r.series.netExposure.end(), exposure_.row(c));
+  }
+}
+
+void CandidateBook::addCandidate(const std::string& label, const Panel& positions) {
+  const std::size_t N = assets(), D = days(), C = candidates_.size();
+  if (positions.assets() != N || positions.dates() < end_) throw std::invalid_argument("candidate positions do not match the book");
+  Candidate cand;
+  cand.label = label;
+  cand.external = external_.size();
+  external_.push_back(positions);
+  candidates_.push_back(cand);
+  auto grow = [&](Matrix& m) {
+    Matrix bigger(C + 1, D);
+    std::copy(m.data().begin(), m.data().end(), bigger.data().begin());
+    m = std::move(bigger);
+  };
+  grow(gross_), grow(turnover_), grow(exposure_);
+  for (std::size_t d = 0; d < D; ++d) {
+    const std::size_t t = start_ + d;
+    double gross = 0, turnover = 0, exposure = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+      const double w = positions(t, i), prev = d > 0 ? positions(t - 1, i) : 0.0;
+      if (w != 0.0 && std::isfinite(nextReturns_(t, i))) gross += w * nextReturns_(t, i);
+      turnover += std::fabs(w - prev), exposure += w;
+    }
+    gross_(C, d) = gross, turnover_(C, d) = turnover, exposure_(C, d) = exposure;
   }
 }
 
@@ -75,6 +104,11 @@ std::vector<double> CandidateBook::turnoverSeries(std::size_t c, std::size_t fro
 
 void CandidateBook::weights(std::size_t c, std::size_t d, double* w) const {
   const auto& cand = candidates_.at(c);
+  if (cand.external != SIZE_MAX) {
+    const double* row = external_[cand.external].row(start_ + d);
+    std::copy(row, row + assets(), w);
+    return;
+  }
   const std::size_t t = start_ + rebalanceOffset(d, cand.strategy.holding);
   const std::size_t N = assets();
   strategyWeights(cand.strategy, probs_[cand.model].row(t), ranks_[cand.model].data() + t * N, N, w);
@@ -120,7 +154,7 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
   if (evalFrom == SIZE_MAX) evalFrom = std::min(spec.lookback, D - 1);
   if (evalFrom >= D) throw std::invalid_argument("selector: nothing left to trade after the look-back");
   const std::size_t M = std::clamp<std::size_t>(spec.topM, 1, C);
-  const double cost = book.costBps() * 1e-4;
+  const double cost = book.costBps() * 1e-4, stamp = book.stampBps() * 1e-4;
 
   // Prefix sums of each candidate's net returns, squares and squared losses.
   Matrix p1(C, D + 1, 0.0), p2(C, D + 1, 0.0), pd(C, D + 1, 0.0);
@@ -153,11 +187,12 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
         if (!(spec.allowCash && !(scores[order[k]] > spec.minScore)) && scores[order[k]] > -1e29) held.push_back(static_cast<int>(order[k]));
       if (held.empty() && !spec.allowCash) held.push_back(static_cast<int>(order[0]));
     }
-    double gross = 0.0, turnover = 0.0;
+    double gross = 0.0, turnover = 0.0, buys = 0.0;
     const bool same = held == prevHeld && d > evalFrom;
     for (int c : held) gross += book.gross(static_cast<std::size_t>(c), d) / static_cast<double>(held.size());
     if (same && held.size() == 1) {
       turnover = book.turnover(static_cast<std::size_t>(held[0]), d);
+      buys = book.buys(static_cast<std::size_t>(held[0]), d);
     } else if (!(same && held.empty())) {
       std::fill(wMeta.begin(), wMeta.end(), 0.0);
       for (int c : held) {
@@ -170,12 +205,12 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
           book.weights(static_cast<std::size_t>(c), d - 1, w.data());
           for (std::size_t i = 0; i < N; ++i) wPrev[i] += w[i] / static_cast<double>(prevHeld.size());
         }
-      for (std::size_t i = 0; i < N; ++i) turnover += std::fabs(wMeta[i] - wPrev[i]);
+      for (std::size_t i = 0; i < N; ++i) turnover += std::fabs(wMeta[i] - wPrev[i]), buys += std::max(0.0, wMeta[i] - wPrev[i]);
     }
     if (d > evalFrom && held != prevHeld) ++out.switches;
     out.gross.push_back(gross);
     out.turnover.push_back(turnover);
-    out.net.push_back(gross - cost * turnover);
+    out.net.push_back(gross - cost * turnover - stamp * buys);
     out.selection.push_back(held.empty() ? -1 : held[0]);
     out.share[held.empty() ? C : static_cast<std::size_t>(held[0])] += 1.0;
     prevHeld = held;
