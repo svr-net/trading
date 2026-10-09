@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(trading_sat
-  VERSION 0.3.2
+  VERSION 0.3.3
   DESCRIPTION "Predicting stock prices with machine learning to build a self-adaptive trading strategy"
   LANGUAGES CXX)
 

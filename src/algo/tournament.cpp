@@ -33,7 +33,8 @@ std::vector<double> equalWeightMarket(const MarketData& d) {
   return out;
 }
 
-TournamentResult runTournament(const MarketData& d, const PredictionSet& p, const ExperimentSpec& exp, const TournamentSpec& spec) {
+TournamentResult runTournament(const MarketData& d, const PredictionSet& p, const ExperimentSpec& exp, const TournamentSpec& spec,
+                               const CandidateBook* precomputed) {
   // Each candidate series: value k is earned from date first + k to first + k + 1.
   struct Series {
     std::string name, family;
@@ -43,7 +44,9 @@ TournamentResult runTournament(const MarketData& d, const PredictionSet& p, cons
   std::vector<Series> all;
   const std::size_t T = d.numDates();
   const auto strategies = exp.strategies.empty() ? ExperimentSpec::defaultStrategies() : exp.strategies;
-  const CandidateBook book(p.models, strategies, p.nextReturns, exp.costBps);
+  const CandidateBook own = precomputed ? CandidateBook() : CandidateBook(p.models, strategies, p.nextReturns, exp.costBps);
+  const CandidateBook& book = precomputed ? *precomputed : own;
+  if (precomputed && precomputed->size() != p.models.size() * strategies.size()) throw std::invalid_argument("tournament: the candidate book does not match the experiment");
   const std::size_t S = strategies.size();
   for (std::size_t m = 0; m < p.models.size(); ++m) {
     std::vector<double> avg(book.days(), 0.0);

@@ -76,9 +76,13 @@ const cases = [
   ...['index', 'core', 'data', 'factors', 'labels', 'models', 'strategies', 'adaptive', 'robustness']
     .map((name) => ({ name, file: name, spec: testSpec, ...(enginePages.includes(name) ? { engine: 'auto', expectEngine: 'WebGPU' } : {}) })),
   // Advances in Financial Machine Learning pages (WebAssembly only).
-  ...['bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'overfitting'].map((name) => ({ name, file: name, spec: afmlSpec })),
+  ...['bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'overfitting'].map((name) => ({ name, file: name, spec: afmlSpec, ...(name === 'overfitting' ? { expectEngine: 'WebGPU' } : {}) })),
   // Hedging and algorithmic trading pages (WebAssembly only).
-  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'].map((name) => ({ name, file: name, spec: algoSpec })),
+  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'].map((name) => ({ name, file: name, spec: algoSpec, ...(['hedging', 'tournament'].includes(name) ? { expectEngine: 'WebGPU' } : {}) })),
+  // The candidate backtests of the tournament, hedging and overfitting pages on every engine.
+  { name: 'tournament-emulator', file: 'tournament', spec: algoSpec, engine: 'emulator', expectEngine: 'Emulated GPU' },
+  { name: 'hedging-no-adapter', file: 'hedging', spec: algoSpec, engine: 'auto', gpuStub: 'no-adapter', expectEngine: 'Emulated GPU', expectReason: 'WebGPU unavailable' },
+  { name: 'overfitting-wasm', file: 'overfitting', spec: afmlSpec, engine: 'wasm', expectEngine: 'WebAssembly' },
   ...['index', 'strategies'].map((name) => ({ name: `${name}-wasm`, file: name, spec: testSpec, engine: 'wasm', expectEngine: 'WebAssembly' })),
   // A first visit (nothing stored): the default is Auto, which must dispatch the kernels.
   { name: 'adaptive-first-visit', file: 'adaptive', spec: testSpec, expectEngine: 'WebGPU' },
@@ -103,6 +107,7 @@ const cases = [
   // A phone: Auto must pick WebGPU, and the collapsed menu must leave the page content in view.
   { name: 'adaptive-mobile', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', device: 'iPhone 14' },
 ];
+const NO_KERNEL_PAGES = ['core', 'data', 'factors', 'labels', 'models', 'bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'options', 'pairs', 'trend', 'regimes', 'execution'];
 const pairs = {};
 let failures = 0;
 console.log(`testing ${root} ${fileMode ? 'from file:// (no server)' : `over ${base}`}`);
@@ -150,6 +155,8 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
   if (fileMode && network.length) problems.push(`network requests from a file:// page: ${network.slice(0, 3).join(', ')}`);
   if (expectEngine && !status.includes(`· ${expectEngine}`)) problems.push(`expected the ${expectEngine} engine: ${status}`);
   if (expectReason && !status.includes(expectReason)) problems.push(`expected the reason "${expectReason}": ${status}`);
+  // Pages whose analysis has no GPU kernel say so.
+  if (NO_KERNEL_PAGES.includes(file) && !status.includes('no GPU kernel for this analysis')) problems.push(`status should say there is no GPU kernel: ${status}`);
   // The status line is not enough: the kernels must really have been dispatched on WebGPU
   // (and never when WebAssembly ran).
   const gpuRuns = await page.evaluate(() => globalThis.__satGpuRuns || 0);

@@ -836,6 +836,11 @@ Analysis analysisJobs(const Env& env, const std::string& analysis) {
     for (std::size_t lb : env.rob.lookbacks) a.evalFrom = std::max(a.evalFrom, lb);
     if (analysis == "robustness")
       for (double c : env.rob.costs) a.jobs.push_back({"cost " + std::to_string(c), c, {sel}});
+  } else if (analysis == "book") {
+    // Only the fixed candidates: their backtests, read back for an analysis that runs its
+    // own selectors and statistics on the CPU (tournament, hedging, overfitting).
+    a.jobs.push_back({"candidates", env.exp.costBps, {}});
+    a.evalFrom = 0;
   } else {
     throw std::invalid_argument("unknown analysis '" + analysis + "'");
   }
@@ -1290,6 +1295,7 @@ val gpuRunPlan(val plan) {
     val o = val::object();
     o.set("stats", typedArray(out.stats));
     o.set("adapt", typedArray(out.adapt));
+    if (flag(plan, "readBook", false)) o.set("book", typedArray(out.book));
     o.set("ms", nowMs() - t0);
     return o;
   });
@@ -1851,12 +1857,25 @@ val afmlPortfolio(val spec) {
   });
 }
 
+// The candidate book of an analysis. When the page ran the candidate-backtest kernel (on
+// WebGPU or the emulated GPU) for this spec it passes the read-back as spec.kernelBook, and
+// the book is built from it; otherwise the candidates are backtested here.
+std::shared_ptr<const CandidateBook> candidateBook(const val& spec, const Env& env, const Predictions& p, bool& fromKernels) {
+  fromKernels = has(spec, "kernelBook");
+  if (fromKernels)
+    return std::make_shared<CandidateBook>(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps,
+                                           emscripten::convertJSArrayToNumberVector<float>(spec["kernelBook"]));
+  return std::make_shared<CandidateBook>(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+}
+
 // Backtest overfitting of the candidate pool and the self-adaptive strategy.
 val afmlOverfitting(val spec) {
   return guarded([&] {
     const Env env = parseEnv(spec);
     const Predictions p = predictions(spec, env);
-    const CandidateBook book(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+    bool kernels = false;
+    const auto bookPtr = candidateBook(spec, env, p, kernels);
+    const CandidateBook& book = *bookPtr;
     const std::size_t evalFrom = std::min(env.exp.selector.lookback, book.days() - 1);
     const AdaptiveResult a = runSelector(book, env.exp.selector, evalFrom);
     const std::size_t blocks = std::clamp<std::size_t>(count(spec["overfitting"], "blocks", 16), 2, 20) / 2 * 2;
@@ -1916,6 +1935,7 @@ val afmlOverfitting(val spec) {
     out.set("betDiscrete", arr(step));
     out.set("trainMs", p.trainMs);
     out.set("cachedPredictions", p.cached);
+    out.set("candidateBacktests", std::string(kernels ? "kernels" : "cpu"));
     return out;
   });
 }
@@ -1957,7 +1977,9 @@ val hedgeOverlays(val spec) {
     const Env env = parseEnv(spec);
     const Predictions p = predictions(spec, env);
     const MarketData& d = *market(spec, env);
-    const CandidateBook book(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+    bool kernels = false;
+    const auto bookPtr = candidateBook(spec, env, p, kernels);
+    const CandidateBook& book = *bookPtr;
     const std::size_t evalFrom = std::min(env.exp.selector.lookback, book.days() - 1);
     const AdaptiveResult a = runSelector(book, env.exp.selector, evalFrom);
     const val H = spec["hedging"];
@@ -2013,6 +2035,7 @@ val hedgeOverlays(val spec) {
     out.set("selector", env.exp.selector.label());
     out.set("trainMs", p.trainMs);
     out.set("cachedPredictions", p.cached);
+    out.set("candidateBacktests", std::string(kernels ? "kernels" : "cpu"));
     return out;
   });
 }
@@ -2390,7 +2413,9 @@ val strategyTournament(val spec) {
     as.allowCash = flag(Q, "allowCash", true);
     if (!(as.costBps >= 0) || !(as.eta > 0)) throw std::invalid_argument("tournament: non-negative cost, positive eta");
     ts.regimes.window = std::min<std::size_t>(ts.regimes.window, d.numDates() / 3);
-    const auto res = algo::runTournament(d, *p.set, env.exp, ts);
+    bool kernels = false;
+    const auto book = candidateBook(spec, env, p, kernels);
+    const auto res = algo::runTournament(d, *p.set, env.exp, ts, book.get());
     val sl = val::array();
     std::vector<std::string> names;
     for (const auto& s : res.sleeves) {
@@ -2425,6 +2450,7 @@ val strategyTournament(val spec) {
     out.set("rebalanceEvery", static_cast<double>(as.rebalanceEvery));
     out.set("trainMs", p.trainMs);
     out.set("cachedPredictions", p.cached);
+    out.set("candidateBacktests", std::string(kernels ? "kernels" : "cpu"));
     return out;
   });
 }

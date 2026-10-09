@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'models',
+  gpu: false,
   title: 'Machine-learning models',
   context: 'sat/ml: Classifier · walkForward · LogisticRegression · LinearSvm · RandomForest · GradientBoosting · Mlp · Lstm',
   description: 'Each model forecasts the probability that a stock\'s label is 1, using the alpha factors. ' +

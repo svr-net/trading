@@ -1,4 +1,4 @@
-import { run } from '../sat-client.js';
+import { engineSelector, kernelNote, runWithKernels } from '../gpu/backend.js';
 import { dateAxis, fmt, heatmap, lineChart } from '../charts.js';
 import { ALLOCATION_NAMES, PERF_HEADERS as ALL_HEADERS, card, grid, initPage, perfRow as fullRow, runButton, specEditor, table, tiles } from '../ui.js';
 
@@ -17,8 +17,10 @@ const page = initPage({
 });
 specEditor(page, ['market', 'csv', 'models', 'strategies', 'costs', 'selector', 'tournament'], { open: false });
 
-runButton(page, 'Run tournament', async (spec) => {
-  const r = await run('strategyTournament', spec);
+const button = runButton(page, 'Run tournament', async (spec) => {
+  const k = await runWithKernels('strategyTournament', spec);
+  const r = k.result;
+  window.__satEngineRun = { page: 'tournament', engine: k.engine, result: r };
   const chosen = r.allocators.find((a) => a.name === r.chosen) || r.allocators[0];
   const sleeves = r.sleeves;
   const paper = sleeves.find((s) => s.family === 'ML self-adaptive');
@@ -56,5 +58,7 @@ runButton(page, 'Run tournament', async (spec) => {
     [...PERF_HEADERS, 'DSR', 'avg. cash', 'turnover / rebalance'],
     r.allocators.map((a) => [...perfRow(a.name + (a === chosen ? ' (chosen)' : ''), a.metrics), fmt.pct(a.dsr, 0),
       fmt.pct(Array.from(a.cash).reduce((p, q) => p + q, 0) / a.cash.length, 0), fmt.pct(a.averageTurnover, 0)]));
-  return `Done · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`} · WebAssembly · method ${ALLOCATION_NAMES[spec.tournament.method] || spec.tournament.method}`;
+  return kernelNote(k, ` · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`} · method ${ALLOCATION_NAMES[spec.tournament.method] || spec.tournament.method}`);
 });
+
+engineSelector(page, () => button.click());

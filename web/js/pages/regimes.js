@@ -8,6 +8,7 @@ const perfRow = (name, m) => fullRow(name, m).slice(0, -1);
 
 const page = initPage({
   id: 'regimes',
+  gpu: false,
   title: 'Regime switching',
   context: 'sat/algo/regimes: fitHmm (Baum–Welch) · filterHmm · regimeSwitch',
   description: 'Hamilton\'s <b>regime-switching</b> model: daily market returns are drawn from one of a few Gaussian states — calm and volatile, say — and the state follows a Markov chain. The model is fitted by <b>Baum–Welch</b> (expectation maximisation), and the <b>filtered</b> probability of each state uses only returns up to that day, which is what a trader could know. ' +

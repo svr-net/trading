@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'pairs',
+  gpu: false,
   title: 'Cointegrated pairs',
   context: 'sat/algo/pairs: engleGranger · halfLife · kalmanPairs',
   description: 'Mean reversion between two prices, following Chan\'s <i>Algorithmic Trading</i>. Two prices are <b>cointegrated</b> when a combination y − βx is stationary even though each wanders; the <b>Engle–Granger</b> test regresses y on x and applies an augmented Dickey–Fuller test to the residual (5% critical value about −3.34). ' +

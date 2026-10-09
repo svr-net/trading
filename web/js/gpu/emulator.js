@@ -11,9 +11,9 @@ export class CpuGpuEngine {
     this.emulated = true;
   }
 
-  /** Runs one plan from gpuJobs. Resolves to { stats, adapt, gpuMs } like GpuEngine.run. */
+  /** Runs one plan from gpuJobs. Resolves to { stats, adapt, gpuMs } (and book with plan.readBook) like GpuEngine.run. */
   async run(plan) {
-    const out = await run('gpuRunPlan', { header: plan.header, tables: plan.tables });
-    return { stats: out.stats, adapt: out.adapt, gpuMs: out.ms };
+    const out = await run('gpuRunPlan', { header: plan.header, tables: plan.tables, readBook: !!plan.readBook });
+    return { stats: out.stats, adapt: out.adapt, ...(out.book ? { book: out.book } : {}), gpuMs: out.ms };
   }
 }

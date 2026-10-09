@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 
 #include "sat/adaptive/experiment.hpp"
@@ -121,4 +122,26 @@ TEST(gpu_kernel_sources) {
     for (const char* reserved : {" active ", "let from", "var from", " filter ", " target "}) CHECK(k->find(reserved) == std::string::npos);
   }
   CHECK(gpu::candidateBacktestKernel().find("var<workgroup> sProb : array<f32, 1024>") != std::string::npos);
+}
+
+TEST(gpu_candidate_book_from_the_kernels) {
+  // The candidate-backtest kernel's book (gross return and turnover per candidate and day)
+  // rebuilds the CPU candidate book to f32 precision, and the selector runs on it unchanged.
+  const auto& p = predictions();
+  const auto strategies = ExperimentSpec::defaultStrategies();
+  const double cost = 10.0;
+  const CandidateBook cpu(p.models, strategies, p.nextReturns, cost);
+  const gpu::FusedPlan plan = gpu::compile(p.models, strategies, p.nextReturns, cost, {}, 0);  // candidates only
+  const gpu::FusedOutput out = gpu::runFusedReference(plan);
+  CHECK(out.book.size() == cpu.size() * cpu.days() * 2);
+  const CandidateBook kernels(p.models, strategies, p.nextReturns, cost, out.book);
+  CHECK(kernels.size() == cpu.size() && kernels.days() == cpu.days() && kernels.start() == cpu.start());
+  double worst = 0;
+  for (std::size_t c = 0; c < cpu.size(); ++c)
+    for (std::size_t d = 0; d < cpu.days(); ++d) worst = std::max(worst, std::fabs(kernels.net(c, d) - cpu.net(c, d)));
+  CHECK(worst < 1e-5);
+  const SelectorSpec sel;
+  const auto a = runSelector(cpu, sel), b = runSelector(kernels, sel);
+  CHECK_NEAR(b.metrics.sharpe, a.metrics.sharpe, 0.05);
+  CHECK_THROWS(CandidateBook(p.models, strategies, p.nextReturns, cost, std::vector<float>(out.book.begin(), out.book.end() - 2)));
 }

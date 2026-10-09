@@ -133,7 +133,7 @@ export class GpuEngine {
     return buf;
   }
 
-  /** Runs one plan from gpuJobs. Resolves to { stats, adapt, gpuMs }. */
+  /** Runs one plan from gpuJobs. Resolves to { stats, adapt, gpuMs }, plus book with plan.readBook. */
   async run(plan) {
     const d = this.device;
     const { bytes, dispatch } = plan;
@@ -147,13 +147,17 @@ export class GpuEngine {
     const bufs = {
       header: this.upload(plan.header, GPUBufferUsage.UNIFORM, 'header'),
       tables: this.upload(plan.tables, S, 'tables'),
-      book: scratch(bytes.book, S, 'book'),
+      book: scratch(bytes.book, S | GPUBufferUsage.COPY_SRC, 'book'),
       prefix: scratch(bytes.prefix, S, 'prefix'),
       adapt: scratch(bytes.adapt, S | GPUBufferUsage.COPY_SRC, 'adapt'),
       stats: scratch(bytes.stats, S | GPUBufferUsage.COPY_SRC, 'stats'),
       readAdapt: scratch(bytes.adapt, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, 'read-adapt'),
       readStats: scratch(bytes.stats, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, 'read-stats'),
     };
+    // The candidate book (gross return, turnover per candidate and day), for analyses that
+    // run their own statistics on the CPU.
+    const bookBytes = plan.numCandidates * plan.numDays * 8;
+    if (plan.readBook) bufs.readBook = scratch(bookBytes, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, 'read-book');
     const group = (pipeline, entries) => d.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: entries.map((buffer, binding) => ({ binding, resource: { buffer } })),
@@ -178,15 +182,18 @@ export class GpuEngine {
     pass.end();
     enc.copyBufferToBuffer(bufs.adapt, 0, bufs.readAdapt, 0, Math.max(16, bytes.adapt));
     enc.copyBufferToBuffer(bufs.stats, 0, bufs.readStats, 0, Math.max(16, bytes.stats));
+    if (plan.readBook) enc.copyBufferToBuffer(bufs.book, 0, bufs.readBook, 0, Math.max(16, bookBytes));
     d.queue.submit([enc.finish()]);
     globalThis.__satGpuRuns = (globalThis.__satGpuRuns || 0) + 1; // kernel pipelines submitted (checked by the e2e test)
-    await Promise.all([bufs.readAdapt.mapAsync(GPUMapMode.READ), bufs.readStats.mapAsync(GPUMapMode.READ)]);
+    await Promise.all([bufs.readAdapt.mapAsync(GPUMapMode.READ), bufs.readStats.mapAsync(GPUMapMode.READ),
+      ...(plan.readBook ? [bufs.readBook.mapAsync(GPUMapMode.READ)] : [])]);
     const gpuMs = performance.now() - t0;
     const oom = await d.popErrorScope();
     const validation = await d.popErrorScope();
     const out = validation || oom ? null : {
       stats: new Float32Array(bufs.readStats.getMappedRange().slice(0, bytes.stats)),
       adapt: new Float32Array(bufs.readAdapt.getMappedRange().slice(0, bytes.adapt)),
+      ...(plan.readBook ? { book: new Float32Array(bufs.readBook.getMappedRange().slice(0, bookBytes)) } : {}),
       gpuMs,
     };
     for (const b of Object.values(bufs)) b.destroy();

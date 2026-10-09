@@ -19,12 +19,10 @@ std::pair<std::size_t, std::size_t> commonRange(const std::vector<ModelPredictio
   return {start, end};
 }
 
-CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
-                             const Panel& nextReturns, double costBps)
-    : nextReturns_(nextReturns), costBps_(costBps) {
+void CandidateBook::setUp(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies) {
   if (models.empty() || strategies.empty()) throw std::invalid_argument("candidate book needs models and strategies");
   std::tie(start_, end_) = commonRange(models);
-  end_ = std::min(end_, nextReturns.dates());
+  end_ = std::min(end_, nextReturns_.dates());
   if (start_ >= end_) throw std::invalid_argument("the models share no out-of-sample dates");
   for (std::size_t m = 0; m < models.size(); ++m) {
     modelNames_.push_back(models[m].name);
@@ -34,12 +32,33 @@ CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const 
   }
   gross_ = Matrix(candidates_.size(), days());
   turnover_ = Matrix(candidates_.size(), days());
+}
+
+CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
+                             const Panel& nextReturns, double costBps)
+    : nextReturns_(nextReturns), costBps_(costBps) {
+  setUp(models, strategies);
   for (std::size_t c = 0; c < candidates_.size(); ++c) {
     const auto& cand = candidates_[c];
     const auto r = backtest(cand.strategy, probs_[cand.model], ranks_[cand.model], nextReturns_, start_, end_, costBps_);
     std::copy(r.series.gross.begin(), r.series.gross.end(), gross_.row(c));
     std::copy(r.series.turnover.begin(), r.series.turnover.end(), turnover_.row(c));
   }
+}
+
+CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
+                             const Panel& nextReturns, double costBps, const std::vector<float>& kernelBook)
+    : nextReturns_(nextReturns), costBps_(costBps) {
+  setUp(models, strategies);
+  const std::size_t C = candidates_.size(), D = days();
+  if (kernelBook.size() != C * D * 2)
+    throw std::invalid_argument("kernel book has " + std::to_string(kernelBook.size()) + " values; expected " + std::to_string(C * D * 2) +
+                                " (candidates x days x 2) for these predictions");
+  for (std::size_t c = 0; c < C; ++c)
+    for (std::size_t d = 0; d < D; ++d) {
+      gross_(c, d) = kernelBook[(c * D + d) * 2];
+      turnover_(c, d) = kernelBook[(c * D + d) * 2 + 1];
+    }
 }
 
 std::vector<double> CandidateBook::netSeries(std::size_t c, std::size_t from) const {

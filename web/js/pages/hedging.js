@@ -1,4 +1,4 @@
-import { run } from '../sat-client.js';
+import { engineSelector, kernelNote, runWithKernels } from '../gpu/backend.js';
 import { dateAxis, fmt, lineChart } from '../charts.js';
 import { PERF_HEADERS as ALL_HEADERS, card, grid, initPage, perfRow as fullRow, runButton, specEditor, table, tiles } from '../ui.js';
 
@@ -18,8 +18,10 @@ const page = initPage({
 });
 specEditor(page, ['market', 'csv', 'models', 'strategies', 'costs', 'selector', 'hedging'], { open: false });
 
-runButton(page, 'Hedge', async (spec) => {
-  const r = await run('hedgeOverlays', spec);
+const button = runButton(page, 'Hedge', async (spec) => {
+  const k = await runWithKernels('hedgeOverlays', spec);
+  const r = k.result;
+  window.__satEngineRun = { page: 'hedging', engine: k.engine, result: r };
   const s = r.series;
   const by = (n) => s.find((x) => x.name === n);
   const un = by('self-adaptive (unhedged)'), kal = by('Kalman-beta hedge'), vt = by('volatility target'), kel = by('fractional Kelly');
@@ -50,5 +52,7 @@ runButton(page, 'Hedge', async (spec) => {
   });
   const box = card(page.content, 'Overlays', `Over ${fmt.num(s[0].equity.length - 1)} days after a ${fmt.num(r.warmup)}-day warm-up. Hedge trades cost ${spec.hedging.hedgeCostBps} bp per unit of beta changed.`);
   table(box, [...PERF_HEADERS, 'corr. to market'], s.map((e, i) => [...perfRow(e.name, e.metrics), fmt.ratio(r.marketCorrelation[i])]));
-  return `Done · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`} · WebAssembly`;
+  return kernelNote(k, ` · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`}`);
 });
+
+engineSelector(page, () => button.click());

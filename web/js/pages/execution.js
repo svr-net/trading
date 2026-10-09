@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'execution',
+  gpu: false,
   title: 'Optimal execution',
   context: 'sat/algo/execution: almgrenChriss · efficientFrontier · simulateShortfall',
   description: 'Any strategy has to trade, and large orders move prices. The <b>Almgren–Chriss</b> model (as presented in Cartea, Jaimungal &amp; Penalva\'s <i>Algorithmic and High-Frequency Trading</i>) liquidates a block over a fixed horizon. Selling fast pays <b>temporary impact</b> (a cost that grows with the trading rate); selling slowly leaves the position exposed to <b>price risk</b>. ' +

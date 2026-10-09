@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'validation',
+  gpu: false,
   title: 'Purged cross-validation and feature importance',
   context: 'sat/afml/sampling · importance: purgedKFold · combinatorialPurgedSplits · MDI · MDA · SFI',
   description: 'Financial labels overlap in time: a 5-day label on Monday shares four days of returns with Tuesday\'s. ' +

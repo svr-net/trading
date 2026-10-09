@@ -8,6 +8,7 @@ const perfRow = (name, m) => fullRow(name, m).slice(0, -1);
 
 const page = initPage({
   id: 'options',
+  gpu: false,
   title: 'Option hedges',
   context: 'sat/hedge/options: blackScholes · simulateDeltaHedge · optionOverlay',
   description: 'Two uses of options from Hull\'s <i>Options, Futures, and Other Derivatives</i>. ' +

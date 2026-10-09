@@ -64,6 +64,7 @@ struct FusedPlan {
 struct FusedOutput {
   std::vector<float> stats;  ///< [series][kStats]
   std::vector<float> adapt;  ///< [selector][day][kAdaptStride]
+  std::vector<float> book;   ///< [candidate][day][2]: gross return and turnover (read back on request)
 };
 
 /// Why the kernels cannot run this grid, or an empty string if they can.

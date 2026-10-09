@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'labels',
+  gpu: false,
   title: 'Labels',
   context: 'sat/features: LabelSpec · makeLabels · assemble',
   description: 'What the classifiers learn to predict. <b>Direction</b> labels a stock 1 if it rises over the next <i>h</i> days. ' +
