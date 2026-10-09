@@ -40,7 +40,7 @@ jobs:
       - name: Download LSE bars
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years 6 --out data/LSE.csv
+        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years 6 --currency GBX --out data/LSE.csv
       - name: Portfolio and backtest
         run: |
           mkdir -p report

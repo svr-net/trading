@@ -67,11 +67,15 @@ const exchangeInfo = await get(`/Exchange/Get/${exchange}`, {}, 'exchange.json')
 const symbols = asList(await get(`/Symbol/List/${exchange}`, {}, `symbols-${stamp}.json`));
 const typeOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'type', 'symbolType', 'typeCode') ?? '')]));
 const nameOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'name', 'description') ?? '')]));
+const currencyOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'currency', 'currencyCode') ?? '')]));
+const currency = opt('currency', exchange === 'LSE' ? 'GBX' : '');  // LSE: pence-quoted lines only (UK shares, not the international order book)
 const quotes = asList(await get(`/Quote/List/${exchange}`, {}, `quotes-${stamp}.json`));
 // The shapes (field names only) help diagnose a parse that finds nothing.
 console.log(`  fields: exchange [${Object.keys(exchangeInfo)}]; symbol [${Object.keys(symbols[0] || {})}]; quote [${Object.keys(quotes[0] || {})}]`);
 console.log(`  symbol types: ${[...new Set([...typeOf.values()])].slice(0, 20).join(', ')}`);
 const isShare = (code) => {
+  if (!/^[A-Z]{1,5}(\.[A-Z])?$/.test(code)) return false;  // letters only: no warrants (YX58), alternative lines (RR-) or IOB codes (0O87)
+  if (currency && currencyOf.get(code) && currencyOf.get(code).toUpperCase() !== currency.toUpperCase()) return false;
   const t = (typeOf.get(code) || '').toLowerCase();
   if (t && !/(share|stock|equity|ord|common)/.test(t)) return false;  // funds, ETFs, warrants, bonds
   const n = (nameOf.get(code) || '').toLowerCase();
@@ -80,13 +84,32 @@ const isShare = (code) => {
 const ranked = quotes
   .map((q) => ({ code: field(q, 'symbolCode', 'code', 'symbol'), value: Number(field(q, 'close')) * Number(field(q, 'volume')) }))
   .filter((q) => q.code && Number.isFinite(q.value) && q.value > 0 && isShare(q.code))
-  .sort((a, b) => b.value - a.value)
-  .slice(0, universe);
-console.log(`  ${symbols.length} symbols, ${quotes.length} quotes; downloading ${ranked.length} most traded shares since ${from}`);
+  .sort((a, b) => b.value - a.value);
+const currencies = {};
+for (const c of currencyOf.values()) currencies[c] = (currencies[c] || 0) + 1;
+console.log(`  currencies: ${JSON.stringify(currencies)}`);
+console.log(`  ${symbols.length} symbols, ${quotes.length} quotes, ${ranked.length} candidate shares; keeping the ${universe} most traded with ${minDays}+ days since ${from}`);
+
+// Splits: prices before a split are divided by its ratio, so returns are not distorted.
+const splits = new Map();
+try {
+  const list = asList(await get(`/Splits/List/${exchange}`, {}, `splits-${stamp}.json`));
+  console.log(`  splits: ${list.length}, fields [${Object.keys(list[0] || {})}], first ${JSON.stringify(list[0] || {})}`);
+  for (const sp of list) {
+    const code = field(sp, 'symbolCode', 'code', 'symbol');
+    const date = day(field(sp, 'dateStamp', 'date', 'exDate') ?? '');
+    let ratio = field(sp, 'ratio', 'splitRatio');
+    if (typeof ratio === 'string' && /[-:/]/.test(ratio)) { const [a, b] = ratio.split(/[-:/]/).map(Number); ratio = a / b; }  // "2-1": two new for one old
+    else if (ratio === undefined) { const n = +field(sp, 'numerator', 'to', 'newShares'), dn = +field(sp, 'denominator', 'from', 'oldShares'); ratio = n / dn; }
+    ratio = Number(ratio);
+    if (code && date && Number.isFinite(ratio) && ratio > 0 && ratio !== 1) (splits.get(code) || splits.set(code, []).get(code)).push({ date, ratio });
+  }
+} catch (e) { console.warn(`  splits unavailable: ${e.message}`); }
 
 const rows = ['date,ticker,open,high,low,close,volume'];
 const kept = [];
 for (const [i, { code }] of ranked.entries()) {
+  if (kept.length >= universe) break;
   const body = await get(`/Quote/List/${exchange}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: from, ToDateStamp: stamp },
     `history-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-${from}-${stamp}.json`).catch((e) => { console.warn(`  skip ${code}: ${e.message}`); return []; });
   const bars = asList(body)
@@ -95,9 +118,13 @@ for (const [i, { code }] of ranked.entries()) {
     .sort((a, b) => (a.d < b.d ? -1 : 1));
   if (i === 0) console.log(`  history fields [${Object.keys(asList(body)[0] || {})}], ${bars.length} bars`);
   if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
+  for (const { date, ratio } of splits.get(code) || [])
+    for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
+  const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6));
+  if (jump > 0) { console.log(`  ${code}: unexplained move on ${bars[jump].d} (${bars[jump - 1].c} -> ${bars[jump].c}), dropped`); continue; }
   for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
   kept.push({ code, name: nameOf.get(code) || '', days: bars.length });
-  if ((i + 1) % 20 === 0) console.log(`  ${i + 1}/${ranked.length}`);
+  if (kept.length % 20 === 0) console.log(`  kept ${kept.length}`);
 }
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, rows.join('\n') + '\n');
