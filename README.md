@@ -214,7 +214,7 @@ The JavaScript layer (`web/js/gpu`) only routes calls and talks to WebGPU, and t
 - over the same header and table buffers that WebGPU uploads;
 - returning the same `stats` and `adapt` read-back.
 
-`gpuAnalyse` then treats the read-back exactly like a GPU's, so the pipeline and its results are unchanged when WebGPU is missing. The reference checks that a plan's header fits its tables, as WebGPU's bounds checks would. The WebGPU page validates the emulated GPU against WebAssembly when the device has no adapter. `gpuEmulate(spec)` does compile, emulate and analyse in one call, which is how Node tests the kernel path.
+`gpuAnalyse` then treats the read-back exactly like a GPU's, so the pipeline and its results are unchanged when WebGPU is missing. The reference checks that a plan's header fits its tables, as WebGPU's bounds checks would. The WebGPU page always runs the emulated GPU next to WebGPU and the WebAssembly library: it reports the timings of all three, checks each kernel device against WASM and the two devices against each other, and benchmarks all three. The sidebar of every page shows whether the GPU emulator is on standby, selected, or in use because WebGPU is missing. `gpuEmulate(spec)` does compile, emulate and analyse in one call, which is how Node tests the kernel path.
 
 **WebGPU kernels** (`include/sat/gpu/fused_backtest.hpp`). `compile()` packs into one table:
 - the candidates (model, rule, parameter, holding period) and the selector settings;

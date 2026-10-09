@@ -87,7 +87,9 @@ export function initPage({ id, title, context, description }) {
   const gpuDot = el('span', { class: 'dot' });
   const wasmText = el('span', { text: 'WASM: loading…' });
   const gpuText = el('span', { text: 'WebGPU: checking…' });
-  links.append(el('div', { class: 'env' }, el('div', {}, wasmDot, wasmText), el('div', {}, gpuDot, gpuText)));
+  const emuDot = el('span', { class: 'dot' });
+  const emuText = el('span', { text: 'GPU emulator: checking…' });
+  links.append(el('div', { class: 'env' }, el('div', {}, wasmDot, wasmText), el('div', {}, gpuDot, gpuText), el('div', { id: 'emulator-status' }, emuDot, emuText)));
 
   const status = el('span', { class: 'status', id: 'run-status' });
   const toolbar = el('div', { class: 'toolbar' });
@@ -103,7 +105,16 @@ export function initPage({ id, title, context, description }) {
   import('./sat-client.js').then(({ run }) => run('version', {}))
     .then((v) => { wasmDot.className = 'dot ok'; wasmText.textContent = `WASM: ${v.library}`; })
     .catch((e) => { wasmDot.className = 'dot bad'; wasmText.textContent = 'WASM: ' + e.message; });
-  gpuStatus().then((s) => { gpuDot.className = 'dot ' + (s.ok ? 'ok' : 'warn'); gpuText.textContent = 'WebGPU: ' + s.text + (s.ok ? '' : ' · emulated GPU'); });
+  gpuStatus().then((s) => {
+    gpuDot.className = 'dot ' + (s.ok ? 'ok' : 'warn');
+    gpuText.textContent = 'WebGPU: ' + s.text;
+    // The emulated GPU (the kernels on the CPU, in the worker) is always available.
+    let mode = 'auto';
+    try { mode = localStorage.getItem('sat-engine') || 'auto'; } catch (_) { /* storage unavailable */ }
+    emuDot.className = 'dot ok';
+    emuText.textContent = mode === 'emulator' ? 'GPU emulator: selected' : mode === 'wasm' ? 'GPU emulator: available'
+      : s.ok ? 'GPU emulator: standby (fallback)' : 'GPU emulator: in use (no WebGPU)';
+  });
 
   return { main, toolbar, status, content, spec: loadSpec() };
 }
