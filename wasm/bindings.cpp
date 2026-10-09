@@ -319,7 +319,9 @@ struct Predictions {
   bool cached = false;
 };
 
-Predictions predictions(const val& spec, const Env& env) {
+// `allModels`: the members and the composite even when the composite trades alone (the
+// Models page compares them).
+Predictions predictions(const val& spec, const Env& env, bool allModels = false) {
   Predictions p;
   p.data = market(spec, env);
   auto& c = predictionCache();
@@ -340,8 +342,9 @@ Predictions predictions(const val& spec, const Env& env) {
     p.set = set;
     p.trainMs = c.elapsedMs;
   }
-  const CompositeSpec& cs = env.exp.composite;
+  CompositeSpec cs = env.exp.composite;
   if (cs.method == CompositeMethod::None) return p;
+  if (allModels) cs.keepMembers = true;
   static PredictionCache composite;
   const std::string key = env.predictionKey + "|composite:" + compositeMethodName(cs.method) + "|" + std::to_string(cs.window) + "|" +
                           std::to_string(cs.refitEvery) + "|" + std::to_string(cs.ridge) + "|" + std::to_string(cs.keepMembers);
@@ -746,7 +749,7 @@ val labels(val spec) {
 val models(val spec) {
   return guarded([&] {
     const Env env = parseEnv(spec);
-    const Predictions p = predictions(spec, env);
+    const Predictions p = predictions(spec, env, true);
     const MarketData& d = *p.data;
     const PredictionSet& set = *p.set;
     val list = val::array();
@@ -2488,7 +2491,7 @@ val strategyTournament(val spec) {
 val compositeStrategy(val spec) {
   return guarded([&] {
     const Env env = parseEnv(spec);
-    const Predictions p = predictions(spec, env);
+    const Predictions p = predictions(spec, env, true);
     const MarketData& d = *market(spec, env);
     std::vector<ModelPredictions> members;
     for (const auto& m : p.set->models)
@@ -2550,8 +2553,9 @@ val compositeStrategy(val spec) {
       throw std::invalid_argument("stock-selection books: holdings and rebalance >= 1, target volatility >= 0, leverage > 0");
     ss.books.clear();
     if (flag(M, "blendBook", true)) ss.books.push_back(ms);
-    if (flag(M, "separateBooks", false))
-      for (int k = 0; k < 3; ++k) {
+    const char* single[] = {"mlBook", "momentumBook", "trailingSharpeBook"};
+    for (int k = 0; k < 3; ++k)
+      if (flag(M, single[k], k == 1)) {
         algo::MultiSignalSpec one = ms;
         one.useMl = k == 0, one.useMomentum = k == 1, one.useTrailingSharpe = k == 2;
         ss.books.push_back(one);

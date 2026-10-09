@@ -223,6 +223,7 @@ TEST(composite_strategy_allocates_between_the_sleeves) {
   exp.walkForward.retrainEvery = 60;
   const auto p = runPredictions(d, exp);
   algo::CompositeStrategySpec cs;
+  cs.books.resize(1);
   cs.books[0].regimes.window = 200;
   const auto r = algo::runCompositeStrategy(d, p, exp, cs);
   CHECK(r.names.size() == 4 && r.returns.size() == 4 && r.metrics.size() == 4 && r.sleeves == 2);
@@ -243,4 +244,6 @@ TEST(composite_strategy_allocates_between_the_sleeves) {
   CHECK(r2.sleeves == 4 && r2.names.size() == 6 && r2.weights.size() == 4);
   CHECK(r2.names[2] == "Momentum book" && r2.names[3] == "Equal-weight market");
   CHECK_NEAR(r2.metrics[0].sharpe, r.metrics[0].sharpe, 1e-12);
+  const auto def = algo::CompositeStrategySpec::defaultBooks();
+  CHECK(def.size() == 2 && algo::bookName(def[1]) == "Momentum book");
 }

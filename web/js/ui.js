@@ -44,6 +44,7 @@ export const PAGES = [
       { id: 'regimes', href: 'regimes.html', title: 'Regime switching' },
       { id: 'execution', href: 'execution.html', title: 'Optimal execution' },
       { id: 'tournament', href: 'tournament.html', title: 'Tournament & meta-allocation' },
+      { id: 'composite', href: 'composite.html', title: 'Composite model & strategy' },
     ],
   },
   { group: 'Acceleration', items: [{ id: 'gpu', href: 'gpu.html', title: 'WebGPU strategy search' }] },
@@ -248,7 +249,8 @@ const STRATEGY_KINDS = { topk: 'Long top k', longshort: 'Long-short k', threshol
 /**
  * Collapsible editor for the shared specification.
  * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness',
- * 'bars','labeling','validation','portfolio','overfitting','hedging','options','pairs','trend','regimes','execution','tournament'].
+ * 'bars','labeling','validation','portfolio','overfitting','hedging','options','pairs','trend','regimes','execution','tournament',
+ * 'composite','multiSignal'].
  */
 export function specEditor(page, sections, { open = false } = {}) {
   page.spec = loadSpec();
@@ -412,6 +414,26 @@ export function specEditor(page, sections, { open = false } = {}) {
         s.append(checkField('cash when nothing scores > 0', checkInput(() => o.allowCash, (v) => { o.allowCash = v; changed(); })));
       }
     }
+    if (sections.includes('composite')) {
+      const s = sec('Composite model');
+      const o = spec.composite;
+      s.append(field('combination (added to every page\'s pool)', selectInput(['none', 'average', 'stacked', 'online'], () => o.method, (v) => { o.method = v; changed(); }, COMPOSITE_NAMES)));
+      s.append(checkField('keep the separate models too', checkInput(() => o.keepMembers, (v) => { o.keepMembers = v; changed(); })));
+      for (const [f, label] of [['window', 'stacked: training dates'], ['refitEvery', 'stacked: refit every (days)'], ['ridge', 'stacked: ridge towards equal weights']])
+        s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 6 })));
+    }
+    if (sections.includes('multiSignal')) {
+      const s = sec('Stock-selection books');
+      const o = spec.multiSignal;
+      for (const [f, label] of [['useMl', 'signal: ML forecast'], ['useMomentum', 'signal: momentum'], ['useTrailingSharpe', 'signal: trailing Sharpe'], ['regimeGate', 'HMM regime gate'],
+        ['blendBook', 'sleeve: blended book'], ['mlBook', 'sleeve: ML-only book'], ['momentumBook', 'sleeve: momentum book'], ['trailingSharpeBook', 'sleeve: trailing-Sharpe book'],
+        ['marketSleeve', 'sleeve: equal-weight market']])
+        s.append(checkField(label, checkInput(() => o[f], (v) => { o[f] = v; changed(); })));
+      s.append(field('signal weights', selectInput(['adaptive', 'equal'], () => o.weighting, (v) => { o.weighting = v; changed(); }, { adaptive: 'adaptive (trailing IC)', equal: 'equal' })));
+      for (const [f, label] of [['holdings', 'stocks held'], ['rebalanceEvery', 'rebalance every (days)'], ['momentumLookback', 'momentum look-back (days)'], ['momentumSkip', 'momentum skip (days)'],
+        ['sharpeLookback', 'trailing Sharpe look-back (days)'], ['icLookback', 'IC look-back (days)'], ['eta', 'signal weights: η'], ['targetVol', 'volatility target (0 = off)'], ['maxLeverage', 'max leverage']])
+        s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 6 })));
+    }
     body.append(el('div', { class: 'spec-actions', style: 'grid-column:1/-1' },
       el('button', { text: 'Reset to defaults', onclick: () => { page.spec = resetSpec(); render(); } }),
       el('span', { class: 'status', text: 'Changes are saved automatically and shared across pages. Press Run to recompute.' })));
@@ -426,4 +448,5 @@ export const argmax = (values) => values.reduce((b, v, i) => (v > values[b] ? i 
 /** One row of the standard performance table. */
 export const perfRow = (name, m) => [name, fmt.pct(m.annualReturn, 1), fmt.pct(m.annualVolatility, 1), fmt.ratio(m.sharpe), fmt.ratio(m.sortino),
   fmt.pct(m.maxDrawdown, 1), fmt.ratio(m.calmar), fmt.pct(m.winRate, 1), fmt.ratio(m.averageTurnover)];
+export const COMPOSITE_NAMES = { none: 'none', average: 'equal-weight average', stacked: 'stacked meta-learner', online: 'online aggregation (BOA)' };
 export const PERF_HEADERS = ['strategy', 'ann. return', 'ann. vol', 'Sharpe', 'Sortino', 'max DD', 'Calmar', 'win rate', 'turnover/day'];

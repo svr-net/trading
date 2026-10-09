@@ -20,6 +20,12 @@ SignalWeighting parseSignalWeighting(const std::string& name) {
 
 std::string signalWeightingName(SignalWeighting w) { return w == SignalWeighting::Adaptive ? "adaptive" : "equal"; }
 
+std::vector<MultiSignalSpec> CompositeStrategySpec::defaultBooks() {
+  MultiSignalSpec momentum;
+  momentum.useMl = momentum.useTrailingSharpe = false;
+  return {MultiSignalSpec{}, momentum};
+}
+
 std::string bookName(const MultiSignalSpec& s) {
   std::vector<std::string> parts;
   if (s.useMl) parts.push_back("ML");

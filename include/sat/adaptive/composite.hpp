@@ -32,6 +32,9 @@ enum class CompositeMethod : int {
 CompositeMethod parseCompositeMethod(const std::string& name);
 std::string compositeMethodName(CompositeMethod m);
 
+/// examples/composite_study: the equal-weight average, traded alone (keepMembers = false), gave
+/// the self-adaptive selector a higher Sharpe ratio than the separate models on synthetic
+/// selection and validation markets and on LSE stocks; the stacked meta-learner was worst.
 struct CompositeSpec {
   CompositeMethod method = CompositeMethod::None;
   std::size_t window = 252;     ///< Stacked: dates of resolved labels in each fit

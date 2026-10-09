@@ -78,7 +78,7 @@ const cases = [
   // Advances in Financial Machine Learning pages (WebAssembly only).
   ...['bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'overfitting'].map((name) => ({ name, file: name, spec: afmlSpec, ...(name === 'overfitting' ? { expectEngine: 'WebGPU' } : {}) })),
   // Hedging and algorithmic trading pages (WebAssembly only).
-  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'].map((name) => ({ name, file: name, spec: algoSpec, ...(['hedging', 'tournament'].includes(name) ? { expectEngine: 'WebGPU' } : {}) })),
+  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'composite'].map((name) => ({ name, file: name, spec: algoSpec, ...(['hedging', 'tournament'].includes(name) ? { expectEngine: 'WebGPU' } : {}) })),
   // The candidate backtests of the tournament, hedging and overfitting pages on every engine.
   { name: 'tournament-emulator', file: 'tournament', spec: algoSpec, engine: 'emulator', expectEngine: 'Emulated GPU' },
   { name: 'hedging-no-adapter', file: 'hedging', spec: algoSpec, engine: 'auto', gpuStub: 'no-adapter', expectEngine: 'Emulated GPU', expectReason: 'WebGPU unavailable' },
@@ -107,7 +107,7 @@ const cases = [
   // A phone: Auto must pick WebGPU, and the collapsed menu must leave the page content in view.
   { name: 'adaptive-mobile', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', device: 'iPhone 14' },
 ];
-const NO_KERNEL_PAGES = ['core', 'data', 'factors', 'labels', 'models', 'bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'options', 'pairs', 'trend', 'regimes', 'execution'];
+const NO_KERNEL_PAGES = ['core', 'data', 'factors', 'labels', 'models', 'bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'options', 'pairs', 'trend', 'regimes', 'execution', 'composite'];
 const pairs = {};
 let failures = 0;
 console.log(`testing ${root} ${fileMode ? 'from file:// (no server)' : `over ${base}`}`);

@@ -83,10 +83,15 @@ MultiSignalResult multiSignalSelection(const MarketData& data, const Panel* prob
 ///  - optionally the equal-weight market itself.
 /// The selector chases the short-horizon forecast; the books hold slower signals and step
 /// aside in turbulent regimes, so the allocator can lean on whichever is working.
+/// The default sleeves (the selector, the blended book and a momentum-only book) are the set
+/// examples/composite_study ranked first of five on synthetic markets; on unseen markets it was
+/// within 0.03 Sharpe of the best set, and on 120 LSE stocks it came first (see the README).
 struct CompositeStrategySpec {
-  std::vector<MultiSignalSpec> books = {MultiSignalSpec{}};
+  std::vector<MultiSignalSpec> books = defaultBooks();
   bool marketSleeve = false;
   AllocationSpec allocation;
+
+  static std::vector<MultiSignalSpec> defaultBooks();
 };
 
 /// Name of a stock-selection book from its signals, e.g. "Momentum book" or
