@@ -39,6 +39,16 @@ enum class ScoringWindow : int {
   /// from the recent part's by more than chance allows (confidence `adwinDelta`), so memory is
   /// long while a candidate's record is stable and short after it changes. Updated daily.
   Adwin = 2,
+  /// Market-driven: as Adwin, and a second ADWIN watches the market itself (the size of the
+  /// equal-weight market's daily moves, i.e. its volatility state). Memory grows while the
+  /// market stays in one state and recedes to the start of the new state when it changes.
+  MarketAdwin = 3,
+  /// Market-driven: every recorded date counts in proportion to how closely its market state
+  /// (21-day market volatility and 63-day market trend) resembles today's, with a Gaussian
+  /// kernel of width `stateBandwidth` (in units of each feature's spread). Memory recedes to
+  /// the dates that match the current state, so a forecast that does well in calm markets and
+  /// another that does well in turbulent ones are each used in their own state.
+  SimilarState = 4,
 };
 
 /// How the scores pick the forecast.
@@ -65,8 +75,9 @@ struct CompositeSpec {
   ScoringWindow window = ScoringWindow::Fixed;
   ScoringDecision decision = ScoringDecision::Best;
   double halfLife = 63.0;       ///< Exponential: dates for a weight to halve (0 = expanding)
-  double adwinDelta = 0.002;    ///< Adwin: confidence of a cut
+  double adwinDelta = 1e-4;     ///< Adwin, MarketAdwin: confidence of a cut
   double minT = 2.0;            ///< Evidence: t-statistic a member's lead must exceed
+  double stateBandwidth = 1.0;  ///< SimilarState: kernel width in units of each state feature's spread
 };
 
 /// The composite forecast and the weight it gave each member over time.
@@ -83,8 +94,10 @@ struct CompositePredictions {
 
 /// Combines members' predictions over their common out-of-sample range. Only labels whose
 /// last date (`labelEnds`, from makeLabels) is before a prediction date are used to set the
-/// weights of that date. Members must all have the same panel shape.
+/// weights of that date. Members must all have the same panel shape. `nextReturns` (the
+/// close-to-close return of the following day, as in PredictionSet) is needed for the
+/// market-driven scoring windows; the market state of a date uses returns up to its close.
 CompositePredictions compositePredictions(const std::vector<ModelPredictions>& members, const Panel& labels,
-                                          const Panel& labelEnds, const CompositeSpec& spec);
+                                          const Panel& labelEnds, const CompositeSpec& spec, const Panel* nextReturns = nullptr);
 
 }  // namespace sat

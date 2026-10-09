@@ -157,6 +157,98 @@ TEST(evidence_decision_stays_with_the_average_without_a_significant_lead) {
   CHECK_THROWS(compositePredictions(w.models, w.labels, w.ends, spec));
 }
 
+namespace {
+
+// A market that alternates between calm and turbulent blocks of `block` days (daily market
+// moves of 0.4% vs 3%), and two members: one informative in calm blocks only, the other in
+// turbulent blocks only.
+struct RegimeWorld {
+  Panel labels, ends, next;
+  std::vector<ModelPredictions> models;
+  std::vector<bool> turbulent;
+  RegimeWorld(std::size_t T, std::size_t block, std::size_t firstSwitch = 0, std::size_t N = 20)
+      : labels(T, N), ends(T, N), next(T, N), turbulent(T) {
+    Rng rng(17);
+    ModelPredictions calm, storm;
+    calm.name = "calm";
+    storm.name = "storm";
+    calm.probability = Panel(T, N);
+    storm.probability = Panel(T, N);
+    for (std::size_t t = 0; t < T; ++t) {
+      turbulent[t] = firstSwitch ? t >= firstSwitch : (t / block) % 2 == 1;
+      const double m = (turbulent[t] ? 0.03 : 0.004) * rng.normal();
+      for (std::size_t i = 0; i < N; ++i) next(t, i) = m + 0.01 * rng.normal();
+    }
+    for (std::size_t t = 0; t + 1 < T; ++t)
+      for (std::size_t i = 0; i < N; ++i) {
+        labels(t, i) = rng.uniform() < 0.5 ? 1.0 : 0.0;
+        ends(t, i) = static_cast<double>(t + 1);
+        const double informative = (labels(t, i) > 0.5 ? 0.6 : 0.4) + 0.2 * (rng.uniform() - 0.5);
+        const double noise = 0.5 + 0.3 * (rng.uniform() - 0.5);
+        // A forecast for date t is made at its close, when the market state of t is known.
+        calm.probability(t, i) = turbulent[t] ? noise : informative;
+        storm.probability(t, i) = turbulent[t] ? informative : noise;
+      }
+    calm.start = storm.start = 70;
+    calm.end = storm.end = T - 1;
+    models = {calm, storm};
+  }
+};
+
+}  // namespace
+
+TEST(market_state_adwin_recedes_when_the_market_changes_state) {
+  // The market turns turbulent at day 300 while the forecasts keep the same quality: only the
+  // market-driven memory has a reason to recede.
+  RegimeWorld w(600, 0, 300);
+  for (std::size_t t = 0; t < 600; ++t)
+    for (std::size_t i = 0; i < 20; ++i) {
+      const double informative = w.models[0].probability(t, i), other = w.models[1].probability(t, i);
+      if (w.turbulent[t]) w.models[0].probability(t, i) = other, w.models[1].probability(t, i) = informative;
+    }
+  CompositeSpec spec;
+  spec.method = CompositeMethod::Adaptive;
+  spec.window = ScoringWindow::MarketAdwin;
+  const auto m = compositePredictions(w.models, w.labels, w.ends, spec, &w.next);
+  spec.window = ScoringWindow::Adwin;
+  const auto a = compositePredictions(w.models, w.labels, w.ends, spec, &w.next);
+  const std::size_t change = 300 - 70;
+  CHECK(m.memory[change - 1] > 200 && a.memory[change - 1] > 200);
+  double leastM = 1e9, leastA = 1e9;
+  for (std::size_t k = change; k < change + 60; ++k) leastM = std::min(leastM, m.memory[k]), leastA = std::min(leastA, a.memory[k]);
+  CHECK(leastM < 60);    // recedes to the new state within weeks
+  CHECK(leastA > 200);   // the forecasts' own records saw no change
+  CHECK(m.memory.back() > 150);  // and grows again while the new state lasts
+  CHECK(m.choice.back() == 0 && a.choice.back() == 0);
+  spec.window = ScoringWindow::MarketAdwin;
+  CHECK_THROWS(compositePredictions(w.models, w.labels, w.ends, spec, nullptr));
+}
+
+TEST(similar_state_memory_uses_each_model_in_its_own_state) {
+  // Calm and turbulent blocks of 60 days alternate: no single model is good all the time.
+  RegimeWorld w(900, 60);
+  CompositeSpec spec;
+  spec.method = CompositeMethod::Adaptive;
+  spec.window = ScoringWindow::SimilarState;
+  const auto sim = compositePredictions(w.models, w.labels, w.ends, spec, &w.next);
+  spec.window = ScoringWindow::Exponential;
+  spec.halfLife = 0;
+  const auto exp = compositePredictions(w.models, w.labels, w.ends, spec, &w.next);
+  // After the first blocks, the similar-state memory never uses the model that is wrong for the
+  // current state (it uses the right one, or the average around transitions); the expanding
+  // record cannot tell the states apart.
+  std::size_t wrong = 0, right = 0, n = 0;
+  for (std::size_t k = 300; k < sim.choice.size(); ++k, ++n) {
+    const int good = w.turbulent[70 + k] ? 1 : 0;
+    wrong += sim.choice[k] == 1 - good ? 1 : 0;
+    right += sim.choice[k] == good ? 1 : 0;
+  }
+  CHECK(wrong < 0.05 * static_cast<double>(n));
+  CHECK(right > 0.25 * static_cast<double>(n));
+  CHECK(sim.model.oos.auc > exp.model.oos.auc + 0.02);
+  CHECK(parseScoringWindow("similar-state") == ScoringWindow::SimilarState);
+}
+
 TEST(composite_rejects_bad_input) {
   Members w;
   CompositeSpec spec;

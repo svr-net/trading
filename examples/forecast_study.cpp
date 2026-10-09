@@ -54,7 +54,9 @@ std::vector<Variant> variants() {
   add("exponential, half-life 63, daily", ScoringWindow::Exponential, 63);
   add("exponential, half-life 252, daily", ScoringWindow::Exponential, 252);
   add("expanding, daily", ScoringWindow::Exponential, 0);
-  add("ADWIN adaptive window, daily", ScoringWindow::Adwin, 0);
+  add("ADWIN on each forecast's record, daily", ScoringWindow::Adwin, 0);
+  add("ADWIN on the record and the market state", ScoringWindow::MarketAdwin, 0);
+  add("similar market state (vol + trend)", ScoringWindow::SimilarState, 0);
   return out;
 }
 
@@ -79,7 +81,7 @@ Market prepare(const std::string& name, const MarketData& data) {
   m.adaptive = std::move(a.model);
   m.choice = std::move(a.choice);
   for (const auto& v : variants()) {
-    auto r = compositePredictions(m.p.models, m.p.labels, m.p.labelEnds, v.spec);
+    auto r = compositePredictions(m.p.models, m.p.labels, m.p.labelEnds, v.spec, &m.p.nextReturns);
     double mem = 0, member = 0;
     for (double x : r.memory) mem += x / static_cast<double>(r.memory.size());
     for (int c : r.choice) member += (c >= 0 ? 1.0 : 0.0) / static_cast<double>(r.choice.size());

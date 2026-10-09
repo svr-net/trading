@@ -348,7 +348,7 @@ Predictions predictions(const val& spec, const Env& env, bool allModels = false)
                           std::to_string(cs.adaptEvery) + "|" + std::to_string(cs.keepMembers);
   if (!(composite.set && composite.key == key)) {
     auto set = std::make_shared<PredictionSet>(*p.set);
-    auto cp = compositePredictions(set->models, set->labels, set->labelEnds, cs);
+    auto cp = compositePredictions(set->models, set->labels, set->labelEnds, cs, &set->nextReturns);
     if (!cs.keepMembers) set->models.clear();
     set->models.push_back(std::move(cp.model));
     set->compositeMembers = std::move(cp.members);
