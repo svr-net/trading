@@ -96,6 +96,38 @@ TEST(selector_risk_control_goes_to_cash) {
   CHECK(a.metrics.totalReturn < 0.0);
 }
 
+TEST(selector_switching_bar_holds_until_the_lead_is_significant) {
+  TwoRegimeWorld w;
+  const CandidateBook book(w.models, {{StrategyKind::LongTopK, 1, 1}}, w.next, 10.0);
+  SelectorSpec s;
+  s.lookback = 20;
+  s.adaptEvery = 5;
+  s.metric = ScoreMetric::Return;
+  s.allowCash = false;
+  const AdaptiveResult free = runSelector(book, s);
+  CHECK(free.heldBack == 0);
+  // An unreachable bar: the first candidate is kept, whatever the record says.
+  s.switchBar = 1e6;
+  AdaptiveResult a = runSelector(book, s);
+  CHECK(a.switches == 0 && a.heldBack > 0);
+  for (int sel : a.selection) CHECK(sel == a.selection[0]);
+  // A reachable bar still switches after the regime change, no sooner than without one.
+  s.switchBar = 2.0;
+  a = runSelector(book, s);
+  CHECK(a.selection[150 - 20] == 1 && a.switches >= 1 && a.switches <= free.switches);
+  std::size_t firstFree = 0, firstBar = 0;
+  while (free.selection[firstFree] == free.selection[0]) ++firstFree;
+  while (a.selection[firstBar] == a.selection[0]) ++firstBar;
+  CHECK(firstBar >= firstFree);
+  // The cost hurdle: a lead that cannot pay for the switch keeps the held candidate.
+  s.switchBar = 0;
+  s.switchCost = 1e6;
+  a = runSelector(book, s);
+  CHECK(a.switches == 0);
+  s.switchCost = -1;
+  CHECK_THROWS(runSelector(book, s));
+}
+
 TEST(selector_mixes_top_candidates) {
   TwoRegimeWorld w;
   const CandidateBook book(w.models, {{StrategyKind::LongTopK, 1, 1}, {StrategyKind::LongTopK, 2, 1}}, w.next, 0.0);

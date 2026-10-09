@@ -117,6 +117,7 @@ double windowScore(ScoreMetric metric, double n, double s1, double s2, double sd
 AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, std::size_t evalFrom) {
   const std::size_t C = book.size(), D = book.days(), N = book.assets();
   if (spec.lookback < 2 || spec.adaptEvery < 1) throw std::invalid_argument("selector look-back must be >= 2 and step >= 1");
+  if (spec.switchBar < 0 || spec.switchCost < 0) throw std::invalid_argument("selector switching bar and cost hurdle must be >= 0");
   if (evalFrom == SIZE_MAX) evalFrom = std::min(spec.lookback, D - 1);
   if (evalFrom >= D) throw std::invalid_argument("selector: nothing left to trade after the look-back");
   const std::size_t M = std::clamp<std::size_t>(spec.topM, 1, C);
@@ -152,6 +153,24 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
       for (std::size_t k = 0; k < M; ++k)
         if (!(spec.allowCash && !(scores[order[k]] > spec.minScore)) && scores[order[k]] > -1e29) held.push_back(static_cast<int>(order[k]));
       if (held.empty() && !spec.allowCash) held.push_back(static_cast<int>(order[0]));
+      if (M == 1 && held.size() == 1 && prevHeld.size() == 1 && held[0] != prevHeld[0] && (spec.switchBar > 0 || spec.switchCost > 0)) {
+        const auto b = static_cast<std::size_t>(held[0]), h = static_cast<std::size_t>(prevHeld[0]);
+        double s1 = 0, s2 = 0;
+        for (std::size_t t = from; t < d; ++t) {
+          const double x = book.net(b, t) - book.net(h, t);
+          s1 += x, s2 += x * x;
+        }
+        const double mean = s1 / n, var = n > 1 ? std::max(0.0, (s2 - s1 * s1 / n) / (n - 1)) : 0.0;
+        bool keep = spec.switchBar > 0 && !(mean / std::sqrt(var / n + 1e-20) > spec.switchBar);
+        if (!keep && spec.switchCost > 0) {
+          double turn = 0;
+          book.weights(b, d, w.data());
+          book.weights(h, d - 1, wPrev.data());
+          for (std::size_t i = 0; i < N; ++i) turn += std::fabs(w[i] - wPrev[i]);
+          keep = !(mean * static_cast<double>(spec.adaptEvery) > spec.switchCost * cost * turn);
+        }
+        if (keep) held = prevHeld, ++out.heldBack;
+      }
     }
     double gross = 0.0, turnover = 0.0;
     const bool same = held == prevHeld && d > evalFrom;

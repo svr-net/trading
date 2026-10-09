@@ -93,6 +93,16 @@ struct SelectorSpec {
   std::size_t topM = 1;
   bool allowCash = true;
   double minScore = 0.0;
+  /// Differential switching bar (topM = 1). At an adaptation date the selector leaves the
+  /// candidate it holds for the best-scored one only when the challenger's lead is significant:
+  /// the t-statistic of the mean daily difference of their net returns over the look-back must
+  /// exceed `switchBar` (0: always switch to the best, the paper's rule). Moves into and out of
+  /// cash are not gated, so the cash rule still acts at once.
+  double switchBar = 0.0;
+  /// Cost hurdle (topM = 1): the challenger's mean daily lead times `adaptEvery` (the gain
+  /// expected until the next adaptation) must also exceed `switchCost` times the cost of the
+  /// turnover between the two portfolios (0: off).
+  double switchCost = 0.0;
   std::string label() const;
 };
 
@@ -107,6 +117,7 @@ struct AdaptiveResult {
   std::vector<int> selection;         ///< candidate held each day (-1 = cash; first of topM)
   std::vector<std::size_t> adaptations;  ///< offsets of the adaptation dates
   std::size_t switches = 0;
+  std::size_t heldBack = 0;           ///< adaptations where the switching bar kept the held candidate
   std::vector<double> share;          ///< fraction of days each candidate was held; last entry = cash
   PerformanceMetrics metrics;
 };
