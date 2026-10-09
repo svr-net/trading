@@ -340,7 +340,7 @@ Responses are cached under `data/`, which git ignores: EODData's licence does no
 
 `examples/uk_portfolio` builds a ten-stock portfolio from that file. Five constructions compete in a walk-forward backtest
 with monthly rebalancing:
-- the six models' ensemble forecast with HRP weights;
+- the default models' ensemble forecast with HRP weights;
 - 12-1 momentum with inverse-volatility weights;
 - minimum variance;
 - trailing Sharpe ratio with HRP weights;
@@ -365,6 +365,37 @@ The machine-learning forecasts had no skill on these stocks: AUC of 0.50 to 0.50
 These results are for research, not investment advice. Returns exclude dividends, the history is short, and the
 universe is today's surviving stocks.
 
+## Which models and rules earn their place
+
+The default candidate pool has **two models × five rules**:
+- models: logistic regression and random forest;
+- rules: top 5 daily, top 10 held 5 days, long-short 3, P > 0.52, and probability-weighted.
+
+This replaced the paper-style pool of six models × nine rules. The choice comes from `examples/pool_ablation`, which:
+1. trains all eight model families on 8 ten-year synthetic markets;
+2. measures what the self-adaptive strategy loses without each model and each rule;
+3. removes, one at a time, the item whose absence costs least;
+4. checks every step on 8 unseen markets.
+
+| Pool | Candidates | Validation Sharpe | Max drawdown | Training |
+|---|---|---|---|---|
+| 8 models × 9 rules (everything) | 72 | 0.70 | 55% | 11.8 s per market |
+| **2 models × 5 rules (default)** | **10** | **1.22** | **49%** | **1.6 s** |
+| 2 models × 1 rule | 2 | 1.52 | 46% | 1.6 s |
+
+What the ablation showed:
+- **Logistic regression** has the best out-of-sample AUC (0.522), trains fastest, and costs the most when left out (−0.26 Sharpe).
+- **The random forest** is the only other family that adds value.
+- **The linear SVM** has no skill (AUC 0.499).
+- **The rest add noise.** XGBoost, LightGBM, MLP, LSTM and the single tree mostly add candidates whose short winning streaks the selector chases.
+- **Rules:** bet sizing, P > 0.55 and long-short 5 lowered the result.
+- **Why stop at ten:** the two-candidate pool scores higher but leaves the selector almost nothing to choose from. The default stops where it still spans long-only and long-short rules, two horizons, and threshold and probability weighting.
+- **Fewer trials:** a smaller pool also means fewer trials for the deflated Sharpe ratio, so the result is more credible.
+
+Every family and rule kind is still in the editor. On real UK data the models showed no skill at all (AUC ≈ 0.50, see the UK section), so there the pool's makeup matters less than its cost.
+
+Run `pool_ablation [markets] [days]` to repeat the study, or `pool_ablation 0 --csv data.csv` to compare the full and default pools on real bars.
+
 ## Conventions
 
 - Panels are date × stock tables (row-major by date). NaN marks a missing value.
@@ -381,7 +412,7 @@ universe is today's surviving stocks.
 using namespace sat;
 
 MarketData data = generateSyntheticMarket(SyntheticMarketSpec{});  // or parseCsv(text)
-ExperimentSpec spec;                                                // 23 alphas, next-day labels, six models
+ExperimentSpec spec;                                                // 23 alphas, next-day labels, the default pool
 PredictionSet p = runPredictions(data, spec);                       // walk-forward, out-of-sample forecasts
 Experiment e = runStrategies(p, spec);                              // every model x rule, then the selector
 
@@ -412,7 +443,7 @@ auto t = algo::runTournament(data, p, spec, algo::TournamentSpec{});           /
 `examples/strategy_tournament.cpp` searches for the best meta-allocator on one set of markets and validates it on another.
 
 `examples/self_adaptive_trading_demo.cpp` runs the whole method on the synthetic market:
-- the walk-forward forecasts of six model families;
+- the walk-forward forecasts of the default models (any of the eight families can be added);
 - the best fixed rules;
 - the self-adaptive strategy against the best fixed rule (chosen in hindsight) and the market;
 - a grid of selector settings;

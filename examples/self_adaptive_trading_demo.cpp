@@ -30,7 +30,7 @@ int main() {
   std::printf("Synthetic market: %zu stocks x %zu days (%s .. %s)\n", data.numAssets(), data.numDates(), data.dates.front().c_str(),
               data.dates.back().c_str());
 
-  ExperimentSpec spec;  // the paper's 23 alphas, next-day direction labels, six model families
+  ExperimentSpec spec;  // the paper's 23 alphas, next-day direction labels, the default model pool
   const PredictionSet p = runPredictions(data, spec);
   std::printf("\nWalk-forward forecasts (train %zu days, re-fit every %zu days, out of sample from %s)\n", spec.walkForward.trainWindow,
               spec.walkForward.retrainEvery, data.dates[p.models[0].start].c_str());

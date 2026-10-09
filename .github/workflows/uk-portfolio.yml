@@ -27,7 +27,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
-          cmake --build build --target uk_portfolio
+          cmake --build build --target uk_portfolio pool_ablation
       - name: Restore the EODData cache
         uses: actions/cache@v4
         with:
@@ -45,6 +45,10 @@ jobs:
             --price-divisor 100 --stamp-duty-bps 50 --cost-bps 10 --robustness --report report/uk-portfolio.json | tee report/uk-portfolio.txt
           cp data/LSE.symbols.json report/
           { echo '```'; cat report/uk-portfolio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Model pool on UK data (full vs previous vs default)
+        run: |
+          ./build/pool_ablation 0 --csv data/LSE.csv | tee report/pool-ablation.txt
+          { echo '```'; cat report/pool-ablation.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Report (for reading from the log)
         run: |
           echo "----- BEGIN REPORT -----"

@@ -21,6 +21,29 @@ export const MODEL_NAMES = {
   xgboost: 'XGBoost', lightgbm: 'LightGBM', mlp: 'MLP', lstm: 'LSTM',
 };
 
+export const DEFAULT_MODELS = ['logistic', 'forest'];
+export const DEFAULT_STRATEGIES = [
+  { kind: 'topk', param: 5, holding: 1 },
+  { kind: 'topk', param: 10, holding: 5 },
+  { kind: 'longshort', param: 3, holding: 1 },
+  { kind: 'threshold', param: 0.52, holding: 1 },
+  { kind: 'probweighted', param: 0.5, holding: 1 },
+];
+
+// The pool before the consolidation (v0.3.3 and earlier). A stored spec still holding exactly
+// this pool, never edited, moves to the consolidated one; an edited pool is kept as it is.
+const LEGACY_MODELS = ['logistic', 'forest', 'xgboost', 'lightgbm', 'mlp', 'lstm'];
+const LEGACY_STRATEGIES = [
+  ['topk', 3, 1], ['topk', 5, 1], ['topk', 10, 5], ['longshort', 3, 1], ['longshort', 5, 1],
+  ['threshold', 0.52, 1], ['threshold', 0.55, 1], ['probweighted', 0.5, 1], ['betsize', 0.1, 1],
+];
+function isLegacyPool(stored) {
+  const m = stored.models, s = stored.strategies;
+  return Array.isArray(m) && Array.isArray(s) && m.length === LEGACY_MODELS.length && s.length === LEGACY_STRATEGIES.length &&
+    m.every((x, i) => JSON.stringify(x) === JSON.stringify(MODEL_DEFAULTS[LEGACY_MODELS[i]])) &&
+    s.every((x, i) => x.kind === LEGACY_STRATEGIES[i][0] && x.param === LEGACY_STRATEGIES[i][1] && x.holding === LEGACY_STRATEGIES[i][2]);
+}
+
 export function defaultSpec() {
   return {
     market: {
@@ -37,19 +60,11 @@ export function defaultSpec() {
     ffdOrder: 0.4,
     cusumMultiple: 0,
     label: { kind: 'direction', horizon: 1, window: 10, barrierWidth: 1, volSpan: 50 },
-    models: ['logistic', 'forest', 'xgboost', 'lightgbm', 'mlp', 'lstm'].map((t) => ({ ...MODEL_DEFAULTS[t] })),
+    // The consolidated pool (examples/pool_ablation): the models and rules that add value to the
+    // self-adaptive strategy. Every other family and rule kind can still be added in the editor.
+    models: DEFAULT_MODELS.map((t) => ({ ...MODEL_DEFAULTS[t] })),
     walkForward: { trainWindow: 504, retrainEvery: 63, maxTrainRows: 8000, seed: 11, weighting: 'none', decayOldest: 0.5 },
-    strategies: [
-      { kind: 'topk', param: 3, holding: 1 },
-      { kind: 'topk', param: 5, holding: 1 },
-      { kind: 'topk', param: 10, holding: 5 },
-      { kind: 'longshort', param: 3, holding: 1 },
-      { kind: 'longshort', param: 5, holding: 1 },
-      { kind: 'threshold', param: 0.52, holding: 1 },
-      { kind: 'threshold', param: 0.55, holding: 1 },
-      { kind: 'probweighted', param: 0.5, holding: 1 },
-      { kind: 'betsize', param: 0.1, holding: 1 },
-    ],
+    strategies: DEFAULT_STRATEGIES.map((x) => ({ ...x })),
     costBps: 10,
     selector: { lookback: 63, adaptEvery: 21, metric: 'sharpe', topM: 1, allowCash: true, minScore: 0 },
     robustness: { lookbacks: [21, 42, 63, 126, 252], steps: [5, 10, 21, 42, 63], metrics: ['return', 'sharpe', 'sortino'], costs: [0, 5, 10, 20, 40] },
@@ -84,6 +99,7 @@ export function loadSpec() {
       const stored = JSON.parse(raw);
       for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'])
         if (stored[k] && typeof stored[k] === 'object') stored[k] = { ...spec[k], ...stored[k] };
+      if (isLegacyPool(stored)) { delete stored.models; delete stored.strategies; }
       spec = { ...spec, ...stored };
     }
   } catch (_) { /* storage unavailable: fall back to defaults */ }

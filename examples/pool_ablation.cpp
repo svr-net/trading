@@ -1,6 +1,7 @@
 // Which models and trading rules earn their place in the self-adaptive strategy's pool?
 //
 //   pool_ablation [markets per set=6] [days=2520] [--csv data.csv]
+//   pool_ablation 0 --csv data.csv     (real data only: full pool vs the library's default pool)
 //
 // Every model family (8) is trained once per market, walk-forward. The candidate pool is
 // every model x rule. Starting from the full pool, backward elimination removes, one at a
@@ -28,8 +29,27 @@ namespace {
 constexpr double kTolerance = 0.02;  // Sharpe a removal may cost and still count as "adds nothing"
 constexpr double kCostBps = 10.0;
 
+// The eight families with the settings of the original (v0.3) pool, and its nine rules.
 std::vector<ModelSpec> allModels() {
-  auto m = ExperimentSpec::defaultModels();  // logistic, forest, xgboost, lightgbm, mlp, lstm
+  std::vector<ModelSpec> m(6);
+  m[0].type = "logistic";
+  m[1].type = "forest";
+  m[1].trees = 40;
+  m[1].maxDepth = 6;
+  m[1].colsample = 0.4;
+  m[1].subsample = 0.7;
+  m[2].type = "xgboost";
+  m[3].type = "lightgbm";
+  m[3].maxDepth = 8;
+  m[3].maxLeaves = 12;
+  m[4].type = "mlp";
+  m[4].learningRate = 0.005;
+  m[4].maxSamples = 4000;
+  m[5].type = "lstm";
+  m[5].hidden = 8;
+  m[5].learningRate = 0.01;
+  m[5].epochs = 2;
+  m[5].maxSamples = 3000;
   ModelSpec svm;
   svm.type = "svm";
   svm.epochs = 3;
@@ -68,6 +88,35 @@ struct Pool {
   std::size_t models() const { return static_cast<std::size_t>(std::count(model.begin(), model.end(), true)); }
   std::size_t rules() const { return static_cast<std::size_t>(std::count(rule.begin(), rule.end(), true)); }
 };
+
+std::vector<StrategySpec> allRules() {
+  return {
+      {StrategyKind::LongTopK, 3, 1},     {StrategyKind::LongTopK, 5, 1},  {StrategyKind::LongTopK, 10, 5},
+      {StrategyKind::LongShort, 3, 1},    {StrategyKind::LongShort, 5, 1}, {StrategyKind::Threshold, 0.52, 1},
+      {StrategyKind::Threshold, 0.55, 1}, {StrategyKind::ProbabilityWeighted, 0.5, 1},
+      {StrategyKind::BetSized, 0.1, 1},
+  };
+}
+
+// The pool the library shipped before the consolidation: the first six families, all nine rules.
+Pool previousPool(const std::vector<std::string>& modelNames, const std::vector<StrategySpec>& rules) {
+  Pool p{std::vector<bool>(modelNames.size(), false), std::vector<bool>(rules.size(), true)};
+  for (std::size_t k = 0; k < 6 && k < modelNames.size(); ++k) p.model[k] = true;
+  return p;
+}
+
+// The library's default pool (ExperimentSpec defaults) as a subset of the full one.
+Pool defaultPool(const std::vector<std::string>& modelNames, const std::vector<StrategySpec>& rules) {
+  Pool p{std::vector<bool>(modelNames.size(), false), std::vector<bool>(rules.size(), false)};
+  const auto models = ExperimentSpec::defaultModels();
+  const auto all = allModels();
+  for (std::size_t k = 0; k < all.size(); ++k)
+    for (const auto& d : models) p.model[k] = p.model[k] || d.type == all[k].type;
+  for (std::size_t k = 0; k < rules.size(); ++k)
+    for (const auto& d : ExperimentSpec::defaultStrategies())
+      p.rule[k] = p.rule[k] || (d.kind == rules[k].kind && d.param == rules[k].param && d.holding == rules[k].holding);
+  return p;
+}
 
 struct Outcome {
   PerformanceMetrics metrics;
@@ -110,10 +159,11 @@ std::string describe(const Pool& pool, const std::vector<std::string>& modelName
   return out;
 }
 
-void validate(const char* title, const std::vector<Market>& set, const Pool& full, const Pool& pruned,
+void validate(const char* title, const std::vector<Market>& set, const std::vector<std::pair<std::string, Pool>>& pools,
               const std::vector<StrategySpec>& rules) {
   std::printf("\n%s\n  %-14s %8s %8s %8s %8s %10s %12s\n", title, "pool", "ann.ret", "Sharpe", "worst", "max DD", "DSR", "train ms");
-  for (const auto& [name, pool] : {std::pair<const char*, const Pool*>{"full", &full}, {"pruned", &pruned}}) {
+  for (const auto& [name, pl] : pools) {
+    const Pool* pool = &pl;
     double ret = 0, sharpe = 0, worst = 1e9, dd = 0, dsr = 0, train = 0;
     const double n = static_cast<double>(set.size());
     for (const auto& m : set) {
@@ -129,7 +179,7 @@ void validate(const char* title, const std::vector<Market>& set, const Pool& ful
       for (std::size_t k = 0; k < pool->model.size(); ++k)
         if (pool->model[k]) train += m.trainMs[k] / n;
     }
-    std::printf("  %-14s %7.1f%% %8.2f %8.2f %7.1f%% %9.0f%% %12.0f\n", name, 100 * ret, sharpe, worst, 100 * dd, 100 * dsr, train);
+    std::printf("  %-14s %7.1f%% %8.2f %8.2f %7.1f%% %9.0f%% %12.0f\n", name.c_str(), 100 * ret, sharpe, worst, 100 * dd, 100 * dsr, train);
   }
 }
 
@@ -148,8 +198,23 @@ int main(int argc, char** argv) {
   if (pos.size() > 0) markets = std::strtoul(pos[0].c_str(), nullptr, 10);
   if (pos.size() > 1) days = std::strtoul(pos[1].c_str(), nullptr, 10);
 
-  const auto rules = ExperimentSpec::defaultStrategies();
+  const auto rules = allRules();
   std::vector<std::string> modelNames;
+  if (markets == 0) {  // real data only: the full pool against the library's default pool
+    if (csv.empty()) throw std::invalid_argument("pool_ablation 0 needs --csv");
+    std::ifstream f(csv);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::vector<Market> real = {prepare(csv, parseCsv(ss.str()))};
+    for (const auto& mp : real[0].p.models) modelNames.push_back(mp.name);
+    std::printf("Models on %s\n  %-22s %8s\n", csv.c_str(), "model", "AUC");
+    for (const auto& mp : real[0].p.models) std::printf("  %-22s %8.4f\n", mp.name.c_str(), mp.oos.auc);
+    const Pool fullPool{std::vector<bool>(modelNames.size(), true), std::vector<bool>(rules.size(), true)};
+    const Pool def = defaultPool(modelNames, rules);
+    std::printf("\nDefault pool: %s\n", describe(def, modelNames, rules).c_str());
+    validate(("Real data: " + csv).c_str(), real, {{"full", fullPool}, {"previous", previousPool(modelNames, rules)}, {"default", def}}, rules);
+    return 0;
+  }
   auto build = [&](std::uint64_t base) {
     std::vector<Market> set;
     for (std::size_t k = 0; k < markets; ++k) {
@@ -219,10 +284,14 @@ int main(int argc, char** argv) {
   std::printf("\nPruned pool: %s (%zu candidates instead of %zu)\n", describe(pool, modelNames, rules).c_str(), pool.models() * pool.rules(),
               full.models() * full.rules());
 
-  validate("Selection markets", selection, full, pool, rules);
+  const Pool def = defaultPool(modelNames, rules);
+  std::printf("Library default pool: %s (%zu candidates)\n", describe(def, modelNames, rules).c_str(), def.models() * def.rules());
+  const std::vector<std::pair<std::string, Pool>> pools = {
+      {"full", full}, {"previous", previousPool(modelNames, rules)}, {"default", def}, {"pruned", pool}};
+  validate("Selection markets", selection, pools, rules);
   std::fprintf(stderr, "validation markets\n");
   const auto validation = build(201);
-  validate("Validation markets (unseen)", validation, full, pool, rules);
+  validate("Validation markets (unseen)", validation, pools, rules);
   // Every step of the elimination on the unseen markets: how small can the pool get before
   // the validation result stops improving?
   std::printf("\nElimination path on the validation markets\n  %-28s %6s %8s %8s %8s\n", "after", "cands", "sel SR", "val SR", "val DD");
@@ -240,7 +309,7 @@ int main(int argc, char** argv) {
     std::stringstream ss;
     ss << f.rdbuf();
     const std::vector<Market> real = {prepare(csv, parseCsv(ss.str()))};
-    validate(("Real data: " + csv).c_str(), real, full, pool, rules);
+    validate(("Real data: " + csv).c_str(), real, pools, rules);
   }
   return 0;
 }
