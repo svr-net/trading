@@ -45,10 +45,8 @@ FusedPlan compile(const std::vector<ModelPredictions>& models, const std::vector
   if (evalFrom >= p.numDays) throw std::invalid_argument("evaluation starts after the last out-of-sample date");
   for (const auto& s : strategies)
     if (s.holding < 1) throw std::invalid_argument("holding period must be at least 1");
-  for (const auto& s : selectors) {
+  for (const auto& s : selectors)
     if (s.lookback < 2 || s.adaptEvery < 1) throw std::invalid_argument("selector look-back must be >= 2 and step >= 1");
-    if (s.switchBar != 0 || s.switchCost != 0) throw std::invalid_argument("the GPU selector kernel has no switching bar; run it on the CPU");
-  }
 
   const std::size_t M = p.numModels, N = p.numAssets, D = p.numDays, C = p.numCandidates, S = p.numSelectors;
   const std::size_t offCand = 0, offSel = offCand + C * kCandidateStride, offRet = offSel + S * kSelectorStride,

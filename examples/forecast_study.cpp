@@ -13,9 +13,7 @@
 //  - the models and the self-adaptive forecast together;
 // then scoring variants of the self-adaptive forecast (fixed, exponential, expanding, ADWIN,
 // market-state ADWIN and similar-state memory; best or evidence decisions), and forecasts
-// built from the models plus four market-state specialists; finally the selector's differential
-// switching bar (a challenger must beat the held candidate significantly, or by more than the
-// cost of switching) at the default 10 bp and at a UK-like 35 bp per unit of turnover.
+// built from the models plus four market-state specialists.
 // Forecast quality (AUC, log loss, information coefficient) and the selector's results are
 // reported on synthetic markets (selection), unseen ones (validation) and, with --csv, real bars.
 #include <algorithm>
@@ -23,7 +21,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -168,17 +165,14 @@ struct Run {
   double trials = 1, trialVariance = 0;
 };
 
-Run selector(const Market& m, const std::vector<ModelPredictions>& models, const SelectorSpec& spec = {}, double costBps = kCostBps,
-             AdaptiveResult* detail = nullptr) {
-  const CandidateBook book(models, ExperimentSpec::defaultStrategies(), m.p.nextReturns, costBps);
+Run selector(const Market& m, const std::vector<ModelPredictions>& models) {
+  const CandidateBook book(models, ExperimentSpec::defaultStrategies(), m.p.nextReturns, kCostBps);
   const std::size_t from = m.first - book.start();
-  auto a = runSelector(book, spec, from);
+  const auto a = runSelector(book, SelectorSpec{}, from);
   std::vector<double> sharpes;
   for (std::size_t c = 0; c < book.size(); ++c) sharpes.push_back(afml::periodSharpe(book.netSeries(c, from)));
   const double sd = sharpes.size() > 1 ? stdev(sharpes) : 0.0;
-  Run r{a.metrics, a.net, static_cast<double>(book.size()), sd * sd};
-  if (detail) *detail = std::move(a);
-  return r;
+  return {a.metrics, a.net, static_cast<double>(book.size()), sd * sd};
 }
 
 void study(const char* title, const std::vector<Market>& set) {
@@ -282,69 +276,6 @@ std::vector<double> scoring(const char* title, const std::vector<Market>& set, c
   return mean;
 }
 
-// The selector's differential switching bar.
-struct Bar {
-  std::string name;
-  double t = 0, cost = 0;
-};
-
-std::vector<Bar> bars() {
-  return {{"off (switch to the best)", 0, 0}, {"t > 0.5", 0.5, 0}, {"t > 1", 1, 0}, {"t > 1.5", 1.5, 0}, {"t > 2", 2, 0}, {"t > 3", 3, 0},
-          {"lead > 1x switch cost", 0, 1}, {"lead > 2x switch cost", 0, 2}, {"lead > 4x switch cost", 0, 4}, {"t > 1 and lead > 1x cost", 1, 1}};
-}
-
-// Pools the selector trades in the switching study.
-struct Pool {
-  std::string name;
-  std::vector<ModelPredictions> (*models)(const Market&);
-};
-
-std::vector<Pool> pools() {
-  return {{"default forecast (self-adaptive, 6 models)", [](const Market& m) { return std::vector<ModelPredictions>{m.specialistForecast[4]}; }},
-          {"separate models (paper)", [](const Market& m) { return m.p.models; }}};
-}
-
-const double kCosts[] = {10.0, 35.0};
-
-// Mean selector Sharpe ratio per [pool][cost][bar]. `chosen` ([pool][cost], from the selection
-// markets) marks the bar picked there.
-std::vector<std::vector<std::vector<double>>> switching(const char* title, const std::vector<Market>& set,
-                                                        const std::vector<std::vector<std::size_t>>& chosen) {
-  const double n = static_cast<double>(set.size());
-  const auto bs = bars();
-  const auto ps = pools();
-  std::vector<std::vector<std::vector<double>>> mean(ps.size(), std::vector<std::vector<double>>(std::size(kCosts), std::vector<double>(bs.size(), 0.0)));
-  for (std::size_t p = 0; p < ps.size(); ++p)
-    for (std::size_t c = 0; c < std::size(kCosts); ++c) {
-      std::printf("\n%s: switching bar, %s, %.0f bp per unit of turnover (beats = markets where it beats no bar)\n"
-                  "  %-30s %8s %8s %8s %6s %9s %8s %7s\n",
-                  title, ps[p].name.c_str(), kCosts[c], "bar", "ann.ret", "Sharpe", "worst", "beats", "switch/yr", "turn/yr", "held");
-      std::vector<double> off;
-      for (std::size_t b = 0; b < bs.size(); ++b) {
-        SelectorSpec spec;
-        spec.switchBar = bs[b].t;
-        spec.switchCost = bs[b].cost;
-        double ret = 0, sharpe = 0, worst = 1e9, swy = 0, turn = 0, held = 0;
-        int beats = 0;
-        for (std::size_t k = 0; k < set.size(); ++k) {
-          AdaptiveResult a;
-          const auto r = selector(set[k], ps[p].models(set[k]), spec, kCosts[c], &a);
-          if (b == 0) off.push_back(r.metrics.sharpe);
-          else beats += r.metrics.sharpe > off[k] + 1e-9 ? 1 : 0;
-          ret += r.metrics.annualReturn / n, sharpe += r.metrics.sharpe / n, worst = std::min(worst, r.metrics.sharpe);
-          swy += 252.0 * static_cast<double>(a.switches) / static_cast<double>(a.net.size()) / n;
-          turn += 252.0 * r.metrics.averageTurnover / n;
-          held += static_cast<double>(a.heldBack) / std::max<double>(1.0, static_cast<double>(a.adaptations.size())) / n;
-        }
-        mean[p][c][b] = sharpe;
-        const bool pick = !chosen.empty() && chosen[p][c] == b;
-        std::printf("%s %-30s %7.1f%% %8.2f %8.2f %3d/%-2zu %9.1f %7.0fx %6.0f%%\n", pick ? " *" : "  ", bs[b].name.c_str(), 100 * ret, sharpe, worst,
-                    beats, set.size(), swy, turn, 100 * held);
-      }
-    }
-  return mean;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -360,7 +291,6 @@ int main(int argc, char** argv) {
   if (pos.size() > 0) markets = std::strtoul(pos[0].c_str(), nullptr, 10);
   if (pos.size() > 1) days = std::strtoul(pos[1].c_str(), nullptr, 10);
   std::vector<std::size_t> ranked;  // variants in the selection markets' order
-  std::vector<std::vector<std::size_t>> chosenBar;  // [pool][cost], best on the selection markets
   auto real = [&]() {
     std::ifstream f(csv);
     std::stringstream ss;
@@ -369,7 +299,6 @@ int main(int argc, char** argv) {
     study(("Real data: " + csv).c_str(), set);
     scoring(("Real data: " + csv).c_str(), set, ranked);
     specialists(("Real data: " + csv).c_str(), set);
-    switching(("Real data: " + csv).c_str(), set, chosenBar);
   };
   if (markets == 0) {
     if (csv.empty()) throw std::invalid_argument("forecast_study 0 needs --csv");
@@ -394,17 +323,11 @@ int main(int argc, char** argv) {
   for (std::size_t v = 0; v < sel.size(); ++v) ranked.push_back(v);
   std::stable_sort(ranked.begin(), ranked.end(), [&](std::size_t a, std::size_t b) { return sel[a] > sel[b]; });
   std::printf("\nChosen on the selection markets: %s\n", variants()[ranked[0]].name.c_str());
-  for (const auto& byCost : switching("Selection markets", selection, {})) {
-    chosenBar.emplace_back();
-    for (const auto& sharpe : byCost)
-      chosenBar.back().push_back(static_cast<std::size_t>(std::max_element(sharpe.begin(), sharpe.end()) - sharpe.begin()));
-  }
   std::fprintf(stderr, "validation markets\n");
   const auto validation = build(201);
   study("Validation markets (unseen)", validation);
   scoring("Validation markets (unseen), in the selection markets' order", validation, ranked);
   specialists("Validation markets (unseen)", validation);
-  switching("Validation markets (unseen); * = chosen on the selection markets", validation, chosenBar);
   if (!csv.empty()) real();
   return 0;
 }
