@@ -518,44 +518,16 @@ On the unseen markets the composite strategy lifts the Sharpe ratio from 1.40 to
 The library therefore keeps the momentum book as a sleeve, so the allocator can lean on it. It does not crown momentum,
 which the synthetic markets (where it earns nothing) would not support.
 
-### Spherical (rotor) allocators: gate 1 of a geometric composition
+**Tried and dropped: spherical (rotor) allocators.** Allocations were written as the squares of a unit vector and
+moved by geometric-algebra rotors, so weights and cash always summed to exactly one. Two variants were tested:
+- a geodesic gradient step on the expected trailing Sharpe ratio;
+- a partial rotation towards the exponential-weights allocation.
 
-Gate 1 tests whether a geometric approach to the composition can beat the allocator.
-
-**The idea.** Allocations live on a sphere. With w_k = u_k² for a unit vector u (cash included), every mix of
-sleeves is a point on S^K, and distances there are Fisher–Rao (Hellinger) distances. A rotor exp(−θ/2 u∧d) of geometric
-algebra moves u along a great circle and keeps |u| = 1 exactly, so the weights always sum to one without
-re-normalising. Two stateful allocators use this (`AllocationMethod::RotorGradient`, `RotorGlide`):
-- **rotor gradient** — a geodesic step along the Riemannian gradient of the expected trailing Sharpe ratio (replicator
-  dynamics). The step never passes the objective's peak on its great circle, and a 2% rotation towards uniform keeps
-  any sleeve from being written off.
-- **rotor glide** — a rotation part of the way towards the exponential-weights allocation. At glide = 1 it *is*
-  exponential weights.
-
-**The gate.** It counted as passed only if a spherical allocator, with settings chosen on the selection markets, beat
-exponential weights on the unseen markets. The settings were picked in `strategy_tournament`, 180 allocator settings in
-all. `composite_study` then ran the composite strategy under each allocator with those settings unchanged, plus
-exponential weights on the same look-back and schedule as a control.
-
-| Sharpe ratio | Tournament, validation | Composite, validation | Composite, UK |
-|---|---|---|---|
-| Exponential weights (library default) | 1.64 | **1.96** | 0.48 |
-| Rotor glide (252 days, weekly, η 2, glide 0.5) | 1.51 | 1.80 | 0.89 |
-| — control: exponential weights (252 days, weekly, η 2) | — | 1.81 | 0.88 |
-| Rotor gradient (63 days, every 21, step 0.1) | 1.39 | 1.61 | **1.06** |
-| — control: exponential weights (63 days, every 21) | — | 1.76 | 0.63 |
-
-**Verdict: gate 1 is not passed.**
-- **On the unseen synthetic markets** both spherical allocators lose to exponential weights.
-- **Rotor glide** matches its exponential-weights control everywhere. Its better UK figure comes from the longer
-  look-back, not from the geometry.
-- **Rotor gradient** is the only result the geometry explains: +0.43 Sharpe over its control on the UK stocks. But that
-  is one sample of about 2½ years, where a Sharpe estimate is uncertain by roughly ±0.6. On the six unseen markets the
-  same allocator was 0.15 worse than its control.
-
-The allocators stay in the library as options, outside `allAllocationMethods()`. The orthonormal-frame and neural rotor
-ODE stages (gates 2 and 3) were not built. They should wait until something passes gate 1, for example on a longer UK
-history or more markets.
+Settings were chosen on the selection markets. Neither beat exponential weights on the unseen markets: composite strategy
+Sharpe 1.61 and 1.80 against 1.96. The glide variant matched exponential weights run on the same look-back and schedule
+(1.80 against 1.81), so the geometry added nothing. The gradient variant did better on UK stocks, 1.06 against 0.63 for
+its control, but that is a single sample of about 2½ years, too short to trust. The library keeps exponential weights.
+The code is in the git history (commit 2f468f3).
 
 Run `composite_study [markets] [days]` to repeat the study, or `composite_study 0 --csv data.csv` on real bars. The web
 page *Composite model & strategy* runs everything in the browser.

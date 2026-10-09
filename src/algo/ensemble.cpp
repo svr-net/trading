@@ -70,10 +70,6 @@ AllocationMethod parseAllocationMethod(const std::string& n) {
   if (n == "inversevol") return AllocationMethod::InverseVolatility;
   if (n == "riskadjusted") return AllocationMethod::RiskAdjustedSharpe;
   if (n == "exponential") return AllocationMethod::ExponentialWeights;
-  for (auto m : sphericalAllocationMethods())
-    if (allocationName(m) == n) return m;
-  if (n == "rotorgradient") return AllocationMethod::RotorGradient;
-  if (n == "rotorglide") return AllocationMethod::RotorGlide;
   throw std::invalid_argument("unknown allocation method: " + n);
 }
 
@@ -85,8 +81,6 @@ std::string allocationName(AllocationMethod m) {
     case AllocationMethod::InverseVolatility: return "inverse volatility";
     case AllocationMethod::RiskAdjustedSharpe: return "Sharpe / volatility";
     case AllocationMethod::ExponentialWeights: return "exponential weights";
-    case AllocationMethod::RotorGradient: return "rotor gradient";
-    case AllocationMethod::RotorGlide: return "rotor glide";
   }
   return "?";
 }
@@ -95,34 +89,6 @@ std::vector<AllocationMethod> allAllocationMethods() {
   return {AllocationMethod::Equal, AllocationMethod::Best, AllocationMethod::SharpeWeighted, AllocationMethod::InverseVolatility,
           AllocationMethod::RiskAdjustedSharpe, AllocationMethod::ExponentialWeights};
 }
-
-std::vector<AllocationMethod> sphericalAllocationMethods() { return {AllocationMethod::RotorGradient, AllocationMethod::RotorGlide}; }
-
-namespace {
-
-constexpr double kQuarterTurn = 1.5707963267948966;
-
-// Rotates the unit vector u by `angle` in the plane spanned by u and the direction d (d need
-// not be orthogonal to u or unit length): the action of the rotor exp(-angle/2 u^d).
-void rotate(std::vector<double>& u, std::vector<double> d, double angle) {
-  double dot = 0;
-  for (std::size_t k = 0; k < u.size(); ++k) dot += u[k] * d[k];
-  double norm = 0;
-  for (std::size_t k = 0; k < u.size(); ++k) norm += (d[k] -= dot * u[k]) * d[k];
-  norm = std::sqrt(norm);
-  if (!(norm > 1e-15) || angle == 0) return;
-  const double c = std::cos(angle), s = std::sin(angle) / norm;
-  for (std::size_t k = 0; k < u.size(); ++k) u[k] = c * u[k] + s * d[k];
-}
-
-// Rotates u the fraction f of the way to the unit vector v along the great circle.
-void glideTowards(std::vector<double>& u, const std::vector<double>& v, double f) {
-  double dot = 0;
-  for (std::size_t k = 0; k < u.size(); ++k) dot += u[k] * v[k];
-  rotate(u, v, f * std::acos(std::max(-1.0, std::min(1.0, dot))));
-}
-
-}  // namespace
 
 AllocationResult allocate(const std::vector<std::vector<double>>& sleeves, const AllocationSpec& s) {
   const std::size_t S = sleeves.size();
@@ -135,13 +101,6 @@ AllocationResult allocate(const std::vector<std::vector<double>>& sleeves, const
   AllocationResult out;
   out.weights.assign(S, {});
   std::vector<double> w(S, 0.0);
-  const bool spherical = s.method == AllocationMethod::RotorGradient || s.method == AllocationMethod::RotorGlide;
-  if (spherical && (!(s.rotorStep >= 0) || !(s.rotorMix >= 0 && s.rotorMix <= 1) || !(s.glide > 0 && s.glide <= 1)))
-    throw std::invalid_argument("allocation: rotor step >= 0, mix in [0, 1], glide in (0, 1]");
-  // Spherical state: S sleeves, then cash (held at zero without allowCash).
-  const std::size_t D = S + (s.allowCash ? 1 : 0);
-  std::vector<double> u;
-  auto uniformU = [&] { return std::vector<double>(D, 1.0 / std::sqrt(static_cast<double>(D))); };
   double turnoverSum = 0;
   for (std::size_t t = s.lookback; t < T; ++t) {
     double turnover = 0;
@@ -173,55 +132,14 @@ AllocationResult allocate(const std::vector<std::vector<double>>& sleeves, const
         case AllocationMethod::RiskAdjustedSharpe:
           for (std::size_t k = 0; k < S; ++k) next[k] = vol[k] > 0 ? std::max(0.0, score[k]) / vol[k] : 0.0;
           break;
-        case AllocationMethod::ExponentialWeights:
-        case AllocationMethod::RotorGlide: {
+        case AllocationMethod::ExponentialWeights: {
           const double top = *std::max_element(score.begin(), score.end());
           for (std::size_t k = 0; k < S; ++k) next[k] = std::exp(s.eta * (score[k] - top));
           if (s.allowCash && top <= 0) std::fill(next.begin(), next.end(), 0.0);
-          if (s.method == AllocationMethod::RotorGlide) {
-            // Target on the sphere: square roots of the exponential-weights allocation.
-            const double total = std::accumulate(next.begin(), next.end(), 0.0);
-            std::vector<double> target(D, 0.0);
-            if (total > 0)
-              for (std::size_t k = 0; k < S; ++k) target[k] = std::sqrt(next[k] / total);
-            else
-              target[S] = 1.0;  // all cash (only reachable with allowCash)
-            if (u.empty()) u = target;
-            else glideTowards(u, target, s.glide);
-          }
-          break;
-        }
-        case AllocationMethod::RotorGradient: {
-          if (u.empty()) u = uniformU();
-          // f(u) = sum_k u_k^2 S_k (cash scores 0): Euclidean gradient 2 u_k S_k; rotate along
-          // its tangent part by an angle proportional to the tangent's length.
-          std::vector<double> g(D, 0.0), sc(D, 0.0);
-          for (std::size_t k = 0; k < S; ++k) g[k] = 2.0 * u[k] * score[k], sc[k] = score[k];
-          double dot = 0, norm = 0;
-          for (std::size_t k = 0; k < D; ++k) dot += g[k] * u[k];
-          std::vector<double> v(D);
-          for (std::size_t k = 0; k < D; ++k) norm += (v[k] = g[k] - dot * u[k]) * v[k];
-          norm = std::sqrt(norm);
-          if (norm > 1e-15) {
-            // Along the great circle u cos(a) + v/|v| sin(a), f = A cos^2 + 2B sin cos + C sin^2
-            // peaks at a* = atan2(2B, A - C) / 2: never step past it.
-            double A = 0, B = 0, C = 0;
-            for (std::size_t k = 0; k < D; ++k) {
-              const double e = v[k] / norm;
-              A += sc[k] * u[k] * u[k], B += sc[k] * u[k] * e, C += sc[k] * e * e;
-            }
-            double peak = 0.5 * std::atan2(2.0 * B, A - C);
-            if (peak <= 0) peak += kQuarterTurn * 2.0;
-            rotate(u, v, std::min({s.rotorStep * norm, peak, kQuarterTurn}));
-          }
-          if (s.rotorMix > 0) glideTowards(u, uniformU(), s.rotorMix);
           break;
         }
       }
-      if (spherical)
-        for (std::size_t k = 0; k < S; ++k) next[k] = u[k] * u[k];  // cash is the rest: u_S^2
-      // The spherical weights already sum to one with cash; the others are normalised here.
-      double total = spherical ? 1.0 : std::accumulate(next.begin(), next.end(), 0.0);
+      double total = std::accumulate(next.begin(), next.end(), 0.0);
       if (!(total > 0) && !s.allowCash) {
         std::fill(next.begin(), next.end(), 1.0);
         total = static_cast<double>(S);
