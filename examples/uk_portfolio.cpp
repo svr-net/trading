@@ -332,6 +332,7 @@ int main(int argc, char** argv) try {
     std::string name, kind;
     std::vector<double> r, turnover;
     std::size_t switches = 0;
+    std::string holding;  ///< selectors: the construction held at the end
   };
   std::vector<RobustRow> robust;
   std::size_t rStart = 0;
@@ -373,24 +374,24 @@ int main(int argc, char** argv) try {
         if (tw.empty()) tw = constructions[static_cast<std::size_t>(held)].second(t, eligibleAt(t));
         return tw;
       }, o.costBps, o.stampBps);
-      robust.push_back({v.name, "selector", b.returns, b.turnover, switches});
+      robust.push_back({v.name, "selector", b.returns, b.turnover, switches, constructions[static_cast<std::size_t>(held)].first});
     }
     const std::size_t off = rStart - start;
     for (std::size_t c = 0; c < books.size(); ++c)
       robust.push_back({constructions[c].first, "construction", std::vector<double>(books[c].returns.begin() + static_cast<std::ptrdiff_t>(off), books[c].returns.end()),
-                        std::vector<double>(books[c].turnover.begin() + static_cast<std::ptrdiff_t>(off), books[c].turnover.end()), 0});
+                        std::vector<double>(books[c].turnover.begin() + static_cast<std::ptrdiff_t>(off), books[c].turnover.end()), 0, ""});
     const Book u = simulate(ret, rStart, T, o.rebalance, [&](std::size_t t) {
       const auto e = eligibleAt(t);
       return scatter(N, e, std::vector<double>(e.size(), 1.0));
     }, o.costBps, o.stampBps);
-    robust.push_back({"equal-weight universe", "benchmark", u.returns, u.turnover, 0});
+    robust.push_back({"equal-weight universe", "benchmark", u.returns, u.turnover, 0, ""});
     std::printf("\nRobustness of the selector, %s .. %s (%zu days, same costs)\n", d.dates[rStart].c_str(), d.dates[T - 1].c_str(), u.returns.size());
-    std::printf("  %-38s %8s %8s %7s %8s %9s %8s\n", "variant", "CAGR", "vol", "Sharpe", "max DD", "turnover/yr", "switches");
+    std::printf("  %-38s %8s %8s %7s %8s %9s %8s  %s\n", "variant", "CAGR", "vol", "Sharpe", "max DD", "turnover/yr", "switches", "holding now");
     for (const auto& r : robust) {
       const auto m = evaluatePerformance(r.r, r.turnover);
       std::printf("  %-38s %7.1f%% %7.1f%% %7.2f %7.1f%% %8.0f%%", r.name.c_str(), 100 * m.annualReturn, 100 * m.annualVolatility, m.sharpe,
                   100 * m.maxDrawdown, 100 * m.averageTurnover * 252);
-      if (r.kind == "selector") std::printf(" %8zu", r.switches);
+      if (r.kind == "selector") std::printf(" %8zu  %s", r.switches, r.holding.c_str());
       std::printf("\n");
     }
   }
@@ -488,7 +489,8 @@ int main(int argc, char** argv) try {
         const auto m = evaluatePerformance(robust[k].r, robust[k].turnover);
         f << (k ? "," : "") << "{\"name\":" << json(robust[k].name) << ",\"kind\":" << json(robust[k].kind) << ",\"cagr\":" << m.annualReturn
           << ",\"vol\":" << m.annualVolatility << ",\"sharpe\":" << m.sharpe << ",\"maxDrawdown\":" << m.maxDrawdown
-          << ",\"turnoverPerYear\":" << m.averageTurnover * 252 << ",\"switches\":" << robust[k].switches << "}";
+          << ",\"turnoverPerYear\":" << m.averageTurnover * 252 << ",\"switches\":" << robust[k].switches
+          << ",\"holding\":" << json(robust[k].holding) << "}";
       }
       f << "]}";
     }
