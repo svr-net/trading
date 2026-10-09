@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(trading_sat
-  VERSION 0.4.0
+  VERSION 0.5.0
   DESCRIPTION "Predicting stock prices with machine learning to build a self-adaptive trading strategy"
   LANGUAGES CXX)
 
@@ -35,6 +35,7 @@ add_library(sat
   src/strategy/strategy.cpp
   src/adaptive/self_adaptive.cpp
   src/adaptive/experiment.cpp
+  src/adaptive/composite.cpp
   src/afml/bars.cpp
   src/afml/fracdiff.cpp
   src/afml/labeling.cpp
@@ -54,6 +55,7 @@ add_library(sat
   src/algo/execution.cpp
   src/algo/ensemble.cpp
   src/algo/tournament.cpp
+  src/algo/composite.cpp
   src/gpu/fused_backtest.cpp
   src/gpu/fused_kernels.cpp
   src/gpu/fused_reference.cpp
@@ -104,6 +106,7 @@ if(SAT_BUILD_TESTS)
     tests/test_gpu.cpp
     tests/test_afml.cpp
     tests/test_hedge_algo.cpp
+    tests/test_composite.cpp
   )
   target_link_libraries(sat_tests PRIVATE sat)
   add_test(NAME sat_tests COMMAND sat_tests)
@@ -116,6 +119,8 @@ if(SAT_BUILD_EXAMPLES)
   target_link_libraries(strategy_tournament PRIVATE sat)
   add_executable(uk_portfolio examples/uk_portfolio.cpp)
   add_executable(pool_ablation examples/pool_ablation.cpp)
+  add_executable(composite_study examples/composite_study.cpp)
+  target_link_libraries(composite_study PRIVATE sat)
   target_link_libraries(pool_ablation PRIVATE sat)
   target_link_libraries(uk_portfolio PRIVATE sat)
 endif()

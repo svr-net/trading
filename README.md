@@ -60,6 +60,16 @@ meta-allocator moves capital between them using only their past returns. That is
 an unseen set. See [Hedging, algorithmic trading and the tournament](#hedging-algorithmic-trading-and-the-tournament).
 As before, the methods are implemented from their published descriptions, in the library's own code and words.
 
+**Composite model and composite strategy.** Version 0.5 adds approaches from recent and classic research on combining
+forecasts and signals:
+- a *composite model* that combines the models' forecasts by the equal-weight average, a stacked meta-learner, or
+  Bernstein Online Aggregation;
+- a *composite strategy* that lets exponential weights move capital between the self-adaptive selector and slower
+  stock-selection books (forecast, momentum and trailing Sharpe, with a volatility target and an HMM regime gate).
+
+`examples/composite_study` chose the defaults on synthetic markets and checked them on unseen markets and on UK stocks.
+See [Composite model and composite strategy](#composite-model-and-composite-strategy).
+
 The library has no dependencies beyond the C++17 standard library.
 
 ## Building
@@ -408,6 +418,108 @@ Every family and rule kind is still in the editor.
 The consolidated pool loses less than the previous default, with a smaller drawdown and 6× faster training. The model-and-rule approach still needs a market where the forecasts carry information.
 
 Run `pool_ablation [markets] [days]` to repeat the study, or `pool_ablation 0 --csv data.csv` to compare the full and default pools on real bars.
+
+## Composite model and composite strategy
+
+### What the research suggests
+
+- **Forecast combination.** Stock and Watson (2004) named the "forecast combination puzzle": an equal-weight average of
+  forecasts usually beats combinations with estimated weights out of sample. Rapach, Strauss and Zhou (2010, *Review of
+  Financial Studies*) found the same for equity-premium forecasts. The weights are estimated with too much noise to pay
+  for themselves.
+- **Stacking** (Wolpert, 1992; Breiman, 1996) fits a meta-learner on the base models' out-of-fold predictions. It works
+  only when the meta-learner never sees in-sample fits, and it overfits easily when signals are weak.
+- **Online expert aggregation.** Bernstein Online Aggregation (Wintenberger, 2017) re-weights experts multiplicatively
+  with a second-order correction. Remlinger, Alasseur, Brière and Mikael (2023, "Expert aggregation for financial
+  forecasting") applied it to machine-learning forecasts of stock returns. In their study, the aggregate beat the
+  individual models on Sharpe ratio for long-short portfolios.
+- **Momentum with risk management.** Cross-sectional momentum (Jegadeesh and Titman, 1993) is the best-documented
+  stock-selection signal. It also suffers crashes. Scaling it to a constant volatility roughly doubles its Sharpe ratio
+  (Barroso and Santa-Clara, 2015), and so does conditioning on the market state (Daniel and Moskowitz, 2016).
+- **Learning to rank.** Poh, Lim, Zohren and Roberts (2021) trained cross-sectional strategies with learning-to-rank
+  objectives. The composite books here use a simpler idea from that work: ranks across stocks, not raw scores.
+
+### What the library implements
+
+**The composite model** is `compositePredictions` in `sat/adaptive/composite.hpp`. It combines the models'
+out-of-sample probabilities in one of three ways:
+- **average** — the equal-weight mean;
+- **stacked** — a logistic meta-learner on the models' log-odds, re-fitted every 21 days on the last 252 days of
+  resolved labels, with non-negative weights and a ridge penalty that pulls them towards equal weights;
+- **online** — BOA with the gradient trick on the log loss, using adaptive learning rates per model and updated daily.
+
+Weights on any date use only labels that ended before that date. A unit test checks this by scrambling future labels.
+
+`ExperimentSpec::composite` adds the composite to the pool. With `keepMembers = false` it trades in place of the
+models. The composite comes out as one more `ModelPredictions`, so every page can use it, including the GPU kernels.
+
+**The composite strategy** is `runCompositeStrategy` in `sat/algo/composite.hpp`. Exponential weights (the tournament's
+allocator: 63-day look-back, weekly, η = 4) move capital between three sleeves:
+1. **The self-adaptive selector** trading the composite forecast.
+2. **A blended stock-selection book** (`multiSignalSelection`):
+   - signals: the forecast, 12-1 month momentum and the 126-day trailing Sharpe ratio, each ranked across stocks;
+   - blending: weights in proportion to exp(0.5 × the t-statistic of each signal's trailing rank information
+     coefficient);
+   - portfolio: the top 10 stocks, held with inverse-volatility weights and rebalanced weekly;
+   - risk: a 15% volatility target on the book's own realised volatility (leverage up to 1.5), and an HMM regime gate
+     on the market.
+3. **A momentum-only book** with the same sizing and overlays.
+
+### How the defaults were chosen and how they held up
+
+`examples/composite_study` worked as follows:
+1. It trained the default models on 6 ten-year synthetic markets (selection).
+2. It ranked 56 book variants (signals × weighting × holdings × overlays) and five sleeve sets.
+3. It re-ran everything on 6 unseen markets (validation) and on the 120 LSE stocks (the UK workflow runs it).
+
+The variants' Sharpe ratios ranked almost the same way on the unseen markets as on the selection markets (rank
+correlation 0.87).
+
+**Composite model.** The table shows the self-adaptive selector's Sharpe ratio for each pool, always with the five
+default rules.
+
+| Pool | Selection | Validation | UK (LSE) |
+|---|---|---|---|
+| The two models (previous default) | 2.00 | 1.36 | −0.65 |
+| Models + average | 1.98 | 1.42 | −0.41 |
+| **Average alone (new web default)** | **2.18** | **1.57** | −0.49 |
+| Stacked alone | 2.01 | 1.46 | −1.09 |
+| Online (BOA) alone | 2.17 | 1.49 | −0.42 |
+
+- **The average wins.** It matches the best model's AUC and has the lowest log loss, as the combination puzzle
+  predicts.
+- **The stacked meta-learner is worst.** With AUCs of 0.52 its weights are mostly noise.
+- **BOA ties with the average.** On synthetic markets it leaned 55–57% towards logistic regression.
+- **Fewer candidates.** Trading the composite alone halves the candidates, which also lifts the deflated Sharpe ratio
+  (75% against 65% on validation).
+
+**Composite strategy.** All rows are over the same days.
+
+| | Selection Sharpe | Validation Sharpe | Validation max DD | UK Sharpe | UK max DD |
+|---|---|---|---|---|---|
+| Equal-weight market | 0.00 | −0.29 | 65% | **1.00** | 13% |
+| Selector on the separate models (previous default) | 2.01 | 1.40 | 47% | −0.54 | 33% |
+| Selector on the composite model | 2.20 | 1.58 | 44% | −0.51 | 30% |
+| Selector + blended book | 2.44 | 1.77 | 37% | 0.16 | 19% |
+| **Selector + blended book + momentum book (default)** | **2.49** | **1.82** | **36%** | **0.64** | **15%** |
+| Selector + one book per signal | 2.48 | 1.85 | 35% | 0.37 | 14% |
+| The same + the market as a sleeve | 2.46 | 1.69 | 36% | 0.36 | 18% |
+
+On the unseen markets the composite strategy lifts the Sharpe ratio from 1.40 to 1.82, cuts the drawdown from 47% to
+36%, and its worst market goes from −0.26 to +0.66. On UK stocks it turns the ML selector's loss into a gain (−0.54 to
++0.64) with less than half the drawdown.
+
+**What this does not show:**
+- **It does not beat the UK market.** The ML forecasts there have no skill (AUC 0.50).
+- **Plain momentum did best on UK data.** The 10-stock momentum book alone reached a Sharpe ratio of 1.49 over the
+  same period, ahead of every composite.
+- **The UK sample is short.** It covers about three years, so its rankings carry little weight.
+
+The library therefore keeps the momentum book as a sleeve, so the allocator can lean on it. It does not crown momentum,
+which the synthetic markets (where it earns nothing) would not support.
+
+Run `composite_study [markets] [days]` to repeat the study, or `composite_study 0 --csv data.csv` on real bars. The web
+page *Composite model & strategy* runs everything in the browser.
 
 ## Conventions
 

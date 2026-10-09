@@ -27,7 +27,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
-          cmake --build build --target uk_portfolio pool_ablation
+          cmake --build build --target uk_portfolio pool_ablation composite_study
       - name: Restore the EODData cache
         uses: actions/cache@v4
         with:
@@ -49,6 +49,10 @@ jobs:
         run: |
           ./build/pool_ablation 0 --csv data/LSE.csv | tee report/pool-ablation.txt
           { echo '```'; cat report/pool-ablation.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Composite model and strategy on UK data
+        run: |
+          ./build/composite_study 0 --csv data/LSE.csv | tee report/composite-study.txt
+          { echo '```'; cat report/composite-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Report (for reading from the log)
         run: |
           echo "----- BEGIN REPORT -----"

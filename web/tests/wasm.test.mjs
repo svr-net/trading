@@ -16,6 +16,8 @@ spec.walkForward = { ...spec.walkForward, trainWindow: 300, retrainEvery: 63, ma
 // Three families of different kinds (linear, boosted trees, recurrent network), not only the default pool.
 spec.models = ['logistic', 'xgboost', 'lstm'].map((t) => ({ ...MODEL_DEFAULTS[t], trees: 25, epochs: 1, maxSamples: 1500 }));
 spec.robustness = { lookbacks: [21, 63], steps: [5, 21], metrics: ['return', 'sharpe'], costs: [0, 20] };
+// The models on their own (the default trades their composite alone; checked below).
+spec.composite = { ...spec.composite, method: 'none' };
 
 function run(name, fn) {
   const t0 = performance.now();
@@ -53,6 +55,8 @@ if (labels) check(labels.kinds[3].labelled < 0.3 && labels.kinds[0].labelled > 0
 const models = run('models', () => sat.models(spec));
 if (models) {
   check(models.models.length === 3, 'three models');
+  const withComposite = sat.models({ ...spec, composite: defaultSpec().composite });
+  check(withComposite.models.length === 4 && withComposite.models[3].name === 'Composite (average)', 'the Models page shows the models and their composite');
   for (const m of models.models) check(m.oos.auc > 0.5 && m.oos.count > 1000, `${m.name} beats chance out of sample (AUC ${m.oos.auc.toFixed(3)})`);
   check(models.models[1].importance.length === 23, 'importance per feature');
 }
@@ -200,6 +204,26 @@ if (tn) {
   const eq = tn.allocators.find((a) => a.name === 'equal weight');
   const w = eq.weights.map((v) => v[10]);
   near(w.reduce((a, b) => a + b, 0), 1, 1e-9, 'equal-weight allocator is fully invested');
+}
+const cs = run('compositeStrategy', () => sat.compositeStrategy({ ...spec, composite: { method: 'online' } }));
+if (cs) {
+  check(cs.members.length === 3 && cs.composites.length === 3 && cs.chosen === 'online', 'three members, three composites, the chosen one traded');
+  check(cs.composites.every((c) => c.weights.length === 3 && c.auc > 0.4), 'composite weights per member');
+  check(cs.sleeves === 3 && cs.series.length === 6 && cs.series[cs.sleeves].name === 'Composite strategy', 'selector, two books, composite, market, members selector');
+  const n = cs.series[0].equity.length;
+  check(cs.series.every((x) => x.equity.length === n) && cs.dates.length === n, 'every series on the same days');
+  const w = cs.cash.map((c, k) => c + cs.weights.reduce((a, x) => a + x[k], 0));
+  check(w.every((v) => Math.abs(v - 1) < 1e-9), 'allocation weights and cash sum to one');
+  const b = cs.books[0];
+  check(b.signals.length === 3 && b.signalWeights.length === 3 && b.holdings.length > 0, 'three signals and the current selection');
+  check(b.exposure.length === n - 1 + cs.allocationLookback, 'the book trades from the allocation look-back on');
+  const avg = run('compositeStrategy (average, cached models)', () => sat.compositeStrategy({ ...spec, composite: { method: 'none' } }));
+  if (avg) check(avg.chosen === 'average' && avg.cachedPredictions, 'no composite in the spec: the average is traded');
+  // The web default: the composite (equal-weight average) traded in place of the models.
+  const def = run('strategies (default composite pool)', () => sat.strategies({ ...spec, composite: defaultSpec().composite }));
+  if (def) check(def.candidates.length === spec.strategies.length && def.candidates.every((c) => JSON.stringify(c).includes('Composite (average)')), 'the default pool trades the composite alone');
+  const many = run('compositeStrategy (separate books + market)', () => sat.compositeStrategy({ ...spec, multiSignal: { mlBook: true, trailingSharpeBook: true, marketSleeve: true } }));
+  if (many) check(many.sleeves === 6 && many.weights.length === 6 && many.books.length === 4 && many.books[2].name === 'Momentum book', 'blend, three single-signal books and the market as sleeves');
 }
 
 // The emulated GPU device: each plan of gpuJobs run through gpuRunPlan and handed to

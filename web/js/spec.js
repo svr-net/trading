@@ -82,6 +82,16 @@ export function defaultSpec() {
     regimes: { states: 2, window: 504, refitEvery: 63, threshold: 0.5, riskOffExposure: 0, costBps: 5, targetVol: 0.12 },
     execution: { shares: 1e6, price: 50, horizonDays: 5, periods: 25, sigma: 0.95, epsilon: 0.0625, eta: 2.5e-6, gamma: 2.5e-7, riskAversion: 1e-6, paths: 5000 },
     tournament: { method: 'exponential', lookback: 63, rebalanceEvery: 5, eta: 4, topN: 1, costBps: 2, allowCash: true },
+    // Composite model: the models' forecasts combined into one model (none | average | stacked |
+    // online), traded in their place or, with keepMembers, alongside them. The equal-weight
+    // average alone gave the selector the best Sharpe ratio in examples/composite_study.
+    composite: { method: 'average', window: 252, refitEvery: 21, ridge: 1, keepMembers: false },
+    // Stock-selection books of the composite strategy (examples/composite_study).
+    multiSignal: {
+      useMl: true, useMomentum: true, useTrailingSharpe: true, weighting: 'adaptive', holdings: 10, rebalanceEvery: 5,
+      momentumLookback: 252, momentumSkip: 21, sharpeLookback: 126, icLookback: 126, eta: 0.5, targetVol: 0.15, maxLeverage: 1.5,
+      regimeGate: true, blendBook: true, mlBook: false, momentumBook: true, trailingSharpeBook: false, marketSleeve: false,
+    },
   };
 }
 
@@ -97,7 +107,7 @@ export function loadSpec() {
     if (raw) {
       // New sections added in later versions keep their defaults when an older spec is stored.
       const stored = JSON.parse(raw);
-      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'])
+      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament', 'composite', 'multiSignal'])
         if (stored[k] && typeof stored[k] === 'object') stored[k] = { ...spec[k], ...stored[k] };
       if (isLegacyPool(stored)) { delete stored.models; delete stored.strategies; }
       spec = { ...spec, ...stored };

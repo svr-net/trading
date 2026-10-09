@@ -25,6 +25,7 @@
 #include "sat/strategy/performance.hpp"
 #include "sat/strategy/strategy.hpp"
 
+#include "sat/adaptive/composite.hpp"
 #include "sat/adaptive/experiment.hpp"
 #include "sat/adaptive/self_adaptive.hpp"
 
@@ -45,6 +46,7 @@
 #include "sat/hedge/hedging.hpp"
 #include "sat/hedge/options.hpp"
 
+#include "sat/algo/composite.hpp"
 #include "sat/algo/ensemble.hpp"
 #include "sat/algo/execution.hpp"
 #include "sat/algo/pairs.hpp"

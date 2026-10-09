@@ -38,6 +38,7 @@ const DESCRIPTIONS = {
   regimes: 'A Gaussian hidden Markov model of market regimes, filtered in real time, and regime-switched exposure.',
   execution: 'Almgren–Chriss optimal liquidation: trajectories, efficient frontier and simulated shortfall.',
   tournament: 'Every approach backtested on the same days and a meta-allocator that adapts across them.',
+  composite: 'The models combined into one forecast (average, stacking, online aggregation) and a composite strategy across the selector and stock-selection books.',
   gpu: 'Candidate backtests and the selector grid as WebGPU kernels, validated against WASM and benchmarked.',
 };
 
