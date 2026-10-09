@@ -23,6 +23,7 @@ const pages = {
   regimes: () => import('./pages/regimes.js'),
   execution: () => import('./pages/execution.js'),
   tournament: () => import('./pages/tournament.js'),
+  composite: () => import('./pages/composite.js'),
   gpu: () => import('./pages/gpu.js'),
 };
 
