@@ -136,6 +136,7 @@ void validate(const char* title, const std::vector<Market>& set, const Pool& ful
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);  // progress lines as they come
   std::size_t markets = 6, days = 2520;
   std::string csv;
   std::vector<std::string> pos;
@@ -188,6 +189,7 @@ int main(int argc, char** argv) {
   // Backward elimination.
   Pool pool = full;
   double current = fullSharpe;
+  std::vector<std::pair<std::string, Pool>> path = {{"full pool", full}};
   std::printf("\nBackward elimination (remove while the loss is within %.2f Sharpe)\n", kTolerance);
   for (;;) {
     double bestScore = -1e9;
@@ -211,6 +213,7 @@ int main(int argc, char** argv) {
     const bool isModel = best < modelNames.size();
     (isModel ? pool.model[best] : pool.rule[best - modelNames.size()]) = false;
     std::printf("  drop %-24s mean Sharpe %.3f (%+.3f)\n", isModel ? modelNames[best].c_str() : rules[best - modelNames.size()].label().c_str(), bestScore, bestScore - current);
+    path.push_back({"- " + (isModel ? modelNames[best] : rules[best - modelNames.size()].label()), pool});
     current = bestScore;
   }
   std::printf("\nPruned pool: %s (%zu candidates instead of %zu)\n", describe(pool, modelNames, rules).c_str(), pool.models() * pool.rules(),
@@ -220,6 +223,18 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "validation markets\n");
   const auto validation = build(201);
   validate("Validation markets (unseen)", validation, full, pool, rules);
+  // Every step of the elimination on the unseen markets: how small can the pool get before
+  // the validation result stops improving?
+  std::printf("\nElimination path on the validation markets\n  %-28s %6s %8s %8s %8s\n", "after", "cands", "sel SR", "val SR", "val DD");
+  for (const auto& [label, p] : path) {
+    double v = 0, dd = 0;
+    for (const auto& m : validation) {
+      const auto o = selector(m, p, rules);
+      v += o.metrics.sharpe / static_cast<double>(validation.size());
+      dd += o.metrics.maxDrawdown / static_cast<double>(validation.size());
+    }
+    std::printf("  %-28s %6zu %8.3f %8.3f %7.1f%%\n", label.c_str(), p.models() * p.rules(), meanSharpe(selection, p, rules), v, 100 * dd);
+  }
   if (!csv.empty()) {
     std::ifstream f(csv);
     std::stringstream ss;
