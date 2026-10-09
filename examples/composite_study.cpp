@@ -257,6 +257,14 @@ int main(int argc, char** argv) {
     b.allocation.method = algo::AllocationMethod::RotorGlide;
     b.allocation.lookback = 252, b.allocation.rebalanceEvery = 5, b.allocation.eta = 2, b.allocation.glide = 0.5;
     allocatorSets.push_back({"B, rotor glide (252, 5, eta 2, glide 0.5)", b});
+    // Controls: exponential weights on the spherical settings' look-back and schedule, to tell
+    // the geometry apart from slower trading.
+    b.allocation = {};
+    b.allocation.lookback = 252, b.allocation.rebalanceEvery = 5, b.allocation.eta = 2;
+    allocatorSets.push_back({"B, exp. weights control (252, 5, eta 2)", b});
+    b.allocation = {};
+    b.allocation.lookback = 63, b.allocation.rebalanceEvery = 21;
+    allocatorSets.push_back({"B, exp. weights control (63, 21, eta 4)", b});
     b.allocation = {};
     b.allocation.method = algo::AllocationMethod::RotorGradient;
     b.allocation.lookback = 63, b.allocation.rebalanceEvery = 21, b.allocation.rotorStep = 0.1;
@@ -305,7 +313,7 @@ int main(int argc, char** argv) {
       }
     }
     std::vector<Row> allocRows = {summarise("equal-weight market (same days)", alloc.back(), 1, tv)};
-    for (std::size_t v = 0; v < allocatorSets.size(); ++v) allocRows.push_back(summarise("composite " + allocatorSets[v].first, alloc[v], 3, tv));
+    for (std::size_t v = 0; v < allocatorSets.size(); ++v) allocRows.push_back(summarise("composite " + allocatorSets[v].first, alloc[v], static_cast<double>(allocatorSets.size()), tv));
     print("Gate 1: the default composite strategy under each allocator (from the longest look-back)", allocRows);
     std::vector<Row> rows = {summarise("equal-weight market", runs[0], 1, tv), summarise("default selector (members)", runs[1], 1, tv),
                              summarise("selector on the composite model", runs[2], 1, tv), summarise("blend book (default)", runs[3], trials, tv)};
