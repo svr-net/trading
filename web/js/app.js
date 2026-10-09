@@ -16,6 +16,13 @@ const pages = {
   validation: () => import('./pages/validation.js'),
   portfolio: () => import('./pages/portfolio.js'),
   overfitting: () => import('./pages/overfitting.js'),
+  hedging: () => import('./pages/hedging.js'),
+  options: () => import('./pages/options.js'),
+  pairs: () => import('./pages/pairs.js'),
+  trend: () => import('./pages/trend.js'),
+  regimes: () => import('./pages/regimes.js'),
+  execution: () => import('./pages/execution.js'),
+  tournament: () => import('./pages/tournament.js'),
   gpu: () => import('./pages/gpu.js'),
 };
 

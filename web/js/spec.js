@@ -59,6 +59,14 @@ export function defaultSpec() {
     validation: { model: 'xgboost', trees: 40, horizon: 5, folds: 5, embargo: 5, groups: 6, testGroups: 2, maxRows: 6000 },
     portfolio: { window: 252, rebalance: 21, trials: 100, simAssets: 10 },
     overfitting: { blocks: 16 },
+    // Hedging and algorithmic trading pages.
+    hedging: { betaWindow: 63, delta: 1e-4, hedgeCostBps: 2, targetVol: 0.1, volSpan: 36, maxLeverage: 2, kellyFraction: 0.5, kellyWindow: 126 },
+    options: { vol: 0.2, impliedVol: 0.2, years: 0.25, strike: 1, costBps: 0, paths: 2000, seed: 13, tenorDays: 21, putMoneyness: 0.95, callMoneyness: 1.05, volPremium: 0.02 },
+    pairs: { days: 1000, beta: 1.5, halfLife: 10, spreadVol: 0.01, seed: 21, delta: 1e-7, observationVariance: 1, entryZ: 1, exitZ: 0, costBps: 5 },
+    trend: { targetVol: 0.15, volSpan: 36, buffer: 0.1, costBps: 5, reweightEvery: 63, reweightWindow: 252, longOnly: false },
+    regimes: { states: 2, window: 504, refitEvery: 63, threshold: 0.5, riskOffExposure: 0, costBps: 5, targetVol: 0.12 },
+    execution: { shares: 1e6, price: 50, horizonDays: 5, periods: 25, sigma: 0.95, epsilon: 0.0625, eta: 2.5e-6, gamma: 2.5e-7, riskAversion: 1e-6, paths: 5000 },
+    tournament: { method: 'exponential', lookback: 63, rebalanceEvery: 5, eta: 4, topN: 1, costBps: 2, allowCash: true },
   };
 }
 
@@ -74,7 +82,7 @@ export function loadSpec() {
     if (raw) {
       // New sections added in later versions keep their defaults when an older spec is stored.
       const stored = JSON.parse(raw);
-      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting'])
+      for (const k of ['label', 'walkForward', 'bars', 'labeling', 'validation', 'portfolio', 'overfitting', 'hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'])
         if (stored[k] && typeof stored[k] === 'object') stored[k] = { ...spec[k], ...stored[k] };
       spec = { ...spec, ...stored };
     }

@@ -34,6 +34,18 @@ export const PAGES = [
       { id: 'overfitting', href: 'overfitting.html', title: 'Backtest overfitting' },
     ],
   },
+  {
+    group: 'Hedging & algorithmic trading',
+    items: [
+      { id: 'hedging', href: 'hedging.html', title: 'Beta hedging & sizing' },
+      { id: 'options', href: 'options.html', title: 'Option hedges' },
+      { id: 'pairs', href: 'pairs.html', title: 'Cointegrated pairs' },
+      { id: 'trend', href: 'trend.html', title: 'Trend following' },
+      { id: 'regimes', href: 'regimes.html', title: 'Regime switching' },
+      { id: 'execution', href: 'execution.html', title: 'Optimal execution' },
+      { id: 'tournament', href: 'tournament.html', title: 'Tournament & meta-allocation' },
+    ],
+  },
   { group: 'Acceleration', items: [{ id: 'gpu', href: 'gpu.html', title: 'WebGPU strategy search' }] },
 ];
 
@@ -210,12 +222,15 @@ const MODEL_FIELDS = {
   lstm: [['hidden', 'hidden'], ['seqLen', 'sequence (days)'], ['epochs', 'epochs']],
 };
 
+/** Same names as sat::algo::allocationName. */
+export const ALLOCATION_NAMES = { exponential: 'exponential weights', best: 'follow the leader', sharpe: 'Sharpe-weighted', riskadjusted: 'Sharpe / volatility', inversevol: 'inverse volatility', equal: 'equal weight' };
+
 const STRATEGY_KINDS = { topk: 'Long top k', longshort: 'Long-short k', threshold: 'Long if P > θ', probweighted: 'P-weighted > θ', betsize: 'Bet size ≥ m' };
 
 /**
  * Collapsible editor for the shared specification.
  * sections: subset of ['market','csv','factors','labels','models','walkForward','strategies','costs','selector','robustness',
- * 'bars','labeling','validation','portfolio','overfitting'].
+ * 'bars','labeling','validation','portfolio','overfitting','hedging','options','pairs','trend','regimes','execution','tournament'].
  */
 export function specEditor(page, sections, { open = false } = {}) {
   page.spec = loadSpec();
@@ -358,6 +373,26 @@ export function specEditor(page, sections, { open = false } = {}) {
       for (const [f, label] of fields) s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); })));
       if (key === 'validation') s.append(field('model', selectInput(['xgboost', 'lightgbm', 'forest', 'tree'], () => o.model, (v) => { o.model = v; changed(); }, MODEL_NAMES)));
       if (key === 'labeling') s.append(field('meta-labels: secondary model', selectInput(['logistic', 'xgboost', 'forest'], () => o.metaModel, (v) => { o.metaModel = v; changed(); }, MODEL_NAMES)));
+    }
+    const ALGO_SECTIONS = {
+      hedging: ['Hedges and sizing', [['betaWindow', 'rolling beta window (days)'], ['delta', 'Kalman state noise δ'], ['hedgeCostBps', 'hedge cost (bp)'], ['targetVol', 'volatility target (annual)'], ['volSpan', 'volatility span (days)'], ['maxLeverage', 'max leverage'], ['kellyFraction', 'Kelly fraction'], ['kellyWindow', 'Kelly window (days)']]],
+      options: ['Options', [['vol', 'true volatility'], ['impliedVol', 'implied (hedging) volatility'], ['years', 'option life (years)'], ['strike', 'strike / spot'], ['costBps', 'hedge cost (bp)'], ['paths', 'Monte Carlo paths'], ['seed', 'seed'], ['tenorDays', 'overlay tenor (days)'], ['putMoneyness', 'put strike / spot'], ['callMoneyness', 'call strike / spot'], ['volPremium', 'implied minus realised vol']]],
+      pairs: ['Pairs', [['days', 'generated days'], ['beta', 'true hedge ratio'], ['halfLife', 'spread half-life (days)'], ['spreadVol', 'spread volatility'], ['seed', 'seed'], ['delta', 'Kalman state noise δ'], ['observationVariance', 'observation variance'], ['entryZ', 'entry |z|'], ['exitZ', 'exit |z|'], ['costBps', 'cost (bp)']]],
+      trend: ['Trend following', [['targetVol', 'volatility target (annual)'], ['volSpan', 'volatility span (days)'], ['buffer', 'position buffer'], ['costBps', 'cost (bp)'], ['reweightEvery', 'reweight every (days)'], ['reweightWindow', 'reweight window (days)']]],
+      regimes: ['Regimes', [['states', 'HMM states'], ['window', 'estimation window (days)'], ['refitEvery', 'refit every (days)'], ['threshold', 'risk-off above P(volatile)'], ['riskOffExposure', 'risk-off exposure'], ['costBps', 'cost (bp)'], ['targetVol', 'comparison: vol target']]],
+      execution: ['Execution', [['shares', 'shares to sell'], ['price', 'price'], ['horizonDays', 'horizon (days)'], ['periods', 'trading periods'], ['sigma', 'volatility (per share per √day)'], ['epsilon', 'fixed cost ε (per share)'], ['eta', 'temporary impact η'], ['gamma', 'permanent impact γ'], ['riskAversion', 'risk aversion λ'], ['paths', 'Monte Carlo paths']]],
+      tournament: ['Meta-allocation', [['lookback', 'look-back (days)'], ['rebalanceEvery', 'rebalance every (days)'], ['eta', 'exponential weights: η'], ['topN', 'follow the leader: top N'], ['costBps', 'reallocation cost (bp)']]],
+    };
+    for (const [key, [title, fields]] of Object.entries(ALGO_SECTIONS)) {
+      if (!sections.includes(key)) continue;
+      const s = sec(title);
+      const o = spec[key];
+      for (const [f, label] of fields) s.append(field(label, numInput(() => o[f], (v) => { o[f] = v; changed(); }, { digits: 12 })));
+      if (key === 'trend') s.append(checkField('long only', checkInput(() => o.longOnly, (v) => { o.longOnly = v; changed(); })));
+      if (key === 'tournament') {
+        s.append(field('method', selectInput(['exponential', 'best', 'sharpe', 'riskadjusted', 'inversevol', 'equal'], () => o.method, (v) => { o.method = v; changed(); }, ALLOCATION_NAMES)));
+        s.append(checkField('cash when nothing scores > 0', checkInput(() => o.allowCash, (v) => { o.allowCash = v; changed(); })));
+      }
     }
     body.append(el('div', { class: 'spec-actions', style: 'grid-column:1/-1' },
       el('button', { text: 'Reset to defaults', onclick: () => { page.spec = resetSpec(); render(); } }),

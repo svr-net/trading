@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(trading_sat
-  VERSION 0.2.0
+  VERSION 0.3.0
   DESCRIPTION "Predicting stock prices with machine learning to build a self-adaptive trading strategy"
   LANGUAGES CXX)
 
@@ -46,6 +46,14 @@ add_library(sat
   src/afml/microstructure.cpp
   src/afml/features.cpp
   src/afml/overfitting.cpp
+  src/hedge/hedging.cpp
+  src/hedge/options.cpp
+  src/algo/pairs.cpp
+  src/algo/trend.cpp
+  src/algo/regimes.cpp
+  src/algo/execution.cpp
+  src/algo/ensemble.cpp
+  src/algo/tournament.cpp
   src/gpu/fused_backtest.cpp
   src/gpu/fused_kernels.cpp
   src/gpu/fused_reference.cpp
@@ -95,6 +103,7 @@ if(SAT_BUILD_TESTS)
     tests/test_adaptive.cpp
     tests/test_gpu.cpp
     tests/test_afml.cpp
+    tests/test_hedge_algo.cpp
   )
   target_link_libraries(sat_tests PRIVATE sat)
   add_test(NAME sat_tests COMMAND sat_tests)
@@ -103,6 +112,10 @@ endif()
 if(SAT_BUILD_EXAMPLES)
   add_executable(self_adaptive_trading_demo examples/self_adaptive_trading_demo.cpp)
   target_link_libraries(self_adaptive_trading_demo PRIVATE sat)
+  add_executable(strategy_tournament examples/strategy_tournament.cpp)
+  target_link_libraries(strategy_tournament PRIVATE sat)
+  add_executable(uk_portfolio examples/uk_portfolio.cpp)
+  target_link_libraries(uk_portfolio PRIVATE sat)
 endif()
 
 include(GNUInstallDirs)

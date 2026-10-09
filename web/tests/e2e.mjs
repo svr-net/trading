@@ -62,6 +62,13 @@ const afmlSpec = {
   portfolio: { window: 200, rebalance: 21, trials: 30, simAssets: 10 },
   overfitting: { blocks: 8 },
 };
+// Hedging and algorithmic trading pages, lighter simulations.
+const algoSpec = {
+  ...testSpec,
+  options: { vol: 0.2, impliedVol: 0.2, years: 0.25, strike: 1, costBps: 0, paths: 400, seed: 13, tenorDays: 21, putMoneyness: 0.95, callMoneyness: 1.05, volPremium: 0.02 },
+  regimes: { states: 2, window: 300, refitEvery: 63, threshold: 0.5, riskOffExposure: 0, costBps: 5, targetVol: 0.12 },
+  execution: { shares: 1e6, price: 50, horizonDays: 5, periods: 25, sigma: 0.95, epsilon: 0.0625, eta: 2.5e-6, gamma: 2.5e-7, riskAversion: 1e-6, paths: 1000 },
+};
 // Pages with the engine selector. With no stored choice they run on Auto, which must pick the
 // WebGPU kernels on desktop too; some also run once forced onto WebAssembly.
 const enginePages = ['index', 'strategies', 'adaptive', 'robustness'];
@@ -70,6 +77,8 @@ const cases = [
     .map((name) => ({ name, file: name, spec: testSpec, ...(enginePages.includes(name) ? { engine: 'auto', expectEngine: 'WebGPU' } : {}) })),
   // Advances in Financial Machine Learning pages (WebAssembly only).
   ...['bars', 'fracdiff', 'labeling', 'validation', 'portfolio', 'overfitting'].map((name) => ({ name, file: name, spec: afmlSpec })),
+  // Hedging and algorithmic trading pages (WebAssembly only).
+  ...['hedging', 'options', 'pairs', 'trend', 'regimes', 'execution', 'tournament'].map((name) => ({ name, file: name, spec: algoSpec })),
   ...['index', 'strategies'].map((name) => ({ name: `${name}-wasm`, file: name, spec: testSpec, engine: 'wasm', expectEngine: 'WebAssembly' })),
   // A first visit (nothing stored): the default is Auto, which must dispatch the kernels.
   { name: 'adaptive-first-visit', file: 'adaptive', spec: testSpec, expectEngine: 'WebGPU' },
