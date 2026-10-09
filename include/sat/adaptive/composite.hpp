@@ -92,6 +92,23 @@ struct CompositePredictions {
   std::vector<double> memory;
 };
 
+/// The market state of every date, from the equal-weight market's returns up to that date's
+/// close: the log of its 21-day volatility and its 63-day trend (sum of returns over their
+/// volatility times sqrt(63)). NaN for the first 63 dates.
+struct MarketState {
+  std::vector<double> volatility, trend;
+};
+MarketState marketState(const Panel& nextReturns);
+
+/// Which side of a market-state feature a specialist model is trained on.
+enum class StateSide : int { Calm = 0, Turbulent = 1, Rising = 2, Falling = 3 };
+std::string stateSideName(StateSide s);
+
+/// Training mask (dates x assets, 1 = train on it) of the dates in one market state: calm or
+/// turbulent (21-day market volatility below or above its median so far), rising or falling
+/// (63-day market trend above or below zero). Uses only information up to each date.
+Panel marketStateMask(const Panel& nextReturns, StateSide side);
+
 /// Combines members' predictions over their common out-of-sample range. Only labels whose
 /// last date (`labelEnds`, from makeLabels) is before a prediction date are used to set the
 /// weights of that date. Members must all have the same panel shape. `nextReturns` (the

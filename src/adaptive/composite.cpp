@@ -183,6 +183,60 @@ class Scorer {
 
 }  // namespace
 
+MarketState marketState(const Panel& nextReturns) {
+  const std::size_t T = nextReturns.dates(), N = nextReturns.assets();
+  std::vector<double> market(T, 0.0);
+  for (std::size_t d = 1; d < T; ++d) {
+    double sum = 0, n = 0;
+    for (std::size_t i = 0; i < N; ++i)
+      if (std::isfinite(nextReturns(d - 1, i))) sum += nextReturns(d - 1, i), ++n;
+    market[d] = n > 0 ? sum / n : 0.0;
+  }
+  MarketState st{std::vector<double>(T, Panel::kMissing), std::vector<double>(T, Panel::kMissing)};
+  for (std::size_t d = 63; d < T; ++d) {
+    double s1 = 0, s2 = 0, l1 = 0, l2 = 0;
+    for (std::size_t k = d - 20; k <= d; ++k) s1 += market[k], s2 += market[k] * market[k];
+    for (std::size_t k = d - 62; k <= d; ++k) l1 += market[k], l2 += market[k] * market[k];
+    const double sv = std::sqrt(std::max(1e-12, s2 / 21 - (s1 / 21) * (s1 / 21)));
+    const double lv = std::sqrt(std::max(1e-12, l2 / 63 - (l1 / 63) * (l1 / 63)));
+    st.volatility[d] = std::log(sv);
+    st.trend[d] = l1 / (lv * std::sqrt(63.0));
+  }
+  return st;
+}
+
+std::string stateSideName(StateSide s) {
+  switch (s) {
+    case StateSide::Calm: return "calm";
+    case StateSide::Turbulent: return "turbulent";
+    case StateSide::Rising: return "rising";
+    case StateSide::Falling: return "falling";
+  }
+  return "calm";
+}
+
+Panel marketStateMask(const Panel& nextReturns, StateSide side) {
+  const auto st = marketState(nextReturns);
+  const std::size_t T = nextReturns.dates();
+  Panel mask(T, nextReturns.assets(), 0.0);
+  std::vector<double> seen;  // volatilities so far, for the running median
+  for (std::size_t d = 0; d < T; ++d) {
+    if (!std::isfinite(st.volatility[d])) continue;
+    seen.insert(std::upper_bound(seen.begin(), seen.end(), st.volatility[d]), st.volatility[d]);
+    const double median = seen[seen.size() / 2];
+    bool in = false;
+    switch (side) {
+      case StateSide::Calm: in = st.volatility[d] <= median; break;
+      case StateSide::Turbulent: in = st.volatility[d] > median; break;
+      case StateSide::Rising: in = st.trend[d] > 0; break;
+      case StateSide::Falling: in = st.trend[d] <= 0; break;
+    }
+    if (in)
+      for (std::size_t i = 0; i < mask.assets(); ++i) mask(d, i) = 1.0;
+  }
+  return mask;
+}
+
 CompositePredictions compositePredictions(const std::vector<ModelPredictions>& members, const Panel& labels,
                                           const Panel& labelEnds, const CompositeSpec& spec, const Panel* nextReturns) {
   if (members.empty()) throw std::invalid_argument("composite model: no member models");
@@ -271,17 +325,11 @@ CompositePredictions compositePredictions(const std::vector<ModelPredictions>& m
           if (std::isfinite((*nextReturns)(d - 1, i))) sum += (*nextReturns)(d - 1, i), ++n;
         market[d] = n > 0 ? sum / n : 0.0;
       }
-      for (std::size_t d = 63; d < T; ++d) {
-        double s1 = 0, s2 = 0, l1 = 0, l2 = 0;
-        for (std::size_t k = d - 20; k <= d; ++k) s1 += market[k], s2 += market[k] * market[k];
-        for (std::size_t k = d - 62; k <= d; ++k) l1 += market[k], l2 += market[k] * market[k];
-        const double sv = std::sqrt(std::max(1e-12, s2 / 21 - (s1 / 21) * (s1 / 21)));
-        const double lv = std::sqrt(std::max(1e-12, l2 / 63 - (l1 / 63) * (l1 / 63)));
-        vol[d] = std::log(sv);
-        trend[d] = l1 / (lv * std::sqrt(63.0));
-      }
+      const auto state = sat::marketState(*nextReturns);
+      vol = state.volatility;
+      trend = state.trend;
     }
-    Adwin marketState(spec.adwinDelta);  // on the size of the market's daily moves
+    Adwin marketMoves(spec.adwinDelta);  // on the size of the market's daily moves
     std::size_t marketFed = 1;
     // Fixed windows re-score on the selector's schedule; the others every day.
     const std::size_t step = spec.window == ScoringWindow::Fixed ? spec.adaptEvery : 1;
@@ -300,8 +348,8 @@ CompositePredictions compositePredictions(const std::vector<ModelPredictions>& m
       // Market-state ADWIN: feed the market's moves up to today's close; when its state
       // changes, every record recedes to the start of the new state.
       if (spec.window == ScoringWindow::MarketAdwin) {
-        for (; marketFed <= t; ++marketFed) marketState.push(std::fabs(market[marketFed]));
-        const std::size_t since = 1 + marketState.from();  // date of the state's first day
+        for (; marketFed <= t; ++marketFed) marketMoves.push(std::fabs(market[marketFed]));
+        const std::size_t since = 1 + marketMoves.from();  // date of the state's first day
         for (auto& r : records) r.forgetBefore(since);
       }
       if ((t - s) % step == 0) {
