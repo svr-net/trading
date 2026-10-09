@@ -151,6 +151,56 @@ const emuBet = run('gpuEmulate (bet-sized rule)', () => sat.gpuEmulate({ ...spec
 const cpuBet = sat.strategies({ ...spec, strategies: [{ kind: 'betsize', param: 0.1, holding: 1 }] });
 if (emuBet && !cpuBet.error) near(emuBet.candidates[0].metrics.sharpe, cpuBet.candidates[0].metrics.sharpe, 1e-3, 'bet-sized rule: kernels vs CPU');
 
+// Hedging and algorithmic trading.
+const hd = run('hedgeOverlays', () => sat.hedgeOverlays(spec));
+if (hd) {
+  check(hd.series.length === 7 && hd.dates.length === hd.series[0].equity.length, 'one series per overlay, dates align with equity');
+  const vt = hd.series.find((s) => s.name === 'volatility target');
+  check(Math.abs(vt.metrics.annualVolatility - 0.10) < 0.05, `volatility target near 10%: ${vt.metrics.annualVolatility}`);
+  check(Math.abs(hd.marketCorrelation[2]) < Math.abs(hd.marketCorrelation[0]) + 0.05, 'the Kalman hedge does not add market exposure');
+}
+const op = run('hedgeOptions', () => sat.hedgeOptions({ ...spec, options: { paths: 400 } }));
+if (op) {
+  const f = op.frequencies;
+  check(f.length === 7 && f[0].sd < f[f.length - 1].sd, 'hedging error grows as rebalancing thins out');
+  check(op.overlays[1].metrics.maxDrawdown < op.overlays[0].metrics.maxDrawdown, 'the protective put cuts the drawdown');
+  check(op.histograms.daily.length === 400 && op.histograms.weekly.length === 400, 'P&L histograms');
+}
+const pr = run('algoPairs', () => sat.algoPairs(spec));
+if (pr) {
+  check(pr.synthetic.cointegration.cointegrated && pr.synthetic.strategy.metrics.sharpe > 0.5, 'the generated pair is cointegrated and tradable');
+  check(pr.pairsTested === 16 * 15 / 2 && pr.scan.length === 5, 'every pair of the universe is scanned');
+}
+const tr = run('algoTrend', () => sat.algoTrend(spec));
+if (tr) {
+  check(tr.series.length === 3 && tr.rules.length === 6, 'three series, six rules');
+  const last = tr.rules.reduce((s, r) => s + r.weights[r.weights.length - 1], 0);
+  near(last, 1, 1e-9, 'rule weights sum to 1');
+  check(tr.dates.length === tr.series[0].equity.length, 'dates align with equity');
+}
+const rg = run('algoRegimes', () => sat.algoRegimes({ ...spec, regimes: { window: 300, refitEvery: 63 } }));
+if (rg) {
+  check(rg.model.sd[1] > rg.model.sd[0] && rg.accuracy > 0.6, `HMM separates the volatile regime (accuracy ${rg.accuracy})`);
+  check(rg.probabilities.length === 2 && rg.probabilities[0].length === 759, 'filtered probabilities per state and day');
+}
+const ex = run('algoExecution', () => sat.algoExecution({ execution: { paths: 2000 } }));
+if (ex) {
+  const [twap, ac] = ex.plans;
+  check(ac.expectedCost > twap.expectedCost && ac.sd < twap.sd, 'risk aversion trades cost for risk');
+  near(ac.simMean, ac.expectedCost, 0.1 * ac.expectedCost, 'Monte Carlo mean matches the closed form');
+  check(ex.frontierCost.every((c, i) => i === 0 || c >= ex.frontierCost[i - 1] - 1e-6), 'frontier cost rises with risk aversion');
+}
+const tn = run('strategyTournament', () => sat.strategyTournament(spec));
+if (tn) {
+  check(tn.sleeves.length === 3 + 3 + 4 && tn.sleeves[tn.sleeves.length - 1].family === 'benchmark', 'three models, three self-adaptive variants, trend, pairs, regimes, benchmark');
+  check(tn.allocators.length === 6 && tn.chosen === 'exponential weights', 'six allocators, exponential weights by default');
+  const n = tn.sleeves[0].equity.length;
+  check(tn.sleeves.every((s) => s.equity.length === n) && tn.allocators.every((a) => a.equity.length === n) && tn.dates.length === n, 'every series on the same days');
+  const eq = tn.allocators.find((a) => a.name === 'equal weight');
+  const w = eq.weights.map((v) => v[10]);
+  near(w.reduce((a, b) => a + b, 0), 1, 1e-9, 'equal-weight allocator is fully invested');
+}
+
 const csv = 'date,ticker,open,high,low,close,volume\n2024-01-02,A,1,1,1,1,1\n';
 check(typeof sat.marketData({ ...spec, csv }).error === 'string', 'a one-stock CSV is rejected');
 

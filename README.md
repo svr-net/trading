@@ -46,6 +46,20 @@ They are implemented from the published algorithms, in the library's own code. M
 
 See [How the library maps onto the AFML book](#how-the-library-maps-onto-advances-in-financial-machine-learning).
 
+**Extended with hedging and algorithmic trading.** Version 0.3 adds a third layer, drawn from standard texts:
+- beta hedging with rolling and Kalman-filter hedge ratios, the minimum-variance hedge ratio, delta hedging, protective puts and collars (J. Hull, *Options, Futures, and Other Derivatives*);
+- cointegration, spread half-life and Kalman-filter pairs trading (E. Chan, *Algorithmic Trading*);
+- EWMAC trend following with forecast scaling, diversification multipliers, volatility targeting, buffering and adaptive rule weights (R. Carver, *Systematic Trading*);
+- hidden Markov regime switching (J. Hamilton's model, fitted by Baum-Welch);
+- fractional Kelly sizing;
+- Almgren-Chriss optimal execution (as presented in Á. Cartea, S. Jaimungal, J. Penalva, *Algorithmic and High-Frequency Trading*).
+
+On top of these sits a **strategy tournament**: every approach of all three layers is backtested on the same days, and a
+meta-allocator moves capital between them using only their past returns. That is a second level of self-adaptation.
+`examples/strategy_tournament` searches 90 allocator settings on one set of synthetic markets and validates the winner on
+an unseen set. See [Hedging, algorithmic trading and the tournament](#hedging-algorithmic-trading-and-the-tournament).
+As before, the methods are implemented from their published descriptions, in the library's own code and words.
+
 The library has no dependencies beyond the C++17 standard library.
 
 ## Building
@@ -93,7 +107,7 @@ npm --prefix tools/standalone ci && node tools/standalone/build.mjs
 
 ```
 dist/standalone/
-  index.html, core.html, ... gpu.html      16 pages
+  index.html, core.html, ... gpu.html      23 pages
   assets/app.<hash>.js                     all pages (classic script, ~95 KiB)
   assets/sat-runtime.<hash>.js             WASM worker with embedded library (~900 KiB)
   assets/style.<hash>.css
@@ -160,6 +174,13 @@ python3 -m http.server -d web 8000      # any static server; file:// will not lo
 | `validation.html` | Shuffled vs blocked vs purged k-fold, combinatorial purged CV paths, MDI / MDA / SFI importance | `afmlValidation` |
 | `portfolio.html` | Hierarchical risk parity vs inverse-variance and minimum-variance: weights, quasi-diagonal correlation, backtest, Monte Carlo | `afmlPortfolio` |
 | `overfitting.html` | Deflated Sharpe ratio and PBO of the candidate pool and the self-adaptive strategy; bet sizing | `afmlOverfitting` |
+| `hedging.html` | Rolling and Kalman beta hedges of the self-adaptive strategy, volatility targeting, fractional Kelly | `hedgeOverlays` |
+| `options.html` | Delta-hedging error against rebalancing frequency; protective puts and collars on the index | `hedgeOptions` |
+| `pairs.html` | Engle-Granger cointegration, half-life, Kalman-filter pairs; a scan of every pair in the universe, traded out of sample | `algoPairs` |
+| `trend.html` | EWMAC trend system with static and adaptive rule weights; rules traded alone | `algoTrend` |
+| `regimes.html` | Gaussian HMM of the market, filtered probabilities against the true regimes, regime-switched exposure | `algoRegimes` |
+| `execution.html` | Almgren-Chriss trajectories, efficient frontier, Monte Carlo implementation shortfall | `algoExecution` |
+| `tournament.html` | Every approach on the same days, six meta-allocators, deflated Sharpe ratios, allocation over time | `strategyTournament` |
 | `gpu.html` | WebGPU kernels validated against WASM, with a benchmark | `gpuJobs` · `gpuAnalyse` (`validation`) |
 
 The pages share one specification: market, factors, labels, models, walk-forward schedule, rules, costs, selector and
@@ -172,7 +193,7 @@ The specification also holds the AFML options of the pipeline, under *Alpha fact
 - triple-barrier labels;
 - sample weights and CUSUM event sampling.
 
-It also holds the settings of the AFML pages.
+It also holds the settings of the AFML pages and of the hedging and algorithmic-trading pages.
 
 **Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector: **Auto** (the default) runs the WebGPU kernels whenever the browser supports WebGPU, on desktop and mobile alike, and WebAssembly otherwise; **WebGPU** or **WebAssembly** forces one. Unsupported settings (a selector that holds a mix of the top M candidates, more than 128 stocks or 8 models) and GPU errors fall back to WebAssembly, and the status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
 
@@ -244,6 +265,55 @@ Notes on these implementations:
 - **HRP.** In the Monte Carlo of this library, minimum-variance portfolios reach a lower out-of-sample variance than HRP. HRP keeps far smaller single positions and no shorts. The book's comparison is with the critical line algorithm under different simulated conditions; the page reports what this simulation shows.
 - **The deflated Sharpe ratio** treats every candidate (model × rule) as a trial. The self-adaptive strategy is deflated by the same number of trials, which is conservative for a strategy that chooses out of sample.
 
+## Hedging, algorithmic trading and the tournament
+
+| Source | Module | What is implemented |
+|---|---|---|
+| Hull: hedging with futures | `hedge/hedging.hpp` | Minimum-variance hedge ratio; rolling-window beta from past data only; a Kalman filter that tracks (beta, alpha) as random walks and returns one-step-ahead estimates; hedged returns with a cost per unit of hedge change |
+| Hull: options | `hedge/options.hpp` | Black-Scholes prices and deltas; Monte Carlo of a delta-hedged short call at any rebalancing frequency, with true and implied volatility apart and hedge costs; rolling protective puts and collars priced at trailing realised volatility plus a premium |
+| Carver, Thorp: position sizing | `hedge/hedging.hpp` | Volatility targeting from an EWM volatility of past returns, capped; fractional Kelly from the trailing mean over variance, capped |
+| Chan: mean reversion | `algo/pairs.hpp` | Engle-Granger test (OLS, then ADF on the residual, 5% critical value −3.34); half-life from an AR(1) fit; a generator of cointegrated pairs; Kalman-filter pairs trading on the z-score of the forecast error with entry and exit levels and costs |
+| Chan: adaptive pairs | `algo/ensemble.hpp` (`pairsBook`) | Every quarter, all pairs are re-tested on the past year; the most cointegrated are traded until the next scan, cash when none passes |
+| Carver: systematic trend following | `algo/trend.hpp` | EWMAC rules 2/8 to 64/256 normalised by price volatility; forecast scalars from past data (average absolute forecast 10), cap at 20; forecast and instrument diversification multipliers; equal volatility budgets per instrument; position buffering; rule weights re-set from trailing positive Sharpe ratios |
+| Hamilton: regime switching | `algo/regimes.hpp` | Gaussian hidden Markov model fitted by Baum-Welch with scaled forward-backward passes; filtered (real-time) state probabilities; rolling re-fits and exposure set by the probability of the most volatile state at the previous close |
+| Almgren-Chriss | `algo/execution.hpp` | Optimal liquidation trajectory from the discrete-time urgency κ; expected cost and variance of any schedule; efficient frontier over risk aversion; Monte Carlo of the implementation shortfall |
+| Online learning | `algo/ensemble.hpp` (`allocate`) | Meta-allocation across strategies: equal weight, follow the leader (top N), Sharpe-weighted, inverse volatility, Sharpe over volatility, exponential weights (the Hedge algorithm); look-back, rebalancing period, reallocation cost, cash when nothing scores above zero |
+| Tournament | `algo/tournament.hpp` | Every ML model (equal capital in each of its rules), the paper's selector plain, volatility-targeted and beta-hedged, trend, the pairs book and the regime switch, aligned on common days; every allocator run on them, with deflated Sharpe ratios for the number of allocators tried |
+
+**Finding the adaptive approach.** `strategy_tournament [markets] [days]` generates two independent sets of synthetic markets.
+Each market is ten years by default. On each market it trains the models and builds every approach. It then ranks 90 allocator
+settings on the first set: 6 methods, look-backs of 63, 126 and 252 days, re-weighting every 5, 21 or 63 days, top N, and η.
+Finally it re-tests the best setting of each method on the second set. A run with 6 + 6 markets of 2,520 days:
+
+| Approach (validation markets, average) | ann. return | Sharpe | worst Sharpe | max drawdown |
+|---|---|---|---|---|
+| Exponential weights, 63-day look-back, weekly, η = 4 (chosen on the selection set) | 21.6% | 1.33 | −0.27 | 31.9% |
+| Follow the leader, top 2, 252-day look-back, weekly | 22.7% | 1.35 | −0.11 | 34.0% |
+| Sharpe-weighted, 63-day look-back, weekly | 15.6% | 1.12 | −0.68 | 33.2% |
+| Paper's self-adaptive selector alone | 27.6% | 1.18 | −0.57 | 42.0% |
+| … with a Kalman beta hedge | 28.0% | 1.26 | −0.42 | 42.6% |
+| … with a 10% volatility target | 13.3% | 1.21 | −0.68 | 25.9% |
+| Equal weight across all approaches | 3.4% | 0.29 | −1.29 | 43.5% |
+| Equal-weight market | −9.0% | −0.32 | −0.49 | 64.4% |
+
+The selection markets told the same story.
+
+**What works:**
+- Concentrated, fast-reacting allocators. Exponential weights and follow-the-leader, re-weighted weekly, beat both the slow ones and spreading capital evenly.
+- Gains over the paper's selector, which they mostly allocate to. The Sharpe ratio is a little higher, and the drawdown is about a quarter smaller, because the allocators step aside into the hedged variants, the regime switch or cash when the selector's record turns.
+
+**What doesn't:**
+- Single models trading every rule lose on average. Picking rules adaptively is what makes the ML forecasts pay, as the paper argues.
+- Trend following and pairs add little on this market. The synthetic market has short regimes and no planted cointegration, and the tests show that both modules profit where those effects exist.
+
+The library default for `AllocationSpec` is the chosen setting. The numbers come from synthetic markets, not from the paper's
+Hong Kong data.
+
+Notes:
+- **Kalman noises are in the units of the data.** For pairs of prices around 50 the default state noise is 1e-7. Chan's 1e-4 lets beta absorb the spread itself.
+- **Engle-Granger has little power** on a one-year window when the spread reverts slowly (half-life of 10 days or more). Expect missed pairs, and about 5% false discoveries among unrelated stocks.
+- **Kelly.** Kelly sizing magnifies the noise in the estimated mean. Even half Kelly sits at its leverage cap much of the time. The hedging page compares every overlay over the same days after the longest warm-up.
+
 ## Conventions
 
 - Panels are date × stock tables (row-major by date). NaN marks a missing value.
@@ -276,6 +346,20 @@ spec.walkForward.weighting = SampleWeighting::Uniqueness;
 auto report = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);  // DSR, PBO
 ```
 
+Hedging, algorithmic trading and the tournament:
+
+```cpp
+// marketReturns: the equal-weight market on the same days as e.adaptive.net
+auto beta = hedge::kalmanRegression(e.adaptive.net, marketReturns).beta;       // adaptive hedge ratio
+auto hedged = hedge::applyHedge(e.adaptive.net, marketReturns, beta, 2.0);
+auto sized = hedge::volatilityTarget(hedged, 0.10, 36, 2.0);                   // 10% annual volatility
+auto trend = algo::trendFollowing(data.close, algo::TrendSpec{});              // EWMAC, adaptive rule weights
+auto plan = algo::almgrenChriss(algo::ExecutionSpec{});                        // optimal liquidation
+auto t = algo::runTournament(data, p, spec, algo::TournamentSpec{});           // every approach + meta-allocators
+```
+
+`examples/strategy_tournament.cpp` searches for the best meta-allocator on one set of markets and validates it on another.
+
 `examples/self_adaptive_trading_demo.cpp` runs the whole method on the synthetic market:
 - the walk-forward forecasts of six model families;
 - the best fixed rules;
@@ -288,7 +372,7 @@ auto report = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);  // D
 
 - **The paper's data.** The Hong Kong data are available from the authors on request. The synthetic market gives every page realistic input, but its numbers are not the paper's results. Load real daily bars from a CSV file to study real stocks.
 - **Unknown settings.** The paper's exact model hyper-parameters, rule set and re-scoring schedule are not public. The defaults here are reasonable choices, not the authors', and the robustness page shows how much they matter.
-- **Execution.** Trades happen at the close that produced the signal, with no slippage or market impact beyond the cost per unit of turnover. Short positions pay no borrowing cost.
+- **Execution.** Trades happen at the close that produced the signal, with no slippage or market impact beyond the cost per unit of turnover. Short positions pay no borrowing cost. The execution page models impact separately (Almgren-Chriss); it is not fed back into the backtests.
 - **Selection bias.** The "best fixed rule" is chosen in hindsight over the evaluation period. No investor could have traded it, which is the point of comparing the self-adaptive strategy with it.
 - **Alpha definitions.** Window lengths follow the paper's factor table, which rounds Kakushadze's fractional windows. Correlations over a constant window are undefined (NaN). Normalised features map them to the cross-sectional centre. Alphas #3 and #81 correlate ranks of price levels, which rarely move, so they are often undefined.
 - **Models.** The networks are small so that they train in a browser in seconds. Tree ensembles use at most 32 histogram bins per feature.
