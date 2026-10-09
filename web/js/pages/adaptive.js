@@ -16,10 +16,10 @@ const button = runButton(page, 'Run the self-adaptive strategy', async (spec) =>
   const t0 = performance.now();
   const runResult = await runAnalysis('adaptive', spec);
   const r = runResult.result;
-  const onGpu = runResult.engine === 'gpu';
+  const onGpu = runResult.engine === 'gpu' || runResult.engine === 'emulator';  // kernel results, real or emulated GPU
   const a = r.adaptive;
   window.__satEngineRun = { page: 'adaptive', engine: runResult.engine, sharpe: a.metrics.sharpe, annualReturn: a.metrics.annualReturn, switches: a.switches };
-  if (onGpu) gpuScopeNote(page.content, 'the average of all fixed rules');
+  if (onGpu) gpuScopeNote(page.content, 'the average of all fixed rules', runResult.engine);
   const cash = a.share[a.share.length - 1];
   tiles(page.content, [
     { label: 'Annual return', value: fmt.pct(a.metrics.annualReturn, 1), hint: `best fixed ${fmt.pct(r.bestFixed.metrics.annualReturn, 1)}, market ${fmt.pct(r.benchmark.metrics.annualReturn, 1)}` },

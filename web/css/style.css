@@ -117,6 +117,7 @@ nav.sidebar .env div { display: flex; gap: 6px; align-items: center; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); display: inline-block; }
 .dot.ok { background: var(--good); }
 .dot.bad { background: var(--critical); }
+.dot.warn { background: var(--warning); }
 
 main { padding: 24px 32px 64px; min-width: 0; }
 main header h1 { margin: 0 0 4px; font-size: 24px; }

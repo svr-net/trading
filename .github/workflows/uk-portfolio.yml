@@ -42,7 +42,7 @@ jobs:
         run: |
           mkdir -p report
           ./build/uk_portfolio data/LSE.csv --stocks "${{ inputs.stocks || '10' }}" --budget "${{ inputs.budget || '100000' }}" \
-            --price-divisor 100 --stamp-duty-bps 50 --cost-bps 10 --report report/uk-portfolio.json | tee report/uk-portfolio.txt
+            --price-divisor 100 --stamp-duty-bps 50 --cost-bps 10 --robustness --report report/uk-portfolio.json | tee report/uk-portfolio.txt
           cp data/LSE.symbols.json report/
           { echo '```'; cat report/uk-portfolio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Report (for reading from the log)

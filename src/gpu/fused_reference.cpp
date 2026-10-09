@@ -36,6 +36,14 @@ Header readHeader(const FusedPlan& p) {
   h.offRank = w[11];
   h.nSeries = w[12];
   h.nEval = w[13];
+  // A plan can arrive from outside the library (the browser's emulated GPU), so every table
+  // the kernels read must lie inside the buffer, as WebGPU's bounds checks would ensure.
+  const auto fits = [&](std::uint64_t off, std::uint64_t len) { return off + len <= p.tables.size(); };
+  const std::uint64_t days = std::uint64_t{h.nD} * h.nN, perModel = std::uint64_t{h.nM} * days;
+  if (h.nN > kMaxAssets || h.evalFrom > h.nD || h.nSeries != h.nC + h.nS || h.nEval != h.nD - h.evalFrom ||
+      !fits(h.offCand, std::uint64_t{h.nC} * 4) || !fits(h.offSel, std::uint64_t{h.nS} * 8) || !fits(h.offRet, days) ||
+      !fits(h.offProb, perModel) || !fits(h.offRank, perModel))
+    throw std::invalid_argument("plan header does not match its tables");
   return h;
 }
 
@@ -115,6 +123,7 @@ FusedOutput runFusedReference(const FusedPlan& plan) {
   for (std::uint32_t c = 0; c < H.nC; ++c) {
     const float* q = T + H.offCand + c * 4u;
     const auto model = static_cast<std::uint32_t>(q[0]), kind = static_cast<std::uint32_t>(q[1]);
+    if (model >= H.nM) throw std::invalid_argument("candidate refers to a missing model");
     const float param = q[2];
     const std::uint32_t hold = std::max(1u, static_cast<std::uint32_t>(q[3]));
     std::fill(w.begin(), w.end(), 0.0f);

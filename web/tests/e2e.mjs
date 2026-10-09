@@ -89,13 +89,17 @@ const cases = [
   ...['adaptive', 'robustness'].flatMap((name) => [
     { name: `${name}-wasm-pair`, file: name, spec: testSpec, engine: 'wasm', expectEngine: 'WebAssembly', pair: name },
     { name: `${name}-gpu-pair`, file: name, spec: testSpec, engine: 'gpu', expectEngine: 'WebGPU', pair: name },
+    { name: `${name}-emulator-pair`, file: name, spec: testSpec, engine: 'emulator', expectEngine: 'Emulated GPU', pair: name },
   ]),
   // Android drivers: no adapter for a high-performance request but one for a plain request
   // (Auto must still reach WebGPU), and no adapter at all (WebAssembly, with the reason).
   { name: 'adaptive-android-quirk', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', gpuStub: 'no-high-performance', device: 'Pixel 7' },
   // Chrome offers only a WebGPU compatibility-mode adapter (OpenGL ES): Auto must use it.
   { name: 'adaptive-compat-only', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', gpuStub: 'compat-only', device: 'Pixel 7', expectReason: 'compatibility mode' },
-  { name: 'adaptive-no-adapter', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebAssembly', gpuStub: 'no-adapter', expectReason: 'WebGPU unavailable' },
+  // No adapter at all, or no WebGPU in the browser: Auto runs the kernels on the emulated GPU.
+  { name: 'adaptive-no-adapter', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'Emulated GPU', gpuStub: 'no-adapter', expectReason: 'WebGPU unavailable' },
+  { name: 'strategies-no-webgpu', file: 'strategies', spec: testSpec, engine: 'auto', expectEngine: 'Emulated GPU', gpuStub: 'no-webgpu', expectReason: 'not available in this browser' },
+  { name: 'gpu-no-adapter', file: 'gpu', spec: testSpec, gpuStub: 'no-adapter', expectDevice: 'Emulated GPU' },
   // A phone: Auto must pick WebGPU, and the collapsed menu must leave the page content in view.
   { name: 'adaptive-mobile', file: 'adaptive', spec: testSpec, engine: 'auto', expectEngine: 'WebGPU', device: 'iPhone 14' },
 ];
@@ -103,7 +107,7 @@ const pairs = {};
 let failures = 0;
 console.log(`testing ${root} ${fileMode ? 'from file:// (no server)' : `over ${base}`}`);
 
-for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expectReason } of cases.filter((c) => !filter || c.name.includes(filter))) {
+for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expectReason, expectDevice } of cases.filter((c) => !filter || c.name.includes(filter))) {
   const context = await browser.newContext(device ? { ...devices[device] } : { viewport: { width: 1400, height: 1000 } });
   const page = await context.newPage();
   const errors = [];
@@ -112,6 +116,7 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
   const network = [];
   page.on('request', (r) => { if (!/^(file|data|blob):/.test(r.url())) network.push(r.url()); });
   if (gpuStub) await page.addInitScript((stub) => {
+    if (stub === 'no-webgpu') { delete Navigator.prototype.gpu; return; }
     const gpu = navigator.gpu;
     if (!gpu) return;
     const original = gpu.requestAdapter.bind(gpu);
@@ -150,6 +155,8 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
   const gpuRuns = await page.evaluate(() => globalThis.__satGpuRuns || 0);
   if (expectEngine === 'WebGPU' && gpuRuns === 0) problems.push('no kernel pipeline was dispatched on WebGPU');
   if (expectEngine === 'WebAssembly' && gpuRuns > 0) problems.push(`${gpuRuns} WebGPU dispatches while WebAssembly ran`);
+  if ((expectEngine === 'Emulated GPU' || expectDevice === 'Emulated GPU') && gpuRuns > 0) problems.push(`${gpuRuns} WebGPU dispatches while the emulated GPU ran`);
+  if (gpuStub === 'no-webgpu' && (await page.evaluate(() => 'gpu' in navigator))) problems.push('the no-WebGPU stub did not remove navigator.gpu');
   if (pair) pairs[pair] = { ...(pairs[pair] || {}), [engine]: await page.evaluate(() => window.__satEngineRun) };
   if (device) {
     const layout = await page.evaluate(() => ({
@@ -163,7 +170,7 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
     await page.click('.menu-toggle');
     if (await page.evaluate(() => document.getElementById('nav-links').offsetParent === null)) problems.push('menu button does not open the menu');
   }
-  if (file === 'gpu') {
+  if (file === 'gpu' && !gpuStub) {
     const probe = await page.waitForFunction(() => window.__satWebGpuProbe, null, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => null);
     if (!probe || !probe.adapters.some((a) => a.adapter)) problems.push(`WebGPU diagnostics found no adapter: ${JSON.stringify(probe)}`);
   }
@@ -171,6 +178,7 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
   if (file === 'gpu' && !problems.length) {
     const r = await page.evaluate(() => window.__satLastRun);
     if (!r) problems.push('no GPU result');
+    else if (expectDevice && r.device !== expectDevice) problems.push(`expected the ${expectDevice} device, ran on ${r.device}`);
     else {
       const c = r.checks;
       if (!(c.candidateSharpeDiff < 1e-3)) problems.push(`candidate Sharpe mismatch ${c.candidateSharpeDiff}`);
@@ -193,13 +201,17 @@ const metrics = {
   adaptive: [['adaptive Sharpe', (r) => r.sharpe, 0.05], ['adaptive annual return', (r) => r.annualReturn, 0.02]],
   robustness: [['share of settings beating the median', (r) => r.shareBeatingMedianFixed, 0.1], ['selector Sharpe', (r) => r.sharpe, 0.05]],
 };
+// The emulated GPU runs the same f32 kernels on the CPU: it must agree with WASM as closely,
+// and with WebGPU almost exactly.
 for (const [name, r] of Object.entries(pairs)) {
-  if (!r.wasm || !r.gpu) continue;
-  for (const [label, get, tol] of metrics[name]) {
-    const w = get(r.wasm), g = get(r.gpu);
-    const ok = Math.abs(g - w) <= tol;
-    console.log(`${ok ? 'ok  ' : 'FAIL'} ${`${name} engines`.padEnd(18)} ${label}: WASM ${w.toFixed(4)} vs GPU ${g.toFixed(4)} (tol ${tol})`);
-    if (!ok) failures++;
+  for (const [a, b, scale] of [['wasm', 'gpu', 1], ['wasm', 'emulator', 1], ['gpu', 'emulator', 0.1]]) {
+    if (!r[a] || !r[b]) continue;
+    for (const [label, get, tol0] of metrics[name]) {
+      const tol = tol0 * scale, x = get(r[a]), y = get(r[b]);
+      const ok = Math.abs(y - x) <= tol;
+      console.log(`${ok ? 'ok  ' : 'FAIL'} ${`${name} ${a}/${b}`.padEnd(22)} ${label}: ${a} ${x.toFixed(4)} vs ${b} ${y.toFixed(4)} (tol ${tol})`);
+      if (!ok) failures++;
+    }
   }
 }
 

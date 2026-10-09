@@ -1277,6 +1277,24 @@ val gpuEmulate(val spec) {
   });
 }
 
+// The emulated GPU device: runs one plan from gpuJobs on the CPU reference of the kernels and
+// returns the same read-back buffers as the WebGPU engine ({ stats, adapt }), so the browser's
+// pipeline (gpuJobs -> device.run per plan -> gpuAnalyse) is unchanged when WebGPU is missing.
+val gpuRunPlan(val plan) {
+  return guarded([&] {
+    gpu::FusedPlan p;
+    p.header = emscripten::convertJSArrayToNumberVector<std::uint32_t>(plan["header"]);
+    p.tables = emscripten::convertJSArrayToNumberVector<float>(plan["tables"]);
+    const double t0 = nowMs();
+    const gpu::FusedOutput out = gpu::runFusedReference(p);
+    val o = val::object();
+    o.set("stats", typedArray(out.stats));
+    o.set("adapt", typedArray(out.adapt));
+    o.set("ms", nowMs() - t0);
+    return o;
+  });
+}
+
 // ------------------------------------------------------------------ Advances in Financial Machine Learning
 //
 // One entry point per topic page. They reuse the cached market and predictions where the
@@ -2426,6 +2444,7 @@ EMSCRIPTEN_BINDINGS(sat) {
   emscripten::function("gpuJobs", &gpuJobs);
   emscripten::function("gpuAnalyse", &gpuAnalyse);
   emscripten::function("gpuEmulate", &gpuEmulate);
+  emscripten::function("gpuRunPlan", &gpuRunPlan);
   emscripten::function("afmlBars", &afmlBars);
   emscripten::function("afmlFracDiff", &afmlFracDiff);
   emscripten::function("afmlLabeling", &afmlLabeling);

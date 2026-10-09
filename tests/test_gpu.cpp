@@ -100,6 +100,17 @@ TEST(gpu_limitations_and_validation) {
   bad.stats.assign(3, 0.0f);
   CHECK_THROWS(gpu::summarise(plan, bad));
   CHECK(plan.adaptBytes() > 0 && plan.statsBytes() == plan.numSeries() * 32);
+  // The CPU reference (the browser's emulated GPU) rejects plans whose header points outside the tables.
+  CHECK(gpu::runFusedReference(plan).stats.size() == plan.numSeries() * gpu::kStats);
+  gpu::FusedPlan truncated = plan;
+  truncated.tables.resize(truncated.tables.size() - 1);
+  CHECK_THROWS(gpu::runFusedReference(truncated));
+  gpu::FusedPlan tooWide = plan;
+  tooWide.header[1] = static_cast<std::uint32_t>(gpu::kMaxAssets + 1);
+  CHECK_THROWS(gpu::runFusedReference(tooWide));
+  gpu::FusedPlan shortHeader = plan;
+  shortHeader.header.pop_back();
+  CHECK_THROWS(gpu::runFusedReference(shortHeader));
 }
 
 TEST(gpu_kernel_sources) {

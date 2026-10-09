@@ -195,7 +195,11 @@ The specification also holds the AFML options of the pipeline, under *Alpha fact
 
 It also holds the settings of the AFML pages and of the hedging and algorithmic-trading pages.
 
-**Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector: **Auto** (the default) runs the WebGPU kernels whenever the browser supports WebGPU, on desktop and mobile alike, and WebAssembly otherwise; **WebGPU** or **WebAssembly** forces one. Unsupported settings (a selector that holds a mix of the top M candidates, more than 128 stocks or 8 models) and GPU errors fall back to WebAssembly, and the status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
+**Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector:
+- **Auto**, the default, runs the WebGPU kernels whenever the browser has a usable WebGPU adapter, on desktop and mobile alike. Otherwise it runs the same kernels on the **emulated GPU**.
+- **WebGPU**, **Emulated GPU** or **WebAssembly** forces one of them. A failing WebGPU run also falls back to the emulated GPU.
+
+Settings the kernels cannot express fall back to WebAssembly on any engine. Those are a selector that holds a mix of the top M candidates, more than 128 stocks, or more than 8 models. The status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
 
 **All numerics are in C++.** Model training always runs in WebAssembly. Each strategy analysis (`strategies`, `adaptive`, `robustness`) is defined once in `wasm/bindings.cpp` as a list of jobs: a transaction cost and the selector settings to run over the candidate pool. A combine step then builds the page's result. On WebAssembly each job builds a `CandidateBook` and runs `evaluateGrid`. On WebGPU:
 
@@ -203,7 +207,14 @@ It also holds the settings of the AFML pages and of the hedging and algorithmic-
 2. `web/js/gpu/engine.js` uploads each plan, dispatches the three kernels and reads back two arrays. The kernel sources come from the library (`gpuKernels`).
 3. `gpuAnalyse(spec)` turns the read-backs into a `GridResult` (`sat::gpu::summarise`) and runs the same combine step as the CPU path.
 
-The JavaScript layer (`web/js/gpu`) only routes calls and talks to WebGPU, and the pages only render results. `gpuEmulate(spec)` runs the kernels on the CPU instead, which is how Node tests the GPU path.
+The JavaScript layer (`web/js/gpu`) only routes calls and talks to WebGPU, and the pages only render results.
+
+**Emulated GPU.** `web/js/gpu/emulator.js` is a drop-in device with the same `run(plan)` interface as the WebGPU engine. Each plan from `gpuJobs` goes to `gpuRunPlan`, which runs it on `runFusedReference()` in the WebAssembly worker:
+- the three kernels, invocation by invocation, in 32-bit floats;
+- over the same header and table buffers that WebGPU uploads;
+- returning the same `stats` and `adapt` read-back.
+
+`gpuAnalyse` then treats the read-back exactly like a GPU's, so the pipeline and its results are unchanged when WebGPU is missing. The reference checks that a plan's header fits its tables, as WebGPU's bounds checks would. The WebGPU page validates the emulated GPU against WebAssembly when the device has no adapter. `gpuEmulate(spec)` does compile, emulate and analyse in one call, which is how Node tests the kernel path.
 
 **WebGPU kernels** (`include/sat/gpu/fused_backtest.hpp`). `compile()` packs into one table:
 - the candidates (model, rule, parameter, holding period) and the selector settings;
