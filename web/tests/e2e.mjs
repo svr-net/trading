@@ -157,6 +157,13 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
   if (expectEngine === 'WebAssembly' && gpuRuns > 0) problems.push(`${gpuRuns} WebGPU dispatches while WebAssembly ran`);
   if ((expectEngine === 'Emulated GPU' || expectDevice === 'Emulated GPU') && gpuRuns > 0) problems.push(`${gpuRuns} WebGPU dispatches while the emulated GPU ran`);
   if (gpuStub === 'no-webgpu' && (await page.evaluate(() => 'gpu' in navigator))) problems.push('the no-WebGPU stub did not remove navigator.gpu');
+  // The sidebar always shows the GPU emulator, and says when it is in use.
+  const emuStatus = await page.waitForFunction(() => {
+    const t = document.getElementById('emulator-status')?.textContent || '';
+    return !/checking/.test(t) && t;
+  }, null, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => '');
+  if (!/^GPU emulator: /.test(emuStatus)) problems.push(`no GPU emulator line in the sidebar: "${emuStatus}"`);
+  else if ((gpuStub === 'no-adapter' || gpuStub === 'no-webgpu') && !/in use/.test(emuStatus)) problems.push(`sidebar should say the emulator is in use: "${emuStatus}"`);
   if (pair) pairs[pair] = { ...(pairs[pair] || {}), [engine]: await page.evaluate(() => window.__satEngineRun) };
   if (device) {
     const layout = await page.evaluate(() => ({
@@ -185,6 +192,10 @@ for (const { name, file, spec, engine, expectEngine, pair, device, gpuStub, expe
       if (!(c.candidateReturnDiff < 1e-3)) problems.push(`candidate return mismatch ${c.candidateReturnDiff}`);
       if (!(c.selectionAgreement >= 0.95)) problems.push(`selection agreement ${c.selectionAgreement}`);
       if (!(c.selectorSharpeDiff < 0.1)) problems.push(`selector Sharpe mismatch ${c.selectorSharpeDiff}`);
+      // The emulated GPU always runs on this page too, and must match WASM, and WebGPU when there is one.
+      const ec = r.emulatorChecks;
+      if (!ec || !(ec.candidateSharpeDiff < 1e-3) || !(ec.selectionAgreement >= 0.95)) problems.push(`emulated GPU vs WASM: ${JSON.stringify(ec)}`);
+      if (r.device === 'GPU' && !(r.gpuVsEmu && r.gpuVsEmu.candidates < 1e-4 && r.gpuVsEmu.selectors < 0.1)) problems.push(`WebGPU vs emulated GPU: ${JSON.stringify(r.gpuVsEmu)}`);
       console.log(`       GPU checks: candidates ΔSharpe ${c.candidateSharpeDiff.toExponential(1)}, Δreturn ${c.candidateReturnDiff.toExponential(1)}; selectors same choice ${(100 * c.selectionAgreement).toFixed(2)}%, ΔSharpe ${c.selectorSharpeDiff.toFixed(4)}`);
     }
   }
