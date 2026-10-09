@@ -115,6 +115,8 @@ if(SAT_BUILD_EXAMPLES)
   add_executable(strategy_tournament examples/strategy_tournament.cpp)
   target_link_libraries(strategy_tournament PRIVATE sat)
   add_executable(uk_portfolio examples/uk_portfolio.cpp)
+  add_executable(pool_ablation examples/pool_ablation.cpp)
+  target_link_libraries(pool_ablation PRIVATE sat)
   target_link_libraries(uk_portfolio PRIVATE sat)
 endif()
 
