@@ -42,6 +42,13 @@ PredictionSet runPredictions(const MarketData& data, const ExperimentSpec& spec)
   for (const auto& m : models)
     p.models.push_back(walkForward(m, p.features, p.labels, spec.label, spec.walkForward, 0, &p.labelEnds,
                                    p.trainMask.empty() ? nullptr : &p.trainMask));
+  if (spec.composite.method != CompositeMethod::None) {
+    auto c = compositePredictions(p.models, p.labels, p.labelEnds, spec.composite);
+    if (!spec.composite.keepMembers) p.models.clear();
+    p.models.push_back(std::move(c.model));
+    p.compositeMembers = std::move(c.members);
+    p.compositeWeights = std::move(c.weights);
+  }
   return p;
 }
 

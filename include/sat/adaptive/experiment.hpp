@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "sat/adaptive/composite.hpp"
 #include "sat/adaptive/self_adaptive.hpp"
 #include "sat/data/market_data.hpp"
 #include "sat/features/dataset.hpp"
@@ -25,6 +26,9 @@ struct ExperimentSpec {
   double cusumMultiple = 0.0;
   LabelSpec label;
   std::vector<ModelSpec> models;       ///< empty: defaultModels()
+  /// A composite model over `models`, appended to the predictions as one more model (or, with
+  /// keepMembers = false, in their place).
+  CompositeSpec composite;
   WalkForwardSpec walkForward;
   std::vector<StrategySpec> strategies;  ///< empty: defaultStrategies()
   double costBps = 10.0;               ///< per unit of turnover, one way (HK stamp duty is 10 bp a side)
@@ -41,7 +45,10 @@ struct PredictionSet {
   Panel labelEnds;    ///< last date each label depends on
   Panel trainMask;    ///< CUSUM events (empty when every day is used)
   Panel nextReturns;  ///< close-to-close return of the following day
-  std::vector<ModelPredictions> models;
+  std::vector<ModelPredictions> models;  ///< the composite, when there is one, comes last
+  /// Weights of the composite model's members, per date from its start (empty without one).
+  std::vector<std::string> compositeMembers;
+  std::vector<std::vector<double>> compositeWeights;
 };
 
 PredictionSet runPredictions(const MarketData& data, const ExperimentSpec& spec);
