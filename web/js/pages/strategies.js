@@ -16,9 +16,9 @@ const button = runButton(page, 'Backtest every candidate', async (spec) => {
   const t0 = performance.now();
   const runResult = await runAnalysis('strategies', spec);
   const r = runResult.result;
-  const onGpu = runResult.engine === 'gpu';
+  const onGpu = runResult.engine === 'gpu' || runResult.engine === 'emulator';  // kernel results, real or emulated GPU
   window.__satEngineRun = { page: 'strategies', engine: runResult.engine, bestSharpe: r.bestFixed.metrics.sharpe, medianSharpe: r.medianFixedSharpe };
-  if (onGpu) gpuScopeNote(page.content, 'the equity curve of every candidate and the rolling winners');
+  if (onGpu) gpuScopeNote(page.content, 'the equity curve of every candidate and the rolling winners', runResult.engine);
   const sorted = r.candidates.map((c, i) => ({ ...c, i })).sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
   const winners = r.blocks ? new Set(r.blocks.map((b) => b.winner)).size : null;
   tiles(page.content, [

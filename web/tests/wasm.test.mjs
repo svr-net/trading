@@ -201,6 +201,24 @@ if (tn) {
   near(w.reduce((a, b) => a + b, 0), 1, 1e-9, 'equal-weight allocator is fully invested');
 }
 
+// The emulated GPU device: each plan of gpuJobs run through gpuRunPlan and handed to
+// gpuAnalyse must give exactly what gpuEmulate (compile + reference + analyse in one call) gives.
+const emuJobs = run('gpuJobs (for the emulated GPU)', () => sat.gpuJobs({ ...spec, analysis: 'adaptive' }));
+if (emuJobs && !emuJobs.unsupported) {
+  const outputs = emuJobs.plans.map((plan) => {
+    if (!plan) return null;
+    const out = sat.gpuRunPlan({ header: plan.header, tables: plan.tables });
+    check(!out.error && out.stats.length === plan.bytes.stats / 4 && out.adapt.length === plan.bytes.adapt / 4, `gpuRunPlan read-back sizes ${out.error || ''}`);
+    return { stats: out.stats, adapt: out.adapt };
+  });
+  const viaDevice = run('gpuAnalyse (emulated GPU read-back)', () => sat.gpuAnalyse({ ...spec, analysis: 'adaptive', gpuOutputs: outputs }));
+  const direct = sat.gpuEmulate({ ...spec, analysis: 'adaptive' });
+  if (viaDevice && !direct.error) near(viaDevice.adaptive.metrics.sharpe, direct.adaptive.metrics.sharpe, 1e-12, 'emulated device = gpuEmulate');
+  const plan = emuJobs.plans.find(Boolean);
+  check(typeof sat.gpuRunPlan({ header: plan.header, tables: plan.tables.subarray(0, plan.tables.length - 1) }).error === 'string', 'a truncated plan is rejected');
+  check(typeof sat.gpuRunPlan({ header: plan.header.subarray(0, 4), tables: plan.tables }).error === 'string', 'a short header is rejected');
+}
+
 const csv = 'date,ticker,open,high,low,close,volume\n2024-01-02,A,1,1,1,1,1\n';
 check(typeof sat.marketData({ ...spec, csv }).error === 'string', 'a one-stock CSV is rejected');
 

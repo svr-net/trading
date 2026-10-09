@@ -1,7 +1,7 @@
 import { run } from '../sat-client.js';
 import { barChart, dateAxis, fmt, lineChart, scatterChart } from '../charts.js';
 import { probeAdapters } from '../gpu/engine.js';
-import { runOnGpu } from '../gpu/backend.js';
+import { runOnEmulator, runOnGpu } from '../gpu/backend.js';
 import { card, el, grid, initPage, passFail, runButton, specEditor, table, tiles } from '../ui.js';
 
 const page = initPage({
@@ -13,33 +13,50 @@ const page = initPage({
     'Three WebGPU compute kernels, also part of the library, then do the search. <b>candidate-backtest</b> runs one invocation per candidate; the 64 candidates of a workgroup share each day of the universe through workgroup memory. ' +
     '<b>adaptive-select</b> runs one invocation per selector setting and scores every candidate in O(1) from prefix sums. <b>series-summary</b> computes the performance statistics. ' +
     'The browser only uploads the table, dispatches the kernels and hands the read-back to the library, which checks it below against its own CPU run. ' +
-    'The GPU works in 32-bit floats, so near-ties between candidates can occasionally resolve differently.',
+    'The GPU works in 32-bit floats, so near-ties between candidates can occasionally resolve differently. ' +
+    'Without a usable WebGPU adapter the page runs the same plans on the <b>emulated GPU</b>: the library\'s CPU reference of the three kernels, invocation by invocation in 32-bit floats, in the WebAssembly worker.',
 });
+
+// The kernels on WebGPU when the device has it, otherwise on the emulated GPU.
+async function runKernels(analysis, spec, options) {
+  let why = 'WebGPU is not available in this browser';
+  if ('gpu' in navigator) {
+    try {
+      return { ...(await runOnGpu(analysis, spec, options)), device: 'GPU' };
+    } catch (e) {
+      console.warn('WebGPU run failed, using the emulated GPU:', e);
+      why = e.message;
+    }
+  }
+  return { ...(await runOnEmulator(analysis, spec, options)), device: 'Emulated GPU', why };
+}
 specEditor(page, ['market', 'csv', 'models', 'strategies', 'costs', 'selector', 'robustness']);
 
 runButton(page, 'Run on GPU and validate against WASM', async (spec) => {
-  const g = await runOnGpu('validation', spec, { warmUp: true });
+  const g = await runKernels('validation', spec, { warmUp: true });
   if (g.unsupported) throw new Error('not on GPU: ' + g.unsupported);
-  const r = g.result, c = r.checks;
+  const r = g.result, c = r.checks, dev = g.device;
+  if (g.why) page.content.append(el('p', { class: 'note engine-note' }, el('b', { text: 'Emulated GPU. ' }),
+    `WebGPU could not run here (${g.why}), so the same plans ran on the CPU reference of the kernels. The checks below compare that emulation with the WebAssembly library; timings are CPU timings.`));
   tiles(page.content, [
-    { label: 'GPU kernels', value: fmt.num(r.gpuMs, 1) + ' ms', hint: `${fmt.num(r.numCandidates)} candidates × ${fmt.num(r.numSelectors)} selectors × ${fmt.num(r.evalDays)} days` },
+    { label: `${dev} kernels`, value: fmt.num(r.gpuMs, 1) + ' ms', hint: `${fmt.num(r.numCandidates)} candidates × ${fmt.num(r.numSelectors)} selectors × ${fmt.num(r.evalDays)} days` },
     { label: 'WASM (CPU, 1 thread)', value: fmt.num(r.cpuMs, 0) + ' ms', hint: 'backtests + selectors' },
     { label: 'Speed-up', value: (r.cpuMs / r.gpuMs).toFixed(1) + '×', hint: 'includes upload & read-back' },
     { label: 'Plan compile (C++)', value: fmt.num(r.compileMs, 1) + ' ms', hint: `${r.numModels} models × ${r.numAssets} stocks` },
     { label: 'Same choice', value: fmt.pct(c.selectionAgreement, 2), hint: 'selector-days holding the same candidate' },
   ]);
   const gr = grid(page.content);
-  scatterChart(card(gr, 'Candidates: Sharpe ratio, GPU vs WASM', 'Every fixed candidate. The points should sit on the diagonal.'), {
-    xLabel: 'WASM', yLabel: 'GPU', diagonal: true, square: true, series: [{ name: 'candidate', x: Array.from(r.cpuCandidateSharpe), y: Array.from(r.gpuCandidateSharpe) }],
+  scatterChart(card(gr, `Candidates: Sharpe ratio, ${dev} vs WASM`, 'Every fixed candidate. The points should sit on the diagonal.'), {
+    xLabel: 'WASM', yLabel: dev, diagonal: true, square: true, series: [{ name: 'candidate', x: Array.from(r.cpuCandidateSharpe), y: Array.from(r.gpuCandidateSharpe) }],
   });
-  scatterChart(card(gr, 'Selector grid: Sharpe ratio, GPU vs WASM', 'Every look-back × step × score setting.'), {
-    xLabel: 'WASM', yLabel: 'GPU', diagonal: true, square: true, series: [{ name: 'selector', x: Array.from(r.cpuSelectorSharpe), y: Array.from(r.gpuSelectorSharpe), colorIndex: 1 }],
+  scatterChart(card(gr, `Selector grid: Sharpe ratio, ${dev} vs WASM`, 'Every look-back × step × score setting.'), {
+    xLabel: 'WASM', yLabel: dev, diagonal: true, square: true, series: [{ name: 'selector', x: Array.from(r.cpuSelectorSharpe), y: Array.from(r.gpuSelectorSharpe), colorIndex: 1 }],
   });
-  lineChart(card(gr, 'Your selector: wealth on both engines', 'Solid: GPU kernels; dashed: WASM library.'), {
+  lineChart(card(gr, 'Your selector: wealth on both engines', `Solid: ${dev} kernels; dashed: WASM library.`), {
     x: r.dates.map((_, i) => i), xFormat: dateAxis(r.dates), xLabel: 'date', yFormat: (v) => v.toFixed(2),
-    series: [{ name: 'GPU', y: Array.from(r.gpuEquity) }, { name: 'WASM', y: Array.from(r.cpuEquity), dash: true, colorIndex: 1 }],
+    series: [{ name: dev, y: Array.from(r.gpuEquity) }, { name: 'WASM', y: Array.from(r.cpuEquity), dash: true, colorIndex: 1 }],
   });
-  const checks = card(gr, 'Agreement checks', 'Computed by the library from the GPU read-back and its own CPU run.');
+  const checks = card(gr, 'Agreement checks', `Computed by the library from the ${dev === 'GPU' ? 'GPU' : 'emulated GPU'} read-back and its own CPU run.`);
   table(checks, ['check', 'value', 'tolerance', 'result'], [
     ['candidates: max |ΔSharpe|', c.candidateSharpeDiff.toExponential(1), '1e-3', passFail(c.candidateSharpeDiff < 1e-3)],
     ['candidates: max |Δ total return| / (1 + |R|)', c.candidateReturnDiff.toExponential(1), '1e-3', passFail(c.candidateReturnDiff < 1e-3)],
@@ -47,8 +64,8 @@ runButton(page, 'Run on GPU and validate against WASM', async (spec) => {
     ['selectors: same candidate held', fmt.pct(c.selectionAgreement, 2), '≥ 95%', passFail(c.selectionAgreement >= 0.95)],
     ['selectors: max |ΔSharpe|', c.selectorSharpeDiff.toFixed(3), '0.1', passFail(c.selectorSharpeDiff < 0.1)],
   ]);
-  window.__satLastRun = { checks: c };
-  return `GPU ${fmt.num(r.gpuMs, 1)} ms · WASM ${fmt.num(r.cpuMs)} ms · adapter: ${r.adapter}`;
+  window.__satLastRun = { checks: c, device: dev };
+  return `${dev} ${fmt.num(r.gpuMs, 1)} ms · WASM ${fmt.num(r.cpuMs)} ms · adapter: ${r.adapter}`;
 });
 
 // More candidates: extra rules with nearby parameters, every model, against the same selector grid.
@@ -72,16 +89,16 @@ bench.addEventListener('click', async () => {
     const rows = [];
     for (const n of [8, 32, 128, 512]) {
       const spec = { ...page.spec, strategies: widen(page.spec.strategies, n) };
-      const g = await runOnGpu('validation', spec);
+      const g = await runKernels('validation', spec);
       if (g.unsupported) throw new Error('not on GPU: ' + g.unsupported);
-      rows.push({ n: g.result.numCandidates, gpuMs: g.result.gpuMs, wasmMs: g.result.cpuMs });
+      rows.push({ n: g.result.numCandidates, gpuMs: g.result.gpuMs, wasmMs: g.result.cpuMs, dev: g.device });
     }
     const box = card(page.content, 'Throughput (candidate-days per second)', 'Both engines run the same candidates and selector grid. The models are trained once, in WebAssembly, and not timed.');
     barChart(box, {
       labels: rows.map((x) => fmt.num(x.n) + ' candidates'),
-      series: [{ name: 'GPU kernels', values: rows.map((x) => (1000 * x.n) / x.gpuMs) }, { name: 'WASM library', values: rows.map((x) => (1000 * x.n) / x.wasmMs) }],
+      series: [{ name: `${rows[0].dev} kernels`, values: rows.map((x) => (1000 * x.n) / x.gpuMs) }, { name: 'WASM library', values: rows.map((x) => (1000 * x.n) / x.wasmMs) }],
     });
-    table(box, ['candidates', 'GPU ms', 'WASM ms', 'speed-up'], rows.map((x) => [fmt.num(x.n), fmt.num(x.gpuMs, 1), fmt.num(x.wasmMs), (x.wasmMs / x.gpuMs).toFixed(1) + '×']));
+    table(box, ['candidates', `${rows[0].dev} ms`, 'WASM ms', 'speed-up'], rows.map((x) => [fmt.num(x.n), fmt.num(x.gpuMs, 1), fmt.num(x.wasmMs), (x.wasmMs / x.gpuMs).toFixed(1) + '×']));
     page.status.textContent = 'Benchmark done';
   } catch (e) {
     page.status.className = 'status error';
@@ -96,7 +113,7 @@ run('gpuKernels', {}).then((k) => page.main.append(el('details', { class: 'spec'
   el('h3', { text: 'adaptive-select' }), el('pre', { class: 'code', text: k.adaptiveSelect }),
   el('h3', { text: 'series-summary' }), el('pre', { class: 'code', text: k.seriesSummary }))));
 
-// What this browser and device offer: useful when Auto falls back to WebAssembly.
+// What this browser and device offer: useful when Auto falls back to the emulated GPU.
 const diag = el('details', { class: 'spec', id: 'webgpu-diagnostics' }, el('summary', { text: 'WebGPU diagnostics for this device' }));
 page.main.append(diag);
 probeAdapters().then((r) => {

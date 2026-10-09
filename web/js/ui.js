@@ -103,7 +103,7 @@ export function initPage({ id, title, context, description }) {
   import('./sat-client.js').then(({ run }) => run('version', {}))
     .then((v) => { wasmDot.className = 'dot ok'; wasmText.textContent = `WASM: ${v.library}`; })
     .catch((e) => { wasmDot.className = 'dot bad'; wasmText.textContent = 'WASM: ' + e.message; });
-  gpuStatus().then((s) => { gpuDot.className = 'dot ' + (s.ok ? 'ok' : 'bad'); gpuText.textContent = 'WebGPU: ' + s.text; });
+  gpuStatus().then((s) => { gpuDot.className = 'dot ' + (s.ok ? 'ok' : 'warn'); gpuText.textContent = 'WebGPU: ' + s.text + (s.ok ? '' : ' · emulated GPU'); });
 
   return { main, toolbar, status, content, spec: loadSpec() };
 }
