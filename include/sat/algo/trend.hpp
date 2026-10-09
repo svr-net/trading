@@ -13,9 +13,10 @@ namespace sat::algo {
 /// Each rule is an exponentially weighted moving-average crossover (fast, slow) whose raw
 /// forecast is (EMA_fast - EMA_slow) / price volatility. Forecasts are scaled so that their
 /// average absolute value is 10 (the scalar estimated from past data only) and capped at
-/// +-20. The rules are combined with weights and a diversification multiplier; positions
-/// size each instrument to an equal share of the target portfolio volatility, scaled by the
-/// combined forecast / 10. A buffer skips trades smaller than `buffer` x the average
+/// +-20. The rules are combined with weights and a forecast diversification multiplier;
+/// positions size each instrument to an equal share of the target portfolio volatility,
+/// scaled up by the instrument diversification multiplier (from the average correlation of
+/// the instruments' past returns) and by the combined forecast / 10. A buffer skips trades smaller than `buffer` x the average
 /// position, which saves costs.
 ///
 /// Self-adaptation: with `adaptiveWeights`, every `reweightEvery` days the rule weights are
@@ -28,6 +29,7 @@ struct TrendSpec {
   double volSpan = 36.0;         ///< span of the instrument volatility estimate (days)
   double forecastCap = 20.0;
   double buffer = 0.1;
+  double maxIdm = 2.5;           ///< cap on the instrument diversification multiplier
   double costBps = 5.0;
   bool longOnly = false;
   bool adaptiveWeights = true;
@@ -36,12 +38,12 @@ struct TrendSpec {
 };
 
 struct TrendResult {
-  std::vector<double> returns, turnover, grossLeverage;
+  std::vector<double> returns, turnover, grossLeverage, idm;
   std::vector<std::vector<double>> ruleReturns;   ///< per rule, each traded alone with the same sizing
   std::vector<std::vector<double>> weights;       ///< per rule, over time
   std::vector<double> combinedForecastMean;       ///< average |combined forecast| across instruments per day
   std::vector<double> forecastScalars;            ///< final scalar per rule
-  std::size_t start = 0;                          ///< first traded date
+  std::size_t start = 0;                          ///< date index of returns[0] (earned to start + 1)
 };
 
 TrendResult trendFollowing(const Panel& close, const TrendSpec& spec);

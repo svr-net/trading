@@ -63,6 +63,7 @@ TrendResult trendFollowing(const Panel& close, const TrendSpec& s) {
   std::vector<double> pos(N, 0.0);
   std::vector<std::vector<double>> rulePos(R, std::vector<double>(N, 0.0));
   const double dailyTarget = s.targetVol / std::sqrt(252.0);
+  double idm = 1.0;
   for (std::size_t t = 1; t + 1 < T; ++t) {
     std::vector<std::vector<double>> scaled(R, std::vector<double>(N, 0.0));
     for (std::size_t r = 0; r < R; ++r) {
@@ -93,7 +94,27 @@ TrendResult trendFollowing(const Panel& close, const TrendSpec& s) {
       }
       for (std::size_t r = 0; r < R; ++r) weight[r] = total > 0 ? sharpe[r] / total : 1.0 / static_cast<double>(R);
     }
-    // Diversification multiplier: 1 / sqrt(w' C w) with C the correlation of rule forecasts
+    // Instrument diversification multiplier: with equal weights 1/N and average pairwise
+    // return correlation rho, w' H w = 1/N + (1 - 1/N) rho; re-estimated with the rule weights.
+    if ((t - s.warmup) % s.reweightEvery == 0 && N > 1) {
+      const std::size_t from = t > s.reweightWindow ? t - s.reweightWindow + 1 : 1;
+      double rho = 0;
+      std::size_t pairs = 0;
+      for (std::size_t a = 0; a < N; ++a)
+        for (std::size_t b = a + 1; b < N; ++b) {
+          const std::vector<double> ra(ret[a].begin() + static_cast<std::ptrdiff_t>(from), ret[a].begin() + static_cast<std::ptrdiff_t>(t + 1)),
+              rb(ret[b].begin() + static_cast<std::ptrdiff_t>(from), ret[b].begin() + static_cast<std::ptrdiff_t>(t + 1));
+          const double c = correlation(ra, rb);
+          if (std::isfinite(c)) {
+            rho += c;
+            ++pairs;
+          }
+        }
+      rho = pairs ? std::max(0.0, rho / static_cast<double>(pairs)) : 0.0;
+      const double n = static_cast<double>(N);
+      idm = std::min(s.maxIdm, 1.0 / std::sqrt(1.0 / n + (1.0 - 1.0 / n) * rho));
+    }
+    // Forecast diversification multiplier: 1 / sqrt(w' C w) with C the correlation of rule forecasts
     // across instruments today (bounded in [1, 2.5]).
     double wcw = 0;
     for (std::size_t a = 0; a < R; ++a)
@@ -108,8 +129,8 @@ TrendResult trendFollowing(const Panel& close, const TrendSpec& s) {
       for (std::size_t r = 0; r < R; ++r) f += weight[r] * scaled[r][i];
       f = std::clamp(f * fdm, -s.forecastCap, s.forecastCap);
       absForecast += std::fabs(f) / static_cast<double>(N);
-      // Equal volatility budget per instrument: weight = (target / N) / instrument vol.
-      const double unit = rvol[i][t] > 0 ? dailyTarget / static_cast<double>(N) / rvol[i][t] : 0.0;
+      // Equal volatility budget per instrument: weight = IDM (target / N) / instrument vol.
+      const double unit = rvol[i][t] > 0 ? idm * dailyTarget / static_cast<double>(N) / rvol[i][t] : 0.0;
       const double target = unit * f / 10.0;
       if (std::fabs(target - pos[i]) > s.buffer * unit) {
         turnover += std::fabs(target - pos[i]);
@@ -121,6 +142,7 @@ TrendResult trendFollowing(const Panel& close, const TrendSpec& s) {
     }
     out.returns.push_back(pnl - s.costBps * 1e-4 * turnover);
     out.turnover.push_back(turnover);
+    out.idm.push_back(idm);
     out.grossLeverage.push_back(gross);
     out.combinedForecastMean.push_back(absForecast);
     for (std::size_t r = 0; r < R; ++r) {

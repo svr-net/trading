@@ -1902,6 +1902,514 @@ val afmlOverfitting(val spec) {
   });
 }
 
+// ------------------------------------------------- hedging and algorithmic trading
+
+val seriesToJs(const std::string& name, const std::vector<double>& daily) {
+  val o = val::object();
+  o.set("name", name);
+  o.set("metrics", metricsToJs(evaluatePerformance(daily)));
+  o.set("equity", arr(equityCurve(daily)));
+  o.set("drawdown", arr(drawdownCurve(daily)));
+  return o;
+}
+
+// Equal-weight average of the finite entries of row t.
+double rowMean(const Panel& p, std::size_t t) {
+  double s = 0;
+  std::size_t n = 0;
+  for (std::size_t i = 0; i < p.assets(); ++i)
+    if (std::isfinite(p(t, i))) {
+      s += p(t, i);
+      ++n;
+    }
+  return n ? s / static_cast<double>(n) : 0.0;
+}
+
+// Equal-weight market: value t is the return from date t to t + 1.
+std::vector<double> equalWeightReturns(const MarketData& d) { return algo::equalWeightMarket(d); }
+
+double correlationOrZero(const std::vector<double>& a, const std::vector<double>& b) {
+  const double c = correlation(a, b);
+  return std::isfinite(c) ? c : 0.0;
+}
+
+// Beta hedging, volatility targeting and Kelly sizing of the self-adaptive strategy.
+val hedgeOverlays(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const Predictions p = predictions(spec, env);
+    const MarketData& d = *market(spec, env);
+    const CandidateBook book(p.set->models, env.exp.strategies, p.set->nextReturns, env.exp.costBps);
+    const std::size_t evalFrom = std::min(env.exp.selector.lookback, book.days() - 1);
+    const AdaptiveResult a = runSelector(book, env.exp.selector, evalFrom);
+    const val H = spec["hedging"];
+    const std::size_t betaWindow = std::max<std::size_t>(10, count(H, "betaWindow", 63));
+    const double delta = num(H, "delta", 1e-4), hedgeCost = num(H, "hedgeCostBps", 2.0);
+    const double targetVol = num(H, "targetVol", 0.10), volSpan = num(H, "volSpan", 36.0), maxLev = num(H, "maxLeverage", 3.0);
+    const double kellyFraction = num(H, "kellyFraction", 0.5);
+    const std::size_t kellyWindow = std::max<std::size_t>(20, count(H, "kellyWindow", 126));
+    if (!(targetVol > 0) || !(maxLev > 0) || !(volSpan >= 2) || !(kellyFraction > 0) || !(delta > 0 && delta < 1))
+      throw std::invalid_argument("hedging: positive target volatility, leverage cap and Kelly fraction, span >= 2, 0 < delta < 1");
+    const std::size_t first = book.start() + evalFrom;
+    const std::vector<double>& r = a.net;
+    std::vector<double> m(r.size());
+    for (std::size_t k = 0; k < r.size(); ++k) m[k] = rowMean(p.set->nextReturns, first + k);
+    // Observation noise of the Kalman regression: the strategy's residual variance, roughly.
+    const double obs = std::max(1e-10, std::pow(stdev(r), 2));
+    const auto kal = hedge::kalmanRegression(r, m, delta, obs);
+    const auto rolling = hedge::rollingBeta(r, m, betaWindow);
+    const auto rollHedged = hedge::applyHedge(r, m, rolling, hedgeCost);
+    const auto kalHedged = hedge::applyHedge(r, m, kal.beta, hedgeCost);
+    std::vector<double> volLev, kellyLev, comboLev;
+    const auto volTargeted = hedge::volatilityTarget(r, targetVol, volSpan, maxLev, &volLev);
+    const auto kelly = hedge::kellyScale(r, kellyWindow, kellyFraction, maxLev, &kellyLev);
+    const auto combo = hedge::volatilityTarget(kalHedged, targetVol, volSpan, maxLev, &comboLev);
+    const double inHindsight = hedge::minimumVarianceHedgeRatio(r, m);
+    // Every overlay is compared over the same days: after the longest warm-up (beta window,
+    // Kelly window), so none of them is credited or blamed for days it sat out.
+    const std::size_t live = std::max(betaWindow, kellyWindow);
+    if (live + 20 >= r.size()) throw std::invalid_argument("hedging: the beta and Kelly windows leave too few evaluation days");
+    auto tail = [&](const std::vector<double>& v) { return std::vector<double>(v.begin() + static_cast<std::ptrdiff_t>(live), v.end()); };
+    const std::vector<double> mt = tail(m);
+    val series = val::array();
+    const std::vector<std::pair<std::string, const std::vector<double>*>> all = {
+        {"self-adaptive (unhedged)", &r},       {"rolling-beta hedge", &rollHedged}, {"Kalman-beta hedge", &kalHedged},
+        {"volatility target", &volTargeted},     {"fractional Kelly", &kelly},        {"Kalman hedge + vol target", &combo},
+        {"equal-weight market", &m}};
+    val corr = val::array();
+    for (const auto& [name, s] : all) {
+      const auto t = tail(*s);
+      series.call<void>("push", seriesToJs(name, t));
+      corr.call<void>("push", correlationOrZero(t, mt));
+    }
+    val out = val::object();
+    out.set("series", series);
+    out.set("marketCorrelation", corr);
+    out.set("rollingBeta", arr(tail(rolling)));
+    out.set("kalmanBeta", arr(tail(kal.beta)));
+    out.set("hindsightBeta", inHindsight);
+    out.set("volLeverage", arr(tail(volLev)));
+    out.set("kellyLeverage", arr(tail(kellyLev)));
+    out.set("dates", dateRange(d, first + live, first + r.size() + 1));
+    out.set("warmup", static_cast<double>(live));
+    out.set("selector", env.exp.selector.label());
+    out.set("trainMs", p.trainMs);
+    out.set("cachedPredictions", p.cached);
+    return out;
+  });
+}
+
+// Delta hedging by simulation, and protective put / collar overlays on the market index.
+val hedgeOptions(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const MarketData& d = *market(spec, env);
+    const val O = spec["options"];
+    hedge::DeltaHedgeSpec h;
+    h.vol = num(O, "vol", 0.2);
+    h.impliedVol = num(O, "impliedVol", h.vol);
+    h.years = num(O, "years", 0.25);
+    h.strike = h.spot * num(O, "strike", 1.0);
+    h.costBps = num(O, "costBps", 0.0);
+    h.paths = std::clamp<std::size_t>(count(O, "paths", 2000), 100, 20000);
+    h.seed = static_cast<std::uint64_t>(num(O, "seed", 13));
+    if (!(h.vol > 0) || !(h.impliedVol > 0) || !(h.years > 0 && h.years <= 2) || !(h.strike > 0) || !(h.costBps >= 0))
+      throw std::invalid_argument("options: positive volatilities and strike, 0 < years <= 2, non-negative cost");
+    const std::size_t perDay = h.stepsPerYear / 252;
+    val freq = val::array();
+    val hist = val::object();
+    for (std::size_t every : {std::size_t{1}, std::size_t{2}, std::size_t{4}, std::size_t{8}, std::size_t{16}, std::size_t{40}, std::size_t{80}}) {
+      const auto res = hedge::simulateDeltaHedge(h, every);
+      val o = val::object();
+      o.set("perDay", static_cast<double>(perDay) / static_cast<double>(every));
+      o.set("rebalances", static_cast<double>(res.rebalances));
+      o.set("mean", res.mean);
+      o.set("sd", res.sd);
+      o.set("q05", quantile(res.pnl, 0.05));
+      freq.call<void>("push", o);
+      if (every == perDay) hist.set("daily", arr(res.pnl));
+      if (every == perDay * 5) hist.set("weekly", arr(res.pnl));
+      hist.set("premium", res.premium);
+    }
+    hedge::OptionOverlaySpec ov;
+    ov.tenorDays = std::max<std::size_t>(5, count(O, "tenorDays", 21));
+    ov.putMoneyness = num(O, "putMoneyness", 0.95);
+    ov.callMoneyness = num(O, "callMoneyness", 1.05);
+    ov.volPremium = num(O, "volPremium", 0.02);
+    if (!(ov.putMoneyness > 0 && ov.putMoneyness <= 1.2) || !(ov.callMoneyness >= 0.8)) throw std::invalid_argument("options: put moneyness in (0, 1.2], call moneyness >= 0.8");
+    const auto mr = equalWeightReturns(d);
+    std::vector<double> price{100.0};
+    for (double x : mr) price.push_back(price.back() * (1 + x));
+    const auto o = hedge::optionOverlay(price, ov);
+    val overlays = val::array();
+    overlays.call<void>("push", seriesToJs("equal-weight index", o.unhedged));
+    overlays.call<void>("push", seriesToJs("protective put", o.protectivePut));
+    overlays.call<void>("push", seriesToJs("collar", o.collar));
+    val out = val::object();
+    out.set("frequencies", freq);
+    out.set("histograms", hist);
+    out.set("premium", hedge::blackScholes(h.spot, h.strike, h.years, h.rate, h.impliedVol, true));
+    out.set("overlays", overlays);
+    out.set("averagePutCost", o.averagePutCost);
+    out.set("averageCallIncome", o.averageCallIncome);
+    out.set("rolls", static_cast<double>(o.rolls));
+    out.set("dates", dateRange(d, 0, d.numDates()));
+    // Payoff of the overlays at expiry against the index move (premia at the average cost).
+    std::vector<double> move, put, collar;
+    for (int k = -20; k <= 20; ++k) {
+      const double x = k / 100.0, s = 1 + x;
+      move.push_back(x);
+      put.push_back(x + std::max(0.0, ov.putMoneyness - s) - o.averagePutCost);
+      collar.push_back(x + std::max(0.0, ov.putMoneyness - s) - std::max(0.0, s - ov.callMoneyness) - o.averagePutCost + o.averageCallIncome);
+    }
+    out.set("payoffMove", arr(move));
+    out.set("payoffPut", arr(put));
+    out.set("payoffCollar", arr(collar));
+    return out;
+  });
+}
+
+val cointegrationToJs(const algo::Cointegration& c) {
+  val o = val::object();
+  o.set("hedgeRatio", c.hedgeRatio);
+  o.set("intercept", c.intercept);
+  o.set("adf", c.adf);
+  o.set("critical5", algo::Cointegration::critical5);
+  o.set("halfLife", c.halfLife);
+  o.set("cointegrated", c.cointegrated());
+  return o;
+}
+
+algo::PairsSpec parsePairs(const val& P) {
+  algo::PairsSpec s;
+  s.delta = num(P, "delta", s.delta);
+  s.observationVariance = num(P, "observationVariance", s.observationVariance);
+  s.entryZ = num(P, "entryZ", s.entryZ);
+  s.exitZ = num(P, "exitZ", s.exitZ);
+  s.costBps = num(P, "costBps", s.costBps);
+  if (!(s.delta > 0 && s.delta < 1) || !(s.observationVariance > 0) || !(s.entryZ > s.exitZ) || !(s.costBps >= 0))
+    throw std::invalid_argument("pairs: 0 < delta < 1, positive observation variance, entry z above exit z");
+  return s;
+}
+
+val pairsToJs(const algo::PairsResult& r) {
+  val o = val::object();
+  o.set("metrics", metricsToJs(evaluatePerformance(r.returns)));
+  o.set("equity", arr(equityCurve(r.returns)));
+  o.set("beta", arr(r.beta));
+  o.set("zscore", arr(r.zscore));
+  std::vector<double> pos(r.position.begin(), r.position.end());
+  o.set("position", arr(pos));
+  o.set("trades", static_cast<double>(r.trades));
+  return o;
+}
+
+// Cointegration and Kalman-filter pairs trading.
+val algoPairs(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const MarketData& d = *market(spec, env);
+    const val P = spec["pairs"];
+    const auto ps = parsePairs(P);
+    algo::PairSpec g;
+    g.days = std::clamp<std::size_t>(count(P, "days", 1000), 100, 20000);
+    g.beta = num(P, "beta", 1.5);
+    g.halfLifeDays = num(P, "halfLife", 10.0);
+    g.spreadVol = num(P, "spreadVol", 0.01);
+    g.seed = static_cast<std::uint64_t>(num(P, "seed", 21));
+    if (!(g.halfLifeDays > 0) || !(g.spreadVol > 0)) throw std::invalid_argument("pairs: positive half-life and spread volatility");
+    std::vector<double> y, x;
+    algo::generatePair(g, y, x);
+    val synth = val::object();
+    synth.set("y", arr(y));
+    synth.set("x", arr(x));
+    synth.set("cointegration", cointegrationToJs(algo::engleGranger(y, x)));
+    synth.set("strategy", pairsToJs(algo::kalmanPairs(y, x, ps)));
+    // Universe scan on the first half; the best pairs are traded on the second half.
+    const std::size_t T = d.numDates(), N = d.numAssets(), half = T / 2;
+    if (half < 60) throw std::invalid_argument("pairs: the universe scan needs at least 120 days");
+    struct Scan {
+      std::size_t a, b;
+      algo::Cointegration c;
+    };
+    std::vector<Scan> scans;
+    std::vector<std::vector<double>> px(N);
+    for (std::size_t i = 0; i < N; ++i) px[i] = d.close.series(i);
+    for (std::size_t a = 0; a < N; ++a)
+      for (std::size_t b = a + 1; b < N; ++b) {
+        const std::vector<double> ya(px[a].begin(), px[a].begin() + static_cast<std::ptrdiff_t>(half)),
+            xb(px[b].begin(), px[b].begin() + static_cast<std::ptrdiff_t>(half));
+        scans.push_back({a, b, algo::engleGranger(ya, xb)});
+      }
+    std::sort(scans.begin(), scans.end(), [](const Scan& l, const Scan& r) { return l.c.adf < r.c.adf; });
+    std::size_t found = 0;
+    for (const auto& s : scans) found += s.c.cointegrated();
+    const std::size_t top = std::min<std::size_t>(5, scans.size());
+    val table = val::array();
+    std::vector<double> oosAll;
+    for (std::size_t k = 0; k < top; ++k) {
+      const auto& s = scans[k];
+      const std::vector<double> yb(px[s.a].begin() + static_cast<std::ptrdiff_t>(half), px[s.a].end()),
+          xb(px[s.b].begin() + static_cast<std::ptrdiff_t>(half), px[s.b].end());
+      const auto res = algo::kalmanPairs(yb, xb, ps);
+      const auto oos = algo::engleGranger(yb, xb);
+      val o = val::object();
+      o.set("pair", d.tickers[s.a] + " / " + d.tickers[s.b]);
+      o.set("inSample", cointegrationToJs(s.c));
+      o.set("outOfSample", cointegrationToJs(oos));
+      o.set("metrics", metricsToJs(evaluatePerformance(res.returns)));
+      o.set("equity", arr(equityCurve(res.returns)));
+      o.set("trades", static_cast<double>(res.trades));
+      table.call<void>("push", o);
+    }
+    std::vector<double> adf;
+    for (const auto& s : scans) adf.push_back(s.c.adf);
+    val out = val::object();
+    out.set("synthetic", synth);
+    out.set("scan", table);
+    out.set("scanAdf", arr(adf));
+    out.set("pairsTested", static_cast<double>(scans.size()));
+    out.set("pairsCointegrated", static_cast<double>(found));
+    out.set("scanDays", static_cast<double>(half));
+    out.set("tradeDates", dateRange(d, half, T));
+    return out;
+  });
+}
+
+// Carver-style trend following on the universe, with static and adaptive rule weights.
+val algoTrend(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const MarketData& d = *market(spec, env);
+    const val R = spec["trend"];
+    algo::TrendSpec s;
+    s.targetVol = num(R, "targetVol", s.targetVol);
+    s.volSpan = num(R, "volSpan", s.volSpan);
+    s.buffer = num(R, "buffer", s.buffer);
+    s.costBps = num(R, "costBps", s.costBps);
+    s.reweightEvery = std::max<std::size_t>(1, count(R, "reweightEvery", s.reweightEvery));
+    s.reweightWindow = std::max<std::size_t>(20, count(R, "reweightWindow", s.reweightWindow));
+    s.longOnly = flag(R, "longOnly", false);
+    if (!(s.targetVol > 0) || !(s.volSpan >= 2) || !(s.buffer >= 0) || !(s.costBps >= 0))
+      throw std::invalid_argument("trend: positive volatility target, span >= 2, non-negative buffer and cost");
+    if (d.numDates() <= s.warmup + 30) throw std::invalid_argument("trend: needs more than " + std::to_string(s.warmup + 30) + " days");
+    algo::TrendSpec fixed = s;
+    fixed.adaptiveWeights = false;
+    const auto adaptive = algo::trendFollowing(d.close, s), stat = algo::trendFollowing(d.close, fixed);
+    const auto mr = equalWeightReturns(d);
+    const std::vector<double> bench(mr.begin() + static_cast<std::ptrdiff_t>(s.warmup), mr.end());
+    val series = val::array();
+    series.call<void>("push", seriesToJs("adaptive rule weights", adaptive.returns));
+    series.call<void>("push", seriesToJs("equal rule weights", stat.returns));
+    series.call<void>("push", seriesToJs("equal-weight market", bench));
+    val rules = val::array();
+    for (std::size_t r = 0; r < s.rules.size(); ++r) {
+      val o = val::object();
+      o.set("name", "EWMAC " + std::to_string(s.rules[r].first) + "/" + std::to_string(s.rules[r].second));
+      o.set("metrics", metricsToJs(evaluatePerformance(adaptive.ruleReturns[r])));
+      o.set("weights", arr(adaptive.weights[r]));
+      o.set("scalar", adaptive.forecastScalars[r]);
+      rules.call<void>("push", o);
+    }
+    val out = val::object();
+    out.set("series", series);
+    out.set("rules", rules);
+    out.set("grossLeverage", arr(adaptive.grossLeverage));
+    out.set("turnover", arr(adaptive.turnover));
+    out.set("idm", arr(adaptive.idm));
+    out.set("forecast", arr(adaptive.combinedForecastMean));
+    out.set("dates", dateRange(d, s.warmup, d.numDates()));
+    out.set("regime", arr(regimeSlice(d, s.warmup + 1, d.numDates())));
+    out.set("regimeNames", regimeNames(d));
+    return out;
+  });
+}
+
+// Hidden Markov regimes of the market and regime-switched exposure.
+val algoRegimes(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const MarketData& d = *market(spec, env);
+    const val G = spec["regimes"];
+    algo::RegimeSwitchSpec rs;
+    rs.states = std::clamp<std::size_t>(count(G, "states", 2), 2, 4);
+    rs.window = std::max<std::size_t>(60, count(G, "window", 504));
+    rs.refitEvery = std::max<std::size_t>(1, count(G, "refitEvery", 63));
+    rs.threshold = num(G, "threshold", 0.5);
+    rs.riskOffExposure = num(G, "riskOffExposure", 0.0);
+    rs.costBps = num(G, "costBps", 5.0);
+    const auto r = equalWeightReturns(d);
+    if (r.size() <= rs.window + 20) throw std::invalid_argument("regimes: the estimation window is longer than the data");
+    const auto model = algo::fitHmm(r, rs.states);
+    const auto filtered = algo::filterHmm(model, r);
+    std::vector<std::vector<double>> probs(rs.states);
+    for (const auto& row : filtered)
+      for (std::size_t k = 0; k < rs.states; ++k) probs[k].push_back(row[k]);
+    // Accuracy against the generator's regimes: the most volatile HMM state against the
+    // most volatile true regime (only for the synthetic market).
+    double accuracy = -1;
+    if (str(spec, "csv", "").empty() && !d.regime.empty()) {
+      const auto regs = parseMarket(spec["market"]).regimes;
+      int volatileRegime = 0;
+      for (std::size_t k = 1; k < regs.size(); ++k)
+        if (regs[k].volatility > regs[static_cast<std::size_t>(volatileRegime)].volatility) volatileRegime = static_cast<int>(k);
+      std::size_t hit = 0;
+      for (std::size_t t = 0; t < r.size(); ++t) hit += (filtered[t].back() > 0.5) == (d.regime[t + 1] == volatileRegime);
+      accuracy = static_cast<double>(hit) / static_cast<double>(r.size());
+    }
+    const auto sw = algo::regimeSwitch(r, rs);
+    const std::vector<double> bench(r.begin() + static_cast<std::ptrdiff_t>(sw.start), r.end());
+    // Volatility targeting as the continuous alternative to switching.
+    const auto vt = hedge::volatilityTarget(bench, num(G, "targetVol", 0.12), 36.0, 2.0);
+    val series = val::array();
+    series.call<void>("push", seriesToJs("equal-weight market", bench));
+    series.call<void>("push", seriesToJs("HMM regime switch", sw.returns));
+    series.call<void>("push", seriesToJs("volatility target", vt));
+    val m = val::object();
+    m.set("mean", arr(model.mean));
+    m.set("sd", arr(model.sd));
+    m.set("transition", arrOfArr(model.transition));
+    m.set("logLikelihood", model.logLikelihood);
+    m.set("iterations", static_cast<double>(model.iterations));
+    val out = val::object();
+    out.set("model", m);
+    out.set("probabilities", arrOfArr(probs));
+    out.set("returns", arr(r));
+    out.set("regime", arr(regimeSlice(d, 1, d.numDates())));
+    out.set("regimeNames", regimeNames(d));
+    out.set("accuracy", accuracy);
+    out.set("series", series);
+    out.set("exposure", arr(sw.exposure));
+    out.set("switchProbability", arr(sw.highVolProbability));
+    out.set("dates", dateRange(d, 1, d.numDates()));
+    out.set("switchStart", static_cast<double>(sw.start));
+    return out;
+  });
+}
+
+// Almgren-Chriss optimal execution.
+val algoExecution(val spec) {
+  return guarded([&] {
+    const val X = spec["execution"];
+    algo::ExecutionSpec s;
+    s.shares = num(X, "shares", s.shares);
+    s.price = num(X, "price", s.price);
+    s.horizonDays = num(X, "horizonDays", s.horizonDays);
+    s.periods = std::clamp<std::size_t>(count(X, "periods", 25), 1, 500);
+    s.sigma = num(X, "sigma", s.sigma);
+    s.epsilon = num(X, "epsilon", s.epsilon);
+    s.eta = num(X, "eta", s.eta);
+    s.gamma = num(X, "gamma", s.gamma);
+    s.riskAversion = num(X, "riskAversion", s.riskAversion);
+    const std::size_t paths = std::clamp<std::size_t>(count(X, "paths", 5000), 100, 50000);
+    if (!(s.sigma >= 0) || !(s.epsilon >= 0) || !(s.gamma >= 0) || !(s.price > 0)) throw std::invalid_argument("execution: non-negative volatility and impact, positive price");
+    algo::ExecutionSpec twapSpec = s, urgent = s;
+    twapSpec.riskAversion = 0.0;
+    urgent.riskAversion = s.riskAversion * 10;
+    const auto twap = algo::almgrenChriss(twapSpec), opt = algo::almgrenChriss(s), fast = algo::almgrenChriss(urgent);
+    std::vector<double> immediate(s.periods + 1, 0.0);
+    immediate[0] = s.shares;
+    double ie, iv;
+    algo::scheduleCostVariance(s, immediate, ie, iv);
+    auto planJs = [&](const std::string& name, const std::vector<double>& holdings, double e, double v, double kappa, std::uint64_t seed) {
+      const auto sim = algo::simulateShortfall(s, holdings, paths, seed);
+      val o = val::object();
+      o.set("name", name);
+      o.set("holdings", arr(holdings));
+      o.set("expectedCost", e);
+      o.set("sd", std::sqrt(v));
+      o.set("kappa", kappa);
+      o.set("simMean", mean(sim));
+      o.set("simSd", stdev(sim));
+      o.set("simQ95", quantile(sim, 0.95));
+      o.set("shortfall", arr(sim));
+      return o;
+    };
+    val plans = val::array();
+    plans.call<void>("push", planJs("TWAP (λ = 0)", twap.holdings, twap.expectedCost, twap.variance, 0.0, 1));
+    plans.call<void>("push", planJs("Almgren-Chriss (λ)", opt.holdings, opt.expectedCost, opt.variance, opt.kappa, 1));
+    plans.call<void>("push", planJs("Almgren-Chriss (10 λ)", fast.holdings, fast.expectedCost, fast.variance, fast.kappa, 1));
+    plans.call<void>("push", planJs("immediate", immediate, ie, iv, 0.0, 1));
+    const double lam = s.riskAversion > 0 ? s.riskAversion : 1e-6;
+    const auto fr = algo::efficientFrontier(s, lam / 1000, lam * 1000, 40);
+    std::vector<double> fl, fc, fs;
+    for (const auto& f : fr) {
+      fl.push_back(f.riskAversion);
+      fc.push_back(f.expectedCost);
+      fs.push_back(f.sd);
+    }
+    std::vector<double> times;
+    for (std::size_t j = 0; j <= s.periods; ++j) times.push_back(s.horizonDays * static_cast<double>(j) / static_cast<double>(s.periods));
+    val out = val::object();
+    out.set("plans", plans);
+    out.set("times", arr(times));
+    out.set("frontierLambda", arr(fl));
+    out.set("frontierCost", arr(fc));
+    out.set("frontierSd", arr(fs));
+    out.set("kappa", opt.kappa);
+    out.set("halfLifeDays", opt.halfLifeDays);
+    out.set("notional", s.shares * s.price);
+    out.set("paths", static_cast<double>(paths));
+    return out;
+  });
+}
+
+// Every approach of the three books on the same days, and self-adaptive allocation across them.
+val strategyTournament(val spec) {
+  return guarded([&] {
+    const Env env = parseEnv(spec);
+    const Predictions p = predictions(spec, env);
+    const MarketData& d = *market(spec, env);
+    const val Q = spec["tournament"];
+    algo::TournamentSpec ts;
+    algo::AllocationSpec& as = ts.allocation;
+    as.lookback = std::max<std::size_t>(5, count(Q, "lookback", as.lookback));
+    as.rebalanceEvery = std::max<std::size_t>(1, count(Q, "rebalanceEvery", as.rebalanceEvery));
+    as.topN = std::max<std::size_t>(1, count(Q, "topN", 1));
+    as.costBps = num(Q, "costBps", as.costBps);
+    as.eta = num(Q, "eta", as.eta);
+    if (has(Q, "method")) as.method = algo::parseAllocationMethod(str(Q, "method", ""));
+    as.allowCash = flag(Q, "allowCash", true);
+    if (!(as.costBps >= 0) || !(as.eta > 0)) throw std::invalid_argument("tournament: non-negative cost, positive eta");
+    ts.regimes.window = std::min<std::size_t>(ts.regimes.window, d.numDates() / 3);
+    const auto res = algo::runTournament(d, *p.set, env.exp, ts);
+    val sl = val::array();
+    std::vector<std::string> names;
+    for (const auto& s : res.sleeves) {
+      val o = seriesToJs(s.name, s.returns);
+      o.set("family", s.family);
+      sl.call<void>("push", o);
+      names.push_back(s.name);
+    }
+    val al = val::array();
+    for (const auto& a : res.allocators) {
+      val o = seriesToJs(algo::allocationName(a.method), a.result.returns);
+      o.set("weights", arrOfArr(a.result.weights));
+      o.set("cash", arr(a.result.cash));
+      o.set("averageTurnover", a.result.averageTurnover);
+      o.set("dsr", a.deflatedSharpe);
+      al.call<void>("push", o);
+    }
+    std::vector<std::vector<double>> corr(res.sleeves.size(), std::vector<double>(res.sleeves.size()));
+    for (std::size_t i = 0; i < corr.size(); ++i)
+      for (std::size_t j = 0; j < corr.size(); ++j) corr[i][j] = i == j ? 1.0 : correlationOrZero(res.sleeves[i].returns, res.sleeves[j].returns);
+    const std::size_t n = res.sleeves[0].returns.size();
+    val out = val::object();
+    out.set("sleeves", sl);
+    out.set("allocators", al);
+    out.set("names", strings(names));
+    out.set("correlation", arrOfArr(corr));
+    out.set("dates", dateRange(d, res.start, res.start + n + 1));
+    out.set("regime", arr(regimeSlice(d, res.start + 1, res.start + n + 1)));
+    out.set("regimeNames", regimeNames(d));
+    out.set("chosen", algo::allocationName(as.method));
+    out.set("lookback", static_cast<double>(as.lookback));
+    out.set("rebalanceEvery", static_cast<double>(as.rebalanceEvery));
+    out.set("trainMs", p.trainMs);
+    out.set("cachedPredictions", p.cached);
+    return out;
+  });
+}
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(sat) {
@@ -1924,4 +2432,11 @@ EMSCRIPTEN_BINDINGS(sat) {
   emscripten::function("afmlValidation", &afmlValidation);
   emscripten::function("afmlPortfolio", &afmlPortfolio);
   emscripten::function("afmlOverfitting", &afmlOverfitting);
+  emscripten::function("hedgeOverlays", &hedgeOverlays);
+  emscripten::function("hedgeOptions", &hedgeOptions);
+  emscripten::function("algoPairs", &algoPairs);
+  emscripten::function("algoTrend", &algoTrend);
+  emscripten::function("algoRegimes", &algoRegimes);
+  emscripten::function("algoExecution", &algoExecution);
+  emscripten::function("strategyTournament", &strategyTournament);
 }

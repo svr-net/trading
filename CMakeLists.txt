@@ -52,6 +52,8 @@ add_library(sat
   src/algo/trend.cpp
   src/algo/regimes.cpp
   src/algo/execution.cpp
+  src/algo/ensemble.cpp
+  src/algo/tournament.cpp
   src/gpu/fused_backtest.cpp
   src/gpu/fused_kernels.cpp
   src/gpu/fused_reference.cpp
@@ -110,6 +112,8 @@ endif()
 if(SAT_BUILD_EXAMPLES)
   add_executable(self_adaptive_trading_demo examples/self_adaptive_trading_demo.cpp)
   target_link_libraries(self_adaptive_trading_demo PRIVATE sat)
+  add_executable(strategy_tournament examples/strategy_tournament.cpp)
+  target_link_libraries(strategy_tournament PRIVATE sat)
 endif()
 
 include(GNUInstallDirs)

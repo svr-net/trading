@@ -2,10 +2,13 @@
 #include <cmath>
 #include <numeric>
 
+#include "sat/algo/ensemble.hpp"
 #include "sat/algo/execution.hpp"
 #include "sat/algo/pairs.hpp"
 #include "sat/algo/regimes.hpp"
+#include "sat/algo/tournament.hpp"
 #include "sat/algo/trend.hpp"
+#include "sat/adaptive/experiment.hpp"
 #include "sat/core/random.hpp"
 #include "sat/core/stats.hpp"
 #include "sat/data/synthetic_market.hpp"
@@ -172,9 +175,10 @@ TEST(trend_weights_and_scaling) {
   // Forecast scaling targets an average absolute forecast of 10, before the cap.
   const double avg = mean(res.combinedForecastMean);
   CHECK(avg > 4 && avg < 16);
-  std::vector<double> tail(res.returns.begin() + static_cast<std::ptrdiff_t>(res.start), res.returns.end());
-  const double vol = stdev(tail) * std::sqrt(252.0);
-  CHECK(vol > 0.05 && vol < 0.35);
+  CHECK(res.returns.size() == m.numDates() - 1 - res.start);
+  CHECK(res.idm.back() >= 1.0 && res.idm.back() <= ts.maxIdm);
+  const double vol = stdev(res.returns) * std::sqrt(252.0);
+  CHECK(vol > 0.6 * ts.targetVol && vol < 1.6 * ts.targetVol);
 }
 
 TEST(regimes_hmm_recovers_volatility_states) {
@@ -223,4 +227,122 @@ TEST(execution_almgren_chriss) {
   double ce, cv;
   algo::scheduleCostVariance(s, twap.holdings, ce, cv);
   CHECK(ac.expectedCost + s.riskAversion * ac.variance <= ce + s.riskAversion * cv);
+}
+
+TEST(trend_profits_from_planted_trends) {
+  // Drifts of +-0.2% a day that flip every 250 days: every speed but the slowest should profit.
+  Rng rng(1);
+  const std::size_t T = 3000, N = 5;
+  Panel p(T, N);
+  for (std::size_t i = 0; i < N; ++i) {
+    double x = 50;
+    for (std::size_t t = 0; t < T; ++t) {
+      x *= 1 + ((t / 250 + i) % 2 ? 0.002 : -0.002) + 0.01 * rng.normal();
+      p(t, i) = x;
+    }
+  }
+  const auto res = algo::trendFollowing(p, {});
+  CHECK(evaluatePerformance(res.returns).sharpe > 2.0);
+  // Adaptive weights move away from the slowest rule, which lags the 250-day trends most.
+  CHECK(res.weights.back().back() < 1.0 / 6.0);
+}
+
+TEST(pairs_book_trades_cointegrated_pairs_only) {
+  // Two cointegrated pairs among independent random walks.
+  const std::size_t T = 900;
+  Panel close(T, 6);
+  for (std::size_t k = 0; k < 2; ++k) {
+    algo::PairSpec ps;
+    ps.days = T;
+    ps.seed = 30 + k;
+    ps.halfLifeDays = 4;  // Engle-Granger has little power on a 252-day window when reversion is slow
+    std::vector<double> y, x;
+    algo::generatePair(ps, y, x);
+    for (std::size_t t = 0; t < T; ++t) {
+      close(t, 2 * k) = y[t];
+      close(t, 2 * k + 1) = x[t];
+    }
+  }
+  Rng rng(8);
+  for (std::size_t i = 4; i < 6; ++i) {
+    double v = 50;
+    for (std::size_t t = 0; t < T; ++t) close(t, i) = v *= std::exp(0.015 * rng.normal());
+  }
+  algo::PairsBookSpec bs;
+  bs.pairs = 2;
+  const auto book = algo::pairsBook(close, bs);
+  CHECK(book.returns.size() == T - 1 - bs.scanWindow && book.scans > 5);
+  CHECK(mean(book.activePairs) >= 1.5);
+  CHECK(evaluatePerformance(book.returns).sharpe > 1.0);
+}
+
+TEST(meta_allocation_adapts_to_the_better_sleeve) {
+  // Sleeve 0 is good in the first half and bad in the second; sleeve 1 the reverse.
+  Rng rng(12);
+  const std::size_t T = 1500;
+  std::vector<std::vector<double>> sleeves(3, std::vector<double>(T));
+  for (std::size_t t = 0; t < T; ++t) {
+    const bool first = t < T / 2;
+    sleeves[0][t] = (first ? 0.002 : -0.002) + 0.01 * rng.normal();
+    sleeves[1][t] = (first ? -0.002 : 0.002) + 0.01 * rng.normal();
+    sleeves[2][t] = 0.01 * rng.normal();
+  }
+  const auto eq = algo::allocate(sleeves, {algo::AllocationMethod::Equal});
+  for (std::size_t t = 0; t < eq.returns.size(); t += 97) {
+    double s = eq.cash[t];
+    for (const auto& w : eq.weights) s += w[t];
+    CHECK_NEAR(s, 1.0, 1e-12);
+  }
+  for (auto m : {algo::AllocationMethod::Best, algo::AllocationMethod::SharpeWeighted, algo::AllocationMethod::RiskAdjustedSharpe,
+                 algo::AllocationMethod::ExponentialWeights}) {
+    algo::AllocationSpec spec;
+    spec.method = m;
+    spec.lookback = 126;
+    spec.rebalanceEvery = 21;
+    spec.eta = 2;
+    const auto a = algo::allocate(sleeves, spec);
+    CHECK(evaluatePerformance(a.returns).sharpe > evaluatePerformance(eq.returns).sharpe + 1.0);
+    CHECK(a.weights[0][200] > 0.5 && a.weights[1].back() > 0.5);  // follows the regime change
+    CHECK(algo::parseAllocationMethod(algo::allocationName(m)) == m);
+  }
+  // No look-ahead: the weights of day t do not change when day t's returns are altered.
+  auto altered = sleeves;
+  altered[1][700] = 0.5;
+  const auto a = algo::allocate(sleeves, {}), b = algo::allocate(altered, {});
+  const std::size_t k = 700 - algo::AllocationSpec{}.lookback;
+  CHECK(a.weights[1][k] == b.weights[1][k]);
+  // Cash when every sleeve loses.
+  std::vector<std::vector<double>> losers(2, std::vector<double>(400, -0.001));
+  losers[0][3] = 0.0;
+  CHECK(algo::allocate(losers, {}).cash.back() == 1.0);
+}
+
+TEST(tournament_aligns_every_approach) {
+  SyntheticMarketSpec ms;
+  ms.numAssets = 10;
+  ms.numDates = 1100;
+  const MarketData d = generateSyntheticMarket(ms);
+  ExperimentSpec exp;
+  exp.alphaIds = {2, 12, 33, 41};
+  exp.walkForward.trainWindow = 250;
+  exp.models.resize(2);
+  exp.models[0].type = "logistic";
+  exp.models[1].type = "tree";
+  const PredictionSet p = runPredictions(d, exp);
+  algo::TournamentSpec ts;
+  ts.regimes.window = 250;
+  const auto res = algo::runTournament(d, p, exp, ts);
+  // 2 models, 3 self-adaptive variants, trend, pairs, regimes, benchmark.
+  CHECK(res.sleeves.size() == 9 && res.sleeves.back().family == "benchmark");
+  const std::size_t n = res.sleeves[0].returns.size();
+  CHECK(n > 100 && res.start + n == d.numDates() - 1);
+  for (const auto& s : res.sleeves) CHECK(s.returns.size() == n);
+  CHECK(res.allocators.size() == algo::allAllocationMethods().size());
+  for (const auto& a : res.allocators) {
+    CHECK(a.result.returns.size() == n);
+    CHECK(a.deflatedSharpe >= 0 && a.deflatedSharpe <= 1);
+  }
+  // The benchmark matches the equal-weight market over the same days.
+  const auto mr = algo::equalWeightMarket(d);
+  CHECK_NEAR(res.sleeves.back().returns[0], mr[res.start], 1e-15);
 }

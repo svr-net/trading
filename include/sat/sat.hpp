@@ -45,7 +45,9 @@
 #include "sat/hedge/hedging.hpp"
 #include "sat/hedge/options.hpp"
 
+#include "sat/algo/ensemble.hpp"
 #include "sat/algo/execution.hpp"
 #include "sat/algo/pairs.hpp"
 #include "sat/algo/regimes.hpp"
+#include "sat/algo/tournament.hpp"
 #include "sat/algo/trend.hpp"
