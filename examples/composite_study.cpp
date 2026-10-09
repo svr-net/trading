@@ -247,6 +247,21 @@ int main(int argc, char** argv) {
       {"E: selector + blend + ML + Mom + TS",
        {{blend, single(true, false, false), single(false, true, false), single(false, false, true)}, false, {}}},
   };
+  // Gate 1 of the spherical allocators: the default sleeves (B) allocated by the spherical
+  // methods, with the settings strategy_tournament chose for them on its selection markets
+  // (not tuned here).
+  std::vector<std::pair<std::string, algo::CompositeStrategySpec>> allocatorSets;
+  {
+    algo::CompositeStrategySpec b{{blend, single(false, true, false)}, false, {}};
+    allocatorSets.push_back({"B, exponential weights (default)", b});
+    b.allocation.method = algo::AllocationMethod::RotorGlide;
+    b.allocation.lookback = 252, b.allocation.rebalanceEvery = 5, b.allocation.eta = 2, b.allocation.glide = 0.5;
+    allocatorSets.push_back({"B, rotor glide (252, 5, eta 2, glide 0.5)", b});
+    b.allocation = {};
+    b.allocation.method = algo::AllocationMethod::RotorGradient;
+    b.allocation.lookback = 63, b.allocation.rebalanceEvery = 21, b.allocation.rotorStep = 0.1;
+    allocatorSets.push_back({"B, rotor gradient (63, 21, step 0.1)", b});
+  }
   auto references = [&](const std::vector<Market>& set, double tv) {
     std::vector<std::vector<Run>> runs(4 + sleeveSets.size());
     for (const auto& m : set) {
@@ -266,6 +281,32 @@ int main(int argc, char** argv) {
         runs[3].push_back({c.metrics[1], c.returns[1]});
       }
     }
+    // The allocator variants start after their own look-backs: compare them over the days
+    // they all cover (the longest look-back), together with the market.
+    std::vector<std::vector<Run>> alloc(allocatorSets.size() + 1);
+    for (const auto& m : set) {
+      ExperimentSpec exp;
+      exp.costBps = kCostBps;
+      std::vector<algo::CompositeStrategyResult> res;
+      std::size_t last = 0;
+      for (const auto& a : allocatorSets) {
+        res.push_back(algo::runCompositeStrategy(m.data, m.p, exp, a.second));
+        last = std::max(last, res.back().start);
+      }
+      for (std::size_t v = 0; v < res.size(); ++v) {
+        const auto& r = res[v].returns[res[v].sleeves];
+        const std::vector<double> x(r.begin() + static_cast<std::ptrdiff_t>(last - res[v].start), r.end());
+        alloc[v].push_back({evaluatePerformance(x), x});
+        if (v == 0) {
+          const auto& b = res[0].returns.back();
+          const std::vector<double> y(b.begin() + static_cast<std::ptrdiff_t>(last - res[0].start), b.end());
+          alloc.back().push_back({evaluatePerformance(y), y});
+        }
+      }
+    }
+    std::vector<Row> allocRows = {summarise("equal-weight market (same days)", alloc.back(), 1, tv)};
+    for (std::size_t v = 0; v < allocatorSets.size(); ++v) allocRows.push_back(summarise("composite " + allocatorSets[v].first, alloc[v], 3, tv));
+    print("Gate 1: the default composite strategy under each allocator (from the longest look-back)", allocRows);
     std::vector<Row> rows = {summarise("equal-weight market", runs[0], 1, tv), summarise("default selector (members)", runs[1], 1, tv),
                              summarise("selector on the composite model", runs[2], 1, tv), summarise("blend book (default)", runs[3], trials, tv)};
     for (std::size_t v = 0; v < sleeveSets.size(); ++v)

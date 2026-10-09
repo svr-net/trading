@@ -317,6 +317,61 @@ TEST(meta_allocation_adapts_to_the_better_sleeve) {
   CHECK(algo::allocate(losers, {}).cash.back() == 1.0);
 }
 
+TEST(spherical_allocators_stay_on_the_sphere_and_adapt) {
+  Rng rng(12);
+  const std::size_t T = 1500;
+  std::vector<std::vector<double>> sleeves(3, std::vector<double>(T));
+  for (std::size_t t = 0; t < T; ++t) {
+    const bool first = t < T / 2;
+    sleeves[0][t] = (first ? 0.002 : -0.002) + 0.01 * rng.normal();
+    sleeves[1][t] = (first ? -0.002 : 0.002) + 0.01 * rng.normal();
+    sleeves[2][t] = 0.01 * rng.normal();
+  }
+  const auto eq = algo::allocate(sleeves, {algo::AllocationMethod::Equal});
+  for (auto m : algo::sphericalAllocationMethods())
+    for (bool cash : {true, false}) {
+      algo::AllocationSpec spec;
+      spec.method = m;
+      spec.lookback = 126;
+      spec.rebalanceEvery = 21;
+      spec.eta = 2;
+      spec.allowCash = cash;
+      const auto a = algo::allocate(sleeves, spec);
+      // Weights are squares of a unit vector moved only by rotations: they sum to one exactly.
+      for (std::size_t t = 0; t < a.returns.size(); ++t) {
+        double sum = a.cash[t];
+        for (const auto& w : a.weights) {
+          sum += w[t];
+          CHECK(w[t] >= 0.0);
+        }
+        CHECK_NEAR(sum, 1.0, 1e-12);
+        if (!cash) CHECK_NEAR(a.cash[t], 0.0, 1e-12);
+      }
+      CHECK(evaluatePerformance(a.returns).sharpe > evaluatePerformance(eq.returns).sharpe + 0.5);
+      CHECK(a.weights[0][300] > a.weights[1][300] && a.weights[1].back() > a.weights[0].back());
+      CHECK(algo::parseAllocationMethod(algo::allocationName(m)) == m);
+      // No look-ahead.
+      auto altered = sleeves;
+      altered[1][700] = 0.5;
+      const auto b = algo::allocate(altered, spec);
+      CHECK(a.weights[1][700 - spec.lookback] == b.weights[1][700 - spec.lookback]);
+    }
+  // Gliding all the way is exponential weights.
+  algo::AllocationSpec ew, full;
+  full.method = algo::AllocationMethod::RotorGlide;
+  full.glide = 1.0;
+  const auto x = algo::allocate(sleeves, ew), y = algo::allocate(sleeves, full);
+  for (std::size_t t = 0; t < x.returns.size(); t += 37) CHECK_NEAR(x.returns[t], y.returns[t], 1e-12);
+  // Mostly cash when every sleeve loses.
+  std::vector<std::vector<double>> losers(2, std::vector<double>(800));
+  for (std::size_t t = 0; t < 800; ++t) losers[0][t] = -0.0005 + (t % 2 ? 0.001 : -0.001), losers[1][t] = -0.0006 + (t % 2 ? 0.001 : -0.001);
+  algo::AllocationSpec grad;
+  grad.method = algo::AllocationMethod::RotorGradient;
+  CHECK(algo::allocate(losers, grad).cash.back() > 0.9);
+  grad.rotorMix = 2.0;
+  CHECK_THROWS(algo::allocate(losers, grad));
+}
+
 TEST(tournament_aligns_every_approach) {
   SyntheticMarketSpec ms;
   ms.numAssets = 10;

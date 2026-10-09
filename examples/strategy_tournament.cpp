@@ -78,7 +78,11 @@ Score sleeveScore(const std::vector<Market>& set, std::size_t k) {
 std::string label(const algo::AllocationSpec& s) {
   std::string l = algo::allocationName(s.method) + ", look-back " + std::to_string(s.lookback) + ", every " + std::to_string(s.rebalanceEvery);
   if (s.method == algo::AllocationMethod::Best) l += ", top " + std::to_string(s.topN);
-  if (s.method == algo::AllocationMethod::ExponentialWeights) l += ", eta " + std::to_string(static_cast<int>(s.eta));
+  if (s.method == algo::AllocationMethod::ExponentialWeights || s.method == algo::AllocationMethod::RotorGlide)
+    l += ", eta " + std::to_string(static_cast<int>(s.eta));
+  char buf[48];
+  if (s.method == algo::AllocationMethod::RotorGlide) std::snprintf(buf, sizeof buf, ", glide %.2f", s.glide), l += buf;
+  if (s.method == algo::AllocationMethod::RotorGradient) std::snprintf(buf, sizeof buf, ", step %.2f", s.rotorStep), l += buf;
   return l;
 }
 
@@ -104,7 +108,9 @@ int main(int argc, char** argv) {
 
   // The search space of the meta-allocator.
   std::vector<algo::AllocationSpec> grid;
-  for (auto m : algo::allAllocationMethods())
+  auto methods = algo::allAllocationMethods();
+  for (auto m : algo::sphericalAllocationMethods()) methods.push_back(m);
+  for (auto m : methods)
     for (std::size_t lb : {63, 126, 252})
       for (std::size_t every : {5, 21, 63}) {
         algo::AllocationSpec s;
@@ -121,6 +127,18 @@ int main(int argc, char** argv) {
             s.eta = eta;
             grid.push_back(s);
           }
+        else if (m == algo::AllocationMethod::RotorGlide)  // spherical: glide part of the way to exponential weights
+          for (double eta : {1.0, 2.0, 4.0})
+            for (double glide : {0.25, 0.5}) {
+              s.eta = eta;
+              s.glide = glide;
+              grid.push_back(s);
+            }
+        else if (m == algo::AllocationMethod::RotorGradient)  // spherical: geodesic gradient steps
+          for (double step : {0.05, 0.1, 0.2, 0.4}) {
+            s.rotorStep = step;
+            grid.push_back(s);
+          }
         else
           grid.push_back(s);
       }
@@ -131,7 +149,7 @@ int main(int argc, char** argv) {
   for (std::size_t k = 0; k < std::min<std::size_t>(8, ranked.size()); ++k) row(label(grid[ranked[k].second]), ranked[k].first);
   // The best setting of each method, to see which family is robust.
   header("Best setting per method: selection -> validation (unseen markets)");
-  for (auto m : algo::allAllocationMethods()) {
+  for (auto m : methods) {
     const auto it = std::find_if(ranked.begin(), ranked.end(), [&](const auto& r) { return grid[r.second].method == m; });
     const auto& spec = grid[it->second];
     row(label(spec) + " [sel]", it->first);
@@ -143,5 +161,14 @@ int main(int argc, char** argv) {
   const auto& winner = grid[ranked[0].second];
   std::printf("\nChosen on the selection markets: %s\n", label(winner).c_str());
   row("validation", evaluate(validation, winner));
+  // Gate 1 of the spherical allocators: the best spherical setting against the best
+  // exponential-weights setting, each chosen on the selection markets, and against the
+  // library's default allocation, on the unseen markets.
+  header("Gate 1: spherical vs exponential weights (each chosen on selection) on the validation markets");
+  for (auto m : {algo::AllocationMethod::ExponentialWeights, algo::AllocationMethod::RotorGlide, algo::AllocationMethod::RotorGradient}) {
+    const auto it = std::find_if(ranked.begin(), ranked.end(), [&](const auto& r) { return grid[r.second].method == m; });
+    row(label(grid[it->second]), evaluate(validation, grid[it->second]));
+  }
+  row("library default (" + label(algo::AllocationSpec{}) + ")", evaluate(validation, algo::AllocationSpec{}));
   return 0;
 }

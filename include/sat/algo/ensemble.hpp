@@ -33,11 +33,28 @@ enum class AllocationMethod {
   InverseVolatility,  ///< in proportion to 1 / trailing volatility (risk parity without correlations)
   RiskAdjustedSharpe, ///< in proportion to positive Sharpe / volatility (mean-variance with a diagonal covariance)
   ExponentialWeights, ///< multiplicative weights (the Hedge algorithm): exp(eta x trailing annual Sharpe)
+  /// Spherical (elliptic) allocators. The weights of the sleeves and of cash are the squares
+  /// of a unit vector u, w_k = u_k^2, so every allocation is a point on the sphere and the
+  /// distance between allocations is the Fisher-Rao (Hellinger) one. u carries over from one
+  /// rebalance to the next and moves only by rotations in a plane (the rotor
+  /// exp(-theta/2 u^v) of geometric algebra), so its norm, and hence sum(w) = 1, is preserved
+  /// exactly rather than re-normalised.
+  ///  - RotorGradient: a geodesic step along the Riemannian gradient of the expected trailing
+  ///    Sharpe ratio sum_k w_k S_k (the replicator dynamics in Fisher-Rao geometry), angle
+  ///    rotorStep x |gradient| (at most a quarter turn), then a small rotation towards the
+  ///    uniform allocation (rotorMix) so no sleeve is ever written off for good.
+  ///  - RotorGlide: a rotation of the fraction `glide` of the way towards the exponential-
+  ///    weights allocation (spherical linear interpolation); glide = 1 is ExponentialWeights.
+  RotorGradient,
+  RotorGlide,
 };
 
 AllocationMethod parseAllocationMethod(const std::string& name);
 std::string allocationName(AllocationMethod m);
 std::vector<AllocationMethod> allAllocationMethods();
+/// The spherical allocators (RotorGradient, RotorGlide), kept out of allAllocationMethods()
+/// until they prove themselves out of sample.
+std::vector<AllocationMethod> sphericalAllocationMethods();
 
 /// Self-adaptive allocation across strategies: every `rebalanceEvery` days the weights are
 /// recomputed from each sleeve's returns over the past `lookback` days (strictly before the
@@ -52,6 +69,8 @@ struct AllocationSpec {
   std::size_t lookback = 63, rebalanceEvery = 5, topN = 1;
   double costBps = 2.0, eta = 4.0;
   bool allowCash = true;
+  double rotorStep = 0.1, rotorMix = 0.02;  ///< RotorGradient
+  double glide = 0.5;                       ///< RotorGlide
 };
 
 struct AllocationResult {
