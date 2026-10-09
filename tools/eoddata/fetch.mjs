@@ -68,6 +68,9 @@ const symbols = asList(await get(`/Symbol/List/${exchange}`, {}, `symbols-${stam
 const typeOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'type', 'symbolType', 'typeCode') ?? '')]));
 const nameOf = new Map(symbols.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'name', 'description') ?? '')]));
 const quotes = asList(await get(`/Quote/List/${exchange}`, {}, `quotes-${stamp}.json`));
+// The shapes (field names only) help diagnose a parse that finds nothing.
+console.log(`  fields: exchange [${Object.keys(exchangeInfo)}]; symbol [${Object.keys(symbols[0] || {})}]; quote [${Object.keys(quotes[0] || {})}]`);
+console.log(`  symbol types: ${[...new Set([...typeOf.values()])].slice(0, 20).join(', ')}`);
 const isShare = (code) => {
   const t = (typeOf.get(code) || '').toLowerCase();
   if (t && !/(share|stock|equity|ord|common)/.test(t)) return false;  // funds, ETFs, warrants, bonds
@@ -90,6 +93,7 @@ for (const [i, { code }] of ranked.entries()) {
     .map((b) => ({ d: day(field(b, 'dateStamp', 'date')), o: +field(b, 'open'), h: +field(b, 'high'), l: +field(b, 'low'), c: +field(b, 'close'), v: +field(b, 'volume') }))
     .filter((b) => b.d && b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0)
     .sort((a, b) => (a.d < b.d ? -1 : 1));
+  if (i === 0) console.log(`  history fields [${Object.keys(asList(body)[0] || {})}], ${bars.length} bars`);
   if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
   for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
   kept.push({ code, name: nameOf.get(code) || '', days: bars.length });

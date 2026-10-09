@@ -1,0 +1,61 @@
+# Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret), builds the
+# self-adaptive 10-stock portfolio and its backtest, and publishes the report (results only:
+# EODData's licence does not allow redistributing the raw data, so the prices stay in the cache).
+name: UK portfolio
+
+on:
+  workflow_dispatch:
+    inputs:
+      stocks: { description: 'Portfolio size', default: '10' }
+      budget: { description: 'Budget (GBP)', default: '100000' }
+      universe: { description: 'Most traded shares to download', default: '120' }
+  push:
+    branches: [claude/stock-price-ml-strategy-3bm61v]
+    paths: [tools/eoddata/**, examples/uk_portfolio.cpp, .github/workflows/uk-portfolio.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  portfolio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
+          cmake --build build --target uk_portfolio
+      - name: Restore the EODData cache
+        uses: actions/cache@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ github.run_id }}
+          restore-keys: eoddata-
+      - name: Download LSE bars
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years 6 --out data/LSE.csv
+      - name: Portfolio and backtest
+        run: |
+          mkdir -p report
+          ./build/uk_portfolio data/LSE.csv --stocks "${{ inputs.stocks || '10' }}" --budget "${{ inputs.budget || '100000' }}" \
+            --price-divisor 100 --stamp-duty-bps 50 --cost-bps 10 --report report/uk-portfolio.json | tee report/uk-portfolio.txt
+          cp data/LSE.symbols.json report/
+          { echo '```'; cat report/uk-portfolio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Report (for reading from the log)
+        run: |
+          echo "----- BEGIN REPORT -----"
+          cat report/uk-portfolio.json
+          echo "----- END REPORT -----"
+          cat report/LSE.symbols.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uk-portfolio-report
+          path: report/
+          retention-days: 14
