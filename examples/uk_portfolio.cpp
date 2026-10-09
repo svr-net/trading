@@ -332,30 +332,46 @@ int main(int argc, char** argv) try {
       if (score > bestScore) bestScore = score, pick = c;
     }
   }
-  const auto w = constructions[pick].second(last, eligibleAt(last));
-  std::vector<std::size_t> held;
-  for (std::size_t i = 0; i < N; ++i)
-    if (w[i] > 0) held.push_back(i);
-  std::sort(held.begin(), held.end(), [&](std::size_t a, std::size_t b) { return w[a] > w[b]; });
-  std::printf("\nPortfolio for %s close, chosen construction: %s\n", d.dates[last].c_str(), constructions[pick].first.c_str());
-  std::printf("  %-10s %7s %10s %8s %12s %10s %10s\n", "ticker", "weight", "price", "shares", "consideration", "costs", "total");
-  double spent = 0, fees = 0;
   struct Trade {
     std::string ticker;
     double weight, price, shares, value, cost;
   };
-  std::vector<Trade> trades;
-  for (std::size_t i : held) {
-    const double price = d.close(last, i) / o.divisor;
-    const double unitCost = price * (1 + (o.costBps + o.stampBps) * 1e-4);
-    const double shares = std::floor(w[i] * o.budget / unitCost);
-    const double value = shares * price, cost = value * (o.costBps + o.stampBps) * 1e-4;
-    trades.push_back({d.tickers[i], w[i], price, shares, value, cost});
-    spent += value + cost;
-    fees += cost;
-    std::printf("  %-10s %6.1f%% %10.2f %8.0f %12.2f %10.2f %10.2f\n", d.tickers[i].c_str(), 100 * w[i], price, shares, value, cost, value + cost);
-  }
-  std::printf("  invested %.2f, costs %.2f, cash left %.2f of %.2f\n", spent - fees, fees, o.budget - spent, o.budget);
+  struct Orders {
+    std::vector<Trade> trades;
+    double spent = 0, fees = 0;
+  };
+  // Whole-share orders for the budget at the last close, largest weight first.
+  auto ordersFor = [&](std::size_t c) {
+    const auto w = constructions[c].second(last, eligibleAt(last));
+    std::vector<std::size_t> held;
+    for (std::size_t i = 0; i < N; ++i)
+      if (w[i] > 0) held.push_back(i);
+    std::sort(held.begin(), held.end(), [&](std::size_t a, std::size_t b) { return w[a] > w[b]; });
+    Orders out;
+    for (std::size_t i : held) {
+      const double price = d.close(last, i) / o.divisor;
+      const double unitCost = price * (1 + (o.costBps + o.stampBps) * 1e-4);
+      const double shares = std::floor(w[i] * o.budget / unitCost);
+      const double value = shares * price, cost = value * (o.costBps + o.stampBps) * 1e-4;
+      out.trades.push_back({d.tickers[i], w[i], price, shares, value, cost});
+      out.spent += value + cost;
+      out.fees += cost;
+    }
+    return out;
+  };
+  auto printOrders = [&](const std::string& title, const Orders& x) {
+    std::printf("\n%s\n  %-10s %7s %10s %8s %12s %10s %10s\n", title.c_str(), "ticker", "weight", "price", "shares", "consideration", "costs", "total");
+    for (const auto& t : x.trades)
+      std::printf("  %-10s %6.1f%% %10.2f %8.0f %12.2f %10.2f %10.2f\n", t.ticker.c_str(), 100 * t.weight, t.price, t.shares, t.value, t.cost, t.value + t.cost);
+    std::printf("  invested %.2f, costs %.2f, cash left %.2f of %.2f\n", x.spent - x.fees, x.fees, o.budget - x.spent, o.budget);
+  };
+  std::vector<Orders> orders;
+  for (std::size_t c = 0; c < constructions.size(); ++c) orders.push_back(ordersFor(c));
+  printOrders("Portfolio for " + d.dates[last] + " close, chosen construction: " + constructions[pick].first, orders[pick]);
+  for (std::size_t c = 0; c < constructions.size(); ++c)
+    if (c != pick) printOrders("Orders if holding " + constructions[c].first + " instead", orders[c]);
+  const auto& trades = orders[pick].trades;
+  const double spent = orders[pick].spent;
 
   if (!o.report.empty()) {
     std::ofstream f(o.report);
@@ -380,7 +396,17 @@ int main(int argc, char** argv) try {
     for (std::size_t k = 0; k < trades.size(); ++k)
       f << (k ? "," : "") << "{\"ticker\":" << json(trades[k].ticker) << ",\"weight\":" << trades[k].weight << ",\"price\":" << trades[k].price
         << ",\"shares\":" << trades[k].shares << ",\"value\":" << trades[k].value << ",\"cost\":" << trades[k].cost << "}";
-    f << "],\"cash\":" << o.budget - spent << "}\n";
+    f << "],\"cash\":" << o.budget - spent << ",\"orders\":{";
+    for (std::size_t c = 0; c < constructions.size(); ++c) {
+      f << (c ? "," : "") << json(constructions[c].first) << ":{\"cash\":" << o.budget - orders[c].spent << ",\"trades\":[";
+      for (std::size_t k = 0; k < orders[c].trades.size(); ++k) {
+        const auto& t = orders[c].trades[k];
+        f << (k ? "," : "") << "{\"ticker\":" << json(t.ticker) << ",\"weight\":" << t.weight << ",\"price\":" << t.price << ",\"shares\":" << t.shares
+          << ",\"value\":" << t.value << ",\"cost\":" << t.cost << "}";
+      }
+      f << "]}";
+    }
+    f << "}}\n";
     std::printf("\nreport written to %s\n", o.report.c_str());
   }
   return 0;
