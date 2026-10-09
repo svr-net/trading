@@ -18,6 +18,22 @@ CompositeMethod parseCompositeMethod(const std::string& name) {
   throw std::invalid_argument("unknown composite method '" + name + "' (none, average, adaptive)");
 }
 
+ScoringWindow parseScoringWindow(const std::string& name) {
+  if (name == "fixed") return ScoringWindow::Fixed;
+  if (name == "exponential") return ScoringWindow::Exponential;
+  if (name == "adwin") return ScoringWindow::Adwin;
+  throw std::invalid_argument("unknown scoring window '" + name + "' (fixed, exponential, adwin)");
+}
+
+std::string scoringWindowName(ScoringWindow w) {
+  switch (w) {
+    case ScoringWindow::Fixed: return "fixed";
+    case ScoringWindow::Exponential: return "exponential";
+    case ScoringWindow::Adwin: return "adwin";
+  }
+  return "fixed";
+}
+
 std::string compositeMethodName(CompositeMethod m) {
   switch (m) {
     case CompositeMethod::None: return "none";
@@ -38,6 +54,82 @@ bool resolved(const Panel& labels, const Panel& labelEnds, std::size_t t, std::s
   }
   return true;
 }
+
+// The record of one candidate: a series of daily values (information coefficients, or their
+// differences from the average's), pushed as their labels resolve, and the statistics of the
+// part the scoring window remembers.
+class Scorer {
+ public:
+  struct Stats {
+    double mean = Panel::kMissing, sd = 0.0, n = 0.0;
+  };
+
+  explicit Scorer(const CompositeSpec& spec) : spec_(spec), lambda_(spec.halfLife > 0 ? std::pow(0.5, 1.0 / spec.halfLife) : 1.0) {
+    p1_.push_back(0.0), p2_.push_back(0.0);
+  }
+
+  void push(double v) {
+    x_.push_back(v);
+    p1_.push_back(p1_.back() + v), p2_.push_back(p2_.back() + v * v);
+    if (spec_.window == ScoringWindow::Exponential) {
+      s0_ = lambda_ * s0_ + 1.0, s1_ = lambda_ * s1_ + v, s2_ = lambda_ * s2_ + v * v, w2_ = lambda_ * lambda_ * w2_ + 1.0;
+    } else if (spec_.window == ScoringWindow::Adwin) {
+      cut();
+    }
+  }
+
+  Stats stats() const {
+    Stats st;
+    if (spec_.window == ScoringWindow::Exponential) {
+      if (s0_ <= 0) return st;
+      st.mean = s1_ / s0_;
+      st.sd = std::sqrt(std::max(0.0, s2_ / s0_ - st.mean * st.mean));
+      st.n = s0_ * s0_ / w2_;
+      return st;
+    }
+    const std::size_t end = x_.size();
+    const std::size_t from = spec_.window == ScoringWindow::Fixed ? (end > spec_.lookback ? end - spec_.lookback : 0) : from_;
+    const double n = static_cast<double>(end - from);
+    if (n < 1) return st;
+    st.mean = (p1_[end] - p1_[from]) / n;
+    st.sd = std::sqrt(std::max(0.0, (p2_[end] - p2_[from]) / n - st.mean * st.mean));
+    st.n = n;
+    return st;
+  }
+
+ private:
+  // ADWIN: drop the older part of the window while some split shows a significant change.
+  void cut() {
+    constexpr std::size_t kMinSide = 10;
+    for (bool changed = true; changed;) {
+      changed = false;
+      const std::size_t end = x_.size(), n = end - from_;
+      if (n < 2 * kMinSide) return;
+      const double nn = static_cast<double>(n);
+      const double mean = (p1_[end] - p1_[from_]) / nn;
+      const double var = std::max(0.0, (p2_[end] - p2_[from_]) / nn - mean * mean);
+      const double logTerm = std::log(2.0 * std::log(nn) / spec_.adwinDelta);
+      const std::size_t step = std::max<std::size_t>(1, n / 64);
+      for (std::size_t k = from_ + kMinSide; k + kMinSide <= end; k += step) {
+        const double n0 = static_cast<double>(k - from_), n1 = static_cast<double>(end - k);
+        const double m0 = (p1_[k] - p1_[from_]) / n0, m1 = (p1_[end] - p1_[k]) / n1;
+        const double m = 1.0 / (1.0 / n0 + 1.0 / n1);
+        const double eps = std::sqrt(2.0 / m * var * logTerm) + 2.0 / (3.0 * m) * logTerm;
+        if (std::fabs(m0 - m1) > eps) {
+          from_ = k;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  const CompositeSpec& spec_;
+  double lambda_;
+  std::vector<double> x_, p1_, p2_;
+  std::size_t from_ = 0;
+  double s0_ = 0, s1_ = 0, s2_ = 0, w2_ = 0;
+};
 
 }  // namespace
 
@@ -96,8 +188,7 @@ CompositePredictions compositePredictions(const std::vector<ModelPredictions>& m
       for (double v : p) sum += v;
       return sum * equal;
     };
-    // Daily information coefficient of each candidate, computed once per resolved date.
-    std::vector<std::vector<double>> ic(M + 1, std::vector<double>(T, Panel::kMissing));
+    // Daily information coefficient of a candidate.
     auto dailyIc = [&](std::size_t c, std::size_t u) {
       std::vector<double> f, y;
       for (std::size_t i = 0; i < N; ++i) {
@@ -108,28 +199,49 @@ CompositePredictions compositePredictions(const std::vector<ModelPredictions>& m
       const double r = correlation(averageRanks(f), averageRanks(y));
       return std::isfinite(r) ? r : Panel::kMissing;
     };
+    if (spec.window == ScoringWindow::Exponential && !(spec.halfLife >= 0)) throw std::invalid_argument("self-adaptive forecast: half-life >= 0");
+    if (spec.window == ScoringWindow::Adwin && !(spec.adwinDelta > 0 && spec.adwinDelta < 1))
+      throw std::invalid_argument("self-adaptive forecast: ADWIN confidence in (0, 1)");
+    // One record per candidate: Best scores every candidate's information coefficient; Evidence
+    // scores each member's daily lead over the average.
+    const bool evidence = spec.decision == ScoringDecision::Evidence;
+    const std::size_t K = evidence ? M : M + 1;
+    std::vector<Scorer> records;
+    for (std::size_t c = 0; c < K; ++c) records.emplace_back(spec);
+    // Fixed windows re-score on the selector's schedule; the others every day.
+    const std::size_t step = spec.window == ScoringWindow::Fixed ? spec.adaptEvery : 1;
+    std::size_t next = s;  // first date not yet added to the records
     int chosen = -1;
     for (std::size_t t = s; t < e; ++t) {
-      if ((t - s) % spec.adaptEvery == 0) {
-        double best = 0.0;
-        chosen = -1;
-        std::vector<double> score(M + 1, Panel::kMissing);
-        for (std::size_t c = 0; c <= M; ++c) {
-          double sum = 0;
-          std::size_t n = 0;
-          for (std::size_t u = t; u-- > s && n < spec.lookback;) {
-            if (!resolved(labels, labelEnds, u, t)) continue;
-            if (!std::isfinite(ic[c][u])) ic[c][u] = dailyIc(c, u);
-            if (std::isfinite(ic[c][u])) sum += ic[c][u], ++n;
-          }
-          if (n >= 5) score[c] = sum / static_cast<double>(n);
-        }
-        // The average, unless a member beats it with a positive record; the average
-        // stands in when nothing scores above zero.
-        if (std::isfinite(score[M]) && score[M] > best) best = score[M];
-        for (std::size_t c = 0; c < M; ++c)
-          if (std::isfinite(score[c]) && score[c] > best) best = score[c], chosen = static_cast<int>(c);
+      // Incremental: add each date whose labels have all resolved before t.
+      for (; next < t && resolved(labels, labelEnds, next, t); ++next) {
+        std::vector<double> v(M + 1);
+        bool ok = true;
+        for (std::size_t c = 0; c <= M && ok; ++c) ok = std::isfinite(v[c] = dailyIc(c, next));
+        if (!ok) continue;
+        for (std::size_t c = 0; c < K; ++c) records[c].push(evidence ? v[c] - v[M] : v[c]);
       }
+      if ((t - s) % step == 0) {
+        chosen = -1;
+        std::vector<Scorer::Stats> st;
+        for (const auto& r : records) st.push_back(r.stats());
+        if (evidence) {
+          double bestT = spec.minT;
+          for (std::size_t c = 0; c < M; ++c) {
+            if (!(st[c].n >= 5) || !std::isfinite(st[c].mean)) continue;
+            const double tstat = st[c].mean / std::max(1e-12, st[c].sd / std::sqrt(st[c].n));
+            if (tstat > bestT) bestT = tstat, chosen = static_cast<int>(c);
+          }
+        } else {
+          // The average, unless a member beats it with a positive record; the average stands
+          // in when nothing scores above zero.
+          double best = 0.0;
+          if (st[M].n >= 5 && std::isfinite(st[M].mean) && st[M].mean > best) best = st[M].mean;
+          for (std::size_t c = 0; c < M; ++c)
+            if (st[c].n >= 5 && std::isfinite(st[c].mean) && st[c].mean > best) best = st[c].mean, chosen = static_cast<int>(c);
+        }
+      }
+      out.memory.push_back(records[0].stats().n);
       std::vector<double> w(M, chosen < 0 ? equal : 0.0);
       if (chosen >= 0) w[static_cast<std::size_t>(chosen)] = 1.0;
       for (std::size_t i = 0; i < N; ++i)

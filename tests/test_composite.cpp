@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 #include "sat/adaptive/composite.hpp"
 #include "sat/adaptive/experiment.hpp"
@@ -83,6 +85,76 @@ TEST(self_adaptive_forecast_uses_only_resolved_labels) {
   bool differs = false;
   for (std::size_t k = 0; k < ca.choice.size() && !differs; ++k) differs = ca.choice[k] != cb.choice[k];
   CHECK(differs);
+}
+
+TEST(scoring_windows_are_progressive_incremental_and_adaptive) {
+  Members w;
+  for (auto window : {ScoringWindow::Exponential, ScoringWindow::Adwin})
+    for (auto decision : {ScoringDecision::Best, ScoringDecision::Evidence}) {
+      CompositeSpec spec;
+      spec.method = CompositeMethod::Adaptive;
+      spec.window = window;
+      spec.decision = decision;
+      spec.halfLife = 0;  // expanding
+      const auto c = compositePredictions(w.models, w.labels, w.ends, spec);
+      // The informative member wins once its record is long enough, and stays chosen.
+      CHECK(c.choice.back() == 0);
+      CHECK(c.model.oos.auc > w.models[1].oos.auc + 0.2);
+      // Incremental: the memory grows by about one date a day while nothing changes.
+      CHECK(c.memory.size() == c.choice.size());
+      CHECK(c.memory.back() > c.memory[c.memory.size() / 2] + 100);
+    }
+}
+
+TEST(adwin_forgets_after_a_change) {
+  // The informative member and the noise member swap roles at day 160.
+  Members w;
+  const std::size_t T = 300, N = 20;
+  for (std::size_t t = 160; t + 1 < T; ++t)
+    for (std::size_t i = 0; i < N; ++i) std::swap(w.models[0].probability(t, i), w.models[1].probability(t, i));
+  CompositeSpec adwin;
+  adwin.method = CompositeMethod::Adaptive;
+  adwin.window = ScoringWindow::Adwin;
+  const auto a = compositePredictions(w.models, w.labels, w.ends, adwin);
+  CompositeSpec expanding = adwin;
+  expanding.window = ScoringWindow::Exponential;
+  expanding.halfLife = 0;
+  const auto x = compositePredictions(w.models, w.labels, w.ends, expanding);
+  // ADWIN cuts its window after the change and switches to the new informative member well
+  // before the expanding record does.
+  const std::size_t off = 160 - 20;
+  std::size_t switchA = SIZE_MAX, switchX = SIZE_MAX;
+  for (std::size_t k = off; k < a.choice.size(); ++k) {
+    if (switchA == SIZE_MAX && a.choice[k] == 1) switchA = k;
+    if (switchX == SIZE_MAX && x.choice[k] == 1) switchX = k;
+  }
+  CHECK(switchA < a.choice.size());
+  CHECK(switchA + 10 < switchX);
+  double minMemory = 1e9;
+  for (std::size_t k = off; k < a.memory.size(); ++k) minMemory = std::min(minMemory, a.memory[k]);
+  CHECK(minMemory < 80);  // the window was cut
+  CHECK(a.choice.back() == 1);
+}
+
+TEST(evidence_decision_stays_with_the_average_without_a_significant_lead) {
+  // Two equally uninformative members: the evidence rule should almost never leave the average.
+  Members w;
+  Rng rng(9);
+  for (std::size_t t = 0; t + 1 < 300; ++t)
+    for (std::size_t i = 0; i < 20; ++i) w.models[0].probability(t, i) = 0.5 + 0.3 * (rng.uniform() - 0.5);
+  CompositeSpec spec;
+  spec.method = CompositeMethod::Adaptive;
+  spec.window = ScoringWindow::Exponential;
+  spec.decision = ScoringDecision::Evidence;
+  const auto c = compositePredictions(w.models, w.labels, w.ends, spec);
+  std::size_t onAverage = 0;
+  for (int k : c.choice) onAverage += k < 0 ? 1 : 0;
+  CHECK(onAverage > 0.8 * static_cast<double>(c.choice.size()));
+  CHECK(parseScoringWindow("adwin") == ScoringWindow::Adwin);
+  CHECK_THROWS(parseScoringWindow("weekly"));
+  spec.window = ScoringWindow::Adwin;
+  spec.adwinDelta = 0;
+  CHECK_THROWS(compositePredictions(w.models, w.labels, w.ends, spec));
 }
 
 TEST(composite_rejects_bad_input) {

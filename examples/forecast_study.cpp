@@ -30,16 +30,47 @@ namespace {
 
 constexpr double kCostBps = 10.0;
 
+// Scoring variants of the self-adaptive forecast: how long and how a candidate's record is
+// remembered, and how the record picks the forecast. Ranked on the selection markets only.
+struct Variant {
+  std::string name;
+  CompositeSpec spec;
+};
+
+std::vector<Variant> variants() {
+  std::vector<Variant> out;
+  auto add = [&](const std::string& name, ScoringWindow w, double halfLife) {
+    for (auto d : {ScoringDecision::Best, ScoringDecision::Evidence}) {
+      Variant v;
+      v.spec.method = CompositeMethod::Adaptive;
+      v.spec.window = w;
+      v.spec.halfLife = halfLife;
+      v.spec.decision = d;
+      v.name = name + (d == ScoringDecision::Best ? ", best" : ", evidence t>2");
+      out.push_back(v);
+    }
+  };
+  add("fixed 63 days, every 21", ScoringWindow::Fixed, 0);
+  add("exponential, half-life 63, daily", ScoringWindow::Exponential, 63);
+  add("exponential, half-life 252, daily", ScoringWindow::Exponential, 252);
+  add("expanding, daily", ScoringWindow::Exponential, 0);
+  add("ADWIN adaptive window, daily", ScoringWindow::Adwin, 0);
+  return out;
+}
+
 struct Market {
   std::string name;
   PredictionSet p;
   ModelPredictions average, adaptive;
   std::vector<int> choice;  // adaptive: candidate per date (-1 = average)
+  std::vector<ModelPredictions> variant;   // per variants()
+  std::vector<double> variantMemory;       // mean scoring memory (dates) per variant
+  std::vector<double> variantMemberShare;  // share of dates a member (not the average) was used
   std::size_t first = 0;
 };
 
 Market prepare(const std::string& name, const MarketData& data) {
-  Market m{name, runPredictions(data, ExperimentSpec{}), {}, {}, {}, 0};
+  Market m{name, runPredictions(data, ExperimentSpec{}), {}, {}, {}, {}, {}, {}, 0};
   CompositeSpec cs;
   cs.method = CompositeMethod::Average;
   m.average = compositePredictions(m.p.models, m.p.labels, m.p.labelEnds, cs).model;
@@ -47,6 +78,15 @@ Market prepare(const std::string& name, const MarketData& data) {
   auto a = compositePredictions(m.p.models, m.p.labels, m.p.labelEnds, cs);
   m.adaptive = std::move(a.model);
   m.choice = std::move(a.choice);
+  for (const auto& v : variants()) {
+    auto r = compositePredictions(m.p.models, m.p.labels, m.p.labelEnds, v.spec);
+    double mem = 0, member = 0;
+    for (double x : r.memory) mem += x / static_cast<double>(r.memory.size());
+    for (int c : r.choice) member += (c >= 0 ? 1.0 : 0.0) / static_cast<double>(r.choice.size());
+    m.variant.push_back(std::move(r.model));
+    m.variantMemory.push_back(mem);
+    m.variantMemberShare.push_back(member);
+  }
   for (const auto& mp : m.p.models) m.first = std::max(m.first, mp.start);
   m.first += SelectorSpec{}.lookback;
   std::fprintf(stderr, "  %s ready\n", name.c_str());
@@ -128,6 +168,34 @@ void study(const char* title, const std::vector<Market>& set) {
   });
 }
 
+// Every scoring variant: the selector's Sharpe ratio on each market against the average's.
+// Returns the mean Sharpe ratio per variant.
+std::vector<double> scoring(const char* title, const std::vector<Market>& set, const std::vector<std::size_t>& order) {
+  const auto vs = variants();
+  const double n = static_cast<double>(set.size());
+  std::vector<double> avg;
+  for (const auto& m : set) avg.push_back(selector(m, {m.average}).metrics.sharpe);
+  std::printf("\n%s: scoring variants of the self-adaptive forecast (selector Sharpe; beats = markets where it beats the average)\n"
+              "  %-46s %8s %8s %6s %8s %8s\n", title, "variant", "AUC", "Sharpe", "beats", "memory", "member");
+  double a = 0;
+  for (double x : avg) a += x / n;
+  std::printf("  %-46s %8s %8.2f %6s %8s %8s\n", "equal-weight average (reference)", "", a, "", "", "");
+  std::vector<double> mean(vs.size(), 0.0);
+  for (std::size_t q = 0; q < vs.size(); ++q) {
+    const std::size_t v = order.empty() ? q : order[q];
+    double auc = 0, mem = 0, member = 0;
+    int beats = 0;
+    for (std::size_t k = 0; k < set.size(); ++k) {
+      const double sr = selector(set[k], {set[k].variant[v]}).metrics.sharpe;
+      mean[v] += sr / n;
+      beats += sr > avg[k] + 1e-9 ? 1 : 0;
+      auc += set[k].variant[v].oos.auc / n, mem += set[k].variantMemory[v] / n, member += set[k].variantMemberShare[v] / n;
+    }
+    std::printf("  %-46s %8.4f %8.2f %3d/%-2zu %8.0f %7.0f%%\n", vs[v].name.c_str(), auc, mean[v], beats, set.size(), mem, 100 * member);
+  }
+  return mean;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -142,11 +210,14 @@ int main(int argc, char** argv) {
   }
   if (pos.size() > 0) markets = std::strtoul(pos[0].c_str(), nullptr, 10);
   if (pos.size() > 1) days = std::strtoul(pos[1].c_str(), nullptr, 10);
+  std::vector<std::size_t> ranked;  // variants in the selection markets' order
   auto real = [&]() {
     std::ifstream f(csv);
     std::stringstream ss;
     ss << f.rdbuf();
-    study(("Real data: " + csv).c_str(), {prepare(csv, parseCsv(ss.str()))});
+    const std::vector<Market> set = {prepare(csv, parseCsv(ss.str()))};
+    study(("Real data: " + csv).c_str(), set);
+    scoring(("Real data: " + csv).c_str(), set, ranked);
   };
   if (markets == 0) {
     if (csv.empty()) throw std::invalid_argument("forecast_study 0 needs --csv");
@@ -164,9 +235,16 @@ int main(int argc, char** argv) {
     return set;
   };
   std::fprintf(stderr, "selection markets\n");
-  study("Selection markets", build(101));
+  const auto selection = build(101);
+  study("Selection markets", selection);
+  const auto sel = scoring("Selection markets", selection, {});
+  for (std::size_t v = 0; v < sel.size(); ++v) ranked.push_back(v);
+  std::stable_sort(ranked.begin(), ranked.end(), [&](std::size_t a, std::size_t b) { return sel[a] > sel[b]; });
+  std::printf("\nChosen on the selection markets: %s\n", variants()[ranked[0]].name.c_str());
   std::fprintf(stderr, "validation markets\n");
-  study("Validation markets (unseen)", build(201));
+  const auto validation = build(201);
+  study("Validation markets (unseen)", validation);
+  scoring("Validation markets (unseen), in the selection markets' order", validation, ranked);
   if (!csv.empty()) real();
   return 0;
 }
