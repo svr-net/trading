@@ -68,12 +68,12 @@ jobs:
             dist/trading-sat-standalone-${{ steps.tag.outputs.tag }}.zip
             dist/trading-sat-standalone-${{ steps.tag.outputs.tag }}.zip.sha256
           body: |
-            Self-adaptive machine-learning trading library (C++17), modelling *Predicting Stock Prices Based on Machine Learning to Build Self-adaptive Trading Strategy* (Wang, Huang and Luo, Computational Economics, 2025) extended with the techniques of *Advances in Financial Machine Learning* (López de Prado, Wiley, 2018) and with hedging and algorithmic trading (Hull, Chan, Carver, Hamilton, Almgren-Chriss), plus a tournament that backtests every approach and allocates across them adaptively, with a WebAssembly + WebGPU front end.
+            Self-adaptive machine-learning trading library (C++17), modelling *Predicting Stock Prices Based on Machine Learning to Build Self-adaptive Trading Strategy* (Wang, Huang and Luo, Computational Economics, 2025), with pipeline options from *Advances in Financial Machine Learning* (López de Prado, Wiley, 2018) and a WebAssembly + WebGPU front end.
 
             ### Standalone site: `trading-sat-standalone-${{ steps.tag.outputs.tag }}.zip`
             Unzip it anywhere and open `index.html`. It needs no server and no install, because the WebAssembly library is embedded in the bundle.
             The same folder can be uploaded unchanged to any static host (S3, GitHub Pages, nginx, IIS).
-            It has 23 pages, one per library context, on a candidate pool of two models × five rules chosen by an ablation study: core numerics, market data, alpha factors, labels, machine-learning models, fixed strategies, the self-adaptive strategy, robustness, information-driven bars, fractional differentiation, triple-barrier labels and meta-labeling, purged cross-validation and feature importance, hierarchical risk parity, backtest overfitting, beta hedging and position sizing, option hedges, cointegrated pairs, trend following, regime switching, optimal execution, the strategy tournament with meta-allocation, and the WebGPU strategy search.
+            It has 10 pages, one per stage of the self-adaptive pipeline: core numerics, market data, alpha factors, labels, machine-learning models and their composite forecast, fixed strategies, the self-adaptive strategy, robustness, and the WebGPU strategy search. By default the selector trades the equal-weight average of the two models chosen by an ablation study, through five trading rules.
             The strategy pages run the backtests and selectors on WebGPU kernels whenever the browser supports WebGPU (the *Auto* engine), and on WebAssembly otherwise.
             Verify the download with the attached `.sha256` file.
 

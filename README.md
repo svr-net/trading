@@ -25,50 +25,29 @@ This library is an independent implementation of that pipeline. It does not repr
 Where the paper's exact settings are unknown (model hyper-parameters, rule set, re-scoring schedule, costs), the library
 makes them explicit, documented parameters with defaults. Every page of the web front end can change them.
 
-**Extended with *Advances in Financial Machine Learning*.** Version 0.2 adds the techniques of
-M. López de Prado, *Advances in Financial Machine Learning* (Wiley, 2018) as a second layer:
-- information-driven bars;
-- fractional differentiation;
-- event sampling with a CUSUM filter;
-- triple-barrier labels and meta-labeling;
-- sample uniqueness and the sequential bootstrap;
-- purged and combinatorial purged cross-validation;
-- MDI / MDA / SFI feature importance;
-- bet sizing;
-- the deflated Sharpe ratio and the probability of backtest overfitting;
-- hierarchical risk parity;
-- microstructure features.
+**Pipeline options from *Advances in Financial Machine Learning*.** A few techniques from M. López de Prado,
+*Advances in Financial Machine Learning* (Wiley, 2018), are options of the same pipeline:
+- triple-barrier labels;
+- uniqueness-weighted training and CUSUM-sampled training events;
+- fractional-differentiation and microstructure features;
+- the bet-sized trading rule;
+- the deflated Sharpe ratio and the probability of backtest overfitting, which assess the pool and the selector.
 
-They are implemented from the published algorithms, in the library's own code. Most of them plug into the self-adaptive pipeline:
-- triple-barrier labels, uniqueness-weighted training, CUSUM-sampled training events, and fractional-differentiation and microstructure features are options of the experiment;
-- the bet-sized rule is part of the candidate pool, on both engines;
-- the overfitting statistics assess the pool and the self-adaptive strategy.
+They are implemented from the published algorithms, in the library's own code.
 
-See [How the library maps onto the AFML book](#how-the-library-maps-onto-advances-in-financial-machine-learning).
+**Composite forecast.** By default, the models' forecasts are averaged into one composite forecast, and the selector
+trades that forecast through the rules. On synthetic validation markets this beat trading the models separately (Sharpe
+1.57 against 1.36). A *self-adaptive forecast* is also available: the paper's rule applied one level down, so every 21
+days it uses whichever model, or the average, has had the best recent rank correlation with the outcomes. See
+[Which forecast the selector trades](#which-forecast-the-selector-trades).
 
-**Extended with hedging and algorithmic trading.** Version 0.3 adds a third layer, drawn from standard texts:
-- beta hedging with rolling and Kalman-filter hedge ratios, the minimum-variance hedge ratio, delta hedging, protective puts and collars (J. Hull, *Options, Futures, and Other Derivatives*);
-- cointegration, spread half-life and Kalman-filter pairs trading (E. Chan, *Algorithmic Trading*);
-- EWMAC trend following with forecast scaling, diversification multipliers, volatility targeting, buffering and adaptive rule weights (R. Carver, *Systematic Trading*);
-- hidden Markov regime switching (J. Hamilton's model, fitted by Baum-Welch);
-- fractional Kelly sizing;
-- Almgren-Chriss optimal execution (as presented in Á. Cartea, S. Jaimungal, J. Penalva, *Algorithmic and High-Frequency Trading*).
+**Scope.** Version 0.6 keeps only the self-adaptive pipeline. Earlier versions also carried:
+- information-driven bars, purged cross-validation, feature importance and hierarchical risk parity pages;
+- hedging, pairs trading, trend following, regime switching and optimal execution;
+- a strategy tournament with meta-allocation;
+- a composite multi-signal strategy.
 
-On top of these sits a **strategy tournament**: every approach of all three layers is backtested on the same days, and a
-meta-allocator moves capital between them using only their past returns. That is a second level of self-adaptation.
-`examples/strategy_tournament` searches 90 allocator settings on one set of synthetic markets and validates the winner on
-an unseen set. See [Hedging, algorithmic trading and the tournament](#hedging-algorithmic-trading-and-the-tournament).
-As before, the methods are implemented from their published descriptions, in the library's own code and words.
-
-**Composite model and composite strategy.** Version 0.5 adds approaches from recent and classic research on combining
-forecasts and signals:
-- a *composite model* that combines the models' forecasts by the equal-weight average, a stacked meta-learner, or
-  Bernstein Online Aggregation;
-- a *composite strategy* that lets exponential weights move capital between the self-adaptive selector and slower
-  stock-selection books (forecast, momentum and trailing Sharpe, with a volatility target and an HMM regime gate).
-
-`examples/composite_study` chose the defaults on synthetic markets and checked them on unseen markets and on UK stocks.
-See [Composite model and composite strategy](#composite-model-and-composite-strategy).
+They remain in the git history and the v0.5.1 release.
 
 The library has no dependencies beyond the C++17 standard library.
 
@@ -117,7 +96,7 @@ npm --prefix tools/standalone ci && node tools/standalone/build.mjs
 
 ```
 dist/standalone/
-  index.html, core.html, ... gpu.html      23 pages
+  index.html, core.html, ... gpu.html      10 pages
   assets/app.<hash>.js                     all pages (classic script, ~95 KiB)
   assets/sat-runtime.<hash>.js             WASM worker with embedded library (~900 KiB)
   assets/style.<hash>.css
@@ -174,23 +153,10 @@ python3 -m http.server -d web 8000      # any static server; file:// will not lo
 | `data.html` | Regime-switching synthetic market or your own CSV of daily bars | `marketData` |
 | `factors.html` | The 23 alphas: information coefficients, coverage, IC by regime, correlations | `factors` |
 | `labels.html` | Next-day direction, excess over the median, N-period min-max labels | `labels` |
-| `models.html` | Walk-forward training of every model: accuracy, AUC, ROC, calibration, importance | `models` |
+| `models.html` | Walk-forward training of every model and their composite forecast: accuracy, AUC, ROC, calibration, importance | `models` |
 | `strategies.html` | Every model × rule candidate, and the winner of each quarter | `strategies` |
 | `adaptive.html` | The self-adaptive strategy against the best fixed rule and the market | `adaptive` |
 | `robustness.html` | Look-back × adaptation-period × score grid, transaction costs, year by year | `robustness` |
-| `bars.html` | Time, tick, volume, dollar and tick-imbalance bars on a synthetic trade stream; normality and stability of their returns | `afmlBars` |
-| `fracdiff.html` | Fixed-window fractional differentiation, ADF test, the minimum *d* for stationarity and the memory it keeps | `afmlFracDiff` |
-| `labeling.html` | CUSUM events, triple-barrier labels, concurrency and uniqueness, sequential bootstrap, meta-labeling | `afmlLabeling` |
-| `validation.html` | Shuffled vs blocked vs purged k-fold, combinatorial purged CV paths, MDI / MDA / SFI importance | `afmlValidation` |
-| `portfolio.html` | Hierarchical risk parity vs inverse-variance and minimum-variance: weights, quasi-diagonal correlation, backtest, Monte Carlo | `afmlPortfolio` |
-| `overfitting.html` | Deflated Sharpe ratio and PBO of the candidate pool and the self-adaptive strategy; bet sizing | `afmlOverfitting` |
-| `hedging.html` | Rolling and Kalman beta hedges of the self-adaptive strategy, volatility targeting, fractional Kelly | `hedgeOverlays` |
-| `options.html` | Delta-hedging error against rebalancing frequency; protective puts and collars on the index | `hedgeOptions` |
-| `pairs.html` | Engle-Granger cointegration, half-life, Kalman-filter pairs; a scan of every pair in the universe, traded out of sample | `algoPairs` |
-| `trend.html` | EWMAC trend system with static and adaptive rule weights; rules traded alone | `algoTrend` |
-| `regimes.html` | Gaussian HMM of the market, filtered probabilities against the true regimes, regime-switched exposure | `algoRegimes` |
-| `execution.html` | Almgren-Chriss trajectories, efficient frontier, Monte Carlo implementation shortfall | `algoExecution` |
-| `tournament.html` | Every approach on the same days, six meta-allocators, deflated Sharpe ratios, allocation over time | `strategyTournament` |
 | `gpu.html` | WebGPU kernels validated against WASM, with a benchmark | `gpuJobs` · `gpuAnalyse` (`validation`) |
 
 The pages share one specification: market, factors, labels, models, walk-forward schedule, rules, costs, selector and
@@ -203,13 +169,14 @@ The specification also holds the AFML options of the pipeline, under *Alpha fact
 - triple-barrier labels;
 - sample weights and CUSUM event sampling.
 
-It also holds the settings of the AFML pages and of the hedging and algorithmic-trading pages.
+The composite forecast is set under *Composite forecast*, next to the models: the separate models, the equal-weight
+average (the default) or the self-adaptive forecast, traded alone or alongside the models.
 
 **Compute engine.** The Overview, Fixed strategies, Self-adaptive and Robustness pages have an *Engine* selector:
 - **Auto**, the default, runs the WebGPU kernels whenever the browser has a usable WebGPU adapter, on desktop and mobile alike. Otherwise it runs the same kernels on the **emulated GPU**.
 - **WebGPU**, **Emulated GPU** or **WebAssembly** forces one of them. A failing WebGPU run also falls back to the emulated GPU.
 
-The Tournament, Beta hedging and Backtest overfitting pages have the same selector. Their pool of fixed candidates (every model × rule) is backtested by the candidate-backtest kernel on the chosen device. The read-back of every candidate's daily gross return and turnover (`kernelBook`) is turned into the library's `CandidateBook`. The selectors, allocators, hedges and overfitting statistics then run on it unchanged. Every other page has no GPU kernel, and its status line says "WebAssembly (no GPU kernel for this analysis)".
+The other pages have no GPU kernel, and their status line says "WebAssembly (no GPU kernel for this analysis)".
 
 Settings the kernels cannot express fall back to WebAssembly on any engine. Those are a selector that holds a mix of the top M candidates, more than 128 stocks, or more than 8 models. The status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
 
@@ -269,73 +236,18 @@ node web/tests/e2e.mjs                   # every page in headless Chromium (Play
 
 | Chapter | Module | What is implemented |
 |---|---|---|
-| 2. Financial data structures | `afml/bars.hpp` | Synthetic trade stream with clustered activity and persistent order flow; time, tick, volume and dollar bars; tick imbalance bars with EWMA expectations (the threshold is floored at the imbalance an unremarkable flow reaches, which keeps bar lengths stable); normality (Jarque-Bera), serial correlation and variance stability of bar returns |
 | 2. Event sampling | `afml/labeling.hpp`, `afml/features.hpp` | Symmetric CUSUM filter. `ExperimentSpec::cusumMultiple` trains the models on CUSUM events only |
 | 3. Labeling | `afml/labeling.hpp`, `features/dataset.hpp` | EWM volatility targets; triple-barrier method (profit taking, stop loss, vertical barrier); meta-labels for a given side. `LabelKind::TripleBarrier` labels every stock and date for the pipeline |
 | 4. Sample weights | `afml/sampling.hpp`, `ml/walk_forward.hpp` | Concurrency, average uniqueness, return-attribution weights, time decay, the sequential bootstrap. `WalkForwardSpec::weighting` trains on a uniqueness-weighted (optionally decayed) bootstrap of each window |
 | 5. Fractional differentiation | `afml/fracdiff.hpp` | Fixed-width-window weights, fractional differences, augmented Dickey-Fuller test, the scan for the minimum stationary *d*; the `ffd` feature |
-| 7. Cross-validation | `afml/sampling.hpp`, `afml/importance.hpp` | Purged k-fold with embargo, compared with shuffled and blocked k-fold |
-| 8. Feature importance | `afml/importance.hpp` | Mean decrease impurity, mean decrease accuracy (permutation, log loss, on purged folds), single feature importance |
 | 10. Bet sizing | `afml/bet_sizing.hpp`, `strategy/strategy.hpp` | Size 2N(z) − 1 from the predicted probability, discretisation. `StrategyKind::BetSized` is a rule of the candidate pool, also in the GPU kernels |
 | 11. The dangers of backtesting | `afml/backtest_stats.hpp` | Probability of backtest overfitting by combinatorially symmetric cross-validation, with the performance degradation and the probability of loss of the in-sample winner |
-| 12. Backtesting through cross-validation | `afml/sampling.hpp` | Combinatorial purged cross-validation: C(N, k) splits assembled into k C(N, k) / N backtest paths |
 | 14. Backtest statistics | `afml/backtest_stats.hpp`, `afml/overfitting.hpp` | Probabilistic and deflated Sharpe ratios, expected maximum Sharpe ratio of unskilled trials, drawdown and time-under-water statistics, concentration of returns. The candidate pool is assessed as a multiple-testing problem |
-| 16. Asset allocation | `afml/portfolio.hpp` | Correlation-distance clustering, quasi-diagonalisation and recursive bisection (hierarchical risk parity); inverse-variance, unconstrained and long-only minimum-variance weights; out-of-sample Monte Carlo comparison |
+| 16. Asset allocation | `afml/portfolio.hpp` | Hierarchical risk parity, inverse-variance and minimum-variance weights, used by the UK portfolio example |
 | 19. Microstructural features | `afml/microstructure.hpp` | Roll spread, Corwin-Schultz spread, Amihud illiquidity and Kyle's lambda from daily bars, as optional features |
 
-Notes on these implementations:
-- **Bars** need trades, which the daily data do not have, so the bars page runs on its own synthetic trade stream.
-- **HRP.** In the Monte Carlo of this library, minimum-variance portfolios reach a lower out-of-sample variance than HRP. HRP keeps far smaller single positions and no shorts. The book's comparison is with the critical line algorithm under different simulated conditions; the page reports what this simulation shows.
+Note on these implementations:
 - **The deflated Sharpe ratio** treats every candidate (model × rule) as a trial. The self-adaptive strategy is deflated by the same number of trials, which is conservative for a strategy that chooses out of sample.
-
-## Hedging, algorithmic trading and the tournament
-
-| Source | Module | What is implemented |
-|---|---|---|
-| Hull: hedging with futures | `hedge/hedging.hpp` | Minimum-variance hedge ratio; rolling-window beta from past data only; a Kalman filter that tracks (beta, alpha) as random walks and returns one-step-ahead estimates; hedged returns with a cost per unit of hedge change |
-| Hull: options | `hedge/options.hpp` | Black-Scholes prices and deltas; Monte Carlo of a delta-hedged short call at any rebalancing frequency, with true and implied volatility apart and hedge costs; rolling protective puts and collars priced at trailing realised volatility plus a premium |
-| Carver, Thorp: position sizing | `hedge/hedging.hpp` | Volatility targeting from an EWM volatility of past returns, capped; fractional Kelly from the trailing mean over variance, capped |
-| Chan: mean reversion | `algo/pairs.hpp` | Engle-Granger test (OLS, then ADF on the residual, 5% critical value −3.34); half-life from an AR(1) fit; a generator of cointegrated pairs; Kalman-filter pairs trading on the z-score of the forecast error with entry and exit levels and costs |
-| Chan: adaptive pairs | `algo/ensemble.hpp` (`pairsBook`) | Every quarter, all pairs are re-tested on the past year; the most cointegrated are traded until the next scan, cash when none passes |
-| Carver: systematic trend following | `algo/trend.hpp` | EWMAC rules 2/8 to 64/256 normalised by price volatility; forecast scalars from past data (average absolute forecast 10), cap at 20; forecast and instrument diversification multipliers; equal volatility budgets per instrument; position buffering; rule weights re-set from trailing positive Sharpe ratios |
-| Hamilton: regime switching | `algo/regimes.hpp` | Gaussian hidden Markov model fitted by Baum-Welch with scaled forward-backward passes; filtered (real-time) state probabilities; rolling re-fits and exposure set by the probability of the most volatile state at the previous close |
-| Almgren-Chriss | `algo/execution.hpp` | Optimal liquidation trajectory from the discrete-time urgency κ; expected cost and variance of any schedule; efficient frontier over risk aversion; Monte Carlo of the implementation shortfall |
-| Online learning | `algo/ensemble.hpp` (`allocate`) | Meta-allocation across strategies: equal weight, follow the leader (top N), Sharpe-weighted, inverse volatility, Sharpe over volatility, exponential weights (the Hedge algorithm); look-back, rebalancing period, reallocation cost, cash when nothing scores above zero |
-| Tournament | `algo/tournament.hpp` | Every ML model (equal capital in each of its rules), the paper's selector plain, volatility-targeted and beta-hedged, trend, the pairs book and the regime switch, aligned on common days; every allocator run on them, with deflated Sharpe ratios for the number of allocators tried |
-
-**Finding the adaptive approach.** `strategy_tournament [markets] [days]` generates two independent sets of synthetic markets.
-Each market is ten years by default. On each market it trains the models and builds every approach. It then ranks 90 allocator
-settings on the first set: 6 methods, look-backs of 63, 126 and 252 days, re-weighting every 5, 21 or 63 days, top N, and η.
-Finally it re-tests the best setting of each method on the second set. A run with 6 + 6 markets of 2,520 days:
-
-| Approach (validation markets, average) | ann. return | Sharpe | worst Sharpe | max drawdown |
-|---|---|---|---|---|
-| Exponential weights, 63-day look-back, weekly, η = 4 (chosen on the selection set) | 21.6% | 1.33 | −0.27 | 31.9% |
-| Follow the leader, top 2, 252-day look-back, weekly | 22.7% | 1.35 | −0.11 | 34.0% |
-| Sharpe-weighted, 63-day look-back, weekly | 15.6% | 1.12 | −0.68 | 33.2% |
-| Paper's self-adaptive selector alone | 27.6% | 1.18 | −0.57 | 42.0% |
-| … with a Kalman beta hedge | 28.0% | 1.26 | −0.42 | 42.6% |
-| … with a 10% volatility target | 13.3% | 1.21 | −0.68 | 25.9% |
-| Equal weight across all approaches | 3.4% | 0.29 | −1.29 | 43.5% |
-| Equal-weight market | −9.0% | −0.32 | −0.49 | 64.4% |
-
-The selection markets told the same story.
-
-**What works:**
-- Concentrated, fast-reacting allocators. Exponential weights and follow-the-leader, re-weighted weekly, beat both the slow ones and spreading capital evenly.
-- Gains over the paper's selector, which they mostly allocate to. The Sharpe ratio is a little higher, and the drawdown is about a quarter smaller, because the allocators step aside into the hedged variants, the regime switch or cash when the selector's record turns.
-
-**What doesn't:**
-- Single models trading every rule lose on average. Picking rules adaptively is what makes the ML forecasts pay, as the paper argues.
-- Trend following and pairs add little on this market. The synthetic market has short regimes and no planted cointegration, and the tests show that both modules profit where those effects exist.
-
-The library default for `AllocationSpec` is the chosen setting. The numbers come from synthetic markets, not from the paper's
-Hong Kong data.
-
-Notes:
-- **Kalman noises are in the units of the data.** For pairs of prices around 50 the default state noise is 1e-7. Chan's 1e-4 lets beta absorb the spread itself.
-- **Engle-Granger has little power** on a one-year window when the spread reverts slowly (half-life of 10 days or more). Expect missed pairs, and about 5% false discoveries among unrelated stocks.
-- **Kelly.** Kelly sizing magnifies the noise in the estimated mean. Even half Kelly sits at its leverage cap much of the time. The hedging page compares every overlay over the same days after the longest warm-up.
 
 ## UK stocks from EODData
 
@@ -368,9 +280,9 @@ EODDATA_API_KEY=... node tools/eoddata/fetch.mjs --exchange LSE --universe 120 -
 The **UK portfolio** workflow (`.github/workflows/uk-portfolio.yml`, run manually) does the same on GitHub Actions with
 the `EODDATA_API_KEY` repository secret. It publishes only the results: the job summary and a report artifact.
 
-On the 120 most traded LSE shares from July 2023 to October 2026, momentum had the best record (30.6% a year, Sharpe
-1.56), against 13.0% for the equal-weight universe. The selector reached 20.4%; its monthly switching costs stamp duty.
-The machine-learning forecasts had no skill on these stocks: AUC of 0.50 to 0.505.
+On the 120 most traded LSE shares from July 2023 to October 2026, momentum had the best record (29.2% a year, Sharpe
+1.50), against 13.0% for the equal-weight universe. The selector reached 16.6% (Sharpe 0.98); its monthly switching
+costs stamp duty. The machine-learning forecasts had no skill on these stocks: AUC of 0.50 to 0.505.
 
 These results are for research, not investment advice. Returns exclude dividends, the history is short, and the
 universe is today's surviving stocks.
@@ -419,118 +331,54 @@ The consolidated pool loses less than the previous default, with a smaller drawd
 
 Run `pool_ablation [markets] [days]` to repeat the study, or `pool_ablation 0 --csv data.csv` to compare the full and default pools on real bars.
 
-## Composite model and composite strategy
+## Which forecast the selector trades
 
-### What the research suggests
+**The idea.** The paper makes the *trading rule* self-adaptive. The forecast can be chosen the same way:
+- `CompositeMethod::Adaptive` in `sat/adaptive/composite.hpp` uses the selector's own rule, one level down.
+- Every 21 days it scores each candidate forecast over the last 63 resolved days. The candidates are each model and the
+  equal-weight average of them; the score is the mean daily rank correlation (information coefficient) with the labels.
+- It then uses the best candidate until the next adaptation, or the average when nothing scores above zero.
+- It uses only labels that have resolved before each date. A unit test checks this by scrambling future labels.
 
-- **Forecast combination.** Stock and Watson (2004) named the "forecast combination puzzle": an equal-weight average of
-  forecasts usually beats combinations with estimated weights out of sample. Rapach, Strauss and Zhou (2010, *Review of
-  Financial Studies*) found the same for equity-premium forecasts. The weights are estimated with too much noise to pay
-  for themselves.
-- **Stacking** (Wolpert, 1992; Breiman, 1996) fits a meta-learner on the base models' out-of-fold predictions. It works
-  only when the meta-learner never sees in-sample fits, and it overfits easily when signals are weak.
-- **Online expert aggregation.** Bernstein Online Aggregation (Wintenberger, 2017) re-weights experts multiplicatively
-  with a second-order correction. Remlinger, Alasseur, Brière and Mikael (2023, "Expert aggregation for financial
-  forecasting") applied it to machine-learning forecasts of stock returns. In their study, the aggregate beat the
-  individual models on Sharpe ratio for long-short portfolios.
-- **Momentum with risk management.** Cross-sectional momentum (Jegadeesh and Titman, 1993) is the best-documented
-  stock-selection signal. It also suffers crashes. Scaling it to a constant volatility roughly doubles its Sharpe ratio
-  (Barroso and Santa-Clara, 2015), and so does conditioning on the market state (Daniel and Moskowitz, 2016).
-- **Learning to rank.** Poh, Lim, Zohren and Roberts (2021) trained cross-sectional strategies with learning-to-rank
-  objectives. The composite books here use a simpler idea from that work: ranks across stocks, not raw scores.
+`CompositeMethod::Average` is the plain equal-weight average. Either composite is appended to the predictions as one more
+model (`ExperimentSpec::composite`), so every page and the GPU kernels can trade it. With `keepMembers = false` it trades
+in place of the separate models.
 
-### What the library implements
+**How they compare.** `examples/forecast_study` trains the default models on 6 ten-year synthetic markets (selection),
+6 unseen ones (validation) and the 120 LSE stocks. It then runs the self-adaptive selector, with its default rules and
+settings, on each choice of forecast.
 
-**The composite model** is `compositePredictions` in `sat/adaptive/composite.hpp`. It combines the models'
-out-of-sample probabilities in one of three ways:
-- **average** — the equal-weight mean;
-- **stacked** — a logistic meta-learner on the models' log-odds, re-fitted every 21 days on the last 252 days of
-  resolved labels, with non-negative weights and a ridge penalty that pulls them towards equal weights;
-- **online** — BOA with the gradient trick on the log loss, using adaptive learning rates per model and updated daily.
-
-Weights on any date use only labels that ended before that date. A unit test checks this by scrambling future labels.
-
-`ExperimentSpec::composite` adds the composite to the pool. With `keepMembers = false` it trades in place of the
-models. The composite comes out as one more `ModelPredictions`, so every page can use it, including the GPU kernels.
-
-**The composite strategy** is `runCompositeStrategy` in `sat/algo/composite.hpp`. Exponential weights (the tournament's
-allocator: 63-day look-back, weekly, η = 4) move capital between three sleeves:
-1. **The self-adaptive selector** trading the composite forecast.
-2. **A blended stock-selection book** (`multiSignalSelection`):
-   - signals: the forecast, 12-1 month momentum and the 126-day trailing Sharpe ratio, each ranked across stocks;
-   - blending: weights in proportion to exp(0.5 × the t-statistic of each signal's trailing rank information
-     coefficient);
-   - portfolio: the top 10 stocks, held with inverse-volatility weights and rebalanced weekly;
-   - risk: a 15% volatility target on the book's own realised volatility (leverage up to 1.5), and an HMM regime gate
-     on the market.
-3. **A momentum-only book** with the same sizing and overlays.
-
-### How the defaults were chosen and how they held up
-
-`examples/composite_study` worked as follows:
-1. It trained the default models on 6 ten-year synthetic markets (selection).
-2. It ranked 56 book variants (signals × weighting × holdings × overlays) and five sleeve sets.
-3. It re-ran everything on 6 unseen markets (validation) and on the 120 LSE stocks (the UK workflow runs it).
-
-The variants' Sharpe ratios ranked almost the same way on the unseen markets as on the selection markets (rank
-correlation 0.87).
-
-**Composite model.** The table shows the self-adaptive selector's Sharpe ratio for each pool, always with the five
-default rules.
-
-| Pool | Selection | Validation | UK (LSE) |
+| Selector Sharpe ratio | Selection | Validation | UK (LSE) |
 |---|---|---|---|
-| The two models (previous default) | 2.00 | 1.36 | −0.65 |
-| Models + average | 1.98 | 1.42 | −0.41 |
-| **Average alone (new web default)** | **2.18** | **1.57** | −0.49 |
-| Stacked alone | 2.01 | 1.46 | −1.09 |
-| Online (BOA) alone | 2.17 | 1.49 | −0.42 |
+| The models as separate candidates (the paper's pool) | 2.00 | 1.36 | −0.65 |
+| **Equal-weight average (default)** | **2.18** | **1.57** | −0.49 |
+| Self-adaptive forecast | 1.98 | 1.41 | −0.26 |
+| The models and the self-adaptive forecast | 1.92 | 1.37 | −0.32 |
 
-- **The average wins.** It matches the best model's AUC and has the lowest log loss, as the combination puzzle
-  predicts.
-- **The stacked meta-learner is worst.** With AUCs of 0.52 its weights are mostly noise.
-- **BOA ties with the average.** On synthetic markets it leaned 55–57% towards logistic regression.
-- **Fewer candidates.** Trading the composite alone halves the candidates, which also lifts the deflated Sharpe ratio
-  (75% against 65% on validation).
+- **The average is the default.** It has the best AUC, log loss and information coefficient of every forecast, and it
+  wins on both synthetic sets. That is what the "forecast combination puzzle" predicts (Stock and Watson, 2004; Rapach,
+  Strauss and Zhou, 2010): estimated choices or weights rarely beat the simple average out of sample.
+- **Why the self-adaptive forecast falls short.** The candidates' information coefficients differ by about 0.005, far
+  less than the noise of a 63-day window. So the choice mostly follows noise: it picked the average about half the time,
+  logistic regression a third, and the forest the rest.
+- **Weighting instead of picking does not help.** Weighting the models by their positive recent IC instead of picking
+  one did no better on the selection markets (2.05), so it was not kept.
+- **On UK stocks** the self-adaptive forecast lost the least. But every forecast there has no skill (AUC 0.50 to 0.503,
+  IC about 0.003), so all three lose money, and over about 2½ years the differences are within noise.
 
-**Composite strategy.** All rows are over the same days.
+Run `forecast_study [markets] [days]` to repeat the study, or `forecast_study 0 --csv data.csv` on real bars. The
+*Composite forecast* section of the specification, under the models, switches between the separate models, the
+average and the self-adaptive forecast.
 
-| | Selection Sharpe | Validation Sharpe | Validation max DD | UK Sharpe | UK max DD |
-|---|---|---|---|---|---|
-| Equal-weight market | 0.00 | −0.29 | 65% | **1.00** | 13% |
-| Selector on the separate models (previous default) | 2.01 | 1.40 | 47% | −0.54 | 33% |
-| Selector on the composite model | 2.20 | 1.58 | 44% | −0.51 | 30% |
-| Selector + blended book | 2.44 | 1.77 | 37% | 0.16 | 19% |
-| **Selector + blended book + momentum book (default)** | **2.49** | **1.82** | **36%** | **0.64** | **15%** |
-| Selector + one book per signal | 2.48 | 1.85 | 35% | 0.37 | 14% |
-| The same + the market as a sleeve | 2.46 | 1.69 | 36% | 0.36 | 18% |
+**Tried and dropped (v0.5).**
+- **Stacking and online aggregation.** A stacked meta-learner and Bernstein Online Aggregation were worse than the
+  average.
+- **A composite multi-signal strategy.** It combined the selector with momentum and trailing-Sharpe books under
+  exponential weights. It raised the synthetic validation Sharpe ratio to 1.82, but trailed both the market and plain
+  momentum on UK stocks after stamp duty.
+- **Spherical (rotor) allocators.** They did not beat exponential weights on unseen markets.
 
-On the unseen markets the composite strategy lifts the Sharpe ratio from 1.40 to 1.82, cuts the drawdown from 47% to
-36%, and its worst market goes from −0.26 to +0.66. On UK stocks it turns the ML selector's loss into a gain (−0.54 to
-+0.64) with less than half the drawdown.
-
-**What this does not show:**
-- **It does not beat the UK market.** The ML forecasts there have no skill (AUC 0.50).
-- **Plain momentum did best on UK data.** The 10-stock momentum book alone reached a Sharpe ratio of 1.49 over the
-  same period, ahead of every composite.
-- **The UK sample is short.** It covers about three years, so its rankings carry little weight.
-
-The library therefore keeps the momentum book as a sleeve, so the allocator can lean on it. It does not crown momentum,
-which the synthetic markets (where it earns nothing) would not support.
-
-**Tried and dropped: spherical (rotor) allocators.** Allocations were written as the squares of a unit vector and
-moved by geometric-algebra rotors, so weights and cash always summed to exactly one. Two variants were tested:
-- a geodesic gradient step on the expected trailing Sharpe ratio;
-- a partial rotation towards the exponential-weights allocation.
-
-Settings were chosen on the selection markets. Neither beat exponential weights on the unseen markets: composite strategy
-Sharpe 1.61 and 1.80 against 1.96. The glide variant matched exponential weights run on the same look-back and schedule
-(1.80 against 1.81), so the geometry added nothing. The gradient variant did better on UK stocks, 1.06 against 0.63 for
-its control, but that is a single sample of about 2½ years, too short to trust. The library keeps exponential weights.
-The code is in the git history (commit 2f468f3).
-
-Run `composite_study [markets] [days]` to repeat the study, or `composite_study 0 --csv data.csv` on real bars. The web
-page *Composite model & strategy* runs everything in the browser.
+All three are in the git history and the v0.5.1 release.
 
 ## Conventions
 
@@ -564,19 +412,17 @@ spec.walkForward.weighting = SampleWeighting::Uniqueness;
 auto report = afml::assessOverfitting(e.book, e.adaptive.net, e.evalFrom);  // DSR, PBO
 ```
 
-Hedging, algorithmic trading and the tournament:
+The composite forecast:
 
 ```cpp
-// marketReturns: the equal-weight market on the same days as e.adaptive.net
-auto beta = hedge::kalmanRegression(e.adaptive.net, marketReturns).beta;       // adaptive hedge ratio
-auto hedged = hedge::applyHedge(e.adaptive.net, marketReturns, beta, 2.0);
-auto sized = hedge::volatilityTarget(hedged, 0.10, 36, 2.0);                   // 10% annual volatility
-auto trend = algo::trendFollowing(data.close, algo::TrendSpec{});              // EWMAC, adaptive rule weights
-auto plan = algo::almgrenChriss(algo::ExecutionSpec{});                        // optimal liquidation
-auto t = algo::runTournament(data, p, spec, algo::TournamentSpec{});           // every approach + meta-allocators
+spec.composite.method = CompositeMethod::Average;                   // or CompositeMethod::Adaptive
+spec.composite.keepMembers = false;                                 // trade it in place of the models
+PredictionSet q = runPredictions(data, spec);                       // the composite comes last in q.models
+Experiment c = runStrategies(q, spec);
 ```
 
-`examples/strategy_tournament.cpp` searches for the best meta-allocator on one set of markets and validates it on another.
+`examples/forecast_study.cpp` compares the forecasts the selector can trade, on selection, validation and real markets.
+`examples/pool_ablation.cpp` finds which models and rules earn their place in the pool.
 
 `examples/self_adaptive_trading_demo.cpp` runs the whole method on the synthetic market:
 - the walk-forward forecasts of the default models (any of the eight families can be added);
@@ -590,7 +436,7 @@ auto t = algo::runTournament(data, p, spec, algo::TournamentSpec{});           /
 
 - **The paper's data.** The Hong Kong data are available from the authors on request. The synthetic market gives every page realistic input, but its numbers are not the paper's results. Load real daily bars from a CSV file to study real stocks.
 - **Unknown settings.** The paper's exact model hyper-parameters, rule set and re-scoring schedule are not public. The defaults here are reasonable choices, not the authors', and the robustness page shows how much they matter.
-- **Execution.** Trades happen at the close that produced the signal, with no slippage or market impact beyond the cost per unit of turnover. Short positions pay no borrowing cost. The execution page models impact separately (Almgren-Chriss); it is not fed back into the backtests.
+- **Execution.** Trades happen at the close that produced the signal, with no slippage or market impact beyond the cost per unit of turnover. Short positions pay no borrowing cost.
 - **Selection bias.** The "best fixed rule" is chosen in hindsight over the evaluation period. No investor could have traded it, which is the point of comparing the self-adaptive strategy with it.
 - **Alpha definitions.** Window lengths follow the paper's factor table, which rounds Kakushadze's fractional windows. Correlations over a constant window are undefined (NaN). Normalised features map them to the cross-sectional centre. Alphas #3 and #81 correlate ranks of price levels, which rarely move, so they are often undefined.
 - **Models.** The networks are small so that they train in a browser in seconds. Tree ensembles use at most 32 histogram bins per feature.
