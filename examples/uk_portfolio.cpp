@@ -2,7 +2,7 @@
 // Exchange via tools/eoddata/fetch.mjs, but any CSV in the library's format works):
 //
 //   uk_portfolio data/LSE.csv [--stocks 10] [--budget 100000] [--price-divisor 100]
-//                [--stamp-duty-bps 50] [--cost-bps 10] [--rebalance 21] [--report report.json]
+//                [--stamp-duty-bps 50] [--cost-bps 10] [--rebalance 21] [--report report.json] [--robustness]
 //
 // Five ways to pick and weight the stocks compete, each rebalanced every --rebalance days
 // with only the data available at that close:
@@ -17,6 +17,11 @@
 // portfolio constructions). Everything is net of costs: --cost-bps on every trade (spread
 // and commission) plus UK stamp duty (SDRT) on purchases. Prices on the LSE are quoted in
 // pence: --price-divisor 100 converts them to pounds for the trade list.
+//
+// --robustness re-runs the selector with slower settings fixed in advance (3-, 6- and
+// 12-month look-backs, choosing monthly or quarterly, and switching only when a rival's
+// Sharpe ratio beats the incumbent's by a margin), all compared on the same days. It is a
+// sensitivity check: picking the best row after the fact would be overfitting.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -37,6 +42,7 @@ namespace {
 struct Options {
   std::string csv, report;
   std::size_t stocks = 10, rebalance = 21, lookback = 126, window = 252;
+  bool robustness = false;
   double budget = 100000, divisor = 100, stampBps = 50, costBps = 10;
 };
 
@@ -56,6 +62,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--rebalance") o.rebalance = std::stoul(next());
     else if (a == "--lookback") o.lookback = std::stoul(next());
     else if (a == "--report") o.report = next();
+    else if (a == "--robustness") o.robustness = true;
     else if (!a.empty() && a[0] != '-') o.csv = a;
     else throw std::invalid_argument("unknown option " + a);
   }
@@ -320,6 +327,74 @@ int main(int argc, char** argv) try {
                 100 * m.maxDrawdown, 100 * m.averageTurnover * 252);
   }
 
+  // Robustness of the selector: slower variants on common days (after the longest look-back).
+  struct RobustRow {
+    std::string name, kind;
+    std::vector<double> r, turnover;
+    std::size_t switches = 0;
+  };
+  std::vector<RobustRow> robust;
+  std::size_t rStart = 0;
+  if (o.robustness) {
+    struct Variant {
+      std::string name;
+      std::size_t lookback, every;  // every: choose on every n-th rebalance
+      double margin;                // annualised Sharpe a rival needs over the incumbent
+    };
+    const std::vector<Variant> variants = {
+        {"6m look-back, monthly (default)", 126, 1, 0.0}, {"3m look-back, monthly", 63, 1, 0.0},
+        {"12m look-back, monthly", 252, 1, 0.0},          {"6m look-back, quarterly", 126, 3, 0.0},
+        {"12m look-back, quarterly", 252, 3, 0.0},        {"6m look-back, monthly, margin 0.5", 126, 1, 0.5},
+        {"12m look-back, monthly, margin 0.5", 252, 1, 0.5}, {"12m look-back, quarterly, margin 0.5", 252, 3, 0.5},
+    };
+    rStart = start + 252;
+    if (rStart + 60 >= T) throw std::invalid_argument("not enough history for the robustness check");
+    auto score = [&](std::size_t c, std::size_t t, std::size_t lb) {
+      const auto& r = books[c].returns;
+      std::vector<double> past(r.begin() + static_cast<std::ptrdiff_t>(t - start - lb), r.begin() + static_cast<std::ptrdiff_t>(t - start));
+      const double sd = stdev(past);
+      return sd > 0 ? mean(past) / sd * std::sqrt(252.0) : 0.0;
+    };
+    for (const auto& v : variants) {
+      int held = -1;
+      std::size_t k = 0, switches = 0;
+      const Book b = simulate(ret, rStart, T, o.rebalance, [&](std::size_t t) {
+        if (held < 0 || k % v.every == 0) {
+          std::size_t best = 0;
+          double bestScore = -1e18;
+          std::vector<double> sc(books.size());
+          for (std::size_t c = 0; c < books.size(); ++c)
+            if ((sc[c] = score(c, t, v.lookback)) > bestScore) bestScore = sc[c], best = c;
+          if (held < 0) held = static_cast<int>(best);
+          else if (static_cast<int>(best) != held && bestScore > sc[static_cast<std::size_t>(held)] + v.margin) held = static_cast<int>(best), ++switches;
+        }
+        ++k;
+        auto& tw = targets[static_cast<std::size_t>(held)][t];
+        if (tw.empty()) tw = constructions[static_cast<std::size_t>(held)].second(t, eligibleAt(t));
+        return tw;
+      }, o.costBps, o.stampBps);
+      robust.push_back({v.name, "selector", b.returns, b.turnover, switches});
+    }
+    const std::size_t off = rStart - start;
+    for (std::size_t c = 0; c < books.size(); ++c)
+      robust.push_back({constructions[c].first, "construction", std::vector<double>(books[c].returns.begin() + static_cast<std::ptrdiff_t>(off), books[c].returns.end()),
+                        std::vector<double>(books[c].turnover.begin() + static_cast<std::ptrdiff_t>(off), books[c].turnover.end()), 0});
+    const Book u = simulate(ret, rStart, T, o.rebalance, [&](std::size_t t) {
+      const auto e = eligibleAt(t);
+      return scatter(N, e, std::vector<double>(e.size(), 1.0));
+    }, o.costBps, o.stampBps);
+    robust.push_back({"equal-weight universe", "benchmark", u.returns, u.turnover, 0});
+    std::printf("\nRobustness of the selector, %s .. %s (%zu days, same costs)\n", d.dates[rStart].c_str(), d.dates[T - 1].c_str(), u.returns.size());
+    std::printf("  %-38s %8s %8s %7s %8s %9s %8s\n", "variant", "CAGR", "vol", "Sharpe", "max DD", "turnover/yr", "switches");
+    for (const auto& r : robust) {
+      const auto m = evaluatePerformance(r.r, r.turnover);
+      std::printf("  %-38s %7.1f%% %7.1f%% %7.2f %7.1f%% %8.0f%%", r.name.c_str(), 100 * m.annualReturn, 100 * m.annualVolatility, m.sharpe,
+                  100 * m.maxDrawdown, 100 * m.averageTurnover * 252);
+      if (r.kind == "selector") std::printf(" %8zu", r.switches);
+      std::printf("\n");
+    }
+  }
+
   // Today's portfolio: the construction the selector would pick at the last close.
   const std::size_t last = T - 1;
   std::size_t pick = 0;
@@ -406,7 +481,18 @@ int main(int argc, char** argv) try {
       }
       f << "]}";
     }
-    f << "}}\n";
+    f << "}";
+    if (!robust.empty()) {
+      f << ",\"robustness\":{\"from\":" << json(d.dates[rStart]) << ",\"rows\":[";
+      for (std::size_t k = 0; k < robust.size(); ++k) {
+        const auto m = evaluatePerformance(robust[k].r, robust[k].turnover);
+        f << (k ? "," : "") << "{\"name\":" << json(robust[k].name) << ",\"kind\":" << json(robust[k].kind) << ",\"cagr\":" << m.annualReturn
+          << ",\"vol\":" << m.annualVolatility << ",\"sharpe\":" << m.sharpe << ",\"maxDrawdown\":" << m.maxDrawdown
+          << ",\"turnoverPerYear\":" << m.averageTurnover * 252 << ",\"switches\":" << robust[k].switches << "}";
+      }
+      f << "]}";
+    }
+    f << "}\n";
     std::printf("\nreport written to %s\n", o.report.c_str());
   }
   return 0;
