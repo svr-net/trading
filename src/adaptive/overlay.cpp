@@ -96,12 +96,21 @@ OverlayNet::Step OverlayNet::forward(const std::vector<double>& x, std::size_t N
     a[i] = ai;
     lam[i] = 1.0 / (1.0 + std::exp(-qi));
   }
-  double abar = 0;
+  // Fully invested target: exposure m in the equal-weight market, the rest long-short in
+  // proportion to the scores' deviations from their mean (gross at most 1).
+  double abar = 0, S = 1e-12, sgnSum = 0;
   for (double v : a) abar += v / n;
-  std::vector<double> u(N), tz(N);
+  std::vector<double> u(N), z(N), ls(N), sg(N);
   for (std::size_t i = 0; i < N; ++i) {
-    tz[i] = std::tanh(a[i] - abar);
-    u[i] = (m + tz[i]) / n;
+    z[i] = a[i] - abar;
+    S += std::fabs(z[i]);
+    sg[i] = z[i] > 0 ? 1.0 : z[i] < 0 ? -1.0 : 0.0;
+    sgnSum += sg[i];
+  }
+  const double am = std::fabs(m), sm = m > 0 ? 1.0 : m < 0 ? -1.0 : 0.0;
+  for (std::size_t i = 0; i < N; ++i) {
+    ls[i] = z[i] / S;
+    u[i] = m / n + (1 - am) * ls[i];
     s.w[i] = wPrev[i] + lam[i] * (u[i] - wPrev[i]);
     s.meanRate += lam[i] / n;
     s.exposure += s.w[i];
@@ -131,17 +140,22 @@ OverlayNet::Step OverlayNet::forward(const std::vector<double>& x, std::size_t N
     }
     for (std::size_t p = 0; p < P; ++p) dabar[p] += dai[p] / n;
   }
-  std::vector<double> dm(P, 0.0);
+  std::vector<double> dm(P, 0.0), Q(P, 0.0);  // Q: sum of sign(z_k) dz_k, for the normalisation
   for (std::size_t k = 0; k < K_; ++k)
     if (g[k] != 0) dm[unitBase(k) + 2 * H + 1] = (1 - m * m) * g[k];
+  for (std::size_t i = 0; i < N; ++i)
+    if (sg[i] != 0)
+      for (std::size_t p = 0; p < P; ++p) Q[p] += sg[i] * da[i * P + p];
+  for (std::size_t p = 0; p < P; ++p) Q[p] -= sgnSum * dabar[p];
   for (std::size_t i = 0; i < N; ++i) {
-    const double c1 = (1 - tz[i] * tz[i]) / n, c2 = lam[i] * (1 - lam[i]) * (u[i] - wPrev[i]);
+    const double cm = 1 / n - sm * ls[i], c1 = (1 - am) / S, cQ = (1 - am) * z[i] / (S * S);
+    const double c2 = lam[i] * (1 - lam[i]) * (u[i] - wPrev[i]);
     const double* Jp = &JPrev[i * P];
     const double* dai = &da[i * P];
     const double* dqi = &dq[i * P];
     double* Ji = &s.J[i * P];
     for (std::size_t p = 0; p < P; ++p)
-      Ji[p] = (1 - lam[i]) * Jp[p] + lam[i] * (dm[p] / n + c1 * (dai[p] - dabar[p])) + c2 * dqi[p];
+      Ji[p] = (1 - lam[i]) * Jp[p] + lam[i] * (cm * dm[p] + c1 * (dai[p] - dabar[p]) - cQ * Q[p]) + c2 * dqi[p];
   }
   return s;
 }

@@ -1,4 +1,4 @@
-// Gate 1 of the overlay trader: does a network that learns the trades beat the fixed rules?
+// Gate 1b of the overlay trader: does a network that learns the trades beat the fixed rules?
 //
 //   overlay_study [markets per set=6] [days=2520] [--csv data.csv]
 //   overlay_study 0 --csv data.csv     (real data only)
@@ -7,9 +7,13 @@
 // self-adaptive forecast). Then, over the same days and at two cost levels (10 bp per unit of
 // turnover; UK: 10 bp plus 50 bp stamp duty on purchases):
 //  - default: the self-adaptive selector over the five fixed rules on the self-adaptive forecast,
-//  - network: the overlay trader alone (inputs: all seven forecasts),
-//  - overlay: the selector over the five rules and the network as one more candidate.
-// Nothing is tuned: the network's settings are OverlaySpec's defaults, fixed before any result.
+//  - network: the overlay trader alone (inputs: all seven forecasts), fully invested, at each of
+//    three learning rates (1e-3, 1e-2, 1e-1),
+//  - overlay: the selector over the five rules and the three networks as candidates, so the
+//    selector, not a hand-set value, chooses the learning rate.
+// Nothing is tuned: the other settings are OverlaySpec's defaults, fixed before any result.
+// (Gate 1, with a network free to scale its book down and a single learning rate of 1e-3,
+// failed: the network held almost nothing.)
 // Gate (fixed in advance): on the selection markets and on the unseen markets, at both cost
 // levels, the overlay's mean Sharpe ratio is above the default's and it beats the default on at
 // least 4 of 6 markets; on UK data, at UK costs, it is at least as good as the default.
@@ -34,6 +38,8 @@ struct Costs {
   double cost, stamp;
 };
 const Costs kCosts[] = {{"10 bp", 10, 0}, {"UK: 10 bp + 50 bp stamp duty on purchases", 10, 50}};
+const double kRates[] = {1e-3, 1e-2, 1e-1};
+constexpr std::size_t kRows = 2 + std::size(kRates);  // default, networks, overlay
 
 struct Outcome {
   PerformanceMetrics metrics;
@@ -45,7 +51,7 @@ struct Market {
   std::string name;
   PredictionSet p;
   std::size_t first = 0;
-  // [cost][default, network, overlay]
+  // [cost][default, network per learning rate, overlay]
   std::vector<std::vector<Outcome>> out;
 };
 
@@ -64,28 +70,34 @@ Market prepare(const std::string& name, const MarketData& data) {
   m.first += SelectorSpec{}.lookback;
   const std::vector<ModelPredictions> forecast = {m.p.models.back()};
   for (const auto& c : kCosts) {
-    std::vector<Outcome> row(3);
+    std::vector<Outcome> row(kRows);
     const CandidateBook base(forecast, ExperimentSpec::defaultStrategies(), m.p.nextReturns, c.cost, c.stamp);
     const std::size_t from = m.first - base.start();
     auto yearly = [](const PerformanceMetrics& pm) { return 252.0 * pm.averageTurnover; };
     const auto a = runSelector(base, SelectorSpec{}, from);
     row[0].metrics = a.metrics, row[0].turnoverYear = yearly(a.metrics);
 
-    const auto net = overlayTrader(m.p.models, m.p.nextReturns, c.cost, c.stamp);
-    if (net.start != base.start()) throw std::logic_error("overlay and book start on different dates");
-    const std::vector<double> n(net.net.begin() + static_cast<std::ptrdiff_t>(from), net.net.end()),
-        t(net.turnover.begin() + static_cast<std::ptrdiff_t>(from), net.turnover.end());
-    row[1].metrics = evaluatePerformance(n, t), row[1].turnoverYear = yearly(row[1].metrics);
-    for (std::size_t d = from; d < net.tradeRate.size(); ++d) {
-      row[1].rate += net.tradeRate[d] / static_cast<double>(net.tradeRate.size() - from);
-      row[1].exposure += net.exposure[d] / static_cast<double>(net.tradeRate.size() - from);
-    }
-    row[1].units = net.units.back();
-
     CandidateBook book = base;
-    book.addCandidate("overlay network", net.weights);
+    for (std::size_t q = 0; q < std::size(kRates); ++q) {
+      OverlaySpec spec;
+      spec.learningRate = kRates[q];
+      const auto net = overlayTrader(m.p.models, m.p.nextReturns, c.cost, c.stamp, spec);
+      if (net.start != base.start()) throw std::logic_error("overlay and book start on different dates");
+      const std::vector<double> n(net.net.begin() + static_cast<std::ptrdiff_t>(from), net.net.end()),
+          t(net.turnover.begin() + static_cast<std::ptrdiff_t>(from), net.turnover.end());
+      Outcome& o = row[1 + q];
+      o.metrics = evaluatePerformance(n, t), o.turnoverYear = yearly(o.metrics);
+      for (std::size_t d = from; d < net.tradeRate.size(); ++d) {
+        o.rate += net.tradeRate[d] / static_cast<double>(net.tradeRate.size() - from);
+        o.exposure += net.exposure[d] / static_cast<double>(net.tradeRate.size() - from);
+      }
+      o.units = net.units.back();
+      book.addCandidate("overlay network", net.weights);
+    }
     const auto o = runSelector(book, SelectorSpec{}, from);
-    row[2].metrics = o.metrics, row[2].turnoverYear = yearly(o.metrics), row[2].networkShare = o.share[book.size() - 1];
+    Outcome& ov = row[kRows - 1];
+    ov.metrics = o.metrics, ov.turnoverYear = yearly(o.metrics);
+    for (std::size_t q = 0; q < std::size(kRates); ++q) ov.networkShare += o.share[base.size() + q];
     m.out.push_back(row);
   }
   std::fprintf(stderr, "  %s ready\n", name.c_str());
@@ -95,32 +107,37 @@ Market prepare(const std::string& name, const MarketData& data) {
 // Prints the comparison; returns whether the overlay passes this set's part of the gate per cost.
 std::vector<bool> report(const char* title, const std::vector<Market>& set) {
   const double n = static_cast<double>(set.size());
-  const char* names[] = {"default (selector, 5 rules)", "network alone", "overlay (selector, 5 rules + network)"};
+  std::vector<std::string> names = {"default (selector, 5 rules)"};
+  for (double r : kRates) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "network alone, learning rate %g", r);
+    names.push_back(buf);
+  }
+  names.push_back("overlay (selector, 5 rules + 3 networks)");
   std::vector<bool> pass;
   for (std::size_t c = 0; c < std::size(kCosts); ++c) {
-    std::printf("\n%s, %s\n  %-40s %8s %8s %8s %8s %8s %6s\n", title, kCosts[c].name, "", "ann.ret", "Sharpe", "worst", "max DD", "turn/yr",
-                "beats");
-    double meanSharpe[3] = {0, 0, 0};
-    int beats[3] = {0, 0, 0};
-    for (int k = 0; k < 3; ++k) {
-      double ret = 0, dd = 0, worst = 1e9, turn = 0;
+    std::printf("\n%s, %s\n  %-42s %8s %8s %8s %8s %8s %6s %6s %6s\n", title, kCosts[c].name, "", "ann.ret", "Sharpe", "worst", "max DD",
+                "turn/yr", "beats", "rate", "expo");
+    std::vector<double> meanSharpe(kRows, 0.0);
+    std::vector<int> beats(kRows, 0);
+    for (std::size_t k = 0; k < kRows; ++k) {
+      double ret = 0, dd = 0, worst = 1e9, turn = 0, rate = 0, expo = 0;
       for (const auto& m : set) {
-        const auto& o = m.out[c][static_cast<std::size_t>(k)];
+        const auto& o = m.out[c][k];
         ret += o.metrics.annualReturn / n, meanSharpe[k] += o.metrics.sharpe / n, dd += o.metrics.maxDrawdown / n, turn += o.turnoverYear / n;
+        rate += o.rate / n, expo += o.exposure / n;
         worst = std::min(worst, o.metrics.sharpe);
         if (k > 0 && o.metrics.sharpe > m.out[c][0].metrics.sharpe + 1e-9) ++beats[k];
       }
-      std::printf("  %-40s %7.1f%% %8.2f %8.2f %7.1f%% %7.0fx", names[k], 100 * ret, meanSharpe[k], worst, 100 * dd, turn);
+      std::printf("  %-42s %7.1f%% %8.2f %8.2f %7.1f%% %7.0fx", names[k].c_str(), 100 * ret, meanSharpe[k], worst, 100 * dd, turn);
       if (k > 0) std::printf(" %3d/%-2zu", beats[k], set.size());
+      if (k > 0 && k + 1 < kRows) std::printf(" %6.2f %+6.2f", rate, expo);
       std::printf("\n");
     }
-    double units = 0, rate = 0, expo = 0, share = 0;
-    for (const auto& m : set)
-      units += static_cast<double>(m.out[c][1].units) / n, rate += m.out[c][1].rate / n, expo += m.out[c][1].exposure / n,
-          share += m.out[c][2].networkShare / n;
-    std::printf("  network: %.1f local units, mean trade rate %.2f, mean net exposure %+.2f; the overlay held it %.0f%% of days\n", units, rate,
-                expo, 100 * share);
-    pass.push_back(set.size() == 1 ? meanSharpe[2] >= meanSharpe[0] : meanSharpe[2] > meanSharpe[0] && beats[2] >= 4);
+    double share = 0;
+    for (const auto& m : set) share += m.out[c][kRows - 1].networkShare / n;
+    std::printf("  the overlay held a network %.0f%% of days\n", 100 * share);
+    pass.push_back(set.size() == 1 ? meanSharpe[kRows - 1] >= meanSharpe[0] : meanSharpe[kRows - 1] > meanSharpe[0] && beats[kRows - 1] >= 4);
   }
   return pass;
 }
@@ -142,7 +159,7 @@ int main(int argc, char** argv) {
   bool gate = true;
   auto verdict = [&](const char* set, const std::vector<bool>& pass) {
     for (std::size_t c = 0; c < pass.size(); ++c) {
-      std::printf("Gate on %s, %s: %s\n", set, kCosts[c].name, pass[c] ? "pass" : "FAIL");
+      std::printf("Gate 1b on %s, %s: %s\n", set, kCosts[c].name, pass[c] ? "pass" : "FAIL");
       gate = gate && pass[c];
     }
   };
@@ -171,15 +188,15 @@ int main(int argc, char** argv) {
     ss << f.rdbuf();
     const auto uk = report(("Real data: " + csv).c_str(), {prepare(csv, parseCsv(ss.str()))});
     // The UK part of the gate is at UK costs only.
-    std::printf("Gate on %s, %s: %s\n", csv.c_str(), kCosts[1].name, uk[1] ? "pass" : "FAIL");
+    std::printf("Gate 1b on %s, %s: %s\n", csv.c_str(), kCosts[1].name, uk[1] ? "pass" : "FAIL");
     gate = gate && uk[1];
   } else if (markets == 0) {
     std::fprintf(stderr, "overlay_study 0 needs --csv\n");
     return 2;
   }
   if (markets == 0)
-    std::printf("\nUK part of gate 1 %s (the synthetic markets' part is not run here: overlay_study [markets])\n", gate ? "passed" : "failed");
+    std::printf("\nUK part of gate 1b %s (the synthetic markets' part is not run here: overlay_study [markets])\n", gate ? "passed" : "failed");
   else
-    std::printf("\nGate 1 %s\n", gate ? "passed" : "failed");
+    std::printf("\nGate 1b %s\n", gate ? "passed" : "failed");
   return 0;
 }

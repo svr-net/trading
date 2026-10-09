@@ -88,7 +88,9 @@ TEST(overlay_is_causal) {
 
 TEST(overlay_learns_to_trade_the_informative_forecast) {
   SignalWorld w(2000, 20, 1, 5);
-  const auto r = overlayTrader(w.forecasts, w.next, 1, 0);
+  OverlaySpec spec;
+  spec.learningRate = 0.1;
+  const auto r = overlayTrader(w.forecasts, w.next, 1, 0, spec);
   CHECK(r.net.size() == r.end - r.start && r.units.back() >= 1);
   double late = 0, corr = 0;
   for (std::size_t d = r.net.size() / 2; d < r.net.size(); ++d) late += r.net[d];
@@ -97,6 +99,12 @@ TEST(overlay_learns_to_trade_the_informative_forecast) {
     for (std::size_t i = 0; i < 20; ++i) corr += r.weights(t, i) * (w.forecasts[0].probability(t, i) - 0.5);
   CHECK(late > 0);
   CHECK(corr > 0);
+  // Fully invested: gross at most 1, and near it once trading.
+  double gross = 0;
+  for (std::size_t i = 0; i < 20; ++i) gross += std::fabs(r.weights(r.end - 1, i));
+  CHECK(gross <= 1 + 1e-9 && gross > 0.5);
+  // With a daily signal and almost no cost, it learns to trade fast.
+  CHECK(r.tradeRate.back() > 0.8);
 }
 
 TEST(overlay_trades_less_when_trading_costs_more) {

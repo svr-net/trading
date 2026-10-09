@@ -21,8 +21,10 @@ namespace sat {
 /// exposure. Units are added when the market enters a state no unit covers yet.
 ///
 /// Differential: the network moves each position part of the way to its target,
-/// w = w_prev + rate * (target - w_prev), target = exposure / N + tanh(score - mean score) / N,
-/// and learns by gradient ascent on the differential Sharpe ratio (Moody and Saffell, 2001) of
+/// w = w_prev + rate * (target - w_prev). The target is fully invested, as the fixed rules are:
+/// exposure m in the equal-weight market and the rest, 1 - |m|, long-short in proportion to
+/// each score's deviation from the mean score (gross at most 1), so the network learns which
+/// assets to favour, how fast to trade and the market exposure, not the size of the book. It learns by gradient ascent on the differential Sharpe ratio (Moody and Saffell, 2001) of
 /// the daily return net of costs. The gradient of each position with respect to every
 /// parameter is carried forward through the positions (forward-mode, real-time recurrent
 /// learning), so the cost of a trade is weighed against all the returns the position earns.
@@ -36,7 +38,7 @@ struct OverlaySpec {
   std::size_t hidden = 8;       ///< shared tanh units
   std::size_t maxUnits = 16;    ///< local units
   double unitRadius = 1.0;      ///< new unit when the state is farther than this from every centre (state sd)
-  double learningRate = 1e-3;
+  double learningRate = 1e-2;  ///< overlay_study trains 1e-3, 1e-2 and 1e-1 and lets the selector choose
   double sharpeRate = 0.01;     ///< adaptation rate of the differential Sharpe ratio's moments
   std::uint64_t seed = 7;
 };
