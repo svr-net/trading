@@ -33,6 +33,13 @@ class CandidateBook {
   CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
                 const Panel& nextReturns, double costBps);
 
+  /// The same book with the candidate backtests taken from the candidate-backtest kernel
+  /// (WebGPU or its CPU emulation): `kernelBook` is its read-back, [candidate][day][2] of
+  /// gross return and turnover in f32, for a plan compiled from the same models, strategies,
+  /// returns and cost. Everything downstream (net series, selectors) is unchanged.
+  CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
+                const Panel& nextReturns, double costBps, const std::vector<float>& kernelBook);
+
   std::size_t size() const { return candidates_.size(); }
   std::size_t days() const { return end_ - start_; }
   std::size_t start() const { return start_; }
@@ -63,6 +70,8 @@ class CandidateBook {
   std::size_t start_ = 0, end_ = 0;
   double costBps_ = 0.0;
   Matrix gross_, turnover_;  // candidates x days
+
+  void setUp(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies);
 };
 
 /// How a candidate's recent record is scored.

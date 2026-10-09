@@ -4,6 +4,7 @@ import { PERF_HEADERS, card, grid, initPage, perfRow, runButton, specEditor, tab
 
 const page = initPage({
   id: 'portfolio',
+  gpu: false,
   title: 'Hierarchical risk parity',
   context: 'sat/afml/portfolio: clusterAssets · hierarchicalRiskParity · minimumVarianceWeights',
   description: 'Mean-variance optimisers invert the covariance matrix, which amplifies estimation error, and they tend to concentrate in a few assets. ' +

@@ -8,6 +8,7 @@ const perfRow = (name, m) => fullRow(name, m).slice(0, -1);
 
 const page = initPage({
   id: 'trend',
+  gpu: false,
   title: 'Trend following',
   context: 'sat/algo/trend: trendFollowing (EWMAC rules, forecast scaling, volatility targeting, adaptive rule weights)',
   description: 'A systematic futures-style trend system after Carver\'s <i>Systematic Trading</i>, run on every stock. Six <b>EWMAC</b> rules compare a fast and a slow exponential moving average, from 2/8 to 64/256 days; each raw forecast is divided by price volatility, <b>scaled</b> so its average absolute value is 10 and <b>capped</b> at 20. ' +

@@ -244,6 +244,7 @@ FusedOutput runFusedReference(const FusedPlan& plan) {
     o[6] = wins;
     o[7] = turn;
   }
+  out.book = std::move(book);
   return out;
 }
 

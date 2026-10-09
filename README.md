@@ -199,6 +199,8 @@ It also holds the settings of the AFML pages and of the hedging and algorithmic-
 - **Auto**, the default, runs the WebGPU kernels whenever the browser has a usable WebGPU adapter, on desktop and mobile alike. Otherwise it runs the same kernels on the **emulated GPU**.
 - **WebGPU**, **Emulated GPU** or **WebAssembly** forces one of them. A failing WebGPU run also falls back to the emulated GPU.
 
+The Tournament, Beta hedging and Backtest overfitting pages have the same selector. Their pool of fixed candidates (every model × rule) is backtested by the candidate-backtest kernel on the chosen device. The read-back of every candidate's daily gross return and turnover (`kernelBook`) is turned into the library's `CandidateBook`. The selectors, allocators, hedges and overfitting statistics then run on it unchanged. Every other page has no GPU kernel, and its status line says "WebAssembly (no GPU kernel for this analysis)".
+
 Settings the kernels cannot express fall back to WebAssembly on any engine. Those are a selector that holds a mix of the top M candidates, more than 128 stocks, or more than 8 models. The status line names the engine that ran and why. Views that need every candidate's daily returns (all equity curves, the quarterly winners, the average of all rules) are WebAssembly-only.
 
 **All numerics are in C++.** Model training always runs in WebAssembly. Each strategy analysis (`strategies`, `adaptive`, `robustness`) is defined once in `wasm/bindings.cpp` as a list of jobs: a transaction cost and the selector settings to run over the candidate pool. A combine step then builds the page's result. On WebAssembly each job builds a `CandidateBook` and runs `evaluateGrid`. On WebGPU:

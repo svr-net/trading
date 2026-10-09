@@ -4,6 +4,7 @@ import { card, grid, initPage, passFail, runButton, specEditor, table, tiles } f
 
 const page = initPage({
   id: 'core',
+  gpu: false,
   title: 'Core numerics',
   context: 'sat/core · sat/factors/operators: Panel · Rng · ts_* and cross-sectional operators',
   description: 'Every factor is a formula in a small operator algebra over date × stock panels. ' +

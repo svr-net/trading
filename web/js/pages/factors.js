@@ -4,6 +4,7 @@ import { card, el, grid, initPage, runButton, specEditor, table, tiles } from '.
 
 const page = initPage({
   id: 'factors',
+  gpu: false,
   title: 'Alpha factors',
   context: 'sat/factors: AlphaInputs · computeAlpha · paperAlphaIds',
   description: 'The models\' inputs are 23 of the "101 Formulaic Alphas" (Kakushadze, 2016): price-volume signals built from the operator algebra, listed in the paper\'s factor table. ' +

@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'fracdiff',
+  gpu: false,
   title: 'Fractional differentiation',
   context: 'sat/afml/fracdiff: fracDiffWeights · fracDiff · adfTest · scanFracDiff',
   description: 'Prices are not stationary, so models are usually fed returns, the first difference of log prices. That throws away the memory of the price level. ' +

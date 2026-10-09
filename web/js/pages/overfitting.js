@@ -1,4 +1,4 @@
-import { run } from '../sat-client.js';
+import { engineSelector, kernelNote, runWithKernels } from '../gpu/backend.js';
 import { fmt, histogram, lineChart, scatterChart } from '../charts.js';
 import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui.js';
 
@@ -13,8 +13,10 @@ const page = initPage({
 });
 specEditor(page, ['market', 'csv', 'models', 'strategies', 'costs', 'selector', 'overfitting'], { open: false });
 
-runButton(page, 'Assess', async (spec) => {
-  const r = await run('afmlOverfitting', spec);
+const button = runButton(page, 'Assess', async (spec) => {
+  const k = await runWithKernels('afmlOverfitting', spec);
+  const r = k.result;
+  window.__satEngineRun = { page: 'overfitting', engine: k.engine, result: r };
   const ann = Math.sqrt(252);
   tiles(page.content, [
     { label: 'Trials (candidates)', value: fmt.num(r.trials), hint: `${fmt.num(r.days)} evaluation days` },
@@ -46,5 +48,7 @@ runButton(page, 'Assess', async (spec) => {
     row(`Best fixed (hindsight): ${r.bestFixedLabel}`, r.best),
     row(r.adaptiveLabel, r.adaptive),
   ]);
-  return `Done · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`} · WebAssembly`;
+  return kernelNote(k, ` · models ${r.cachedPredictions ? 'cached' : `trained in ${fmt.num(r.trainMs)} ms`}`);
 });
+
+engineSelector(page, () => button.click());

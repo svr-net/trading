@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'labeling',
+  gpu: false,
   title: 'Triple barrier and meta-labels',
   context: 'sat/afml/labeling · sampling: cusumFilter · tripleBarrier · averageUniqueness · sequentialBootstrap',
   description: 'Instead of a label for every day, a <b>CUSUM filter</b> samples the days on which the price has drifted by more than a threshold since the last event. ' +

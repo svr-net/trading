@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "sat/adaptive/experiment.hpp"
+#include "sat/adaptive/self_adaptive.hpp"
 #include "sat/algo/ensemble.hpp"
 #include "sat/algo/regimes.hpp"
 #include "sat/algo/trend.hpp"
@@ -48,8 +49,10 @@ struct TournamentResult {
   std::size_t start = 0;  ///< date index of the first evaluated return (earned to start + 1)
 };
 
+/// `book`, when given, is the candidate book to use (for example built from the GPU kernels'
+/// read-back); otherwise it is backtested here.
 TournamentResult runTournament(const MarketData& data, const PredictionSet& predictions, const ExperimentSpec& experiment,
-                               const TournamentSpec& spec);
+                               const TournamentSpec& spec, const CandidateBook* book = nullptr);
 
 /// Equal-weight market return from date t to t + 1, for t = 0 .. T - 2.
 std::vector<double> equalWeightMarket(const MarketData& data);

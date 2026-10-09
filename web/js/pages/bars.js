@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'bars',
+  gpu: false,
   title: 'Information-driven bars',
   context: 'sat/afml/bars: generateTrades · timeBars · tickBars · volumeBars · dollarBars · tickImbalanceBars',
   description: 'Markets do not process information at a constant rate, so sampling prices every fixed slice of clock time mixes quiet and busy periods. ' +

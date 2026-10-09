@@ -219,6 +219,31 @@ if (emuJobs && !emuJobs.unsupported) {
   check(typeof sat.gpuRunPlan({ header: plan.header.subarray(0, 4), tables: plan.tables }).error === 'string', 'a short header is rejected');
 }
 
+// Candidate backtests on the kernels: the 'book' plan read back through the emulated GPU feeds
+// the tournament, hedging and overfitting entry points, which must match their CPU runs.
+const bookJobs = run('gpuJobs (candidate book)', () => sat.gpuJobs({ ...spec, analysis: 'book' }));
+if (bookJobs && !bookJobs.unsupported) {
+  const plan = bookJobs.plans[0];
+  const out = sat.gpuRunPlan({ header: plan.header, tables: plan.tables, readBook: true });
+  check(!out.error && out.book.length === plan.numCandidates * plan.numDays * 2, `kernel book size ${out.error || out.book?.length}`);
+  check(plan.numSelectors === 0, 'the book plan has no selectors');
+  const kernelBook = out.book;
+  const pairs = [
+    ['strategyTournament', (r) => r.allocators[0].metrics.sharpe, {}],
+    ['hedgeOverlays', (r) => r.series[0].metrics.sharpe, {}],
+    ['afmlOverfitting', (r) => r.adaptive.sharpe, { overfitting: { blocks: 8 } }],
+  ];
+  for (const [fn, get, extra] of pairs) {
+    const k = run(`${fn} (kernel book)`, () => sat[fn]({ ...spec, ...extra, kernelBook }));
+    const c = sat[fn]({ ...spec, ...extra });
+    if (k && !c.error) {
+      check(k.candidateBacktests === 'kernels' && c.candidateBacktests === 'cpu', `${fn} reports where the candidates ran`);
+      near(get(k), get(c), 0.02, `${fn}: kernel book vs CPU`);
+    }
+  }
+  check(typeof sat.hedgeOverlays({ ...spec, kernelBook: kernelBook.subarray(0, 10) }).error === 'string', 'a kernel book of the wrong size is rejected');
+}
+
 const csv = 'date,ticker,open,high,low,close,volume\n2024-01-02,A,1,1,1,1,1\n';
 check(typeof sat.marketData({ ...spec, csv }).error === 'string', 'a one-stock CSV is rejected');
 

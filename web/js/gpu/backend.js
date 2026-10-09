@@ -100,6 +100,55 @@ export async function runAnalysis(analysis, spec) {
   }
 }
 
+/**
+ * Runs a library entry point (strategyTournament, hedgeOverlays, afmlOverfitting) whose pool of
+ * fixed candidates (every model × rule) is backtested by the candidate-backtest kernel: on
+ * WebGPU, or on the emulated GPU when WebGPU is missing, fails, or the emulator is selected.
+ * The kernel's read-back of every candidate's daily gross return and turnover is handed to the
+ * entry point, which runs its selectors and statistics on it. WebAssembly runs everything when
+ * selected or when the kernels cannot express the pool. Resolves to { result, engine, reason }.
+ */
+export async function runWithKernels(entry, spec) {
+  const mode = getEngineMode();
+  let jobs = null;
+  // After gpuJobs the models are cached, so report the training as gpuJobs saw it.
+  const trained = (result) => (jobs ? { ...result, trainMs: jobs.trainMs, cachedPredictions: jobs.cachedPredictions } : result);
+  const wasm = async (reason) => ({ result: trained(await run(entry, spec)), engine: 'wasm', reason });
+  if (mode === 'wasm') return wasm('WebAssembly selected');
+  jobs = await run('gpuJobs', { ...spec, analysis: 'book' });
+  if (jobs.unsupported) return wasm(jobs.unsupported);
+  const plan = { ...jobs.plans[0], readBook: true };
+  const onDevice = async (device, engine, reason) => {
+    const out = await device.run(plan);
+    const result = await run(entry, { ...spec, kernelBook: out.book });
+    return { result: { ...trained(result), gpuMs: out.gpuMs, adapter: device.name }, engine, reason };
+  };
+  const emulate = async (reason) => {
+    try {
+      return await onDevice(emulatedGpu(), 'emulator', reason);
+    } catch (e) {
+      console.warn('Emulated GPU failed, falling back to WebAssembly:', e);
+      return wasm(`emulated GPU failed (${e.message}); used WebAssembly`);
+    }
+  };
+  if (mode === 'emulator') return emulate('emulated GPU selected');
+  if (!('gpu' in navigator)) return emulate('WebGPU is not available in this browser; kernels emulated on the CPU');
+  try {
+    return await onDevice(await gpuEngine(), 'gpu', mode === 'auto' ? 'Auto: WebGPU available' : 'WebGPU selected');
+  } catch (e) {
+    console.warn('WebGPU run failed, falling back to the emulated GPU:', e);
+    if (/no WebGPU adapter|too limited/.test(e.message)) return emulate(`WebGPU unavailable: ${e.message.replace('no WebGPU adapter: ', '')}; kernels emulated on the CPU`);
+    return emulate(`WebGPU failed (${e.message}); kernels emulated on the CPU`);
+  }
+}
+
+/** Status line for runWithKernels: where the candidate backtests ran, and why. */
+export function kernelNote(r, extra = '') {
+  const where = r.engine === 'gpu' ? `WebGPU (${r.result.adapter})` : r.engine === 'emulator' ? 'Emulated GPU' : 'WebAssembly';
+  const timing = r.engine === 'wasm' ? '' : `: candidate backtests in ${(Math.round(r.result.gpuMs * 10) / 10).toLocaleString('en-US')} ms`;
+  return `Done${extra} · ${where}${timing} · ${r.reason}`;
+}
+
 /** Toolbar control: Engine [Auto | WebGPU | Emulated GPU | WebAssembly]. Changing it re-runs via `onChange`. */
 export function engineSelector(page, onChange) {
   const select = el('select', { 'aria-label': 'Compute engine' },

@@ -63,7 +63,7 @@ export function el(tag, attrs = {}, ...children) {
 }
 
 /** Builds the page shell. Returns { main, toolbar, status, content }. */
-export function initPage({ id, title, context, description }) {
+export function initPage({ id, title, context, description, gpu = true }) {
   document.title = `${title} · trading SAT`;
   // On narrow screens the links collapse behind a Menu button so the page content shows first.
   const links = el('div', { class: 'nav-links', id: 'nav-links' });
@@ -116,7 +116,8 @@ export function initPage({ id, title, context, description }) {
       : s.ok ? 'GPU emulator: standby (fallback)' : 'GPU emulator: in use (no WebGPU)';
   });
 
-  return { main, toolbar, status, content, spec: loadSpec() };
+  // gpu: false marks a page whose analysis has no GPU kernel; its status line says so.
+  return { main, toolbar, status, content, spec: loadSpec(), gpu };
 }
 
 export async function gpuStatus() {
@@ -165,6 +166,12 @@ export function table(parent, headers, rows) {
 export const passFail = (ok, text) => el('span', { class: ok ? 'pass' : 'fail', text: (ok ? '✓ ' : '✗ ') + (text ?? (ok ? 'pass' : 'fail')) });
 
 /** Adds a primary run button. handler(spec) may be async; status shows timing or errors. */
+const NO_KERNEL = 'WebAssembly (no GPU kernel for this analysis)';
+/** Status line of a page without a GPU kernel: names WebAssembly and says why. */
+export function withoutKernelNote(msg) {
+  return /· WebAssembly\b/.test(msg) ? msg.replace(/· WebAssembly\b/, `· ${NO_KERNEL}`) : `${msg} · ${NO_KERNEL}`;
+}
+
 export function runButton(page, label, handler, { auto = true } = {}) {
   const btn = el('button', { class: 'primary', text: label });
   page.toolbar.insertBefore(btn, page.status);
@@ -175,8 +182,8 @@ export function runButton(page, label, handler, { auto = true } = {}) {
     const t0 = performance.now();
     try {
       page.content.innerHTML = '';
-      const msg = await handler(page.spec);
-      page.status.textContent = msg || `Done in ${fmt.num(performance.now() - t0)} ms`;
+      const msg = (await handler(page.spec)) || `Done in ${fmt.num(performance.now() - t0)} ms`;
+      page.status.textContent = page.gpu === false ? withoutKernelNote(msg) : msg;
     } catch (e) {
       console.error(e);
       page.status.className = 'status error';

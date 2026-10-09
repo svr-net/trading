@@ -4,6 +4,7 @@ import { card, grid, initPage, runButton, specEditor, table, tiles } from '../ui
 
 const page = initPage({
   id: 'data',
+  gpu: false,
   title: 'Market data',
   context: 'sat/data: MarketData · parseCsv · generateSyntheticMarket',
   description: 'The paper\'s experiments use daily bars of Hong Kong stocks. Those data are not published, so by default the library simulates a market with the features that matter here. ' +
