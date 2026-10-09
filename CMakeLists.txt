@@ -114,6 +114,8 @@ if(SAT_BUILD_EXAMPLES)
   target_link_libraries(self_adaptive_trading_demo PRIVATE sat)
   add_executable(strategy_tournament examples/strategy_tournament.cpp)
   target_link_libraries(strategy_tournament PRIVATE sat)
+  add_executable(uk_portfolio examples/uk_portfolio.cpp)
+  target_link_libraries(uk_portfolio PRIVATE sat)
 endif()
 
 include(GNUInstallDirs)
