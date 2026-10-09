@@ -79,7 +79,8 @@ const isShare = (code) => {
   const t = (typeOf.get(code) || '').toLowerCase();
   if (t && !/(share|stock|equity|ord|common)/.test(t)) return false;  // funds, ETFs, warrants, bonds
   const n = (nameOf.get(code) || '').toLowerCase();
-  return !/\b(etf|etc|fund|trust plc|investment trust|ucits|tracker|warrant|bond|gilt|pref)\b/.test(n);
+  if (/\b(etf|etc|etn|fund|trust plc|investment trust|ucits|tracker|swap|s&p|msci|ftse|warrant|bond|gilt|pref)\b/.test(n)) return false;
+  return /\b(plc|ltd|limited|s\.a\.|sa|ag|n\.v\.|nv|se|inc|corp|group|holdings|ord)\b/.test(n);  // a company's name, not a product's
 };
 const ranked = quotes
   .map((q) => ({ code: field(q, 'symbolCode', 'code', 'symbol'), value: Number(field(q, 'close')) * Number(field(q, 'volume')) }))

@@ -130,11 +130,25 @@ Matrix windowReturns(const Panel& ret, std::size_t t, std::size_t window, const 
   return R;
 }
 
+// Spreads the weights of the selected stocks over all N, keeping every selected stock between
+// half and twice its equal share (4% and 20% for ten), so a portfolio of ten holds ten.
 std::vector<double> scatter(std::size_t N, const std::vector<std::size_t>& cols, const std::vector<double>& w) {
   std::vector<double> out(N, 0.0);
+  const std::size_t n = cols.size();
+  if (n == 0) return out;
+  std::vector<double> v(n);
   double s = 0;
   for (double x : w) s += std::max(0.0, x);
-  for (std::size_t j = 0; j < cols.size(); ++j) out[cols[j]] = s > 0 ? std::max(0.0, w[j]) / s : 1.0 / cols.size();
+  for (std::size_t j = 0; j < n; ++j) v[j] = s > 0 ? std::max(0.0, w[j]) / s : 1.0 / n;
+  if (n > 2) {
+    const double lo = 0.5 / n, hi = std::min(1.0, 2.0 / n);
+    for (int it = 0; it < 100; ++it) {  // alternate clipping and renormalising until both hold
+      double t = 0;
+      for (double& x : v) t += (x = std::clamp(x, lo, hi));
+      for (double& x : v) x /= t;
+    }
+  }
+  for (std::size_t j = 0; j < n; ++j) out[cols[j]] = v[j];
   return out;
 }
 
