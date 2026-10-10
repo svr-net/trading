@@ -208,9 +208,11 @@ struct Learner {
   std::vector<Obs> obs;
   std::vector<std::size_t> byLo, byHi;  // obs sorted by lo and by hi
   double kc = 0, kcs = 0;               // log of the round trip; the same for a stopped trade
+  double maxDrop = 0, maxRise = 0;      // the largest fall and rise from the open ever seen (log)
 
   void add(double lo, double hi, double c, double sig) {
     obs.push_back({lo, hi, c, sig});
+    maxDrop = std::max(maxDrop, lo * sig), maxRise = std::max(maxRise, hi * sig);
     const std::size_t idx = obs.size() - 1;
     auto put = [&](std::vector<std::size_t>& v, double Obs::*key) {
       const double kv = obs[idx].*key;
@@ -554,6 +556,9 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     r.tradeNext = r.tradeNext || trade;
     o.asset = i, o.action = trade ? 1 : 0, o.rank = q + 1, o.open = 0, o.sigma = iv(L, i), o.ratio = score;
     const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
+    // A level further from the open than any move the trades learnt from is no level.
+    if (std::isfinite(a) && a * o.sigma > ln.maxDrop) a = kInf;
+    if (std::isfinite(b) && b * o.sigma > ln.maxRise) b = kInf;
     o.stop = std::isfinite(a) ? std::exp(-a * o.sigma) - 1 : kNaN, o.take = std::isfinite(b) ? std::exp(b * o.sigma) - 1 : kNaN, o.close = std::expm1(e);
     o.pStopDay = pS, o.pTakeDay = pT, o.pStopLife = o.pTakeLife = kNaN;
     r.orders[i] = trade ? 1 : 0;
