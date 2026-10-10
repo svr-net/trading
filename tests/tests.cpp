@@ -149,6 +149,8 @@ TEST(csv_round_trip_and_report) {
       "2020-01-01,B,2,2,2,2,5\n2020-01-03,B,2,2.1,1.9,2.05,5\n";
   const auto m = ofm::parseMarketCsv(csv);
   CHECK(m.N() == 2 && m.T() == 3 && std::isnan(m.close(1, 1)) && m.close(2, 0) == 1.05);
+  const auto ew = ofm::equalWeightIndex(m);
+  CHECK(ew[0] == 1.0 && std::fabs(ew[1] - 1.1) < 1e-12 && std::fabs(ew[2] - 1.1 * (1.05 / 1.1)) < 1e-12);  // B has no bar on day 1
   const auto s = ofm::parseSeriesCsv("date,ticker,close\n2020-01-02,F,100\n", m.dates);
   CHECK(std::isnan(s.at("F")[0]) && s.at("F")[1] == 100 && std::isnan(s.at("F")[2]));
   const auto syn = ofm::syntheticMarket(5, 40, 800);
