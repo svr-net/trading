@@ -40,6 +40,7 @@ struct Inputs {
   Panel score;                            // NaN: not eligible
   std::vector<std::vector<std::size_t>> order;  // eligible stocks by score, best first
   bool returnUnits = false;               // the score is an expected daily return
+  bool oneDay = false;                    // levels reset each day from the open, one day's volatility
   std::vector<double> life;               // per day (days)
   Panel width;                            // sigma sqrt(life) at each close
   std::size_t s = 0, K = 10;
@@ -118,8 +119,8 @@ Sim simulate(const Inputs& in, const std::vector<double>& kStop, const std::vect
       if (!(o > 0 && c > 0)) continue;
       h[i] *= o / c;
       if (order[i] < 0) traded += h[i], exitTrade(i, d, h[i], Exit::Rotate);
-      else if (o <= entryPx[i] * std::exp(-a * w[i])) traded += h[i], exitTrade(i, d, h[i], Exit::Stop);
-      else if (o >= entryPx[i] * std::exp(b * w[i])) traded += h[i], exitTrade(i, d, h[i], Exit::Take);
+      else if (!in.oneDay && o <= entryPx[i] * std::exp(-a * w[i])) traded += h[i], exitTrade(i, d, h[i], Exit::Stop);
+      else if (!in.oneDay && o >= entryPx[i] * std::exp(b * w[i])) traded += h[i], exitTrade(i, d, h[i], Exit::Take);
     }
     // Purchases: the cash split equally.
     std::vector<std::size_t> buys;
@@ -131,6 +132,10 @@ Sim simulate(const Inputs& in, const std::vector<double>& kStop, const std::vect
         h[i] = v, entryValue[i] = v * (1 + in.buy), entryPx[i] = m.open(d, i), entryDay[i] = d, w[i] = in.width(t, i), traded += v;
       cash = 0;
     }
+    // One-day holding: every position's levels are set afresh from today's open.
+    if (in.oneDay)
+      for (std::size_t i = 0; i < N; ++i)
+        if (h[i] > 0 && m.open(d, i) > 0 && std::isfinite(in.width(t, i))) entryPx[i] = m.open(d, i), w[i] = in.width(t, i) / std::sqrt(in.life[t]);
     // During the day: stop first, then take-profit; then to the close.
     for (std::size_t i = 0; i < N; ++i) {
       if (!(h[i] > 0)) continue;
@@ -245,21 +250,24 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
 
   std::vector<double> gridK = {0.25, 0.5, 1, 2, 4, kInf};
   const std::size_t G = gridK.size();
-  for (int which = 0; which < 2; ++which) {
+  // 0: today's 10 best by expected return; 1: the same ranking, swapping only when the gain over
+  // the forecast's life beats a round trip; 2: the 10 largest.
+  for (int which = 0; which < 3; ++which) {
     Inputs in = base;
-    in.returnUnits = which == 0;
+    in.returnUnits = which == 1;
+    in.oneDay = which == 0;
     in.score = Panel(T, N);
     in.order.assign(T, {});
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t i = 0; i < N; ++i)
-        if (std::isfinite(f.E(t, i)) && m.close(t, i) > 0) in.score(t, i) = which == 0 ? f.E(t, i) : tv(t, i);
+        if (std::isfinite(f.E(t, i)) && m.close(t, i) > 0) in.score(t, i) = which < 2 ? f.E(t, i) : tv(t, i);
       auto& o = in.order[t];
       for (std::size_t i = 0; i < N; ++i)
         if (std::isfinite(in.score(t, i))) o.push_back(i);
       std::stable_sort(o.begin(), o.end(), [&](std::size_t p, std::size_t q) { return in.score(t, p) > in.score(t, q); });
     }
     TopKResult r;
-    r.name = which == 0 ? "top 10 by expected return" : "top 10 largest (traded value)";
+    r.name = which == 0 ? "top 10 by expected return" : which == 1 ? "top 10 by expected return, cost-aware swaps" : "top 10 largest (traded value)";
     r.K = K, r.start = bt.start, r.gridK = gridK;
     // Shadow portfolios for every fixed pair; the growth of each so far picks the live pair.
     std::vector<std::vector<double>> shadow(G * G);
@@ -281,6 +289,20 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     r.kStop.push_back(kS[D]), r.kTake.push_back(kT[D]);
     r.trades = std::move(live.trades), r.positions = std::move(live.positions), r.orders = std::move(live.orders);
     r.noStops = shadow[G * G - 1];
+    r.oneDay = in.oneDay;
+    // Before costs: each day's 10 best, bought at the next open and sold at the open after,
+    // against all the stocks ranked that day (equal weights).
+    for (std::size_t t = in.s; t + 2 < T; ++t) {
+      double st = 0, nt = 0, sm = 0, nm = 0;
+      for (std::size_t q = 0; q < in.order[t].size(); ++q) {
+        const std::size_t i = in.order[t][q];
+        const double o1 = m.open(t + 1, i), o2 = m.open(t + 2, i);
+        if (!(o1 > 0 && o2 > 0)) continue;
+        sm += o2 / o1 - 1, nm += 1;
+        if (nt < static_cast<double>(K)) st += o2 / o1 - 1, nt += 1;
+      }
+      if (nt > 0 && nm > 0) r.grossTop.push_back(st / nt), r.grossAll.push_back(sm / nm);
+    }
     // The plan for the next day.
     const std::size_t L = T - 1;
     r.life = in.life[L];
@@ -299,6 +321,8 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     auto add = [&](std::size_t i, int action, double stop, double take) {
       TopKOrder o;
       o.asset = i, o.action = action, o.open = 0, o.advisoryStop = advA, o.advisoryTake = advB;
+      const auto& ord = in.order[L];
+      o.rank = static_cast<std::size_t>(std::find(ord.begin(), ord.end(), i) - ord.begin()) + 1;
       const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
       o.sigma = std::isfinite(in.width(L, i)) ? in.width(L, i) / std::sqrt(r.life) : kNaN;
       if (action < 0) {
@@ -314,13 +338,13 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     for (const auto& p : r.positions)
       if (r.orders[p.asset] >= 0) {
         // The rule's levels stay where they were set at entry; advisory ones are set from the last close.
-        const double wNow = in.width(L, p.asset);
-        add(p.asset, 0, advA ? std::exp(-a * wNow) - 1 : p.entryRel * std::exp(-a * p.width) - 1,
-            advB ? std::exp(b * wNow) - 1 : p.entryRel * std::exp(b * p.width) - 1);
+        const double wNow = in.width(L, p.asset) / (in.oneDay ? std::sqrt(r.life) : 1.0);
+        add(p.asset, 0, advA || in.oneDay ? std::exp(-a * wNow) - 1 : p.entryRel * std::exp(-a * p.width) - 1,
+            advB || in.oneDay ? std::exp(b * wNow) - 1 : p.entryRel * std::exp(b * p.width) - 1);
       }
     for (std::size_t i = 0; i < N; ++i)
       if (r.orders[i] > 0) {
-        const double w = in.width(L, i);
+        const double w = in.width(L, i) / (in.oneDay ? std::sqrt(r.life) : 1.0);
         add(i, 1, std::isfinite(a) ? std::exp(-a * w) - 1 : kNaN, std::isfinite(b) ? std::exp(b * w) - 1 : kNaN);
       }
     for (const auto& p : r.positions)
@@ -452,13 +476,24 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"since\":" << str(m.dates[p.entryDay]) << ",\"ret\":" << num(p.ret)
         << ",\"stop\":" << num(p.stopDist) << ",\"take\":" << num(p.takeDist) << ",\"sell\":" << (r.orders[p.asset] < 0 ? 1 : 0) << "}";
     }
-    o << "],\"life\":" << num(r.life) << ",\"plan\":[";
+    {
+      const std::size_t g = r.grossTop.size();
+      double a1 = 0, a2 = 0, e = 0, e2 = 0, hit = 0;
+      for (std::size_t k = 0; k < g; ++k) {
+        const double x = r.grossTop[k] - r.grossAll[k];
+        a1 += r.grossTop[k], a2 += r.grossAll[k], e += x, e2 += x * x, hit += x > 0;
+      }
+      const double gn = std::max<double>(1, static_cast<double>(g)), me = e / gn, ve = std::max(0.0, (e2 - gn * me * me) / std::max(1.0, gn - 1));
+      o << "],\"oneDay\":" << (r.oneDay ? "true" : "false") << ",\"gross\":{\"days\":" << g << ",\"top\":" << num(a1 / gn) << ",\"all\":" << num(a2 / gn)
+        << ",\"excess\":" << num(me) << ",\"t\":" << num(ve > 0 ? me / std::sqrt(ve / gn) : 0.0) << ",\"hitRate\":" << num(hit / gn) << "}";
+    }
+    o << ",\"life\":" << num(r.life) << ",\"plan\":[";
     for (std::size_t k = 0; k < r.plan.size(); ++k) {
       const auto& p = r.plan[k];
       o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"action\":" << p.action << ",\"open\":" << num(p.open)
         << ",\"stop\":" << num(p.stop) << ",\"take\":" << num(p.take) << ",\"close\":" << num(p.close) << ",\"sigma\":" << num(p.sigma)
         << ",\"pStopDay\":" << num(p.pStopDay) << ",\"pTakeDay\":" << num(p.pTakeDay) << ",\"pStopLife\":" << num(p.pStopLife)
-        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
+        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"rank\":" << p.rank << ",\"expectedDaily\":" << num(p.close) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
         << ",\"advisoryTake\":" << (p.advisoryTake ? "true" : "false") << "}";
     }
     o << "],\"buys\":[";
@@ -491,6 +526,14 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
         o << b;
       }
     }
+    if (!r.grossTop.empty()) {
+      double a1 = 0, a2 = 0, hit = 0;
+      for (std::size_t k = 0; k < r.grossTop.size(); ++k) a1 += r.grossTop[k], a2 += r.grossAll[k], hit += r.grossTop[k] > r.grossAll[k];
+      const double gn = static_cast<double>(r.grossTop.size());
+      std::snprintf(b, sizeof b, "before costs, open to open, %.0f days: the day's 10 best %+.2f bp a day, all ranked %+.2f bp, excess %+.2f bp, beat them on %.1f%% of days\n",
+                    gn, 1e4 * a1 / gn, 1e4 * a2 / gn, 1e4 * (a1 - a2) / gn, 100 * hit / gn);
+      o << b;
+    }
     o << "exits:\n";
     for (Exit e : {Exit::Stop, Exit::Take, Exit::Rotate, Exit::Open}) {
       const ReasonStats s = reasonStats(r, e);
@@ -498,8 +541,9 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
                     100 * s.mean, s.days);
       o << b;
     }
-    std::snprintf(b, sizeof b, "stop now %s, take-profit now %s (of the volatility over the forecast's life)\n",
-                  kName(r.kStop.empty() ? kInf : r.kStop.back()).c_str(), kName(r.kTake.empty() ? kInf : r.kTake.back()).c_str());
+    std::snprintf(b, sizeof b, "stop now %s, take-profit now %s (of the volatility over %s)\n",
+                  kName(r.kStop.empty() ? kInf : r.kStop.back()).c_str(), kName(r.kTake.empty() ? kInf : r.kTake.back()).c_str(),
+                  r.oneDay ? "one day" : "the forecast's life");
     o << b << "hindsight Sharpe of each fixed pair (rows stop, columns take-profit):\n        ";
     const std::size_t G = r.gridK.size();
     for (double k : r.gridK) std::snprintf(b, sizeof b, "%7s", kName(k).c_str()), o << b;

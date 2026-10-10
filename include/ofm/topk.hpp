@@ -54,6 +54,7 @@ struct TopKPosition {
 struct TopKOrder {
   std::size_t asset = 0;
   int action = 0;  ///< +1 buy at the open, 0 hold, -1 sell at the open
+  std::size_t rank = 0;  ///< rank by the portfolio's score at the last close (1 best; past the end: not ranked)
   bool advisoryStop = false, advisoryTake = false;  ///< the rule has none: best finite level so far
   double open = 0, stop = 0, take = 0, close = 0, sigma = 0;
   double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;
@@ -73,6 +74,8 @@ struct TopKResult {
   std::vector<int> orders;        ///< at the last close: +1 buy, -1 sell at the next open
   std::vector<TopKOrder> plan;    ///< the next day: the 10 held after the open, then the sales
   double life = 1;                ///< the forecast's life at the last close (days)
+  bool oneDay = false;            ///< positions held one day: levels reset from each open, one day's volatility
+  std::vector<double> grossTop, grossAll;  ///< before costs, open to open: the day's 10 best and all ranked stocks
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).
