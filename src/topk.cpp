@@ -367,19 +367,97 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     else if (x.h >= take) px = take, why = Exit::Take;
     return (px / x.o) * (1 - sell) / (1 + buy) - 1;
   };
-  // Each stock learns its own levels from its own days (all of them, from the first bar, each
-  // bought at the open as these trades are), never from a day after the decision.
-  std::vector<Learner> learners(N);
+  // The state of each stock at each close, from three indicators: the parabolic SAR's trend (price
+  // above or below it), the RSI (above or below 50, its neutral point) and the ADX (trend strength,
+  // above or below its average so far over all stocks). Their lookback is the forecast's life,
+  // rounded up to the model's next horizon (the RSI's and ADX's Wilder smoothing 1/h; the SAR's
+  // acceleration rising by 1/h with each new extreme, up to 1). Eight states: the trades of each
+  // state teach that state its own stop-loss and take-profit (how the levels respond to the trend,
+  // its momentum and its strength).
+  const std::vector<std::uint32_t>& H = f.horizons;
+  auto lookback = [&](std::size_t t) {
+    for (auto h : H)
+      if (h >= in.life[t]) return static_cast<double>(h);
+    return H.empty() ? 1.0 : static_cast<double>(H.back());
+  };
+  std::vector<int> state(T * N, -1);
+  {
+    struct Ind { double g = kNaN, l = kNaN, pdm = kNaN, ndm = kNaN, tr = kNaN, adx = kNaN, sar = kNaN, ep = kNaN, af = 0; bool up = true; };
+    std::vector<Ind> st(N);
+    double adxSum = 0, adxN = 0;
+    for (std::size_t t = 1; t < T; ++t) {
+      const double hz = lookback(t), al = 1 / hz;
+      for (std::size_t i = 0; i < N; ++i) {
+        const double h = m.high(t, i), l = m.low(t, i), c = m.close(t, i), ph = m.high(t - 1, i), pl = m.low(t - 1, i), pc = m.close(t - 1, i);
+        if (!(h > 0 && l > 0 && c > 0 && ph > 0 && pl > 0 && pc > 0)) continue;
+        Ind& x = st[i];
+        auto ema = [al](double& v, double z) { v = std::isfinite(v) ? v + al * (z - v) : z; };
+        // RSI
+        ema(x.g, std::max(0.0, c - pc)), ema(x.l, std::max(0.0, pc - c));
+        // ADX
+        const double up = h - ph, dn = pl - l;
+        ema(x.pdm, up > dn && up > 0 ? up : 0.0), ema(x.ndm, dn > up && dn > 0 ? dn : 0.0);
+        ema(x.tr, std::max({h - l, std::fabs(h - pc), std::fabs(l - pc)}));
+        if (x.tr > 0) {
+          const double pdi = x.pdm / x.tr, ndi = x.ndm / x.tr;
+          if (pdi + ndi > 0) ema(x.adx, 100 * std::fabs(pdi - ndi) / (pdi + ndi));
+        }
+        // Parabolic SAR
+        if (!std::isfinite(x.sar)) {
+          x.up = c >= pc, x.sar = x.up ? pl : ph, x.ep = x.up ? h : l, x.af = al;
+        } else if (x.up) {
+          x.sar = std::min(x.sar + x.af * (x.ep - x.sar), pl);
+          if (l < x.sar) x.up = false, x.sar = x.ep, x.ep = l, x.af = al;
+          else if (h > x.ep) x.ep = h, x.af = std::min(1.0, x.af + al);
+        } else {
+          x.sar = std::max(x.sar + x.af * (x.ep - x.sar), ph);
+          if (h > x.sar) x.up = true, x.sar = x.ep, x.ep = h, x.af = al;
+          else if (l < x.ep) x.ep = l, x.af = std::min(1.0, x.af + al);
+        }
+        if (std::isfinite(x.adx)) adxSum += x.adx, adxN += 1;
+      }
+      for (std::size_t i = 0; i < N; ++i) {
+        const Ind& x = st[i];
+        if (!std::isfinite(x.adx) || !std::isfinite(x.g) || !(x.g + x.l > 0) || adxN < 1) continue;
+        const bool rsiUp = x.g / (x.g + x.l) > 0.5, strong = x.adx > adxSum / adxN;
+        state[t * N + i] = (x.up ? 4 : 0) + (rsiUp ? 2 : 0) + (strong ? 1 : 0);
+      }
+    }
+  }
+  // Three ways to learn the levels, run side by side: each stock from all its own days (0), each
+  // indicator state from the earlier trades in it (1), all the earlier trades together (2). Each
+  // proposes its levels for every trade; the trades follow the way whose own record so far has
+  // the best return per unit of risk (each way's record is what its proposals would have earned).
   const double kc = std::log((1 - sell) / (1 + buy));
-  for (auto& l : learners) l.kc = kc, l.kcs = kc + std::log(1 - sell);
-  auto feed = [&](std::size_t d) {  // day d's bars join what each stock learns from
+  std::vector<Learner> perStock(N), perState(8), pooled(1);
+  for (auto* v : {&perStock, &perState, &pooled})
+    for (auto& l : *v) l.kc = kc, l.kcs = kc + std::log(1 - sell);
+  static const Learner none;
+  auto learnerOf = [&](int way, std::size_t t, std::size_t i) -> const Learner& {
+    if (way == 0) return perStock[i];
+    if (way == 2) return pooled[0];
+    const int c = state[t * N + i];
+    return c < 0 ? none : perState[static_cast<std::size_t>(c)];
+  };
+  auto feedStocks = [&](std::size_t d) {
     for (std::size_t i = 0; i < N; ++i) {
       const double o = m.open(d, i), h = m.high(d, i), l = m.low(d, i), c = m.close(d, i), sg = iv(d - 1, i);
       if (!(o > 0 && h > 0 && l > 0 && c > 0) || !std::isfinite(sg) || l > std::min(o, c) || h < std::max(o, c)) continue;
-      learners[i].add(-std::log(l / o) / sg, std::log(h / o) / sg, std::log(c / o), sg);
+      perStock[i].add(-std::log(l / o) / sg, std::log(h / o) / sg, std::log(c / o), sg);
     }
   };
-  for (std::size_t d = 1; d <= s; ++d) feed(d);
+  for (std::size_t d = 1; d <= s; ++d) feedStocks(d);
+  const char* wayName[3] = {"each stock", "each indicator state", "all trades together"};
+  double wayS1[3] = {0, 0, 0}, wayS2[3] = {0, 0, 0}, wayN[3] = {0, 0, 0};
+  auto bestWay = [&]() {
+    int best = 2;
+    double bestR = -kInf;
+    for (int w = 0; w < 3; ++w) {
+      const double rr = Learner::ratio(wayS1[w], wayS2[w], wayN[w]);
+      if (wayN[w] >= 2 && rr > bestR) bestR = rr, best = w;
+    }
+    return best;
+  };
 
   // The live portfolio, its trades and the evaluation against the bars.
   const std::size_t D = days.size();
@@ -387,11 +465,20 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   double sxy = 0, sxx = 0, syy = 0, sx = 0, sy = 0;
   for (std::size_t j = 0; j < D; ++j) {
     const std::size_t d = s + 1 + j;
-    double sum = 0, sum0 = 0, top = 0, aSum = 0, bSum = 0, nTraded = 0;
+    const int way = bestWay();
+    r.ways.push_back(way);
+    double sum = 0, sum0 = 0, top = 0, aSum = 0, bSum = 0, nTraded = 0, waySum[3] = {0, 0, 0};
+    for (const auto& x : days[j])
+      for (int w = 0; w < 3; ++w) {
+        double a, b, score;
+        Exit why;
+        if (learnerOf(w, d - 1, x.i).learn(a, b, score)) waySum[w] += outcome(x, a, b, why);
+      }
     for (const auto& x : days[j]) {
       double a, b, score;
-      const bool trade = learners[x.i].learn(a, b, score);
-      const auto [pS, pT] = learners[x.i].probs(a, b);
+      const Learner& ln = learnerOf(way, d - 1, x.i);
+      const bool trade = ln.learn(a, b, score);
+      const auto [pS, pT] = ln.probs(a, b);
       Exit why, why0;
       const double ret = outcome(x, a, b, why);
       sum += trade ? ret : 0.0, sum0 += outcome(x, kInf, kInf, why0);
@@ -416,8 +503,9 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       r.lastDate = m.dates[d];
       for (const auto& x : days[j]) {
         double a, b, score;
-        const bool trade = learners[x.i].learn(a, b, score);
-        const auto [pS, pT] = learners[x.i].probs(a, b);
+        const Learner& ln = learnerOf(way, d - 1, x.i);
+        const bool trade = ln.learn(a, b, score);
+        const auto [pS, pT] = ln.probs(a, b);
         Exit why;
         const double ret = trade ? outcome(x, a, b, why) : 0.0;
         if (!trade) why = Exit::Open;  // not traded
@@ -425,8 +513,19 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
                              std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS, pT, x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
       }
     }
-    // Then the day's bars join what is learnt from.
-    feed(d);
+    // Then each way's day joins its record, and the day's bars and trades join what is learnt from.
+    if (!days[j].empty())
+      for (int w = 0; w < 3; ++w) {
+        const double v = waySum[w] / static_cast<double>(days[j].size());
+        wayS1[w] += v, wayS2[w] += v * v, wayN[w] += 1;
+      }
+    feedStocks(d);
+    for (const auto& x : days[j]) {
+      const double lo = -std::log(x.l / x.o) / x.sig, hi = std::log(x.h / x.o) / x.sig, cl = std::log(x.c / x.o);
+      const int c = state[(d - 1) * N + x.i];
+      if (c >= 0) perState[static_cast<std::size_t>(c)].add(lo, hi, cl, x.sig);
+      pooled[0].add(lo, hi, cl, x.sig);
+    }
   }
   if (ev.trades) {
     const double n = static_cast<double>(ev.trades);
@@ -438,6 +537,8 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   // The plan for the next day: the 10 best at the last close, each bought at the open and sold by the close.
   const std::size_t L = T - 1;
   r.tradeNext = false, r.learntRatio = kNaN;
+  r.wayNow = wayName[bestWay()];
+  for (int w = 0; w < 3; ++w) r.wayRatios.push_back({wayName[w], Learner::ratio(wayS1[w], wayS2[w], wayN[w]) * std::sqrt(252.0)});
   r.kStop.push_back(kNaN), r.kTake.push_back(kNaN);
   r.life = in.life[L];
   r.orders.assign(N, 0);
@@ -446,8 +547,10 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     if (!std::isfinite(iv(L, i))) continue;
     TopKOrder o;
     double a, b, score;
-    const bool trade = learners[i].learn(a, b, score);
-    const auto [pS, pT] = learners[i].probs(a, b);
+    const Learner& ln = learnerOf(bestWay(), L, i);
+    const bool trade = ln.learn(a, b, score);
+    const auto [pS, pT] = ln.probs(a, b);
+    o.state = state[L * N + i];
     r.tradeNext = r.tradeNext || trade;
     o.asset = i, o.action = trade ? 1 : 0, o.rank = q + 1, o.open = 0, o.sigma = iv(L, i), o.ratio = score;
     const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
@@ -761,6 +864,10 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       const auto& e = r.eval;
       std::size_t tradedDays = 0;
       for (bool t : r.traded) tradedDays += t;
+      o << ",\"wayNow\":" << str(r.wayNow) << ",\"wayRatios\":[";
+      for (std::size_t k = 0; k < r.wayRatios.size(); ++k)
+        o << (k ? "," : "") << "{\"name\":" << str(r.wayRatios[k].first) << ",\"sharpe\":" << num(r.wayRatios[k].second) << "}";
+      o << "]";
       o << ",\"dayTrades\":true,\"tradeNext\":" << (r.tradeNext ? "true" : "false") << ",\"tradedDays\":" << tradedDays << ",\"eval\":{\"trades\":" << e.trades << ",\"days\":" << e.days << ",\"predStop\":" << num(e.predStop)
         << ",\"realStop\":" << num(e.realStop) << ",\"predTake\":" << num(e.predTake) << ",\"realTake\":" << num(e.realTake)
         << ",\"expected\":" << num(e.expected) << ",\"realised\":" << num(e.realised) << ",\"ic\":" << num(e.ic) << ",\"signHit\":"
@@ -781,7 +888,7 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"action\":" << p.action << ",\"open\":" << num(p.open)
         << ",\"stop\":" << num(p.stop) << ",\"take\":" << num(p.take) << ",\"close\":" << num(p.close) << ",\"sigma\":" << num(p.sigma)
         << ",\"pStopDay\":" << num(p.pStopDay) << ",\"pTakeDay\":" << num(p.pTakeDay) << ",\"pStopLife\":" << num(p.pStopLife)
-        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"ratio\":" << num(p.ratio) << ",\"rank\":" << p.rank << ",\"expectedDaily\":" << num(p.close) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
+        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"ratio\":" << num(p.ratio) << ",\"state\":" << p.state << ",\"rank\":" << p.rank << ",\"expectedDaily\":" << num(p.close) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
         << ",\"advisoryTake\":" << (p.advisoryTake ? "true" : "false") << "}";
     }
     o << "],\"buys\":[";
@@ -847,7 +954,9 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
       std::size_t nTrade = 0;
       for (const auto& p : r.plan) nTrade += p.action > 0;
       std::snprintf(b, sizeof b, "next open: %zu of the %zu traded (their own learnt levels beat cash after costs); the rest in cash\n", nTrade, r.plan.size());
-      o << b;
+      o << b << "levels learnt from: " << r.wayNow << " (each way's record, annualised return per unit of risk:";
+      for (const auto& [name, sr] : r.wayRatios) std::snprintf(b, sizeof b, " %s %.2f;", name.c_str(), sr), o << b;
+      o << ")\n";
     }
     o << b;
     if (r.gridK.empty()) continue;
