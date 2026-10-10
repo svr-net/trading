@@ -9,6 +9,7 @@ on:
     inputs:
       universe: { description: 'Most traded shares to download', default: '120' }
       years: { description: 'Years of history', default: '6' }
+      probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
 
 permissions:
   contents: read
@@ -29,17 +30,25 @@ jobs:
         run: |
           pip install -r requirements.txt
           python model/test_orthofactor.py
+      - name: Exchanges and futures markets available (metadata only)
+        if: ${{ inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/exchanges.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Restore the EODData cache
+        if: ${{ !inputs.probe }}
         uses: actions/cache@v4
         with:
           path: data/eoddata
           key: eoddata-${{ github.run_id }}
           restore-keys: eoddata-
       - name: Download LSE bars
+        if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years "${{ inputs.years || '6' }}" --currency GBP --out data/LSE.csv
       - name: Summary (no prices)
+        if: ${{ !inputs.probe }}
         run: |
           {
             echo '```'
@@ -50,10 +59,12 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Backtest the model (results only)
+        if: ${{ !inputs.probe }}
         run: |
           python model/run.py data/LSE.csv | tee model-report.txt
           { echo '```'; cat model-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Daily backtest with stop-loss and take-profit (results only)
+        if: ${{ !inputs.probe }}
         run: |
           python model/run_daily.py data/LSE.csv 2>/dev/null | tee daily-report.txt
           { echo '```'; cat daily-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
