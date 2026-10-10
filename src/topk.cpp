@@ -222,6 +222,19 @@ struct Learner {
     };
     put(byLo, &Obs::lo), put(byHi, &Obs::hi);
   }
+  // The largest value of a sorted field that is not an outlier by Chauvenet's criterion (robust
+  // centre and scale from the quartiles): moves beyond it are taken for data errors.
+  double plausibleMax(const std::vector<std::size_t>& sorted, double Obs::*key) const {
+    const std::size_t n = sorted.size();
+    if (n < 4) return n ? obs[sorted.back()].*key : kInf;
+    const double q1 = obs[sorted[n / 4]].*key, q2 = obs[sorted[n / 2]].*key, q3 = obs[sorted[3 * n / 4]].*key;
+    const double sc = (q3 - q1) / 1.349;
+    for (std::size_t k = n; k-- > 0;) {
+      const double v = obs[sorted[k]].*key;
+      if (!(sc > 0) || static_cast<double>(n) * std::erfc((v - q2) / sc / std::sqrt(2.0)) >= 0.5) return v;
+    }
+    return obs[sorted.back()].*key;
+  }
   static double ratio(double s1, double s2, double n) {
     if (n < 2) return -kInf;
     const double mu = s1 / n, vr = std::max(0.0, s2 / n - mu * mu);
@@ -234,12 +247,13 @@ struct Learner {
     for (const auto& x : obs) t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
     // Every trade has a stop: the best among the lows at least the round trip below the open.
     const double floorA = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
-    double bestA = byLo.empty() ? kInf : obs[byLo.back()].lo;
+    const double capA = plausibleMax(byLo, &Obs::lo);
+    double bestA = byLo.empty() ? kInf : capA;
     score = -kInf;
     for (std::size_t q = 0; q < byLo.size(); ++q) {
       const Obs& x = obs[byLo[q]];
       const double a = x.lo;  // this low and all deeper ones stop at -a sig
-      if (!(a > 0) || a < floorA) {  // nearer the open than the round trip: not a stop that can pay
+      if (!(a > 0) || a < floorA || a > capA) {  // nearer the open than the round trip, or beyond any plausible fall
         const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
@@ -266,13 +280,14 @@ struct Learner {
     }
     // Every trade has a take-profit: the best among the highs at least the round trip above the open.
     const double floorB = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
-    double bestB = byHi.empty() ? kInf : obs[byHi.back()].hi;
+    const double capB = plausibleMax(byHi, &Obs::hi);
+    double bestB = byHi.empty() ? kInf : capB;
     score = -kInf;
     for (std::size_t q = 0; q < byHi.size(); ++q) {
       const Obs& x = obs[byHi[q]];
       if (x.lo >= a) continue;
       const double b = x.hi;  // this high and all higher ones take profit at b sig
-      if (!(b > 0) || b < floorB) {
+      if (!(b > 0) || b < floorB || b > capB) {
         const double v = x.c + kc;
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
@@ -287,7 +302,7 @@ struct Learner {
   }
   // Whether to trade, with the levels and their ratio.
   bool learn(double& a, double& b, double& lastScore) const {
-    a = byLo.empty() ? kInf : obs[byLo.back()].lo, b = byHi.empty() ? kInf : obs[byHi.back()].hi, lastScore = kNaN;
+    a = byLo.empty() ? kInf : plausibleMax(byLo, &Obs::lo), b = byHi.empty() ? kInf : plausibleMax(byHi, &Obs::hi), lastScore = kNaN;
     if (obs.size() < 2) return false;
     double score = -kInf;
     for (int it = 0; it < 50; ++it) {
