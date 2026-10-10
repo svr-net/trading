@@ -27,7 +27,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
-          cmake --build build --target uk_portfolio pool_ablation forecast_study overlay_study ceiling_check
+          cmake --build build --target uk_portfolio pool_ablation forecast_study
       - name: Restore the EODData cache
         uses: actions/cache@v4
         with:
@@ -53,14 +53,6 @@ jobs:
         run: |
           ./build/forecast_study 0 --csv data/LSE.csv | tee report/forecast-study.txt
           { echo '```'; cat report/forecast-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Overlay trader (gate 1) on UK data
-        run: |
-          ./build/overlay_study 0 --csv data/LSE.csv | tee report/overlay-study.txt
-          { echo '```'; cat report/overlay-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Ceiling check for an overlay on orthonormal control portfolios, UK data
-        run: |
-          ./build/ceiling_check 0 --csv data/LSE.csv | tee report/ceiling-check.txt
-          { echo '```'; cat report/ceiling-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Report (for reading from the log)
         run: |
           echo "----- BEGIN REPORT -----"

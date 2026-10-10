@@ -20,7 +20,6 @@ struct Candidate {
   std::size_t model = 0;
   StrategySpec strategy;
   std::string label;
-  std::size_t external = SIZE_MAX;  ///< index of its stored positions (addCandidate), else from a model
 };
 
 /// Out-of-sample backtests of every candidate over the common prediction range of the models.
@@ -35,10 +34,6 @@ class CandidateBook {
   /// `stampBps`: charged on purchases on top of `costBps` (UK stamp duty).
   CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
                 const Panel& nextReturns, double costBps, double stampBps = 0.0);
-
-  /// Adds a candidate traded with positions of its own (dates x assets, rows start() .. end() - 1),
-  /// such as the overlay trader's.
-  void addCandidate(const std::string& label, const Panel& positions);
 
   /// The same book with the candidate backtests taken from the candidate-backtest kernel
   /// (WebGPU or its CPU emulation): `kernelBook` is its read-back, [candidate][day][2] of
@@ -84,7 +79,6 @@ class CandidateBook {
   std::size_t start_ = 0, end_ = 0;
   double costBps_ = 0.0, stampBps_ = 0.0;
   Matrix gross_, turnover_, exposure_;  // candidates x days
-  std::vector<Panel> external_;
 
   void setUp(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies);
 };

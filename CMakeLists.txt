@@ -36,7 +36,6 @@ add_library(sat
   src/adaptive/self_adaptive.cpp
   src/adaptive/experiment.cpp
   src/adaptive/composite.cpp
-  src/adaptive/overlay.cpp
   src/afml/fracdiff.cpp
   src/afml/labeling.cpp
   src/afml/sampling.cpp
@@ -96,7 +95,6 @@ if(SAT_BUILD_TESTS)
     tests/test_gpu.cpp
     tests/test_afml.cpp
     tests/test_composite.cpp
-    tests/test_overlay.cpp
   )
   target_link_libraries(sat_tests PRIVATE sat)
   add_test(NAME sat_tests COMMAND sat_tests)
@@ -109,10 +107,6 @@ if(SAT_BUILD_EXAMPLES)
   add_executable(pool_ablation examples/pool_ablation.cpp)
   add_executable(forecast_study examples/forecast_study.cpp)
   target_link_libraries(forecast_study PRIVATE sat)
-  add_executable(ceiling_check examples/ceiling_check.cpp)
-  target_link_libraries(ceiling_check PRIVATE sat)
-  add_executable(overlay_study examples/overlay_study.cpp)
-  target_link_libraries(overlay_study PRIVATE sat)
   target_link_libraries(pool_ablation PRIVATE sat)
   target_link_libraries(uk_portfolio PRIVATE sat)
 endif()

@@ -49,32 +49,6 @@ CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const 
   }
 }
 
-void CandidateBook::addCandidate(const std::string& label, const Panel& positions) {
-  const std::size_t N = assets(), D = days(), C = candidates_.size();
-  if (positions.assets() != N || positions.dates() < end_) throw std::invalid_argument("candidate positions do not match the book");
-  Candidate cand;
-  cand.label = label;
-  cand.external = external_.size();
-  external_.push_back(positions);
-  candidates_.push_back(cand);
-  auto grow = [&](Matrix& m) {
-    Matrix bigger(C + 1, D);
-    std::copy(m.data().begin(), m.data().end(), bigger.data().begin());
-    m = std::move(bigger);
-  };
-  grow(gross_), grow(turnover_), grow(exposure_);
-  for (std::size_t d = 0; d < D; ++d) {
-    const std::size_t t = start_ + d;
-    double gross = 0, turnover = 0, exposure = 0;
-    for (std::size_t i = 0; i < N; ++i) {
-      const double w = positions(t, i), prev = d > 0 ? positions(t - 1, i) : 0.0;
-      if (w != 0.0 && std::isfinite(nextReturns_(t, i))) gross += w * nextReturns_(t, i);
-      turnover += std::fabs(w - prev), exposure += w;
-    }
-    gross_(C, d) = gross, turnover_(C, d) = turnover, exposure_(C, d) = exposure;
-  }
-}
-
 CandidateBook::CandidateBook(const std::vector<ModelPredictions>& models, const std::vector<StrategySpec>& strategies,
                              const Panel& nextReturns, double costBps, const std::vector<float>& kernelBook)
     : nextReturns_(nextReturns), costBps_(costBps) {
@@ -104,11 +78,6 @@ std::vector<double> CandidateBook::turnoverSeries(std::size_t c, std::size_t fro
 
 void CandidateBook::weights(std::size_t c, std::size_t d, double* w) const {
   const auto& cand = candidates_.at(c);
-  if (cand.external != SIZE_MAX) {
-    const double* row = external_[cand.external].row(start_ + d);
-    std::copy(row, row + assets(), w);
-    return;
-  }
   const std::size_t t = start_ + rebalanceOffset(d, cand.strategy.holding);
   const std::size_t N = assets();
   strategyWeights(cand.strategy, probs_[cand.model].row(t), ranks_[cand.model].data() + t * N, N, w);

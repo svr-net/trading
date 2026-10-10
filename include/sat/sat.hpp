@@ -27,7 +27,6 @@
 
 #include "sat/adaptive/composite.hpp"
 #include "sat/adaptive/experiment.hpp"
-#include "sat/adaptive/overlay.hpp"
 #include "sat/adaptive/self_adaptive.hpp"
 
 #include "sat/gpu/fused_backtest.hpp"

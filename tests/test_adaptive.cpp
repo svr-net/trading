@@ -96,6 +96,33 @@ TEST(selector_risk_control_goes_to_cash) {
   CHECK(a.metrics.totalReturn < 0.0);
 }
 
+TEST(book_and_selector_charge_stamp_duty_on_purchases) {
+  TwoRegimeWorld w;
+  const std::vector<StrategySpec> rules = {{StrategyKind::LongTopK, 2, 1}, {StrategyKind::LongShort, 1, 3}};
+  const CandidateBook plain(w.models, rules, w.next, 10.0), stamped(w.models, rules, w.next, 10.0, 50.0);
+  for (std::size_t c = 0; c < stamped.size(); ++c) {
+    double wt[4], prev[4] = {0, 0, 0, 0};
+    for (std::size_t d = 0; d < stamped.days(); ++d) {
+      stamped.weights(c, d, wt);
+      double buys = 0;
+      for (std::size_t i = 0; i < 4; ++i) buys += std::max(0.0, wt[i] - prev[i]), prev[i] = wt[i];
+      CHECK_NEAR(stamped.buys(c, d), buys, 1e-12);
+      CHECK_NEAR(stamped.net(c, d), plain.net(c, d) - 50e-4 * buys, 1e-12);
+    }
+  }
+  // The selector pays it on its own trades too, switches included.
+  SelectorSpec s;
+  s.lookback = 20;
+  s.adaptEvery = 5;
+  s.metric = ScoreMetric::Return;
+  const auto a = runSelector(plain, s), b = runSelector(stamped, s);
+  CHECK(a.selection == b.selection || b.metrics.totalReturn < a.metrics.totalReturn);
+  double paid = 0;
+  for (std::size_t k = 0; k < a.net.size(); ++k) paid += (a.net[k] - b.net[k]) * (a.selection[k] == b.selection[k] ? 1.0 : 0.0);
+  CHECK(paid > 0);
+  CHECK_THROWS(CandidateBook(w.models, rules, w.next, 10.0, -1.0));
+}
+
 TEST(selector_mixes_top_candidates) {
   TwoRegimeWorld w;
   const CandidateBook book(w.models, {{StrategyKind::LongTopK, 1, 1}, {StrategyKind::LongTopK, 2, 1}}, w.next, 0.0);
