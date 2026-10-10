@@ -43,9 +43,9 @@ class Session {
   val plan() const {
     val o = val::object();
     o.set("T", plan_.T), o.set("N", plan_.N), o.set("K", plan_.K), o.set("H", plan_.H);
-    o.set("stride", plan_.stride), o.set("chunks", plan_.numChunks()), o.set("chunkDays", plan_.chunkDays);
+    o.set("stride", plan_.stride), o.set("chunks", plan_.numChunks()), o.set("chunkDays", plan_.chunkDays), o.set("gramTiles", ofm::kernels::gramTiles(plan_));
     val src = val::object();
-    src.set("signal", ofm::kernels::signalSource()), src.set("rank", ofm::kernels::rankSource()), src.set("gram", ofm::kernels::gramSource()), src.set("expect", ofm::kernels::expectSource());
+    src.set("zscore", ofm::kernels::zscoreSource()), src.set("gram", ofm::kernels::gramSource()), src.set("expect", ofm::kernels::expectSource());
     o.set("sources", src);
     return o;
   }
@@ -114,7 +114,7 @@ class Session {
     o.set("T", b.T), o.set("N", b.N), o.set("K", b.K), o.set("s", b.s), o.set("chunkDays", 64);
     o.set("state", ofm::daytrade::kState), o.set("level", ofm::daytrade::kLevel), o.set("trade", ofm::daytrade::kTrade), o.set("day", ofm::daytrade::kDay);
     val src = val::object();
-    src.set("levels", ofm::daytrade::levelsSource()), src.set("trades", ofm::daytrade::tradesSource()), src.set("book", ofm::daytrade::bookSource());
+    src.set("levels", ofm::daytrade::levelsSource()), src.set("book", ofm::daytrade::bookSource());
     o.set("sources", src);
     o.set("bars", copyOut(b.bars)), o.set("expected", copyOut(b.expected)), o.set("elig", copyOut(b.elig));
     o.set("life", copyOut(b.life)), o.set("initialState", copyOut(b.state));

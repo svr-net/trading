@@ -5,14 +5,15 @@
 // same inputs, same arithmetic, same outputs) or in double precision (F = double: the reference).
 //
 // Bindings: 0 uniform header (Plan::header), 1 tables (Plan::tables).
-//  signal  (workgroup 64; grid ceil(N/64) x K x days): one stock's signal. 2: sig [day][stock][signal].
-//  rank    (workgroup 64; grid ceil(N/64) x K x days): its rank z-score among the day's eligible
-//          stocks (ties by stock index). 2: sig (read), 3: z [day][stock][signal] (read_write).
-//  gram    (workgroup 64; grid ceil(stride/64) x days): per day, the Gram matrix of the z-scores
-//          (upper triangle), each signal's projection on the next-day targets, and the counts of
-//          eligible and targeted stocks. 2: z (read), 3: gram [day][stride] (read_write).
-//  expect  (workgroup 64; grid ceil(N/64) x days): E = z . v per stock and day.
-//          2: z (read), 3: v [day][K] (read), 4: E [day][stock] (read_write).
+//  zscore  (workgroup 64; grid K x days): signal k of every stock on the day, then each stock's rank
+//          z-score among the day's eligible stocks (ties by stock index), ranked against tiles of 64
+//          stocks in workgroup memory. 2: sig [day][stock][signal] (scratch), 3: z (read_write).
+//  gram    (workgroup 64; grid gramTiles x days): per day, [Z y]'[Z y] as a tiled matrix product
+//          (8 x 8 outputs per workgroup, 32 stocks a step as vec4): the upper triangle of Z'Z, Z'y
+//          (projections on the next-day targets) and the counts of eligible and targeted stocks.
+//          2: z (read), 3: gram [day][stride] (read_write).
+//  expect  (workgroup 64; grid ceil(N/64) x days): E = z . v per stock and day, v staged in
+//          workgroup memory, four signals a step. 2: z (read), 3: v [day][K] (read), 4: E (read_write).
 
 #include <string>
 #include <vector>
@@ -21,10 +22,11 @@
 
 namespace ofm::kernels {
 
-const std::string& signalSource();
-const std::string& rankSource();
+const std::string& zscoreSource();
 const std::string& gramSource();
 const std::string& expectSource();
+/// Workgroups per day of the gram kernel.
+std::uint32_t gramTiles(const Plan& p);
 
 /// The kernels on the CPU for chunk c, in F (float: emulated GPU; double: reference). tables are
 /// Plan::tables in F.

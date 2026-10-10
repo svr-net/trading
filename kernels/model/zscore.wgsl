@@ -1,7 +1,14 @@
 // #include header.wgsl
-// One stock's signal k on day c0 + td (0 where the stock is not eligible).
-// Grid ceil(N/64) x K x days: id = (stock, signal, day of the chunk).
+// Signal k of every stock on day c0 + td and its rank z-score among the day's eligible stocks (ties:
+// by stock index; 0 where not eligible), fused: one workgroup per (signal, day), grid K x days.
+// Phase 1 writes the 64 lanes' signals; phase 2 ranks each stock against the day's stocks staged
+// tile by tile (64 at a time) in workgroup memory.
 @group(0) @binding(2) var<storage, read_write> sig : array<f32>;
+@group(0) @binding(3) var<storage, read_write> z : array<f32>;
+
+const WG : u32 = 64u;
+var<workgroup> tv : array<f32, 64>;
+var<workgroup> tok : array<u32, 64>;
 
 // Families: 0 return, 1 low volatility, 2 nearness to the high, 3 trend quality, 4 small size,
 // 5 RSI (share of up moves in the absolute moves), 6 Bollinger z-score (close against the mean and
@@ -67,13 +74,50 @@ fn signal(fam : u32, h : u32, t : u32, a : u32) -> f32 {
 }
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id : vec3<u32>) {
-  let a = id.x;
-  let k = id.y;
-  let td = id.z;
-  if (a >= P.N || k >= P.K || td >= P.cd) { return; }
-  let t = P.c0 + td;
-  var x = 0.0;
-  if (at(4u, t, a) > 0.5) { x = signal(k / P.H, horizon(k % P.H), t, a); }
-  sig[(td * P.N + a) * P.K + k] = x;
+fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index) lane : u32) {
+  let k : u32 = wid.x;
+  let td : u32 = wid.y;
+  let t : u32 = P.c0 + td;
+  let fam : u32 = k / P.H;
+  let h : u32 = horizon(k % P.H);
+  for (var a = lane; a < P.N; a = a + WG) {
+    var x = 0.0;
+    if (at(4u, t, a) > 0.5) { x = signal(fam, h, t, a); }
+    sig[(td * P.N + a) * P.K + k] = x;
+  }
+  storageBarrier();
+  workgroupBarrier();
+  let blocks : u32 = (P.N + WG - 1u) / WG;
+  for (var ib = 0u; ib < blocks; ib = ib + 1u) {
+    let a : u32 = ib * WG + lane;
+    var x : f32 = 0.0;
+    if (a < P.N) { x = sig[(td * P.N + a) * P.K + k]; }
+    var n : u32 = 0u;
+    var r : u32 = 0u;
+    for (var jb = 0u; jb < blocks; jb = jb + 1u) {
+      let b : u32 = jb * WG + lane;
+      var y : f32 = 0.0;
+      var e : u32 = 0u;
+      if (b < P.N && at(4u, t, b) > 0.5) { y = sig[(td * P.N + b) * P.K + k]; e = 1u; }
+      workgroupBarrier();
+      tv[lane] = y;
+      tok[lane] = e;
+      workgroupBarrier();
+      for (var j = 0u; j < WG; j = j + 1u) {
+        if (tok[j] == 1u) {
+          n = n + 1u;
+          let bj = jb * WG + j;
+          if (tv[j] < x || (tv[j] == x && bj < a)) { r = r + 1u; }
+        }
+      }
+    }
+    if (a < P.N) {
+      var out = 0.0;
+      if (at(4u, t, a) > 0.5) {
+        let fn1 = f32(n);
+        out = (f32(r) - 0.5 * (fn1 - 1.0)) / sqrt(max((fn1 * fn1 - 1.0) / 12.0, 1.0e-12));
+      }
+      z[(td * P.N + a) * P.K + k] = out;
+    }
+  }
 }

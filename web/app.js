@@ -68,15 +68,16 @@ async function run() {
       await cpu(engine, '');
     } else {
       try {
+        const mode = engine === 'gpu-cpu' ? 'software' : 'auto';
         status('Running the kernels on WebGPU…');
-        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`));
+        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`), mode);
         json = session.finishGpu(...costs, g.ms, g.adapter);
         status('Running the day-trade kernels on WebGPU…');
-        const dt = await runDayTrades(session, (m) => status(m));
+        const dt = await runDayTrades(session, (m) => status(m), mode);
         if (dt) json = dt.json;
         note = '';
       } catch (e) {
-        if (engine === 'gpu') throw e;
+        if (engine === 'gpu' || engine === 'gpu-cpu') throw e;
         session.delete();
         const fresh = new ofm.Session();
         if ($('src-files').checked) fresh.loadCsv(await readFile($('stocks-file')), await readFile($('series-file')));

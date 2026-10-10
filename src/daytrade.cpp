@@ -24,11 +24,8 @@ gen::Header<R> header(const Buffers<R>& b, std::uint32_t t0, std::uint32_t t1) {
 
 template <class R>
 void bind(gen::Levels<R>& k, Buffers<R>& b) {
-  k.bars = b.bars.data(), k.life = b.life.data(), k.st = b.state.data(), k.obs = b.obs.data(), k.idx = b.idx.data(), k.lev = b.levels.data();
-}
-template <class R>
-void bind(gen::Trades<R>& k, Buffers<R>& b) {
-  k.bars = b.bars.data(), k.life = b.life.data(), k.lev = b.levels.data(), k.tra = b.trades.data();
+  k.bars = b.bars.data(), k.life = b.life.data(), k.st = b.state.data(), k.obs = b.obs.data(), k.idx = b.idx.data(), k.lev = b.levels.data(),
+  k.tra = b.trades.data();
 }
 template <class R>
 void bind(gen::Book<R>& k, Buffers<R>& b) {
@@ -39,43 +36,21 @@ void bind(gen::Book<R>& k, Buffers<R>& b) {
 }  // namespace
 
 template <class R>
-void levels(Buffers<R>& b, std::uint32_t i, std::uint32_t t0, std::uint32_t t1) {
-  gen::Levels<R> k;
-  k.P = header(b, t0, t1), bind(k, b);
-  k.main({i, 0, 0});
-}
-
-template <class R>
-void trades(Buffers<R>& b, std::uint32_t t, std::uint32_t i) {
-  gen::Trades<R> k;
-  k.P = header(b, 0, 0), bind(k, b);
-  k.main({i, t - b.s, 0});
-}
-
-template <class R>
-void book(Buffers<R>& b, std::uint32_t t) {
-  gen::Book<R> k;
-  k.P = header(b, 0, 0), bind(k, b);
-  k.main({t - b.s, 0, 0});
-}
-
-template <class R>
 void run(Buffers<R>& b, std::uint32_t chunk) {
-  for (std::uint32_t t0 = 0; t0 < b.T; t0 += chunk)
-    detail::invokeAll(b.N, [&](std::uint32_t i) { levels(b, i, t0, std::min(b.T, t0 + chunk)); });
-  if (b.s + 1 < b.T)
-    detail::invokeAll(b.T - 1 - b.s, [&](std::uint32_t d) {
-      for (std::uint32_t i = 0; i < b.N; ++i) trades(b, b.s + d, i);
-    });
-  if (b.s < b.T) detail::invokeAll(b.T - b.s, [&](std::uint32_t d) { book(b, b.s + d); });
+  gen::Levels<R> lv;
+  bind(lv, b);
+  for (std::uint32_t t0 = 0; t0 < b.T; t0 += chunk) {
+    lv.P = header(b, t0, std::min(b.T, t0 + chunk));
+    detail::dispatch(lv, b.N);
+  }
+  if (b.s >= b.T) return;
+  gen::Book<R> bk;
+  bk.P = header(b, 0, 0), bind(bk, b);
+  detail::dispatch(bk, detail::groups(b.T - b.s, bk.kWorkgroup[0]));
 }
 
 const std::string& levelsSource() {
   static const std::string s = gen::Levels<float>::wgsl();
-  return s;
-}
-const std::string& tradesSource() {
-  static const std::string s = gen::Trades<float>::wgsl();
   return s;
 }
 const std::string& bookSource() {
@@ -83,12 +58,6 @@ const std::string& bookSource() {
   return s;
 }
 
-template void levels<double>(Buffers<double>&, std::uint32_t, std::uint32_t, std::uint32_t);
-template void levels<float>(Buffers<float>&, std::uint32_t, std::uint32_t, std::uint32_t);
-template void trades<double>(Buffers<double>&, std::uint32_t, std::uint32_t);
-template void trades<float>(Buffers<float>&, std::uint32_t, std::uint32_t);
-template void book<double>(Buffers<double>&, std::uint32_t);
-template void book<float>(Buffers<float>&, std::uint32_t);
 template void run<double>(Buffers<double>&, std::uint32_t);
 template void run<float>(Buffers<float>&, std::uint32_t);
 

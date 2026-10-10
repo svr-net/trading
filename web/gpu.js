@@ -1,25 +1,43 @@
 // WebGPU host for the model's fused kernels. No numerics here: the C++ library (WebAssembly)
 // supplies the WGSL sources, the packed tables and each chunk's header; this file uploads them,
-// dispatches signal -> rank -> gram, hands the Gram read-back to the library (absorb), uploads the vector
+// dispatches zscore -> gram, hands the Gram read-back to the library (absorb), uploads the vector
 // it returns, dispatches expect, and hands that read-back back (takeExpected).
 
-const ADAPTERS = [{ powerPreference: 'high-performance' }, {}, { featureLevel: 'compatibility' }];
+// Adapters in order of preference: the graphics hardware, then the browser's software adapter (a
+// GPU simulated on the CPU, e.g. SwiftShader, running the same WGSL) where there is no graphics
+// support. Without WebGPU at all, the page falls back to the kernels' C++ translation (WebAssembly).
+const HARDWARE = [{ powerPreference: 'high-performance' }, {}, { featureLevel: 'compatibility' }];
+const SOFTWARE = [{ forceFallbackAdapter: true }, { forceFallbackAdapter: true, featureLevel: 'compatibility' }];
 const NEED = { maxComputeInvocationsPerWorkgroup: 64, maxComputeWorkgroupSizeX: 64, maxStorageBuffersPerShaderStage: 8 };
 
-export async function openDevice() {
+const isSoftware = (adapter) => Boolean(adapter.isFallbackAdapter || (adapter.info && adapter.info.isFallbackAdapter));
+
+/** Opens a device. mode: 'auto' (hardware, else the software adapter), 'hardware' or 'software'. */
+export async function openDevice(mode = 'auto') {
   if (!('gpu' in navigator)) throw new Error('this browser has no WebGPU');
-  for (const options of ADAPTERS) {
+  const tries = mode === 'software' ? SOFTWARE : mode === 'hardware' ? HARDWARE : [...HARDWARE, ...SOFTWARE];
+  let soft = null;
+  for (const options of tries) {
     const adapter = await navigator.gpu.requestAdapter(options).catch(() => null);
-    if (!adapter) continue;
-    if (Object.entries(NEED).some(([k, v]) => !(adapter.limits[k] >= v))) continue;
-    const lim = adapter.limits;
-    const device = await adapter.requestDevice({
-      requiredLimits: { ...NEED, maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize, maxBufferSize: lim.maxBufferSize },
-    });
-    const info = adapter.info || {};
-    return { device, name: [info.vendor, info.architecture].filter(Boolean).join(' ') || 'GPU' };
+    if (!adapter || Object.entries(NEED).some(([k, v]) => !(adapter.limits[k] >= v))) continue;
+    const software = isSoftware(adapter) || Boolean(options.forceFallbackAdapter);
+    if (mode === 'hardware' && software) continue;
+    // A software adapter offered for a hardware request: keep it in reserve, prefer real hardware.
+    if (mode === 'auto' && software && !options.forceFallbackAdapter) { soft = soft || adapter; continue; }
+    return open(adapter, software);
   }
-  throw new Error('no WebGPU adapter with 256-invocation workgroups');
+  if (soft) return open(soft, true);
+  throw new Error(mode === 'software' ? 'no software WebGPU adapter' : 'no WebGPU adapter');
+}
+
+async function open(adapter, software) {
+  const lim = adapter.limits;
+  const device = await adapter.requestDevice({
+    requiredLimits: { ...NEED, maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize, maxBufferSize: lim.maxBufferSize },
+  });
+  const info = adapter.info || {};
+  const name = [info.vendor, info.architecture].filter(Boolean).join(' ') || 'GPU';
+  return { device, name: software ? `CPU-simulated GPU: ${name}` : name, software };
 }
 
 async function pipeline(device, code, label) {
@@ -43,12 +61,11 @@ async function readBack(device, src, bytes, Type = Float32Array) {
 }
 
 /** Runs the model's kernels for every chunk of days. Resolves to { ms, adapter }. */
-export async function runKernels(session, onProgress = () => {}) {
+export async function runKernels(session, onProgress = () => {}, mode = 'auto') {
   const plan = session.plan();
-  const { device, name } = await openDevice();
-  const [signal, rank, gram, expect] = await Promise.all([
-    pipeline(device, plan.sources.signal, 'signal'), pipeline(device, plan.sources.rank, 'rank'),
-    pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
+  const { device, name } = await openDevice(mode);
+  const [zscore, gram, expect] = await Promise.all([
+    pipeline(device, plan.sources.zscore, 'zscore'), pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
   ]);
   const t0 = performance.now();
   const S = GPUBufferUsage.STORAGE;
@@ -67,8 +84,7 @@ export async function runKernels(session, onProgress = () => {}) {
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
-  const gS = group(signal, [[0, uniform], [1, tables], [2, sig]]);
-  const gR = group(rank, [[0, uniform], [1, tables], [2, sig], [3, z]]);
+  const gZ = group(zscore, [[0, uniform], [1, tables], [2, sig], [3, z]]);
   const gG = group(gram, [[0, uniform], [1, tables], [2, z], [3, g]]);
   const gE = group(expect, [[0, uniform], [2, z], [3, v], [4, e]]);
   for (let c = 0; c < plan.chunks; c++) {
@@ -76,9 +92,8 @@ export async function runKernels(session, onProgress = () => {}) {
     device.queue.writeBuffer(uniform, 0, session.header(c));
     let enc = device.createCommandEncoder();
     let pass = enc.beginComputePass();
-    pass.setPipeline(signal); pass.setBindGroup(0, gS); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), plan.K, cd);
-    pass.setPipeline(rank); pass.setBindGroup(0, gR); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), plan.K, cd);
-    pass.setPipeline(gram); pass.setBindGroup(0, gG); pass.dispatchWorkgroups(Math.ceil(plan.stride / 64), cd);
+    pass.setPipeline(zscore); pass.setBindGroup(0, gZ); pass.dispatchWorkgroups(plan.K, cd);
+    pass.setPipeline(gram); pass.setBindGroup(0, gG); pass.dispatchWorkgroups(plan.gramTiles, cd);
     pass.end();
     device.queue.submit([enc.finish()]);
     const gramOut = await readBack(device, g, cd * plan.stride * 4);
@@ -97,15 +112,13 @@ export async function runKernels(session, onProgress = () => {}) {
   return { ms, adapter: name };
 }
 
-/** Runs the day-trade kernels (levels per chunk of days, then trades, then book) on the model's
+/** Runs the day-trade kernels (levels with the trades fused, per chunk of days, then book) on the model's
  * expected returns, and hands the read-backs to the library. Resolves to the report (JSON text). */
-export async function runDayTrades(session, onProgress = () => {}) {
+export async function runDayTrades(session, onProgress = () => {}, mode = 'auto') {
   const plan = session.dayTradePlan();
   if (!plan.ok) return null;
-  const { device } = await openDevice();
-  const [levels, trades, book] = await Promise.all([
-    pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.trades, 'trades'), pipeline(device, plan.sources.book, 'book'),
-  ]);
+  const { device } = await openDevice(mode);
+  const [levels, book] = await Promise.all([pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.book, 'book')]);
   const { T, N, K, s } = plan;
   const S = GPUBufferUsage.STORAGE, DST = GPUBufferUsage.COPY_DST, SRC = GPUBufferUsage.COPY_SRC;
   const buffer = (bytes, usage) => device.createBuffer({ size: Math.max(16, Math.ceil(bytes / 4) * 4), usage });
@@ -120,8 +133,7 @@ export async function runDayTrades(session, onProgress = () => {}) {
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
-  const gL = group(levels, [[0, uniform], [1, bars], [2, life], [3, state], [4, obs], [5, idx], [6, lev]]);
-  const gT = group(trades, [[0, uniform], [1, bars], [2, life], [6, lev], [7, tra]]);
+  const gL = group(levels, [[0, uniform], [1, bars], [2, life], [3, state], [4, obs], [5, idx], [6, lev], [7, tra]]);
   const gB = group(book, [[0, uniform], [1, bars], [6, lev], [7, tra], [8, expected], [9, elig], [10, days], [11, booked]]);
   const step = (p, g, x, y = 1) => {
     const enc = device.createCommandEncoder();
@@ -133,12 +145,11 @@ export async function runDayTrades(session, onProgress = () => {}) {
   const t0 = performance.now();
   for (let a = 0; a < T; a += plan.chunkDays) {
     device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(a, Math.min(T, a + plan.chunkDays)));
-    step(levels, gL, Math.ceil(N / 64));
+    step(levels, gL, N);
     await device.queue.onSubmittedWorkDone();
     onProgress(`Day trades on WebGPU: day ${Math.min(T, a + plan.chunkDays)} of ${T}`);
   }
   device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(0, T));
-  step(trades, gT, Math.ceil(N / 64), T - s);
   step(book, gB, Math.ceil((T - s) / 64));
   const [L, R, D, B] = await Promise.all([
     readBack(device, lev, T * N * plan.level * 4), readBack(device, tra, T * N * plan.trade * 4),

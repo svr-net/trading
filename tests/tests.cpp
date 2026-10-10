@@ -191,7 +191,7 @@ TEST(market_structure_sees_one_factor_and_independent_stocks) {
 }
 
 TEST(kernel_sources_declare_their_entry_points) {
-  for (const std::string* s : {&ofm::kernels::signalSource(), &ofm::kernels::rankSource(), &ofm::kernels::gramSource(), &ofm::kernels::expectSource()})
+  for (const std::string* s : {&ofm::kernels::zscoreSource(), &ofm::kernels::gramSource(), &ofm::kernels::expectSource()})
     CHECK(s->find("fn main") != std::string::npos && s->find("struct Header") != std::string::npos);
 }
 

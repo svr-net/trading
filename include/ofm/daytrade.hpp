@@ -1,18 +1,19 @@
 #pragma once
 
 // The same-day trades as fused kernels: every number from the bars and the expected returns to the
-// booked trades. Three kernels, each in WGSL for WebGPU and in C++ (one body, instantiated in double
-// precision as the reference and in single precision as the emulated GPU):
-//  levels  (workgroup 64; grid ceil(N/64); called per chunk of days [t0, t1)): one invocation per
-//          stock walks its days in order: the open-to-close volatility (exponentially weighted,
-//          half-life the forecast's life), the parabolic SAR / RSI / ADX state, the record of its
-//          days (how far the low fell and the high rose from the open in its volatility, the close)
-//          kept sorted, and at each decision the stop-loss and take-profit learnt from that record
-//          (best return per unit of risk; the stop no nearer the open than the median fall or the
-//          round trip, both within the plausible moves by Chauvenet's criterion), whether they beat
-//          cash, and their touch probabilities. Its state carries over from chunk to chunk.
-//  trades  (workgroup 64; grid ceil(N/64) x days): each stock's trade on the next day against its
-//          bar: bought at the open, sold at the stop (first), the take-profit or the close.
+// booked trades. Two kernels, written once in WGSL (kernels/daytrade): WebGPU runs them, the CPU runs
+// their C++ translation in double precision (the reference) and single precision (the emulated GPU).
+//  levels  (workgroup 64; grid N; called per chunk of days [t0, t1)): one workgroup per stock walks
+//          its days in order. Lane 0 keeps the running state: the open-to-close volatility
+//          (exponentially weighted, half-life the forecast's life) and the parabolic SAR / RSI / ADX
+//          state. The 64 lanes share the work on the record of its days (how far the low fell and
+//          the high rose from the open in its volatility, the close), kept sorted: each day's
+//          insertion, and at each decision the stop-loss and take-profit learnt from that record
+//          (best return per unit of risk, as parallel scans and reductions; the stop no nearer the
+//          open than the median fall or the round trip, both within the plausible moves by
+//          Chauvenet's criterion), whether they beat cash, their touch probabilities, and (fused)
+//          the trade on the next day's bar: bought at the open, sold at the stop (first), the
+//          take-profit or the close. Its state carries over from chunk to chunk.
 //  book    (workgroup 64; grid ceil(days/64)): per day, down the ranking by expected return, the first
 //          K stocks whose levels beat cash are booked; the day's result, the plain comparison and the
 //          evaluation sums. On the last day, the plan for the next open.
@@ -48,19 +49,11 @@ struct Buffers {
   std::vector<std::uint32_t> booked; // [T + 1][K]: booked stocks per day; row T: the plan's ranks
 };
 
-template <class R>
-void levels(Buffers<R>& b, std::uint32_t stock, std::uint32_t t0, std::uint32_t t1);
-template <class R>
-void trades(Buffers<R>& b, std::uint32_t t, std::uint32_t stock);
-template <class R>
-void book(Buffers<R>& b, std::uint32_t t);
-
 /// Runs the kernels on the CPU (double: reference; float: the emulated GPU), in the GPU's order.
 template <class R>
 void run(Buffers<R>& b, std::uint32_t chunk);
 
 const std::string& levelsSource();
-const std::string& tradesSource();
 const std::string& bookSource();
 
 }  // namespace ofm::daytrade

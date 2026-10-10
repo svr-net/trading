@@ -27,7 +27,7 @@ const browser = await chromium.launch({
 
 const results = {};
 let failed = 0;
-for (const [engine, expect] of [['gpu', 'WebGPU'], ['emulated', 'Emulated GPU'], ['reference', 'Reference']]) {
+for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GPU'], ['emulated', 'Emulated GPU'], ['reference', 'Reference']]) {
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -48,7 +48,7 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['emulated', 'Emulated GPU'],
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
     if (!drawn || !Number.isFinite(sharpe)) throw new Error('backtest not rendered');
     if (errors.length) throw new Error(errors.join(' | '));
-    // The day trades (fused kernels: levels, trades, book) on the same engine.
+    // The day trades (fused kernels: levels with trades, book) on the same engine.
     const plan = await page.$$eval('#top10-plan tbody tr td:first-child', (t) => t.map((x) => x.textContent));
     if (!plan.length || !/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('day trades not rendered');
     const daySharpe = await page.$eval('#top10-verdict .tile .v', (e) => +e.textContent);
