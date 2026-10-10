@@ -51,7 +51,8 @@ async function run() {
     } else {
       session.loadSample();
     }
-    const costs = [+$('buy-bps').value || 0, +$('sell-bps').value || 0, +$('fut-bps').value || 0];
+    const dealing = +$('cost-pct').value || 0, stamp = +$('stamp-pct').value || 0;
+    const costs = [100 * (dealing + stamp), 100 * dealing, +$('fut-bps').value || 0];
     session.setUniverseHedge($('universe-hedge').checked);
     const engine = $('engine').value;
     let json, note;

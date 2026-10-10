@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=22">
+<link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
 <div class="wrap">
@@ -87,13 +87,13 @@
       </div>
     </div>
     <div class="field costs">
-      <span class="label">Costs (basis points)</span>
+      <span class="label">Transaction costs (%)</span>
       <div class="row">
-        <label>Purchases <input type="number" id="buy-bps" value="60" min="0" step="1"></label>
-        <label>Sales <input type="number" id="sell-bps" value="10" min="0" step="1"></label>
-        <label>Futures <input type="number" id="fut-bps" value="1" min="0" step="0.5"></label>
+        <label>Per trade <input type="number" id="cost-pct" value="0.10" min="0" step="0.01"></label>
+        <label>Stamp duty <input type="number" id="stamp-pct" value="0.50" min="0" step="0.05"></label>
+        <label>Futures (bp) <input type="number" id="fut-bps" value="1" min="0" step="0.5"></label>
       </div>
-      <p class="hint">UK: 10 dealing + 50 stamp duty on purchases.</p>
+      <p class="hint">Market standard: 0.10% per side (commission and spread); UK stamp duty 0.50% on purchases (0 for CFDs, spread bets and AIM shares).</p>
       <label class="radio"><input type="checkbox" id="universe-hedge"> Hedge with the stocks' own index (stand-in for FTSE 250 futures)</label>
     </div>
     <div class="field">
@@ -113,6 +113,6 @@
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=22"></script>
+<script type="module" src="app.js?v=23"></script>
 </body>
 </html>
