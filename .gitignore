@@ -73,3 +73,8 @@ dist/
 
 # Market data downloads (EODData licence: not for redistribution)
 data/
+
+# Builds
+build/
+build-*/
+web/wasm/

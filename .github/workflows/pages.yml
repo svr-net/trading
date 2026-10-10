@@ -1,11 +1,9 @@
 name: Pages
 
-# Deploys the standalone site to GitHub Pages on every push to main (and on demand), after the
-# full CI passes. The site published is the same tested build that ships in releases: plain HTML
-# and classic scripts with the WebAssembly embedded, so Pages needs no special configuration.
+# Publishes the page (web/ with the WebAssembly module built by CI) to GitHub Pages after CI passes.
 on:
   push:
-    branches: [main]
+    branches: [main, claude/stock-price-ml-strategy-3bm61v]
   workflow_dispatch:
 
 permissions:
@@ -31,11 +29,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: trading-sat-standalone
-          path: dist
+          name: site
+          path: site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist/standalone
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

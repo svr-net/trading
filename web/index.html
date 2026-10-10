@@ -1,14 +1,88 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>trading SAT</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>UK Factor Model</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="app"></div>
-  <script type="module" src="js/pages/index.js"></script>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
+    <h1>UK Factor Model</h1>
+    <p class="lede">Expected returns for every stock and a daily backtest against holding the market, after real costs. Every setting comes from the data: signal horizons, factor premia, trade timing and the hedge. The only inputs are the costs.</p>
+  </header>
+
+  <section class="controls" aria-label="Run">
+    <div class="field">
+      <span class="label">Data</span>
+      <div class="row">
+        <label class="radio"><input type="radio" name="source" id="src-sample" value="sample" checked> Sample market (synthetic)</label>
+        <label class="radio"><input type="radio" name="source" id="src-files" value="files"> My files</label>
+      </div>
+      <div class="row files" id="files" hidden>
+        <label>Stocks CSV <input type="file" id="stocks-file" accept=".csv,text/csv"></label>
+        <label>Futures / index CSV (optional) <input type="file" id="series-file" accept=".csv,text/csv"></label>
+        <p class="hint">Format <code>date,ticker,open,high,low,close,volume</code>. Files are read in this browser and never uploaded.</p>
+      </div>
+    </div>
+    <div class="field costs">
+      <span class="label">Costs (basis points)</span>
+      <div class="row">
+        <label>Purchases <input type="number" id="buy-bps" value="60" min="0" step="1"></label>
+        <label>Sales <input type="number" id="sell-bps" value="10" min="0" step="1"></label>
+        <label>Futures <input type="number" id="fut-bps" value="1" min="0" step="0.5"></label>
+      </div>
+      <p class="hint">UK: 10 dealing + 50 stamp duty on purchases.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="engine">Engine</label>
+      <select id="engine">
+        <option value="auto">Auto (WebGPU, else emulated GPU)</option>
+        <option value="gpu">WebGPU</option>
+        <option value="emulated">Emulated GPU (CPU)</option>
+        <option value="reference">Reference (double precision)</option>
+      </select>
+    </div>
+    <div class="field run">
+      <button id="run" type="button">Run model</button>
+      <p class="status" id="status" role="status">Loading the model…</p>
+    </div>
+  </section>
+
+  <section id="results" hidden>
+    <div class="verdict" id="verdict"></div>
+
+    <h2>Expected returns</h2>
+    <p class="muted" id="expected-note"></p>
+    <div class="table-scroll"><table id="expected"></table></div>
+    <button type="button" class="link" id="expected-all">Show every stock</button>
+
+    <h2>Backtest</h2>
+    <div class="chart"><canvas id="chart" height="320" aria-label="Growth of 1 for the model, the hedged model and the market"></canvas><div class="legend" id="legend"></div></div>
+    <div class="table-scroll"><table id="parts"></table></div>
+    <p class="muted" id="trades"></p>
+
+    <h2>Market topology &amp; geometry</h2>
+    <p class="muted">Per half-life of the stocks' correlations: the minimum spanning tree's mean edge length (the total dimension-0 persistence of the correlation filtration; it contracts when stocks move together), the effective dimension of the correlation matrix (participation ratio over the number of stocks), and the Riemannian (affine-invariant) distance of the signal families' recent covariance from its long-run shape. These feed the futures hedge forecast.</p>
+    <div class="two">
+      <div class="table-scroll"><table id="structure"></table></div>
+      <div class="chart"><canvas id="structure-chart" height="220" aria-label="Tree length and effective dimension over time"></canvas><div class="legend" id="structure-legend"></div></div>
+    </div>
+
+    <div class="two">
+      <div><h3>Calendar years</h3><div class="table-scroll"><table id="years"></table></div></div>
+      <div><h3>Factors the model uses</h3><div class="table-scroll"><table id="factors"></table></div></div>
+    </div>
+    <p class="muted foot" id="facts"></p>
+  </section>
+
+  <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
+</div>
+<script type="module" src="app.js"></script>
 </body>
 </html>

@@ -1,20 +1,22 @@
-# Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret), builds the
-# self-adaptive 10-stock portfolio and its backtest, and publishes the report (results only:
-# EODData's licence does not allow redistributing the raw data, so the prices stay in the cache).
+# Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret) into the runner's
+# cache, reports what was downloaded (dates, symbols, rows) and backtests the model on it
+# (results only). EODData's licence does not allow redistributing the raw data, so the prices
+# stay in the cache and are never published.
 name: UK portfolio
 
 on:
   workflow_dispatch:
     inputs:
-      stocks: { description: 'Portfolio size', default: '10' }
-      budget: { description: 'Budget (GBP)', default: '100000' }
-      universe: { description: 'Most traded shares to download', default: '120' }
+      universe: { description: 'Most traded shares to download', default: '250' }
+      years: { description: 'Years of history (the plan serves about 9)', default: '9' }
+      series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
+      probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
 
 permissions:
   contents: read
 
 jobs:
-  portfolio:
+  data:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -22,45 +24,70 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
-      - name: Build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and test the model
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
-          cmake --build build --target uk_portfolio pool_ablation composite_study
+          pip install -r requirements.txt
+          python model/test_orthofactor.py
+      - name: Exchanges and futures markets available (metadata only)
+        if: ${{ inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/exchanges.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Restore the EODData cache
+        if: ${{ !inputs.probe }}
         uses: actions/cache@v4
         with:
           path: data/eoddata
           key: eoddata-${{ github.run_id }}
           restore-keys: eoddata-
       - name: Download LSE bars
+        if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years 6 --currency GBP --out data/LSE.csv
-      - name: Portfolio and backtest
+        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv
+      - name: Download futures, index and currency series
+        if: ${{ !inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Summary (no prices)
+        if: ${{ !inputs.probe }}
+        run: |
+          {
+            echo '```'
+            echo "rows:    $(($(wc -l < data/LSE.csv) - 1))"
+            echo "symbols: $(tail -n +2 data/LSE.csv | cut -d, -f2 | sort -u | wc -l)"
+            echo "first:   $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | head -1)"
+            echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build the C++ model
+        if: ${{ !inputs.probe }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+          cmake -S . -B build -G Ninja
+          cmake --build build
+          ./build/ofm_tests
+      - name: Adaptive model, reference engine (results only)
+        if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/uk_portfolio data/LSE.csv --stocks "${{ inputs.stocks || '10' }}" --budget "${{ inputs.budget || '100000' }}" \
-            --price-divisor 100 --stamp-duty-bps 50 --cost-bps 10 --robustness --report report/uk-portfolio.json | tee report/uk-portfolio.txt
-          cp data/LSE.symbols.json report/
-          { echo '```'; cat report/uk-portfolio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Model pool on UK data (full vs previous vs default)
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --json report/ofm.json | tee report/ofm.txt
+          { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Adaptive model, emulated GPU kernels (agreement check)
+        if: ${{ !inputs.probe }}
+        run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24
+      - name: 'Benchmark - first Python model, fixed look-backs, monthly (results only)'
+        if: ${{ !inputs.probe }}
         run: |
-          ./build/pool_ablation 0 --csv data/LSE.csv | tee report/pool-ablation.txt
-          { echo '```'; cat report/pool-ablation.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Composite model and strategy on UK data
-        run: |
-          ./build/composite_study 0 --csv data/LSE.csv | tee report/composite-study.txt
-          { echo '```'; cat report/composite-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Report (for reading from the log)
-        run: |
-          echo "----- BEGIN REPORT -----"
-          cat report/uk-portfolio.json
-          echo "----- END REPORT -----"
-          cat report/LSE.symbols.json
+          python model/run.py data/LSE.csv | tee report/benchmark.txt
+          { echo '```'; cat report/benchmark.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.probe }}
         with:
-          name: uk-portfolio-report
+          name: uk-report
           path: report/
           retention-days: 14
