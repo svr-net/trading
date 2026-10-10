@@ -60,11 +60,11 @@ class Session {
     if (g32.size() != cd * plan_.stride) throw std::invalid_argument("gram read-back has the wrong size");
     const std::vector<double> g(g32.begin(), g32.end());
     std::vector<float> v(cd * plan_.K, 0.0f);
-    valid_.assign(cd, 0);
+    if (valid_.size() != plan_.T) valid_.assign(plan_.T, 0);
     for (std::size_t td = 0; td < cd; ++td) {
       const auto vt = forecaster_->absorb(c0 + td, &g[td * plan_.stride]);
       if (vt.empty()) continue;
-      valid_[td] = 1;
+      valid_[c0 + td] = 1;
       for (std::size_t k = 0; k < plan_.K; ++k) v[td * plan_.K + k] = static_cast<float>(vt[k]);
     }
     return copyOut(v);
@@ -77,7 +77,7 @@ class Session {
     if (e32.size() != cd * N) throw std::invalid_argument("expected-return read-back has the wrong size");
     const std::size_t TN = plan_.T * N;
     for (std::size_t td = 0; td < cd; ++td) {
-      if (!valid_[td]) continue;
+      if (!valid_[c0 + td]) continue;
       for (std::size_t a = 0; a < N; ++a)
         if (plan_.tables[4 * TN + (c0 + td) * N + a] > 0.5f) forecast_.E(c0 + td, a) = e32[td * N + a];
     }
@@ -151,6 +151,7 @@ class Session {
   std::string reset() {
     plan_ = ofm::compilePlan(market_);
     forecaster_ = std::make_unique<ofm::Forecaster>(plan_);
+    valid_.assign(plan_.T, 0);
     forecast_ = ofm::Forecast{};
     forecast_.E = ofm::Panel(plan_.T, plan_.N);
     std::string j = "{\"stocks\":" + std::to_string(market_.N()) + ",\"days\":" + std::to_string(market_.T()) + ",\"from\":\"" +
@@ -182,7 +183,7 @@ class Session {
   ofm::Plan plan_;
   std::unique_ptr<ofm::Forecaster> forecaster_;
   ofm::Forecast forecast_;
-  std::vector<char> valid_;
+  std::vector<char> valid_;  // per day: absorbed with a forecast (chunks' read-backs may arrive late)
   ofm::Costs costs_;
   ofm::MarketStructure ms_;
   ofm::Backtest bt_;

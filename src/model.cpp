@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -292,33 +293,46 @@ Forecast runModel(const Market& m, const std::string& engine) {
   out.engine = engine;
   out.E = Panel(p.T, p.N);
   double kernelMs = 0;
-  // Both CPU engines run the kernels' translation (kernels.hpp): float emulates the GPU, double is the reference.
+  // Both CPU engines run the kernels' translation (kernels.hpp): float emulates the GPU, double is the
+  // reference. Chunks are pipelined as on the GPU: the next chunk's zscore and gram kernels run on a
+  // worker while this chunk's Gram rows are absorbed (a sequential pass over the days) and its
+  // expected returns computed.
   auto run = [&](auto zero) {
     using F = decltype(zero);
     const std::vector<F> tables(p.tables.begin(), p.tables.end());
+    struct Stage { std::vector<F> z, g; };
+    auto stage = [&](std::size_t c) {
+      Stage st;
+      kernels::zscore<F>(p, c, tables.data(), st.z);
+      kernels::gram<F>(p, c, tables.data(), st.z, st.g);
+      return st;
+    };
+#ifdef __EMSCRIPTEN__
+    const auto policy = std::launch::deferred;
+#else
+    const auto policy = std::launch::async;
+#endif
+    const auto k0 = std::chrono::steady_clock::now();
+    std::future<Stage> next = std::async(policy, stage, std::size_t{0});
     for (std::size_t c = 0; c < p.numChunks(); ++c) {
       const std::size_t cd = p.chunkLength(c), c0 = p.chunkStart(c);
-      const auto k0 = std::chrono::steady_clock::now();
-      std::vector<F> z, g, e;
-      kernels::zscore<F>(p, c, tables.data(), z);
-      kernels::gram<F>(p, c, tables.data(), z, g);
-      kernelMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
-      const std::vector<double> gd(g.begin(), g.end());
+      Stage cur = next.get();
+      if (c + 1 < p.numChunks()) next = std::async(policy, stage, c + 1);
+      const std::vector<double> gd(cur.g.begin(), cur.g.end());
       std::vector<std::vector<double>> v(cd);
-      std::vector<F> vf(cd * p.K, F(0));
+      std::vector<F> vf(cd * p.K, F(0)), e;
       for (std::size_t td = 0; td < cd; ++td) {
         v[td] = fc.absorb(c0 + td, &gd[td * p.stride]);
         for (std::size_t k = 0; k < v[td].size(); ++k) vf[td * p.K + k] = static_cast<F>(v[td][k]);
       }
-      const auto k1 = std::chrono::steady_clock::now();
-      kernels::expect<F>(p, c, z, vf, e);
-      kernelMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k1).count();
+      kernels::expect<F>(p, c, cur.z, vf, e);
       for (std::size_t td = 0; td < cd; ++td) {
         if (v[td].empty()) continue;
         for (std::size_t a = 0; a < p.N; ++a)
           if (p.tables[4 * p.T * p.N + (c0 + td) * p.N + a] > 0.5f) out.E(c0 + td, a) = static_cast<double>(e[td * p.N + a]);
       }
     }
+    kernelMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
   };
   if (engine == "reference") run(0.0);
   else if (engine == "emulated") run(0.0f);

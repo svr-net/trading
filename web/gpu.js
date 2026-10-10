@@ -68,46 +68,81 @@ export async function runKernels(session, onProgress = () => {}, mode = 'auto') 
     pipeline(device, plan.sources.zscore, 'zscore'), pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
   ]);
   const t0 = performance.now();
-  const S = GPUBufferUsage.STORAGE;
+  const S = GPUBufferUsage.STORAGE, DST = GPUBufferUsage.COPY_DST, SRC = GPUBufferUsage.COPY_SRC;
+  const MAP = GPUBufferUsage.MAP_READ | DST;
   const buffer = (bytes, usage) => device.createBuffer({ size: Math.max(16, bytes), usage });
   const tablesData = session.tables();
-  const tables = buffer(tablesData.byteLength, S | GPUBufferUsage.COPY_DST);
+  const tables = buffer(tablesData.byteLength, S | DST);
   device.queue.writeBuffer(tables, 0, tablesData);
-  const uniform = buffer(128, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const cdMax = plan.chunkDays;
-  const sig = buffer(cdMax * plan.N * plan.K * 4, S);
-  const z = buffer(cdMax * plan.N * plan.K * 4, S);
-  const g = buffer(cdMax * plan.stride * 4, S | GPUBufferUsage.COPY_SRC);
-  const v = buffer(cdMax * plan.K * 4, S | GPUBufferUsage.COPY_DST);
-  const e = buffer(cdMax * plan.N * 4, S | GPUBufferUsage.COPY_SRC);
+  const gBytes = cdMax * plan.stride * 4, eBytes = cdMax * plan.N * 4;
   const group = (p, entries) => device.createBindGroup({
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
-  const gZ = group(zscore, [[0, uniform], [1, tables], [2, sig], [3, z]]);
-  const gG = group(gram, [[0, uniform], [1, tables], [2, z], [3, g]]);
-  const gE = group(expect, [[0, uniform], [2, z], [3, v], [4, e]]);
-  for (let c = 0; c < plan.chunks; c++) {
-    const cd = session.chunkLength(c);
-    device.queue.writeBuffer(uniform, 0, session.header(c));
-    let enc = device.createCommandEncoder();
-    let pass = enc.beginComputePass();
-    pass.setPipeline(zscore); pass.setBindGroup(0, gZ); pass.dispatchWorkgroups(plan.K, cd);
-    pass.setPipeline(gram); pass.setBindGroup(0, gG); pass.dispatchWorkgroups(plan.gramTiles, cd);
-    pass.end();
+  // Two slots, so the GPU runs chunk c + 1's zscore and gram while the CPU absorbs chunk c's Gram
+  // rows; each chunk's expect is queued behind them and read back later.
+  const slots = [0, 1].map(() => {
+    const s = {
+      uniform: buffer(128, GPUBufferUsage.UNIFORM | DST),
+      sig: buffer(cdMax * plan.N * plan.K * 4, S), z: buffer(cdMax * plan.N * plan.K * 4, S),
+      g: buffer(gBytes, S | SRC), gRead: buffer(gBytes, MAP),
+      v: buffer(cdMax * plan.K * 4, S | DST), e: buffer(eBytes, S | SRC), eRead: buffer(eBytes, MAP),
+    };
+    s.gZ = group(zscore, [[0, s.uniform], [1, tables], [2, s.sig], [3, s.z]]);
+    s.gG = group(gram, [[0, s.uniform], [1, tables], [2, s.z], [3, s.g]]);
+    s.gE = group(expect, [[0, s.uniform], [2, s.z], [3, s.v], [4, s.e]]);
+    return s;
+  });
+  const submit = (fill) => {
+    const enc = device.createCommandEncoder();
+    fill(enc);
     device.queue.submit([enc.finish()]);
-    const gramOut = await readBack(device, g, cd * plan.stride * 4);
-    device.queue.writeBuffer(v, 0, session.absorb(c, gramOut));
-    enc = device.createCommandEncoder();
-    pass = enc.beginComputePass();
-    pass.setPipeline(expect); pass.setBindGroup(0, gE); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), cd);
-    pass.end();
-    device.queue.submit([enc.finish()]);
-    session.takeExpected(c, await readBack(device, e, cd * plan.N * 4));
+  };
+  const front = (c) => {  // zscore + gram of chunk c, Gram rows copied for reading
+    const s = slots[c % 2], cd = session.chunkLength(c);
+    device.queue.writeBuffer(s.uniform, 0, session.header(c));
+    submit((enc) => {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(zscore); pass.setBindGroup(0, s.gZ); pass.dispatchWorkgroups(plan.K, cd);
+      pass.setPipeline(gram); pass.setBindGroup(0, s.gG); pass.dispatchWorkgroups(plan.gramTiles, cd);
+      pass.end();
+      enc.copyBufferToBuffer(s.g, 0, s.gRead, 0, cd * plan.stride * 4);
+    });
+    return s.gRead.mapAsync(GPUMapMode.READ);
+  };
+  const expected = new Array(plan.chunks);
+  const take = async (c) => {  // chunk c's expected returns, once its expect has run
+    if (c < 0 || !expected[c]) return;
+    const s = slots[c % 2], bytes = session.chunkLength(c) * plan.N * 4;
+    await expected[c];
+    expected[c] = null;
+    session.takeExpected(c, new Float32Array(s.eRead.getMappedRange(0, bytes)).slice());
+    s.eRead.unmap();
     onProgress((c + 1) / plan.chunks);
+  };
+  let gramReady = front(0);
+  for (let c = 0; c < plan.chunks; c++) {
+    const s = slots[c % 2], cd = session.chunkLength(c);
+    await take(c - 2);  // frees this slot's read-back buffer
+    const nextReady = c + 1 < plan.chunks ? front(c + 1) : null;
+    await gramReady;
+    const gramOut = new Float32Array(s.gRead.getMappedRange(0, cd * plan.stride * 4)).slice();
+    s.gRead.unmap();
+    device.queue.writeBuffer(s.v, 0, session.absorb(c, gramOut));
+    submit((enc) => {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(expect); pass.setBindGroup(0, s.gE); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), cd);
+      pass.end();
+      enc.copyBufferToBuffer(s.e, 0, s.eRead, 0, cd * plan.N * 4);
+    });
+    expected[c] = s.eRead.mapAsync(GPUMapMode.READ);
+    gramReady = nextReady;
   }
+  for (let c = Math.max(0, plan.chunks - 2); c < plan.chunks; c++) await take(c);
   const ms = performance.now() - t0;
-  for (const b of [tables, uniform, sig, z, g, v, e]) b.destroy();
+  for (const s of slots) for (const k of ['uniform', 'sig', 'z', 'g', 'gRead', 'v', 'e', 'eRead']) s[k].destroy();
+  tables.destroy();
   device.destroy();
   return { ms, adapter: name };
 }
@@ -145,11 +180,14 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
     device.queue.submit([enc.finish()]);
   };
   const t0 = performance.now();
+  // Every chunk of days is queued at once (the queue keeps their order; each writes its own header
+  // first), so the GPU never waits on the page between chunks.
+  const done = [];
   for (let a = 0; a < T; a += plan.chunkDays) {
     device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(a, Math.min(T, a + plan.chunkDays)));
     step(levels, gL, N);
-    await device.queue.onSubmittedWorkDone();
-    onProgress(`Day trades on WebGPU: day ${Math.min(T, a + plan.chunkDays)} of ${T}`);
+    const day = Math.min(T, a + plan.chunkDays);
+    done.push(device.queue.onSubmittedWorkDone().then(() => onProgress(`Day trades on WebGPU: day ${day} of ${T}`)));
   }
   device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(0, T));
   step(book, gB, Math.ceil((T - s) / 64));
@@ -157,6 +195,7 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
     readBack(device, lev, T * N * plan.level * 4), readBack(device, tra, T * N * plan.trade * 4),
     readBack(device, days, T * plan.day * 4), readBack(device, booked, (T + 1) * K * 4, Uint32Array),
   ]);
+  await Promise.all(done);
   const ms = performance.now() - t0;
   device.destroy();
   return { json: session.finishDayTrades(L, R, D, B), ms };
