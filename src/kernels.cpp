@@ -4,6 +4,8 @@
 // division, which WGSL leaves to the device.
 #include "ofm/kernels.hpp"
 
+#include "signals.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -15,20 +17,80 @@ namespace {
 const char* kHeader = R"wgsl(
 struct Header {
   T : u32, N : u32, K : u32, H : u32,
-  c0 : u32, cd : u32, offLc : u32, offS1 : u32,
-  offS2 : u32, offLv : u32, offElig : u32, offTgt : u32,
-  offTmask : u32, nPairs : u32, stride : u32, pad0 : u32,
+  c0 : u32, cd : u32, nPairs : u32, stride : u32,
+  u0 : u32, u1 : u32, u2 : u32, u3 : u32,
+  u4 : u32, u5 : u32, u6 : u32, u7 : u32,
   hz : array<vec4<u32>, 4>,
 };
 @group(0) @binding(0) var<uniform> P : Header;
 @group(0) @binding(1) var<storage, read> tab : array<f32>;
+// Tables: 0 log close, 1 prefix log returns, 2 prefix squared, 3 prefix log traded value,
+// 4 eligible, 5 target, 6 target mask, 7 log high, 8 log low, 9 traded value.
 fn horizon(i : u32) -> u32 { return P.hz[i / 4u][i % 4u]; }
-fn at(off : u32, t : u32, a : u32) -> f32 { return tab[off + t * P.N + a]; }
+fn at(tb : u32, t : u32, a : u32) -> f32 { return tab[tb * P.T * P.N + t * P.N + a]; }
 )wgsl";
 
 const char* kZscore = R"wgsl(
 @group(0) @binding(2) var<storage, read_write> z : array<f32>;
 var<workgroup> val : array<f32, 256>;
+
+// The stock's signal (src/signals.hpp computes the same on the CPU).
+fn signal(fam : u32, h : u32, t : u32, a : u32) -> f32 {
+  let fh = f32(h);
+  let lc = at(0u, t, a);
+  if (fam == 0u) { return lc - at(0u, t - h, a); }
+  if (fam == 1u || fam == 3u) {
+    let d1 = at(1u, t, a) - at(1u, t - h, a);
+    let d2 = at(2u, t, a) - at(2u, t - h, a);
+    let vol = sqrt(max(0.0, (d2 - d1 * d1 / fh) / (fh - 1.0)));
+    if (fam == 1u) { return -vol; }
+    return select(0.0, (lc - at(0u, t - h, a)) / (vol * sqrt(fh)), vol > 0.0);
+  }
+  if (fam == 2u) {
+    var mx = lc;
+    for (var u = 1u; u < h; u = u + 1u) { mx = max(mx, at(0u, t - u, a)); }
+    return lc - mx;
+  }
+  if (fam == 4u) { return -(at(3u, t, a) - at(3u, t - h, a)) / fh; }
+  if (fam == 5u) {
+    var up = 0.0;
+    var tot = 0.0;
+    for (var u = 0u; u < h; u = u + 1u) {
+      let d = at(0u, t - u, a) - at(0u, t - u - 1u, a);
+      up = up + max(d, 0.0);
+      tot = tot + abs(d);
+    }
+    return select(0.5, up / tot, tot > 0.0);
+  }
+  if (fam == 6u) {
+    var s = 0.0;
+    for (var u = 1u; u <= h; u = u + 1u) { s = s + at(0u, t - u, a); }
+    let m = s / fh;
+    var v = 0.0;
+    for (var u = 1u; u <= h; u = u + 1u) { v = v + (at(0u, t - u, a) - m) * (at(0u, t - u, a) - m); }
+    let sd = sqrt(v / (fh - 1.0));
+    return select(0.0, (lc - m) / sd, sd > 0.0);
+  }
+  if (fam == 7u) {
+    var lo = at(8u, t, a);
+    var hi = at(7u, t, a);
+    for (var u = 1u; u < h; u = u + 1u) { lo = min(lo, at(8u, t - u, a)); hi = max(hi, at(7u, t - u, a)); }
+    return select(0.5, (lc - lo) / (hi - lo), hi > lo);
+  }
+  if (fam == 8u) {
+    var up = 0.0;
+    var tot = 0.0;
+    for (var u = 0u; u < h; u = u + 1u) {
+      let v = at(9u, t - u, a);
+      if (at(0u, t - u, a) > at(0u, t - u - 1u, a)) { up = up + v; }
+      tot = tot + v;
+    }
+    return select(0.5, up / tot, tot > 0.0);
+  }
+  var s = 0.0;
+  for (var u = 0u; u < h; u = u + 1u) { s = s + (at(7u, t - u, a) - at(8u, t - u, a)); }
+  return -s / fh;
+}
 var<workgroup> ok : array<u32, 256>;
 
 @compute @workgroup_size(256)
@@ -40,27 +102,9 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>, @builtin(local_invocation_index) 
   let h = horizon(k % P.H);
   var x = 0.0;
   var e = 0u;
-  if (a < P.N && at(P.offElig, t, a) > 0.5) {
+  if (a < P.N && at(4u, t, a) > 0.5) {
     e = 1u;
-    let fh = f32(h);
-    let lc = at(P.offLc, t, a);
-    let ret = lc - at(P.offLc, t - h, a);
-    let d1 = at(P.offS1, t, a) - at(P.offS1, t - h, a);
-    let d2 = at(P.offS2, t, a) - at(P.offS2, t - h, a);
-    let vol = sqrt(max(0.0, (d2 - d1 * d1 / fh) / (fh - 1.0)));
-    if (fam == 0u) {
-      x = ret;
-    } else if (fam == 1u) {
-      x = -vol;
-    } else if (fam == 2u) {
-      var mx = lc;
-      for (var u = 1u; u < h; u = u + 1u) { mx = max(mx, at(P.offLc, t - u, a)); }
-      x = lc - mx;
-    } else if (fam == 3u) {
-      x = select(0.0, ret / (vol * sqrt(fh)), vol > 0.0);
-    } else {
-      x = -(at(P.offLv, t, a) - at(P.offLv, t - h, a)) / fh;
-    }
+    x = signal(fam, h, t, a);
   }
   val[a] = x;
   ok[a] = e;
@@ -112,12 +156,12 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
   } else if (p < P.nPairs + P.K) {
     let k = p - P.nPairs;
     for (var a = 0u; a < P.N; a = a + 1u) {
-      acc = acc + z[(td * P.N + a) * P.K + k] * (at(P.offTmask, t, a) * at(P.offTgt, t, a));
+      acc = acc + z[(td * P.N + a) * P.K + k] * (at(6u, t, a) * at(5u, t, a));
     }
   } else if (p == P.nPairs + P.K) {
-    for (var a = 0u; a < P.N; a = a + 1u) { acc = acc + at(P.offElig, t, a); }
+    for (var a = 0u; a < P.N; a = a + 1u) { acc = acc + at(4u, t, a); }
   } else {
-    for (var a = 0u; a < P.N; a = a + 1u) { acc = acc + at(P.offElig, t, a) * at(P.offTmask, t, a); }
+    for (var a = 0u; a < P.N; a = a + 1u) { acc = acc + at(4u, t, a) * at(6u, t, a); }
   }
   g[td * P.stride + p] = acc;
 }
@@ -172,20 +216,7 @@ void emulateZscore(const Plan& p, std::size_t c, std::vector<float>& z) {
         unsigned e = 0;
         if (at(4, t, a) > 0.5f) {
           e = 1;
-          const float fh = static_cast<float>(h);
-          const float lc = at(0, t, a);
-          const float ret = lc - at(0, t - h, a);
-          const float d1 = at(1, t, a) - at(1, t - h, a);
-          const float d2 = at(2, t, a) - at(2, t - h, a);
-          const float vol = std::sqrt(std::max(0.0f, (d2 - d1 * d1 / fh) / (fh - 1.0f)));
-          if (fam == 0) x = ret;
-          else if (fam == 1) x = -vol;
-          else if (fam == 2) {
-            float mx = lc;
-            for (std::size_t u = 1; u < h; ++u) mx = std::max(mx, at(0, t - u, a));
-            x = lc - mx;
-          } else if (fam == 3) x = vol > 0.0f ? ret / (vol * std::sqrt(fh)) : 0.0f;
-          else x = -(at(3, t, a) - at(3, t - h, a)) / fh;
+          x = detail::signal<float>(fam, h, t, [&](std::size_t tb, std::size_t u) { return at(tb, u, a); });
         }
         val[a] = x, ok[a] = e;
       }

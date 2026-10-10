@@ -2,10 +2,12 @@
 
 // The orthonormal shrinkage factor model, with every setting derived from the data.
 //
-// Signals: five families at dyadic horizons h = 2, 4, 8, ... up to the largest power of two not
-// above an eighth of the history (so every factor record covers most of the data):
-//   return over h, low volatility over h, nearness to the h-day high, trend quality over h
-//   (return over volatility x sqrt(h)), and small traded value over h.
+// Signals: ten families at dyadic horizons h = 2, 4, 8, ... up to the largest power of two not
+// above an eighth of the history (so every factor record covers most of the data), and no more
+// horizons than keep the signals fewer than the stocks: return, low
+// volatility, nearness to the high, trend quality (return over volatility x sqrt(h)), small
+// traded value, and the technical indicators RSI, Bollinger z-score, stochastic %K, money flow and
+// intraday range (src/signals.hpp).
 // Each day: cross-sectional rank z-scores of every signal (ties broken by asset order), made
 // exactly orthonormal by symmetric (Loewdin) orthogonalisation S = Z (Z'Z)^(-1/2). Each factor's
 // record is its return the day a position decided at that close earns (next open to the open
@@ -27,7 +29,8 @@
 
 namespace ofm {
 
-constexpr std::size_t kFamilies = 5;
+constexpr std::size_t kFamilies = 10;
+constexpr std::size_t kTables = 10;
 constexpr std::size_t kMaxAssets = 256;   ///< one workgroup ranks a day's universe
 constexpr std::size_t kMaxHorizons = 16;  ///< uniform block
 const char* familyName(std::size_t f);
@@ -39,12 +42,12 @@ struct Plan {
   std::size_t first = 0;      ///< first day any stock can be eligible (the longest horizon has passed)
   std::size_t chunkDays = 0;  ///< days per chunk (z of one chunk fits the GPU buffer budget)
   std::size_t stride = 0;     ///< per day in the Gram read-back: K(K+1)/2 pairs, K projections, eligible count
-  /// lc | s1 | s2 | lv | elig | tgt | tmask, each T x N (f32)
+  /// lc | s1 | s2 | lv | elig | tgt | tmask | lh | ll | tv, each T x N (f32)
   std::vector<float> tables;
   std::size_t numChunks() const { return (T - first + chunkDays - 1) / chunkDays; }
   std::size_t chunkStart(std::size_t c) const { return first + c * chunkDays; }
   std::size_t chunkLength(std::size_t c) const;
-  /// Uniform block of chunk c: 16 u32 + 16 horizons.
+  /// Uniform block of chunk c: T, N, K, H, chunk start, chunk days, pairs, stride, 8 unused, 16 horizons.
   std::vector<std::uint32_t> header(std::size_t c) const;
   std::size_t pairs() const { return K * (K + 1) / 2; }
   std::string signalName(std::size_t k) const;

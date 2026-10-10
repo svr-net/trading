@@ -7,11 +7,13 @@
 #include <stdexcept>
 
 #include "ofm/kernels.hpp"
+#include "signals.hpp"
 
 namespace ofm {
 
 const char* familyName(std::size_t f) {
-  static const char* names[] = {"return", "low volatility", "near high", "trend quality", "small size"};
+  static const char* names[] = {"return", "low volatility", "near high", "trend quality", "small size",
+                                "RSI", "Bollinger z", "stochastic %K", "money flow", "intraday range"};
   return f < kFamilies ? names[f] : "?";
 }
 
@@ -23,13 +25,10 @@ std::size_t Plan::chunkLength(std::size_t c) const { return std::min(chunkDays, 
 
 std::vector<std::uint32_t> Plan::header(std::size_t c) const {
   std::vector<std::uint32_t> h(32, 0);
-  const std::uint32_t TN = static_cast<std::uint32_t>(T * N);
   h[0] = static_cast<std::uint32_t>(T), h[1] = static_cast<std::uint32_t>(N), h[2] = static_cast<std::uint32_t>(K),
   h[3] = static_cast<std::uint32_t>(H);
   h[4] = static_cast<std::uint32_t>(chunkStart(c)), h[5] = static_cast<std::uint32_t>(chunkLength(c));
-  for (std::uint32_t j = 0; j < 7; ++j) h[6 + j] = j * TN;  // lc s1 s2 lv elig tgt tmask
-  h[13] = static_cast<std::uint32_t>(pairs());
-  h[14] = static_cast<std::uint32_t>(stride);
+  h[6] = static_cast<std::uint32_t>(pairs()), h[7] = static_cast<std::uint32_t>(stride);
   for (std::size_t j = 0; j < H; ++j) h[16 + j] = horizons[j];
   return h;
 }
@@ -40,7 +39,11 @@ Plan compilePlan(const Market& m, std::size_t budget) {
   std::uint32_t hmax = 2;
   while (hmax * 2 <= p.T / 8) hmax *= 2;
   if (p.T / 8 < 2) throw std::invalid_argument("too little history: need at least 16 days");
-  for (std::uint32_t h = 2; h <= hmax && p.horizons.size() < kMaxHorizons; h *= 2) p.horizons.push_back(h);
+  // As many horizons as the universe supports: the signals must stay fewer than the stocks for
+  // the orthonormalisation to exist (the shortest horizons are kept; longer ones are dropped).
+  const std::size_t maxH = p.N > kFamilies + 2 ? (p.N - 2) / kFamilies : 0;
+  if (maxH == 0) throw std::invalid_argument("too few stocks: need more stocks than signal families");
+  for (std::uint32_t h = 2; h <= hmax && p.horizons.size() < std::min(kMaxHorizons, maxH); h *= 2) p.horizons.push_back(h);
   p.H = p.horizons.size();
   p.K = kFamilies * p.H;
   p.first = p.horizons.back();
@@ -49,9 +52,9 @@ Plan compilePlan(const Market& m, std::size_t budget) {
   p.chunkDays = std::max<std::size_t>(1, std::min(p.T - p.first, budget / std::max<std::size_t>(perDay, 1)));
 
   const std::size_t T = p.T, N = p.N, TN = T * N;
-  p.tables.assign(7 * TN, 0.0f);
+  p.tables.assign(kTables * TN, 0.0f);
   float *lc = &p.tables[0], *s1 = &p.tables[TN], *s2 = &p.tables[2 * TN], *lv = &p.tables[3 * TN], *el = &p.tables[4 * TN],
-        *tg = &p.tables[5 * TN], *tm = &p.tables[6 * TN];
+        *tg = &p.tables[5 * TN], *tm = &p.tables[6 * TN], *lh = &p.tables[7 * TN], *ll = &p.tables[8 * TN], *tv = &p.tables[9 * TN];
   // Traded value is centred on one constant for all stocks and days: it keeps the prefix sums
   // small in single precision and shifts every stock alike, so no rank changes.
   // The constant is the average over the warm-up days only, so later data never changes it.
@@ -61,7 +64,7 @@ Plan compilePlan(const Market& m, std::size_t budget) {
   centre = cnt > 0 ? centre / cnt : 0.0;
   for (std::size_t i = 0; i < N; ++i) {
     std::size_t firstValid = T;
-    double last = kNaN, a1 = 0, a2 = 0, av = 0;
+    double last = kNaN, lastH = kNaN, lastL = kNaN, a1 = 0, a2 = 0, av = 0;
     for (std::size_t t = 0; t < T; ++t) {
       const double c = m.close(t, i);
       if (std::isfinite(c) && firstValid == T) firstValid = t;
@@ -73,7 +76,14 @@ Plan compilePlan(const Market& m, std::size_t budget) {
       }
       a1 += r, a2 += r * r;
       av += (std::isfinite(c) ? std::log1p(c * m.volume(t, i)) : 0.0) - (firstValid <= t ? centre : 0.0);
+      if (std::isfinite(c)) {
+        const double hi = m.high(t, i), lo = m.low(t, i);
+        lastH = std::log(hi > 0 ? std::max(hi, c) : c), lastL = std::log(lo > 0 ? std::min(lo, c) : c);
+      }
       lc[t * N + i] = std::isfinite(last) ? static_cast<float>(last) : 0.0f;
+      lh[t * N + i] = std::isfinite(lastH) ? static_cast<float>(lastH) : 0.0f;
+      ll[t * N + i] = std::isfinite(lastL) ? static_cast<float>(lastL) : 0.0f;
+      tv[t * N + i] = std::isfinite(c) ? static_cast<float>(c * m.volume(t, i)) : 0.0f;
       s1[t * N + i] = static_cast<float>(a1), s2[t * N + i] = static_cast<float>(a2), lv[t * N + i] = static_cast<float>(av);
       const bool e = std::isfinite(c) && firstValid != T && firstValid + p.first <= t;
       el[t * N + i] = e ? 1.0f : 0.0f;
@@ -88,44 +98,121 @@ Plan compilePlan(const Market& m, std::size_t budget) {
 
 namespace {
 
-// Eigen decomposition of a symmetric matrix (cyclic Jacobi); a is overwritten.
-void jacobi(std::vector<double>& a, std::size_t n, std::vector<double>& w, std::vector<double>& V) {
-  V.assign(n * n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) V[i * n + i] = 1.0;
-  for (int sweep = 0; sweep < 100; ++sweep) {
-    double off = 0, diag = 0;
-    for (std::size_t i = 0; i < n; ++i)
-      for (std::size_t j = 0; j < n; ++j) (i == j ? diag : off) += a[i * n + j] * a[i * n + j];
-    if (off <= 1e-24 * std::max(diag, 1e-300)) break;
-    for (std::size_t p = 0; p < n; ++p)
-      for (std::size_t q = p + 1; q < n; ++q) {
-        const double apq = a[p * n + q];
-        if (std::fabs(apq) < 1e-300) continue;
-        const double theta = (a[q * n + q] - a[p * n + p]) / (2 * apq);
-        const double t = (theta >= 0 ? 1.0 : -1.0) / (std::fabs(theta) + std::sqrt(theta * theta + 1));
-        const double c = 1 / std::sqrt(t * t + 1), s = t * c;
-        for (std::size_t k = 0; k < n; ++k) {
-          const double akp = a[k * n + p], akq = a[k * n + q];
-          a[k * n + p] = c * akp - s * akq, a[k * n + q] = s * akp + c * akq;
-        }
-        for (std::size_t k = 0; k < n; ++k) {
-          const double apk = a[p * n + k], aqk = a[q * n + k];
-          a[p * n + k] = c * apk - s * aqk, a[q * n + k] = s * apk + c * aqk;
-        }
-        for (std::size_t k = 0; k < n; ++k) {
-          const double vkp = V[k * n + p], vkq = V[k * n + q];
-          V[k * n + p] = c * vkp - s * vkq, V[k * n + q] = s * vkp + c * vkq;
-        }
+// Eigen decomposition of a symmetric matrix: Householder reduction to tridiagonal form, then the
+// implicit QL algorithm (EISPACK tred2 / tql2). a (n x n, row-major) is overwritten; on return
+// the columns of V are the eigenvectors and w the eigenvalues.
+void eigenSymmetric(std::vector<double>& a, std::size_t n, std::vector<double>& w, std::vector<double>& V) {
+  std::vector<double> d(n), e(n);
+  V = a;
+  auto v = [&](std::size_t i, std::size_t j) -> double& { return V[i * n + j]; };
+  for (std::size_t j = 0; j < n; ++j) d[j] = v(n - 1, j);
+  for (std::size_t i = n - 1; i > 0; --i) {
+    double scale = 0, h = 0;
+    for (std::size_t k = 0; k < i; ++k) scale += std::fabs(d[k]);
+    if (scale == 0) {
+      e[i] = d[i - 1];
+      for (std::size_t j = 0; j < i; ++j) d[j] = v(i - 1, j), v(i, j) = 0, v(j, i) = 0;
+    } else {
+      for (std::size_t k = 0; k < i; ++k) d[k] /= scale, h += d[k] * d[k];
+      double f = d[i - 1], g = std::sqrt(h);
+      if (f > 0) g = -g;
+      e[i] = scale * g;
+      h -= f * g;
+      d[i - 1] = f - g;
+      for (std::size_t j = 0; j < i; ++j) e[j] = 0;
+      for (std::size_t j = 0; j < i; ++j) {
+        f = d[j];
+        v(j, i) = f;
+        g = e[j] + v(j, j) * f;
+        for (std::size_t k = j + 1; k <= i - 1; ++k) g += v(k, j) * d[k], e[k] += v(k, j) * f;
+        e[j] = g;
       }
+      f = 0;
+      for (std::size_t j = 0; j < i; ++j) e[j] /= h, f += e[j] * d[j];
+      const double hh = f / (h + h);
+      for (std::size_t j = 0; j < i; ++j) e[j] -= hh * d[j];
+      for (std::size_t j = 0; j < i; ++j) {
+        f = d[j], g = e[j];
+        for (std::size_t k = j; k <= i - 1; ++k) v(k, j) -= (f * e[k] + g * d[k]);
+        d[j] = v(i - 1, j);
+        v(i, j) = 0;
+      }
+    }
+    d[i] = h;
   }
-  w.resize(n);
-  for (std::size_t i = 0; i < n; ++i) w[i] = a[i * n + i];
+  for (std::size_t i = 0; i + 1 < n; ++i) {
+    v(n - 1, i) = v(i, i);
+    v(i, i) = 1;
+    const double h = d[i + 1];
+    if (h != 0) {
+      for (std::size_t k = 0; k <= i; ++k) d[k] = v(k, i + 1) / h;
+      for (std::size_t j = 0; j <= i; ++j) {
+        double g = 0;
+        for (std::size_t k = 0; k <= i; ++k) g += v(k, i + 1) * v(k, j);
+        for (std::size_t k = 0; k <= i; ++k) v(k, j) -= g * d[k];
+      }
+    }
+    for (std::size_t k = 0; k <= i; ++k) v(k, i + 1) = 0;
+  }
+  for (std::size_t j = 0; j < n; ++j) d[j] = v(n - 1, j), v(n - 1, j) = 0;
+  v(n - 1, n - 1) = 1;
+  e[0] = 0;
+  // Implicit QL.
+  for (std::size_t i = 1; i < n; ++i) e[i - 1] = e[i];
+  e[n - 1] = 0;
+  double f = 0, tst1 = 0;
+  const double eps = std::ldexp(1.0, -52);
+  for (std::size_t l = 0; l < n; ++l) {
+    tst1 = std::max(tst1, std::fabs(d[l]) + std::fabs(e[l]));
+    std::size_t m = l;
+    while (m < n) {
+      if (std::fabs(e[m]) <= eps * tst1) break;
+      ++m;
+    }
+    if (m > l) {
+      for (int iter = 0; iter < 60; ++iter) {
+        double g = d[l];
+        double p = (d[l + 1] - g) / (2 * e[l]);
+        double r = std::hypot(p, 1.0);
+        if (p < 0) r = -r;
+        d[l] = e[l] / (p + r);
+        d[l + 1] = e[l] * (p + r);
+        const double dl1 = d[l + 1];
+        double h = g - d[l];
+        for (std::size_t i = l + 2; i < n; ++i) d[i] -= h;
+        f += h;
+        p = d[m];
+        double c = 1, c2 = c, c3 = c, el1 = e[l + 1], s = 0, s2 = 0;
+        for (std::size_t ii = m; ii-- > l;) {
+          c3 = c2, c2 = c, s2 = s;
+          g = c * e[ii], h = c * p;
+          r = std::hypot(p, e[ii]);
+          e[ii + 1] = s * r;
+          s = e[ii] / r, c = p / r;
+          p = c * d[ii] - s * g;
+          d[ii + 1] = h + s * (c * g + s * d[ii]);
+          for (std::size_t k = 0; k < n; ++k) {
+            h = v(k, ii + 1);
+            v(k, ii + 1) = s * v(k, ii) + c * h;
+            v(k, ii) = c * v(k, ii) - s * h;
+          }
+        }
+        p = -s * s2 * c3 * el1 * e[l] / dl1;
+        e[l] = s * p;
+        d[l] = c * p;
+        if (!(std::fabs(e[l]) > eps * tst1)) break;
+      }
+    }
+    d[l] += f;
+    e[l] = 0;
+  }
+  w = d;
 }
 
 // (G)^(-1/2) of a symmetric positive semi-definite matrix; directions with no variance are dropped.
 std::vector<double> invSqrt(std::vector<double> G, std::size_t n) {
   std::vector<double> w, V;
-  jacobi(G, n, w, V);
+  eigenSymmetric(G, n, w, V);
   const double top = *std::max_element(w.begin(), w.end());
   std::vector<double> out(n * n, 0.0);
   for (std::size_t k = 0; k < n; ++k) {
@@ -200,22 +287,7 @@ void referenceChunk(const Plan& p, std::size_t c, std::vector<double>& z, std::v
       if (at(4, t, a) > 0.5) el.push_back(a);
     for (std::size_t k = 0; k < K; ++k) {
       const std::size_t fam = k / H, h = p.horizons[k % H];
-      const double fh = static_cast<double>(h);
-      for (std::size_t a : el) {
-        const double lc = at(0, t, a), ret = lc - at(0, t - h, a);
-        const double d1 = at(1, t, a) - at(1, t - h, a), d2 = at(2, t, a) - at(2, t - h, a);
-        const double vol = std::sqrt(std::max(0.0, (d2 - d1 * d1 / fh) / (fh - 1.0)));
-        double x;
-        if (fam == 0) x = ret;
-        else if (fam == 1) x = -vol;
-        else if (fam == 2) {
-          double mx = lc;
-          for (std::size_t u = 1; u < h; ++u) mx = std::max(mx, at(0, t - u, a));
-          x = lc - mx;
-        } else if (fam == 3) x = vol > 0 ? ret / (vol * std::sqrt(fh)) : 0.0;
-        else x = -(at(3, t, a) - at(3, t - h, a)) / fh;
-        val[a] = x;
-      }
+      for (std::size_t a : el) val[a] = detail::signal<double>(fam, h, t, [&](std::size_t tb, std::size_t u) { return at(tb, u, a); });
       order = el;
       std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return val[x] < val[y]; });
       const double n = static_cast<double>(el.size()), sd = std::sqrt(std::max((n * n - 1) / 12.0, 1e-12));
