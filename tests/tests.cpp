@@ -213,7 +213,7 @@ TEST(rolling_top_ten_holds_ten_and_uses_no_future) {
   const auto f = ofm::runModel(s.market);
   const auto bt = ofm::backtest(s.market, f, ofm::Costs{}, s.series);
   const auto r = ofm::topKBacktests(s.market, f, ofm::Costs{}, bt, 10);
-  CHECK(r.size() == 3);
+  CHECK(r.size() == 1 && r[0].dayTrades);
   // The daily ranking holds exactly the 10 best at the last close after the next open's orders.
   std::size_t kept = 0;
   for (const auto& o : r[0].plan)

@@ -197,14 +197,13 @@ std::pair<double, double> firstTouch(double mu, double sigma, double lo, double 
 
 // Today's 10 best by expected return, each bought at the next open and sold the same day at its
 // stop-loss, its take-profit (stop first when both are touched) or the close. Levels are multiples
-// of the stock's open-to-close volatility (exponentially weighted, half-life the forecast's life);
-// the multiples are the pair whose shadow has grown most so far. Every trade pays a round trip.
-TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const Costs& costs, const std::vector<double>& gridK,
-                     std::size_t K, std::size_t start) {
-  const std::size_t T = m.T(), N = m.N(), G = gridK.size(), s = in.s;
+// of the stock's open-to-close volatility (exponentially weighted, half-life the forecast's life),
+// learnt from the bars of the trades before (below). Every trade pays a round trip.
+TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const Costs& costs, std::size_t K, std::size_t start) {
+  const std::size_t T = m.T(), N = m.N(), s = in.s;
   const double buy = costs.buyBps * 1e-4, sell = costs.sellBps * 1e-4;
   TopKResult r;
-  r.name = "top 10 by expected return", r.K = K, r.start = start, r.gridK = gridK, r.oneDay = r.dayTrades = true;
+  r.name = "top 10 by expected return", r.K = K, r.start = start, r.oneDay = r.dayTrades = true;
   // Open-to-close volatility known at each close.
   Panel iv(T, N);
   std::vector<double> var(N, kNaN);
@@ -219,11 +218,6 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       if (std::isfinite(var[i]) && var[i] > 0) iv(t, i) = std::sqrt(var[i]);
     }
   }
-  // Probabilities of touching each level first within the day, per pair: how often it happened in
-  // the trades before (no later bar is looked at); before any trade, the probability for a
-  // Brownian day (scale-free in volatilities, evaluated at a 2% day).
-  std::vector<double> pS0(G * G), pT0(G * G);
-  for (std::size_t c = 0; c < G * G; ++c) std::tie(pS0[c], pT0[c]) = firstTouch(0, 0.02, -0.02 * gridK[c / G], 0.02 * gridK[c % G], 1.0, 1000 + c);
   struct Trade { std::size_t i; double o, h, l, c, sig, e, ex, v; };
   std::vector<std::vector<Trade>> days;
   std::vector<double> all;  // the day's mean open-to-close over all ranked stocks
@@ -256,71 +250,108 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     else if (x.h >= take) px = take, why = Exit::Take;
     return (px / x.o) * (1 - sell) / (1 + buy) - 1;
   };
-  const std::size_t D = days.size();
-  std::vector<std::vector<double>> shadow(G * G, std::vector<double>(D, 0.0));
-  for (std::size_t c = 0; c < G * G; ++c)
-    for (std::size_t j = 0; j < D; ++j) {
-      double sum = 0;
-      Exit why;
-      for (const auto& x : days[j]) sum += outcome(x, gridK[c / G], gridK[c % G], why);
-      shadow[c][j] = days[j].empty() ? 0.0 : sum / static_cast<double>(days[j].size());
+  // The levels are learnt from the trades so far, in each stock's own volatility: how far below the
+  // open the day's low went (Lo), how far above the high went (Hi), and the close (log). The stop
+  // a and the take-profit b are those that would have earned most on all of them (the round trip
+  // is paid either way), searched over every value the data allow, "none" included, by turns
+  // (the best a for the current b, then the best b for that a, until neither moves).
+  struct Obs { double lo, hi, c, sig; };
+  std::vector<Obs> obs;
+  std::vector<std::size_t> byLo, byHi;  // obs sorted by lo and by hi
+  auto bestStop = [&](double b) {
+    // Stopped when lo >= a: earns -a sig; otherwise the take-profit or the close.
+    const std::size_t n = byLo.size();
+    double total = 0;
+    for (const auto& x : obs) total += x.hi >= b ? b * x.sig : x.c;
+    double bestA = kInf, best = total, head = 0, tailSig = 0;
+    for (const auto& x : obs) tailSig += x.sig;
+    for (std::size_t k = 0; k < n; ++k) {
+      const Obs& x = obs[byLo[k]];
+      const double v = head - x.lo * tailSig;  // a = this low: it and all deeper ones stop
+      if (v > best + 1e-12) best = v, bestA = x.lo;
+      head += x.hi >= b ? b * x.sig : x.c, tailSig -= x.sig;
     }
-  std::vector<double> growth(G * G, 0.0);
-  std::vector<std::size_t> pick(D + 1);
-  for (std::size_t j = 0; j <= D; ++j) {
-    std::size_t best = G * G - 1;
-    for (std::size_t c = 0; c < G * G; ++c)
-      if (growth[c] > growth[best] + 1e-12) best = c;
-    pick[j] = best;
-    if (j < D)
-      for (std::size_t c = 0; c < G * G; ++c) growth[c] += std::log1p(shadow[c][j]);
-  }
+    return bestA;
+  };
+  auto bestTake = [&](double a) {
+    const std::size_t n = byHi.size();
+    // Among the trades not stopped: take-profit when hi >= b, earning b sig; otherwise the close.
+    double head = 0, tailSig = 0, total = 0;
+    for (const auto& x : obs)
+      if (x.lo < a) tailSig += x.sig, total += x.c;
+    double bestB = kInf, best = total;
+    for (std::size_t k = 0; k < n; ++k) {
+      const Obs& x = obs[byHi[k]];
+      if (!(x.lo < a)) continue;
+      const double v = head + x.hi * tailSig;  // b = this high: it and all higher ones take profit
+      if (v > best + 1e-12) best = v, bestB = x.hi;
+      head += x.c, tailSig -= x.sig;
+    }
+    return bestB;
+  };
+  auto learn = [&](double& a, double& b) {
+    a = kInf, b = kInf;
+    if (obs.empty()) return;
+    for (int it = 0; it < 50; ++it) {
+      const double nb = bestTake(a), na = bestStop(nb);
+      if (na == a && nb == b) break;
+      a = na, b = nb;
+    }
+  };
+  auto probs = [&](double a, double b) {
+    double ns = 0, nt = 0;
+    for (const auto& x : obs) ns += x.lo >= a, nt += x.lo < a && x.hi >= b;
+    const double n = std::max<double>(1, static_cast<double>(obs.size()));
+    return std::make_pair(obs.empty() ? 0.0 : ns / n, obs.empty() ? 0.0 : nt / n);
+  };
+  auto insertSorted = [&](std::vector<std::size_t>& v, std::size_t idx, double Obs::*key) {
+    const double k = obs[idx].*key;
+    auto it = std::lower_bound(v.begin(), v.end(), k, [&](std::size_t q, double val) { return obs[q].*key < val; });
+    v.insert(it, idx);
+  };
+
   // The live portfolio, its trades and the evaluation against the bars.
+  const std::size_t D = days.size();
   TopKEvaluation& ev = r.eval;
   double sxy = 0, sxx = 0, syy = 0, sx = 0, sy = 0;
-  std::vector<double> hitS(G * G, 0.0), hitT(G * G, 0.0);
-  double seen = 0;
-  auto prob = [&](std::size_t c) {
-    return seen > 0 ? std::make_pair(hitS[c] / seen, hitT[c] / seen) : std::make_pair(pS0[c], pT0[c]);
-  };
-  std::vector<double> pS(G * G), pT(G * G);
   for (std::size_t j = 0; j < D; ++j) {
-    const std::size_t c = pick[j], d = s + 1 + j;
-    for (std::size_t q = 0; q < G * G; ++q) std::tie(pS[q], pT[q]) = prob(q);
-    const double a = gridK[c / G], b = gridK[c % G];
-    r.daily.push_back(shadow[c][j]);
-    r.kStop.push_back(a), r.kTake.push_back(b);
-    r.turnover.push_back(days[j].empty() ? 0.0 : 2.0);
-    if (!days[j].empty()) ++ev.days;
-    double top = 0;
+    const std::size_t d = s + 1 + j;
+    double a, b;
+    learn(a, b);
+    const auto [pS, pT] = probs(a, b);
+    double sum = 0, sum0 = 0, top = 0;
     for (const auto& x : days[j]) {
-      Exit why;
+      Exit why, why0;
       const double ret = outcome(x, a, b, why);
+      sum += ret, sum0 += outcome(x, kInf, kInf, why0);
       r.trades.push_back({x.i, d, d, ret, why});
       ++ev.trades;
-      ev.predStop += pS[c], ev.predTake += pT[c], ev.realStop += why == Exit::Stop, ev.realTake += why == Exit::Take;
+      ev.predStop += pS, ev.predTake += pT, ev.realStop += why == Exit::Stop, ev.realTake += why == Exit::Take;
       const double e = std::isfinite(x.e) ? x.e : 0.0;
       ev.expected += e, ev.realised += x.ex, ev.signHit += (e > 0) == (x.ex > 0);
       sx += e, sy += x.ex, sxx += e * e, syy += x.ex * x.ex, sxy += e * x.ex;
       top += x.c / x.o - 1;
     }
-    if (!days[j].empty()) ev.grossTop += top / static_cast<double>(days[j].size()), ev.grossAll += all[j];
-    // Then the day's bars join the record of every pair.
-    for (std::size_t q = 0; q < G * G; ++q)
-      for (const auto& x : days[j]) {
-        Exit why;
-        outcome(x, gridK[q / G], gridK[q % G], why);
-        hitS[q] += why == Exit::Stop, hitT[q] += why == Exit::Take;
-      }
-    seen += static_cast<double>(days[j].size());
+    const double nd = static_cast<double>(days[j].size());
+    r.daily.push_back(nd > 0 ? sum / nd : 0.0);
+    r.noStops.push_back(nd > 0 ? sum0 / nd : 0.0);
+    r.kStop.push_back(a), r.kTake.push_back(b);
+    r.turnover.push_back(nd > 0 ? 2.0 : 0.0);
+    if (nd > 0) ++ev.days, ev.grossTop += top / nd, ev.grossAll += all[j];
     if (j + 1 == D) {
       r.lastDate = m.dates[d];
       for (const auto& x : days[j]) {
         Exit why;
         const double ret = outcome(x, a, b, why);
-        r.lastDay.push_back({x.i, std::exp(-a * x.sig) - 1, std::exp(b * x.sig) - 1, std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS[c], pT[c],
-                             x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
+        r.lastDay.push_back({x.i, std::isfinite(a) ? std::exp(-a * x.sig) - 1 : kNaN, std::isfinite(b) ? std::exp(b * x.sig) - 1 : kNaN,
+                             std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS, pT, x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
       }
+    }
+    // Then the day's bars join what is learnt from.
+    for (const auto& x : days[j]) {
+      obs.push_back({-std::log(x.l / x.o) / x.sig, std::log(x.h / x.o) / x.sig, std::log(x.c / x.o), x.sig});
+      insertSorted(byLo, obs.size() - 1, &Obs::lo);
+      insertSorted(byHi, obs.size() - 1, &Obs::hi);
     }
   }
   if (ev.trades) {
@@ -330,36 +361,22 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     ev.ic = vx > 0 && vy > 0 ? cv / std::sqrt(vx * vy) : 0.0;
   }
   if (ev.days) ev.grossTop /= static_cast<double>(ev.days), ev.grossAll /= static_cast<double>(ev.days);
-  r.noStops = shadow[G * G - 1];
-  for (const auto& sh : shadow) r.grid.push_back(metrics(sh).sharpe);
-  r.kStop.push_back(gridK[pick[D] / G]), r.kTake.push_back(gridK[pick[D] % G]);
   // The plan for the next day: the 10 best at the last close, each bought at the open and sold by the close.
+  double a, b;
+  learn(a, b);
+  r.kStop.push_back(a), r.kTake.push_back(b);
+  const auto [pS, pT] = probs(a, b);
   const std::size_t L = T - 1;
   r.life = in.life[L];
-  double a = r.kStop.back(), b = r.kTake.back();
-  const bool advA = !std::isfinite(a), advB = !std::isfinite(b);
-  {
-    std::size_t bs = G * G, bt = G * G;
-    for (std::size_t c = 0; c < G * G; ++c) {
-      if (std::isfinite(gridK[c / G]) && gridK[c % G] == b && (bs == G * G || growth[c] > growth[bs])) bs = c;
-      if (std::isfinite(gridK[c % G]) && gridK[c / G] == a && (bt == G * G || growth[c] > growth[bt])) bt = c;
-    }
-    if (advA && bs < G * G) a = gridK[bs / G];
-    if (advB && bt < G * G) b = gridK[bt % G];
-  }
   r.orders.assign(N, 0);
   for (std::size_t q = 0; q < in.order[L].size() && r.plan.size() < K; ++q) {
     const std::size_t i = in.order[L][q];
     if (!std::isfinite(iv(L, i))) continue;
     TopKOrder o;
-    o.asset = i, o.action = 1, o.rank = q + 1, o.open = 0, o.advisoryStop = advA, o.advisoryTake = advB, o.sigma = iv(L, i);
+    o.asset = i, o.action = 1, o.rank = q + 1, o.open = 0, o.sigma = iv(L, i);
     const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
-    o.stop = std::exp(-a * o.sigma) - 1, o.take = std::exp(b * o.sigma) - 1, o.close = std::expm1(e);
-    std::size_t c = 0;
-    for (std::size_t g = 0; g < G * G; ++g)
-      if (gridK[g / G] == a && gridK[g % G] == b) c = g;
-    std::tie(o.pStopDay, o.pTakeDay) = prob(c);
-    o.pStopLife = o.pTakeLife = kNaN;
+    o.stop = std::isfinite(a) ? std::exp(-a * o.sigma) - 1 : kNaN, o.take = std::isfinite(b) ? std::exp(b * o.sigma) - 1 : kNaN, o.close = std::expm1(e);
+    o.pStopDay = pS, o.pTakeDay = pT, o.pStopLife = o.pTakeLife = kNaN;
     r.orders[i] = 1;
     r.plan.push_back(o);
   }
@@ -421,9 +438,10 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
 
   std::vector<double> gridK = {0.25, 0.5, 1, 2, 4, kInf};
   const std::size_t G = gridK.size();
-  // 0: today's 10 best by expected return; 1: the same ranking, swapping only when the gain over
-  // the forecast's life beats a round trip; 2: the 10 largest.
-  for (int which = 0; which < 3; ++which) {
+  // Today's 10 best by expected return as same-day trades (dayTrades). The multi-day portfolios
+  // below (1: swapping only when the gain over the forecast's life beats a round trip; 2: the 10
+  // largest) choose their levels from a fixed menu of multiples and are not run.
+  for (int which = 0; which < 1; ++which) {
     Inputs in = base;
     in.returnUnits = which == 1;
     in.oneDay = which == 0;
@@ -438,7 +456,7 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
       std::stable_sort(o.begin(), o.end(), [&](std::size_t p, std::size_t q) { return in.score(t, p) > in.score(t, q); });
     }
     if (which == 0) {
-      results.push_back(dayTrades(m, f, in, costs, gridK, K, bt.start));
+      results.push_back(dayTrades(m, f, in, costs, K, bt.start));
       continue;
     }
     TopKResult r;
@@ -742,10 +760,12 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
                     100 * s.mean, s.days);
       o << b;
     }
-    std::snprintf(b, sizeof b, "stop now %s, take-profit now %s (of the volatility over %s)\n",
+    std::snprintf(b, sizeof b, "stop now %s, take-profit now %s (of the volatility over %s%s)\n",
                   kName(r.kStop.empty() ? kInf : r.kStop.back()).c_str(), kName(r.kTake.empty() ? kInf : r.kTake.back()).c_str(),
-                  r.oneDay ? "one day" : "the forecast's life");
-    o << b << "hindsight Sharpe of each fixed pair (rows stop, columns take-profit):\n        ";
+                  r.oneDay ? "one day" : "the forecast's life", r.dayTrades ? "; learnt from the bars of the trades before" : "; the shadow that has grown most");
+    o << b;
+    if (r.gridK.empty()) continue;
+    o << "hindsight Sharpe of each fixed pair (rows stop, columns take-profit):\n        ";
     const std::size_t G = r.gridK.size();
     for (double k : r.gridK) std::snprintf(b, sizeof b, "%7s", kName(k).c_str()), o << b;
     o << "\n";
