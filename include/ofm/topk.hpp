@@ -1,0 +1,66 @@
+#pragma once
+
+// Rolling portfolio of the K most valuable stocks each day, with stop-loss and take-profit exits.
+//
+// Two meanings of "most valuable" are run side by side:
+//  - "expected return": the K stocks with the highest expected return from the model (E);
+//  - "largest": the K stocks with the highest traded value (close times volume, averaged over the
+//    model's longest horizon), the nearest measure of size the bars carry.
+// Decisions at each close, fills at the next open, K equal shares to start. A held stock leaves
+// when it drops out of the K (for the expected-return ranking: only when the best outsider's
+// expected return beats it by a round trip over the forecast's life). Exits free a slot, which
+// the best stock outside the portfolio fills at the next open with the cash.
+//
+// Stops and take-profits: a position bought at price P has a stop at P exp(-a w) and a take-profit
+// at P exp(b w), w = sigma sqrt(L): the stock's volatility over the forecast's life L (sigma the
+// exponentially weighted daily volatility with half-life L, both at the entry decision). Each day
+// the high and low are checked against them; a gap through a level fills at the open, and when
+// both are touched the stop is assumed first. The multipliers a and b are not set by hand: each
+// pair of a grid of powers of two (and "none") runs as a shadow portfolio, and each day the live
+// portfolio uses the pair whose shadow has grown most so far (no stops at all until one has).
+
+#include <string>
+#include <vector>
+
+#include "ofm/data.hpp"
+#include "ofm/model.hpp"
+#include "ofm/trade.hpp"
+
+namespace ofm {
+
+enum class Exit : char { Stop = 's', Take = 't', Rotate = 'r', Open = 'o' };
+
+struct TopKTrade {
+  std::size_t asset = 0, entryDay = 0, exitDay = 0;
+  double ret = 0;  ///< net of costs
+  Exit reason = Exit::Open;
+};
+
+struct TopKPosition {
+  std::size_t asset = 0, entryDay = 0;
+  double ret = 0;       ///< net of the purchase cost, to the last close
+  double stopDist = 0;  ///< stop level / last close - 1 (NaN: no stop)
+  double takeDist = 0;  ///< take-profit level / last close - 1 (NaN: none)
+};
+
+struct TopKResult {
+  std::string name;
+  std::size_t K = 0, start = 0;
+  std::vector<double> daily;      ///< net returns from `start`, adaptive stops
+  std::vector<double> noStops;    ///< the same portfolio without stops or take-profits
+  std::vector<double> turnover;
+  std::vector<double> kStop, kTake;  ///< multipliers used each day (inf: none)
+  std::vector<TopKTrade> trades;
+  std::vector<double> grid;       ///< Sharpe of each fixed (stop, take) pair over the whole period, row-major
+  std::vector<double> gridK;      ///< the multipliers of the grid (inf: none)
+  std::vector<TopKPosition> positions;  ///< at the last close
+  std::vector<int> orders;        ///< at the last close: +1 buy, -1 sell at the next open
+};
+
+/// Both rankings, from the same start as the backtest (bt.start).
+std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const Costs& costs, const Backtest& bt, std::size_t K = 10);
+
+std::string topKJson(const Market& m, const std::vector<TopKResult>& r, const Backtest& bt);
+std::string topKText(const Market& m, const std::vector<TopKResult>& r, const Backtest& bt);
+
+}  // namespace ofm

@@ -15,6 +15,7 @@
 #include <string>
 
 #include "ofm/report.hpp"
+#include "ofm/topk.hpp"
 
 namespace {
 std::string readFile(const std::string& path) {
@@ -60,8 +61,13 @@ int main(int argc, char** argv) {
     const ofm::Forecast f = ofm::runModel(m, engine);
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
     const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);
-    std::cout << ofm::reportText(m, f, bt, costs, &ms);
-    if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms);
+    const auto top = ofm::topKBacktests(m, f, costs, bt, 10);
+    std::cout << ofm::reportText(m, f, bt, costs, &ms) << ofm::topKText(m, top, bt);
+    if (!json.empty()) {
+      std::string j = ofm::reportJson(m, f, bt, costs, &ms);
+      j.pop_back();  // add the rolling top-10 portfolios to the report object
+      std::ofstream(json) << j << ",\"top10\":" << ofm::topKJson(m, top, bt) << "}";
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

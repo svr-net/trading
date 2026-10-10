@@ -27,6 +27,24 @@
     <p class="muted" id="holdings"></p>
   </section>
 
+  <section id="top10" hidden aria-labelledby="top10-title">
+    <h2 id="top10-title">Rolling top 10 with stop-loss and take-profit</h2>
+    <p class="muted" id="top10-note"></p>
+    <div class="tabs" role="group" aria-label="Ranking" id="top10-tabs"></div>
+    <div class="verdict" id="top10-verdict"></div>
+    <div class="chart"><canvas id="top10-chart" height="320" aria-label="Growth of 1 for the rolling top 10 with and without stops, and the market"></canvas><div class="legend" id="top10-legend"></div></div>
+    <div class="two">
+      <div><h3>Performance</h3><div class="table-scroll"><table id="top10-parts"></table></div></div>
+      <div><h3>How positions ended</h3><div class="table-scroll"><table id="top10-exits"></table></div>
+        <h3 style="margin-top:18px">Held at the last close</h3><div class="table-scroll"><table id="top10-pos"></table></div>
+        <p class="muted" id="top10-orders"></p></div>
+    </div>
+    <div class="two">
+      <div><h3>Calendar years</h3><div class="table-scroll"><table id="top10-years"></table></div></div>
+      <div><h3>Each fixed stop / take-profit pair, in hindsight</h3><p class="hint">Sharpe ratio over the whole period; rows the stop, columns the take-profit, in volatilities over the forecast's life. The live portfolio never sees this table: each day it uses the pair that had grown most up to then.</p><div class="table-scroll"><table id="top10-grid"></table></div></div>
+    </div>
+  </section>
+
   <section id="results" hidden>
     <div class="verdict" id="verdict"></div>
 

@@ -13,7 +13,8 @@ add_library(ofm
   src/kernels.cpp
   src/trade.cpp
   src/structure.cpp
-  src/report.cpp)
+  src/report.cpp
+  src/topk.cpp)
 target_include_directories(ofm PUBLIC include)
 if(NOT MSVC)
   target_compile_options(ofm PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
