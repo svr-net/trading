@@ -125,9 +125,12 @@ class Result:
     persistence: list[float] = field(default_factory=list)
 
 
-def run(close: pd.DataFrame, volume: pd.DataFrame, buy_bps: float = 60.0, sell_bps: float = 10.0, min_months: int = 12) -> Result:
+def run(close: pd.DataFrame, volume: pd.DataFrame, buy_bps: float = 60.0, sell_bps: float = 10.0, min_months: int = 12,
+        states=None) -> Result:
     """Backtests the model and its benchmarks over the same days; everything decided at a
-    month-end uses data up to that close only."""
+    month-end uses data up to that close only. `states(ends)` -> (len(ends) x k) market states
+    (1/0, -1 unknown) at the month-ends: with it, each factor's premium is estimated from the past
+    months that were in the same state, per state variable, and the estimates are averaged."""
     C, V = close.to_numpy(), volume.to_numpy()
     T, N = C.shape
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -137,6 +140,7 @@ def run(close: pd.DataFrame, volume: pd.DataFrame, buy_bps: float = 60.0, sell_b
     if len(ends) < min_months + 3:
         raise ValueError("not enough history: need a year for signals and a year of factor records")
     buy, sell = buy_bps * 1e-4, sell_bps * 1e-4
+    st = states(ends) if states is not None else None
 
     # Pass 1: signals, orthonormal exposures and each factor's realised return per month.
     exposures, factor_returns = [], []
@@ -176,6 +180,10 @@ def run(close: pd.DataFrame, volume: pd.DataFrame, buy_bps: float = 60.0, sell_b
         p = ends[m]
         hist = np.array(factor_returns[:m])  # months that ended by this close
         prem = shrunk_premia(hist, min_months)
+        if st is not None:
+            parts = [shrunk_premia(hist[st[:m, j] == st[m, j]], min_months) for j in range(st.shape[1]) if st[m, j] >= 0]
+            if parts:
+                prem = np.mean(parts, axis=0)
         premia_rows.append(prem)
         raw_rows.append(hist.mean(axis=0))
         se = hist.std(axis=0, ddof=1) / np.sqrt(len(hist))

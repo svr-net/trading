@@ -7,8 +7,9 @@ name: UK portfolio
 on:
   workflow_dispatch:
     inputs:
-      universe: { description: 'Most traded shares to download', default: '120' }
-      years: { description: 'Years of history', default: '6' }
+      universe: { description: 'Most traded shares to download', default: '250' }
+      years: { description: 'Years of history (the plan serves about 9)', default: '9' }
+      series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP'
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
 
 permissions:
@@ -46,12 +47,12 @@ jobs:
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years "${{ inputs.years || '6' }}" --currency GBP --out data/LSE.csv
+        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv
       - name: Download futures, index and currency series
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols LIFFE:XY00,LIFFE:YY00,LIFFE:GY00,CFE:VIY00,EUREX:GGY00,INDEX:SG2C,FOREX:GBPUSD | tee -a "$GITHUB_STEP_SUMMARY"
+        run: node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |
@@ -73,3 +74,8 @@ jobs:
         run: |
           python model/run_daily.py data/LSE.csv 2>/dev/null | tee daily-report.txt
           { echo '```'; cat daily-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Model with futures inputs (results only)
+        if: ${{ !inputs.probe }}
+        run: |
+          python model/run_futures.py data/LSE.csv data/futures.csv | tee futures-report.txt
+          { echo '```'; cat futures-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

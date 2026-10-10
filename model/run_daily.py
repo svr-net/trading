@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from daily import DailySpec, run_daily  # noqa: E402
+from adaptive import run_adaptive  # noqa: E402
+from daily import DailySpec, prepare_daily, simulate_daily  # noqa: E402
 from orthofactor import load_bars, metrics  # noqa: E402
 
 
@@ -51,7 +52,8 @@ def main() -> int:
     print(f"rules: stop-loss {spec.sl_atr} x ATR(14), take-profit {spec.tp_atr} x ATR(14), up to {spec.max_positions} positions of "
           f"1/{spec.max_positions} equity, {spec.cooldown}-day cool-down after a stop; fills at the next open; "
           f"costs {spec.buy_bps:.0f} bp on purchases, {spec.sell_bps:.0f} bp on sales")
-    res = run_daily(bars, spec)
+    pr = prepare_daily(bars, spec.min_months)
+    res = simulate_daily(pr, spec)
     n = len(res.dates)
     full = block(res, 0, n, "Whole period")
     first = block(res, 0, n // 2, "First half")
@@ -83,10 +85,24 @@ def main() -> int:
     if not a.no_grid:
         print("\nSensitivity (information only; does not decide the pass mark): whole-period Sharpe and annual return")
         for sl, tp in [(1.5, 3.0), (2.0, 4.0), (3.0, 6.0), (2.0, 1e9), (1e9, 1e9)]:
-            r = run_daily(bars, replace(spec, sl_atr=sl, tp_atr=tp))
+            r = simulate_daily(pr, replace(spec, sl_atr=sl, tp_atr=tp))
             m = metrics(r.returns["model (daily, SL/TP)"])
             label = f"stop {'none' if sl > 1e8 else f'{sl:g} ATR'}, take {'none' if tp > 1e8 else f'{tp:g} ATR'}"
             print(f"  {label:<28} Sharpe {m['sharpe']:5.2f}  ann.ret {m['ann_return']:6.1%}  max DD {m['max_dd']:5.1%}  trades {len(r.trades)}")
+    print("\nAdaptive settings: each day follow the stop / take-profit / position-count book (or the market) with the best"
+          " shrunk record so far; switching pays the trades between books")
+    ad = run_adaptive(pr, spec)
+    mk = res.returns["market (buy and hold)"]
+    for title, lo, hi in [("whole period", 0, n), ("first half", 0, n // 2), ("second half", n // 2, n)]:
+        m, b = metrics(ad.returns[lo:hi]), metrics(mk[lo:hi])
+        print(f"  {title:<13} adaptive Sharpe {m['sharpe']:5.2f} ({m['ann_return']:6.1%} a year)   market {b['sharpe']:5.2f} ({b['ann_return']:6.1%})")
+    used = np.bincount(ad.choice, minlength=len(ad.names)) / len(ad.choice)
+    print(f"  {ad.switches} switches costing {ad.switch_cost:.1%} of equity in total; time in each book:")
+    for i in np.argsort(-used)[:6]:
+        if used[i] > 0:
+            print(f"    {ad.names[i]:<34} {used[i]:5.0%}")
+    ok_ad = all(metrics(ad.returns[lo:hi])["sharpe"] > metrics(mk[lo:hi])["sharpe"] for lo, hi in [(0, n), (0, n // 2), (n // 2, n)])
+    print(f"  Pass mark for the adaptive version: {'PASS' if ok_ad else 'FAIL'}")
     print("Caveats: the universe is today's most traded shares that have the history (survivorship bias); prices exclude"
           " dividends; fills at the open and at stop levels assume no extra slippage; past results do not predict future ones.")
     return 0
