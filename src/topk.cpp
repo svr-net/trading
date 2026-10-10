@@ -301,19 +301,36 @@ struct Learner {
     return bestB;
   }
   // Whether to trade, with the levels and their ratio.
+  // Two targets learnt separately: how often the stop is touched and how often the take-profit
+  // is. Both start at 50% (the stop at the median fall below the open, the take-profit at the median
+  // rise above it); then, in turns, the take-profit for the current stop and the stop for that
+  // take-profit move to whatever touch rate gives the best return per unit of risk on the days so
+  // far, until neither moves. The stock is traded when that is above zero.
   bool learn(double& a, double& b, double& lastScore) const {
-    a = byLo.empty() ? kInf : plausibleMax(byLo, &Obs::lo), b = byHi.empty() ? kInf : plausibleMax(byHi, &Obs::hi), lastScore = kNaN;
+    a = kInf, b = kInf, lastScore = kNaN;
     if (obs.size() < 2) return false;
-    double score = -kInf;
+    const double floorL = minMove / (sigSum / static_cast<double>(obs.size()));
+    a = std::max(obs[byLo[byLo.size() / 2]].lo, floorL), b = std::max(obs[byHi[byHi.size() / 2]].hi, floorL);
+    auto score = [&](double sa, double sb) {
+      double s1 = 0, s2 = 0;
+      for (const auto& x : obs) {
+        const double v = x.lo >= sa ? -sa * x.sig + kcs : (x.hi >= sb ? sb * x.sig : x.c) + kc;
+        s1 += v, s2 += v * v;
+      }
+      return ratio(s1, s2, static_cast<double>(obs.size()));
+    };
+    double best = score(a, b);
     for (int it = 0; it < 50; ++it) {
       double s1, s2;
-      const double nb = bestTake(a, s1), na = bestStop(nb, s2);
-      score = s2;
+      const double nb = bestTake(a, s1);
+      const double na = bestStop(nb, s2);
+      if (!(s2 > best + 1e-12)) break;  // only a better pair replaces the current one
+      best = s2;
       if (na == a && nb == b) break;
       a = na, b = nb;
     }
-    lastScore = score;
-    return score > 0;
+    lastScore = best;
+    return best > 0;
   }
   std::pair<double, double> probs(double a, double b) const {
     double ns = 0, nt = 0;
