@@ -1,5 +1,7 @@
 # Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret) into the runner's
-# cache, reports what was downloaded (dates, symbols, rows) and backtests the model on it
+# cache, reports what was downloaded (dates, symbols, rows) and backtests the model on it. By
+# default the data already downloaded is reused from the cache (no API calls); 'refresh' downloads
+# again, and an incomplete cache falls back to a download
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in the cache and are never published.
 name: UK portfolio
@@ -11,6 +13,7 @@ on:
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
+      refresh: { description: 'Download fresh data from EODData (otherwise the cached download is used)', type: boolean, default: false }
 
 permissions:
   contents: read
@@ -47,12 +50,21 @@ jobs:
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv
+        run: |
+          ARGS=(--exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv)
+          if [ "${{ inputs.refresh }}" != "true" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
+            echo "Used the cached download" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            node tools/eoddata/fetch.mjs "${ARGS[@]}"
+          fi
       - name: Download futures, index and currency series
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
+          if [ "${{ inputs.refresh }}" != "true" ]; then MODE=--cached; else MODE=; fi
+          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |

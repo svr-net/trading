@@ -5,6 +5,8 @@
 //   EODDATA_API_KEY=... node tools/eoddata/fetch.mjs [--exchange LSE] [--universe 120] [--years 6] [--out data/LSE.csv]
 //
 // The key is read from the environment only; it is never written to disk or printed.
+// With --cached, no request is made: the newest cached responses (data/eoddata/, kept between
+// workflow runs by actions/cache) are used, whatever day they were downloaded.
 // Responses are cached under data/eoddata/ (git-ignored: EODData's licence does not allow
 // redistributing its data), so a re-run only fetches what is missing. Behind an HTTP proxy,
 // run Node with NODE_USE_ENV_PROXY=1 (Node >= 22.21).
@@ -23,8 +25,9 @@ const years = Number(opt('years', 6));
 const minDays = Number(opt('min-days', 750));
 const out = opt('out', `data/${exchange}.csv`);
 const cacheDir = path.join('data', 'eoddata', exchange);
+const cached = argv.includes('--cached');
 const key = process.env.EODDATA_API_KEY;
-if (!key) {
+if (!key && !cached) {
   console.error('Set EODDATA_API_KEY in the environment (never pass it on the command line).');
   process.exit(2);
 }
@@ -32,9 +35,24 @@ fs.mkdirSync(cacheDir, { recursive: true });
 
 const BASE = 'https://api.eoddata.com';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Cached mode: the newest cached file with the same name up to its date stamps.
+function newestCached(cacheName) {
+  const stem = cacheName.replace(/(-\d{4}-\d{2}-\d{2})+\.json$/, '');
+  const hits = fs.readdirSync(cacheDir).filter((f) => f.startsWith(stem + '-') && /(-\d{4}-\d{2}-\d{2})+\.json$/.test(f) &&
+    f.slice(stem.length + 1).replace(/\.json$/, '').split('-').length % 3 === 0);
+  if (!hits.length) return null;
+  hits.sort();
+  return path.join(cacheDir, hits[hits.length - 1]);
+}
+
 async function get(route, params = {}, cacheName) {
   const file = cacheName && path.join(cacheDir, cacheName);
   if (file && fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (cached) {
+    const hit = cacheName && newestCached(cacheName);
+    if (hit) return JSON.parse(fs.readFileSync(hit, 'utf8'));
+    throw new Error(`${route}: not in the cache`);
+  }
   const url = new URL(BASE + route);
   for (const [k, v] of Object.entries({ ...params, ApiKey: key })) if (v !== undefined) url.searchParams.set(k, v);
   for (let attempt = 0; ; attempt++) {
