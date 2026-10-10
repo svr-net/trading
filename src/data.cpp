@@ -118,6 +118,24 @@ std::map<std::string, std::vector<double>> parseSeriesCsv(const std::string& tex
   return out;
 }
 
+std::vector<double> equalWeightIndex(const Market& m) {
+  std::vector<double> level(m.T(), kNaN);
+  if (m.T() == 0) return level;
+  level[0] = 1.0;
+  std::vector<double> last(m.N(), kNaN);
+  for (std::size_t i = 0; i < m.N(); ++i) last[i] = m.close(0, i);
+  for (std::size_t t = 1; t < m.T(); ++t) {
+    double s = 0, n = 0;
+    for (std::size_t i = 0; i < m.N(); ++i) {
+      const double c = m.close(t, i);
+      if (c > 0 && last[i] > 0 && std::isfinite(m.close(t - 1, i))) s += c / last[i] - 1, n += 1;
+      if (c > 0) last[i] = c;
+    }
+    level[t] = level[t - 1] * (1 + (n > 0 ? s / n : 0.0));
+  }
+  return level;
+}
+
 namespace {
 
 // SplitMix64 + Box-Muller: the same numbers on every compiler and in WebAssembly.

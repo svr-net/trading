@@ -1,7 +1,10 @@
 // Runs the model and the backtest and prints the report (results only, no prices).
 //
 //   ofm_report [--csv stocks.csv] [--series futures.csv] [--engine reference|emulated]
-//              [--buy-bps 60] [--sell-bps 10] [--futures-bps 1] [--json out.json]
+//              [--buy-bps 60] [--sell-bps 10] [--futures-bps 1] [--json out.json] [--universe-index-hedge]
+//
+// --universe-index-hedge adds the stocks' own equal-weight index as a hedge series, a stand-in for
+// an index future on these stocks (FTSE 250 futures for a UK universe).
 //
 // Without --csv it runs on the synthetic sample market.
 #include <cstdio>
@@ -26,6 +29,7 @@ std::string readFile(const std::string& path) {
 int main(int argc, char** argv) {
   try {
     std::string csv, series, engine = "reference", json;
+    bool universeHedge = false;
     ofm::Costs costs;
     for (int k = 1; k < argc; ++k) {
       const std::string a = argv[k];
@@ -40,6 +44,7 @@ int main(int argc, char** argv) {
       else if (a == "--buy-bps") costs.buyBps = std::stod(next());
       else if (a == "--sell-bps") costs.sellBps = std::stod(next());
       else if (a == "--futures-bps") costs.futuresBps = std::stod(next());
+      else if (a == "--universe-index-hedge") universeHedge = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Market m;
@@ -51,6 +56,7 @@ int main(int argc, char** argv) {
       m = ofm::parseMarketCsv(readFile(csv));
       if (!series.empty()) s = ofm::parseSeriesCsv(readFile(series), m.dates);
     }
+    if (universeHedge) s[ofm::kUniverseIndex] = ofm::equalWeightIndex(m);
     const ofm::Forecast f = ofm::runModel(m, engine);
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
     const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);

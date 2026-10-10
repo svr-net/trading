@@ -51,6 +51,7 @@ async function run() {
       session.loadSample();
     }
     const costs = [+$('buy-bps').value || 0, +$('sell-bps').value || 0, +$('fut-bps').value || 0];
+    session.setUniverseHedge($('universe-hedge').checked);
     const engine = $('engine').value;
     let json, note;
     const t0 = performance.now();
@@ -74,6 +75,7 @@ async function run() {
         const fresh = new ofm.Session();
         if ($('src-files').checked) fresh.loadCsv(await readFile($('stocks-file')), await readFile($('series-file')));
         else fresh.loadSample();
+        fresh.setUniverseHedge($('universe-hedge').checked);
         status('WebGPU unavailable; running the emulated GPU…');
         await yieldToPaint();
         json = fresh.runCpu('emulated', ...costs);

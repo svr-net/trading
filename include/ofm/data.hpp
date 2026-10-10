@@ -38,6 +38,12 @@ Market parseMarketCsv(const std::string& text);
 /// after its last bar.
 std::map<std::string, std::vector<double>> parseSeriesCsv(const std::string& text, const std::vector<std::string>& dates);
 
+/// The universe's own equal-weight index (level, from 1), each day's change the mean close-to-close
+/// return of the stocks with bars on both days. A stand-in for an index future on these stocks
+/// (FTSE 250 futures for a UK universe) when no futures history is available.
+constexpr const char* kUniverseIndex = "UNIVERSE:EQUAL-WEIGHT INDEX";
+std::vector<double> equalWeightIndex(const Market& m);
+
 /// A synthetic market for the demo and the tests: a market factor, a slow momentum effect, a
 /// short-term reversal and a low-volatility premium are built in, with intraday ranges and
 /// volumes; and an index future that follows the market. The model is not told any of this.

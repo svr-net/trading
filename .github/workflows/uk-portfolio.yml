@@ -77,6 +77,11 @@ jobs:
           mkdir -p report
           ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Adaptive model, hedged with the stocks' own index (stand-in for FTSE 250 futures)
+        if: ${{ !inputs.probe }}
+        run: |
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --universe-index-hedge --json report/ofm-universe-hedge.json | tee report/ofm-universe-hedge.txt
+          { echo '```'; cat report/ofm-universe-hedge.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, emulated GPU kernels (agreement check)
         if: ${{ !inputs.probe }}
         run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24
