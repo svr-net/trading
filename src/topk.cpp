@@ -209,10 +209,12 @@ struct Learner {
   std::vector<std::size_t> byLo, byHi;  // obs sorted by lo and by hi
   double kc = 0, kcs = 0;               // log of the round trip; the same for a stopped trade
   double maxDrop = 0, maxRise = 0;      // the largest fall and rise from the open ever seen (log)
+  double minMove = 0;                   // the nearest a level may be to the open (log): the round trip
+  double sigSum = 0;
 
   void add(double lo, double hi, double c, double sig) {
     obs.push_back({lo, hi, c, sig});
-    maxDrop = std::max(maxDrop, lo * sig), maxRise = std::max(maxRise, hi * sig);
+    maxDrop = std::max(maxDrop, lo * sig), maxRise = std::max(maxRise, hi * sig), sigSum += sig;
     const std::size_t idx = obs.size() - 1;
     auto put = [&](std::vector<std::size_t>& v, double Obs::*key) {
       const double kv = obs[idx].*key;
@@ -229,17 +231,15 @@ struct Learner {
     // Stopped when lo >= a: earns -a sig; otherwise the take-profit (hi >= b: b sig) or the close.
     const double n = static_cast<double>(obs.size());
     double h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;  // head: sums of base, base^2; tail: sig, sig^2, count
-    double a1 = 0, a2 = 0;
-    for (const auto& x : obs) {
-      const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
-      a1 += v, a2 += v * v, t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
-    }
-    double bestA = kInf;
-    score = ratio(a1, a2, n);
+    for (const auto& x : obs) t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
+    // Every trade has a stop: the best among the lows at least the round trip below the open.
+    const double floorA = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
+    double bestA = byLo.empty() ? kInf : obs[byLo.back()].lo;
+    score = -kInf;
     for (std::size_t q = 0; q < byLo.size(); ++q) {
       const Obs& x = obs[byLo[q]];
       const double a = x.lo;  // this low and all deeper ones stop at -a sig
-      if (!(a > 0)) {  // a stop at the open is no trade at all, at the cost of one
+      if (!(a > 0) || a < floorA) {  // nearer the open than the round trip: not a stop that can pay
         const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
@@ -255,23 +255,24 @@ struct Learner {
   double bestTake(double a, double& score) const {
     // The stopped trades are fixed; among the others, hi >= b takes profit at b sig, else the close.
     const double n = static_cast<double>(obs.size());
-    double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0, all1 = 0, all2 = 0;
+    double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;
     for (const auto& x : obs) {
       if (x.lo >= a) {
         const double v = -a * x.sig + kcs;
         c1 += v, c2 += v * v;
       } else {
-        const double v = x.c + kc;
-        all1 += v, all2 += v * v, t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
+        t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
       }
     }
-    double bestB = kInf;
-    score = ratio(c1 + all1, c2 + all2, n);
+    // Every trade has a take-profit: the best among the highs at least the round trip above the open.
+    const double floorB = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
+    double bestB = byHi.empty() ? kInf : obs[byHi.back()].hi;
+    score = -kInf;
     for (std::size_t q = 0; q < byHi.size(); ++q) {
       const Obs& x = obs[byHi[q]];
       if (x.lo >= a) continue;
       const double b = x.hi;  // this high and all higher ones take profit at b sig
-      if (!(b > 0)) {
+      if (!(b > 0) || b < floorB) {
         const double v = x.c + kc;
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
@@ -286,7 +287,7 @@ struct Learner {
   }
   // Whether to trade, with the levels and their ratio.
   bool learn(double& a, double& b, double& lastScore) const {
-    a = kInf, b = kInf, lastScore = kNaN;
+    a = byLo.empty() ? kInf : obs[byLo.back()].lo, b = byHi.empty() ? kInf : obs[byHi.back()].hi, lastScore = kNaN;
     if (obs.size() < 2) return false;
     double score = -kInf;
     for (int it = 0; it < 50; ++it) {
@@ -296,11 +297,6 @@ struct Learner {
       if (na == a && nb == b) break;
       a = na, b = nb;
     }
-    // A level reached on at most one day the stock has had is no level at all.
-    double ns = 0, nt = 0;
-    for (const auto& x : obs) ns += x.lo >= a, nt += x.lo < a && x.hi >= b;
-    if (ns <= 1) a = kInf;
-    if (nt <= 1) b = kInf;
     lastScore = score;
     return score > 0;
   }
@@ -361,8 +357,10 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     days.push_back(std::move(day));
     all.push_back(mean);
   }
+  const double kcRound = std::log((1 - sell) / (1 + buy));
   auto outcome = [&](const Trade& x, double a, double b, Exit& why) {
-    const double stop = x.o * std::exp(-a * x.sig), take = x.o * std::exp(b * x.sig);
+    // No level nearer the open than the round trip.
+    const double stop = x.o * std::exp(-std::max(a * x.sig, -kcRound)), take = x.o * std::exp(std::max(b * x.sig, -kcRound));
     double px = x.c;
     why = Exit::Close;
     if (x.l <= stop) px = stop * (1 - sell), why = Exit::Stop;  // a stop fills worse than its level, by a side's cost
@@ -433,10 +431,10 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   const double kc = std::log((1 - sell) / (1 + buy));
   std::vector<Learner> perStock(N), perState(8), pooled(1);
   for (auto* v : {&perStock, &perState, &pooled})
-    for (auto& l : *v) l.kc = kc, l.kcs = kc + std::log(1 - sell);
+    for (auto& l : *v) l.kc = kc, l.kcs = kc + std::log(1 - sell), l.minMove = -kc;
   static const Learner none;
   auto learnerOf = [&](int way, std::size_t t, std::size_t i) -> const Learner& {
-    if (way == 0) return perStock[i];
+    if (way == 0) return perStock[i].obs.size() < 2 ? pooled[0] : perStock[i];
     if (way == 2) return pooled[0];
     const int c = state[t * N + i];
     return c < 0 ? none : perState[static_cast<std::size_t>(c)];
@@ -511,7 +509,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
         Exit why;
         const double ret = trade ? outcome(x, a, b, why) : 0.0;
         if (!trade) why = Exit::Open;  // not traded
-        r.lastDay.push_back({x.i, std::isfinite(a) ? std::exp(-a * x.sig) - 1 : kNaN, std::isfinite(b) ? std::exp(b * x.sig) - 1 : kNaN,
+        r.lastDay.push_back({x.i, std::isfinite(a) ? std::exp(-std::max(a * x.sig, -kcRound)) - 1 : kNaN, std::isfinite(b) ? std::exp(std::max(b * x.sig, -kcRound)) - 1 : kNaN,
                              std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS, pT, x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
       }
     }
@@ -556,10 +554,10 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     r.tradeNext = r.tradeNext || trade;
     o.asset = i, o.action = trade ? 1 : 0, o.rank = q + 1, o.open = 0, o.sigma = iv(L, i), o.ratio = score;
     const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
-    // A level further from the open than any move the trades learnt from is no level.
-    if (std::isfinite(a) && a * o.sigma > ln.maxDrop) a = kInf;
-    if (std::isfinite(b) && b * o.sigma > ln.maxRise) b = kInf;
-    o.stop = std::isfinite(a) ? std::exp(-a * o.sigma) - 1 : kNaN, o.take = std::isfinite(b) ? std::exp(b * o.sigma) - 1 : kNaN, o.close = std::expm1(e);
+    // Levels between the round trip and the furthest move the trades learnt from.
+    const double sd = std::isfinite(a) ? std::min(std::max(a * o.sigma, ln.minMove), std::max(ln.maxDrop, ln.minMove)) : kNaN;
+    const double td = std::isfinite(b) ? std::min(std::max(b * o.sigma, ln.minMove), std::max(ln.maxRise, ln.minMove)) : kNaN;
+    o.stop = std::isfinite(sd) ? std::exp(-sd) - 1 : kNaN, o.take = std::isfinite(td) ? std::exp(td) - 1 : kNaN, o.close = std::expm1(e);
     o.pStopDay = pS, o.pTakeDay = pT, o.pStopLife = o.pTakeLife = kNaN;
     r.orders[i] = trade ? 1 : 0;
     r.plan.push_back(o);
