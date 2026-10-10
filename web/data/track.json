@@ -1,0 +1,32 @@
+{
+ "about": "Live record of the top-10 same-day trades, one entry per day (results only).",
+ "days": [
+  {
+   "date": "2026-10-09",
+   "ret": 0.0051628,
+   "trades": [
+    {
+     "ticker": "LIKE",
+     "exit": "sold at the close",
+     "ret": 0.000244699,
+     "stop": -0.169486,
+     "take": 0.0480416
+    },
+    {
+     "ticker": "PRTC",
+     "exit": "sold at the close",
+     "ret": 0.0353105,
+     "stop": -0.00213355,
+     "take": 0.0776872
+    },
+    {
+     "ticker": "KNOS",
+     "exit": "sold at the close",
+     "ret": 0.0160728,
+     "stop": -0.001998,
+     "take": 0.0672142
+    }
+   ]
+  }
+ ]
+}
