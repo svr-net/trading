@@ -54,6 +54,7 @@ struct TopKPosition {
 struct TopKOrder {
   std::size_t asset = 0;
   int action = 0;  ///< +1 buy at the open, 0 hold, -1 sell at the open
+  std::size_t rank = 0;  ///< rank by the portfolio's score at the last close (1 best; past the end: not ranked)
   bool advisoryStop = false, advisoryTake = false;  ///< the rule has none: best finite level so far
   double open = 0, stop = 0, take = 0, close = 0, sigma = 0;
   double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;

@@ -256,9 +256,9 @@ function renderTop(r) {
   const sgn = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(100 * v).toFixed(d)}%`);
   const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
   const act = { 1: 'buy at open', 0: 'hold', '-1': 'sell at open' };
-  table($('top10-plan'), [['Stock'], ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
+  table($('top10-plan'), [['Stock'], [x.name.includes('largest') ? 'Size rank' : 'Rank today', 'num'], ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
     ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], [`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']],
-    x.plan.length ? x.plan.map((p) => [[p.ticker], [act[p.action]], [sgn(p.open), 'num'],
+    x.plan.length ? x.plan.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], [act[p.action]], [sgn(p.open), 'num'],
       [`${sgn(p.stop)}${p.advisoryStop && p.stop != null ? '*' : ''}`, 'num neg'], [`${sgn(p.take)}${p.advisoryTake && p.take != null ? '*' : ''}`, 'num pos'],
       [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'], [prob(p.pStopLife), 'num'], [prob(p.pTakeLife), 'num']])
       : [{ gap: 'no positions' }]);

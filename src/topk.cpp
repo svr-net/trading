@@ -245,21 +245,23 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
 
   std::vector<double> gridK = {0.25, 0.5, 1, 2, 4, kInf};
   const std::size_t G = gridK.size();
-  for (int which = 0; which < 2; ++which) {
+  // 0: today's 10 best by expected return; 1: the same ranking, swapping only when the gain over
+  // the forecast's life beats a round trip; 2: the 10 largest.
+  for (int which = 0; which < 3; ++which) {
     Inputs in = base;
-    in.returnUnits = which == 0;
+    in.returnUnits = which == 1;
     in.score = Panel(T, N);
     in.order.assign(T, {});
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t i = 0; i < N; ++i)
-        if (std::isfinite(f.E(t, i)) && m.close(t, i) > 0) in.score(t, i) = which == 0 ? f.E(t, i) : tv(t, i);
+        if (std::isfinite(f.E(t, i)) && m.close(t, i) > 0) in.score(t, i) = which < 2 ? f.E(t, i) : tv(t, i);
       auto& o = in.order[t];
       for (std::size_t i = 0; i < N; ++i)
         if (std::isfinite(in.score(t, i))) o.push_back(i);
       std::stable_sort(o.begin(), o.end(), [&](std::size_t p, std::size_t q) { return in.score(t, p) > in.score(t, q); });
     }
     TopKResult r;
-    r.name = which == 0 ? "top 10 by expected return" : "top 10 largest (traded value)";
+    r.name = which == 0 ? "top 10 by expected return" : which == 1 ? "top 10 by expected return, cost-aware swaps" : "top 10 largest (traded value)";
     r.K = K, r.start = bt.start, r.gridK = gridK;
     // Shadow portfolios for every fixed pair; the growth of each so far picks the live pair.
     std::vector<std::vector<double>> shadow(G * G);
@@ -299,6 +301,8 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     auto add = [&](std::size_t i, int action, double stop, double take) {
       TopKOrder o;
       o.asset = i, o.action = action, o.open = 0, o.advisoryStop = advA, o.advisoryTake = advB;
+      const auto& ord = in.order[L];
+      o.rank = static_cast<std::size_t>(std::find(ord.begin(), ord.end(), i) - ord.begin()) + 1;
       const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
       o.sigma = std::isfinite(in.width(L, i)) ? in.width(L, i) / std::sqrt(r.life) : kNaN;
       if (action < 0) {
@@ -458,7 +462,7 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"action\":" << p.action << ",\"open\":" << num(p.open)
         << ",\"stop\":" << num(p.stop) << ",\"take\":" << num(p.take) << ",\"close\":" << num(p.close) << ",\"sigma\":" << num(p.sigma)
         << ",\"pStopDay\":" << num(p.pStopDay) << ",\"pTakeDay\":" << num(p.pTakeDay) << ",\"pStopLife\":" << num(p.pStopLife)
-        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
+        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"rank\":" << p.rank << ",\"expectedDaily\":" << num(p.close) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
         << ",\"advisoryTake\":" << (p.advisoryTake ? "true" : "false") << "}";
     }
     o << "],\"buys\":[";
