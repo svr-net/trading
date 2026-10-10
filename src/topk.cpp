@@ -231,11 +231,7 @@ struct Learner {
     // Stopped when lo >= a: earns -a sig; otherwise the take-profit (hi >= b: b sig) or the close.
     const double n = static_cast<double>(obs.size());
     double h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;  // head: sums of base, base^2; tail: sig, sig^2, count
-    double a1 = 0, a2 = 0;
-    for (const auto& x : obs) {
-      const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
-      a1 += v, a2 += v * v, t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
-    }
+    for (const auto& x : obs) t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
     // Every trade has a stop: the best among the lows at least the round trip below the open.
     const double floorA = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
     double bestA = byLo.empty() ? kInf : obs[byLo.back()].lo;
@@ -259,14 +255,13 @@ struct Learner {
   double bestTake(double a, double& score) const {
     // The stopped trades are fixed; among the others, hi >= b takes profit at b sig, else the close.
     const double n = static_cast<double>(obs.size());
-    double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0, all1 = 0, all2 = 0;
+    double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;
     for (const auto& x : obs) {
       if (x.lo >= a) {
         const double v = -a * x.sig + kcs;
         c1 += v, c2 += v * v;
       } else {
-        const double v = x.c + kc;
-        all1 += v, all2 += v * v, t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
+        t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
       }
     }
     // Every trade has a take-profit: the best among the highs at least the round trip above the open.
