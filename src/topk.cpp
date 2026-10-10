@@ -248,7 +248,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     const double stop = x.o * std::exp(-a * x.sig), take = x.o * std::exp(b * x.sig);
     double px = x.c;
     why = Exit::Close;
-    if (x.l <= stop) px = stop, why = Exit::Stop;
+    if (x.l <= stop) px = stop * (1 - sell), why = Exit::Stop;  // a stop fills worse than its level, by a side's cost
     else if (x.h >= take) px = take, why = Exit::Take;
     return (px / x.o) * (1 - sell) / (1 + buy) - 1;
   };
@@ -263,7 +263,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   // The objective is return per unit of risk: the mean net log return of a trade over its standard
   // deviation (a Sharpe ratio per trade; the round trip k is in every trade). Not trading earns
   // nothing at no risk, so trades are only made while the best levels have a positive ratio.
-  const double kc = std::log((1 - sell) / (1 + buy));
+  const double kc = std::log((1 - sell) / (1 + buy)), kcs = kc + std::log(1 - sell);  // kcs: a stopped trade, with its slippage
   auto ratio = [&](double s1, double s2, double n) {
     if (n < 2) return -kInf;
     const double mu = s1 / n, vr = std::max(0.0, s2 / n - mu * mu);
@@ -288,7 +288,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
       }
-      const double s1 = h1 - a * t1 + tm * kc, s2 = h2 + a * a * t2 - 2 * a * kc * t1 + tm * kc * kc;
+      const double s1 = h1 - a * t1 + tm * kcs, s2 = h2 + a * a * t2 - 2 * a * kcs * t1 + tm * kcs * kcs;
       const double rr = ratio(s1, s2, n);
       if (rr > score + 1e-12) score = rr, bestA = a;
       const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
@@ -302,7 +302,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0, all1 = 0, all2 = 0;
     for (const auto& x : obs) {
       if (x.lo >= a) {
-        const double v = -a * x.sig + kc;
+        const double v = -a * x.sig + kcs;
         c1 += v, c2 += v * v;
       } else {
         const double v = x.c + kc;
@@ -373,6 +373,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       r.trades.push_back({x.i, d, d, ret, why});
       ++ev.trades;
       ev.predStop += pS, ev.predTake += pT, ev.realStop += why == Exit::Stop, ev.realTake += why == Exit::Take;
+      ev.lowAtOpen += x.l >= x.o;
       const double e = std::isfinite(x.e) ? x.e : 0.0;
       ev.expected += e, ev.realised += x.ex, ev.signHit += (e > 0) == (x.ex > 0);
       sx += e, sy += x.ex, sxx += e * e, syy += x.ex * x.ex, sxy += e * x.ex;
@@ -403,7 +404,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   }
   if (ev.trades) {
     const double n = static_cast<double>(ev.trades);
-    ev.predStop /= n, ev.predTake /= n, ev.realStop /= n, ev.realTake /= n, ev.expected /= n, ev.realised /= n, ev.signHit /= n;
+    ev.lowAtOpen /= n, ev.predStop /= n, ev.predTake /= n, ev.realStop /= n, ev.realTake /= n, ev.expected /= n, ev.realised /= n, ev.signHit /= n;
     const double cv = sxy - sx * sy / n, vx = sxx - sx * sx / n, vy = syy - sy * sy / n;
     ev.ic = vx > 0 && vy > 0 ? cv / std::sqrt(vx * vy) : 0.0;
   }
@@ -736,7 +737,7 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       o << ",\"dayTrades\":true,\"tradeNext\":" << (r.tradeNext ? "true" : "false") << ",\"tradedDays\":" << tradedDays << ",\"eval\":{\"trades\":" << e.trades << ",\"days\":" << e.days << ",\"predStop\":" << num(e.predStop)
         << ",\"realStop\":" << num(e.realStop) << ",\"predTake\":" << num(e.predTake) << ",\"realTake\":" << num(e.realTake)
         << ",\"expected\":" << num(e.expected) << ",\"realised\":" << num(e.realised) << ",\"ic\":" << num(e.ic) << ",\"signHit\":"
-        << num(e.signHit) << ",\"grossTop\":" << num(e.grossTop) << ",\"grossAll\":" << num(e.grossAll) << "},\"lastDate\":" << str(r.lastDate)
+        << num(e.signHit) << ",\"lowAtOpen\":" << num(e.lowAtOpen) << ",\"grossTop\":" << num(e.grossTop) << ",\"grossAll\":" << num(e.grossAll) << "},\"lastDate\":" << str(r.lastDate)
         << ",\"lastDay\":[";
       for (std::size_t k = 0; k < r.lastDay.size(); ++k) {
         const auto& c = r.lastDay[k];
@@ -801,6 +802,8 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
                     "  expected excess %+.2f bp, realised %+.2f bp (open to close); correlation %.3f, same sign %.1f%%; before costs the 10 %+.2f bp a day, all ranked %+.2f bp\n",
                     e.trades, e.days, 100 * e.realStop, 100 * e.predStop, 100 * e.realTake, 100 * e.predTake, 1e4 * e.expected, 1e4 * e.realised, e.ic,
                     100 * e.signHit, 1e4 * e.grossTop, 1e4 * e.grossAll);
+      o << b;
+      std::snprintf(b, sizeof b, "  days the low was the open (the stock never traded below its opening price): %.1f%% of trades\n", 100 * e.lowAtOpen);
       o << b;
     }
     o << "exits:\n";
