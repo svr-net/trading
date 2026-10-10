@@ -74,6 +74,8 @@ struct TopKResult {
   std::vector<int> orders;        ///< at the last close: +1 buy, -1 sell at the next open
   std::vector<TopKOrder> plan;    ///< the next day: the 10 held after the open, then the sales
   double life = 1;                ///< the forecast's life at the last close (days)
+  bool oneDay = false;            ///< positions held one day: levels reset from each open, one day's volatility
+  std::vector<double> grossTop, grossAll;  ///< before costs, open to open: the day's 10 best and all ranked stocks
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).

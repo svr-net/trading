@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=18">
+<link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
 <div class="wrap">
@@ -34,7 +34,7 @@
     </div>
     <div class="two">
       <div><h3>Calendar years</h3><div class="table-scroll"><table id="top10-years"></table></div></div>
-      <div><h3>Each fixed stop / take-profit pair, in hindsight</h3><p class="hint">Sharpe ratio over the whole period; rows the stop, columns the take-profit, in volatilities over the forecast's life. The live portfolio never sees this table: each day it uses the pair that had grown most up to then.</p><div class="table-scroll"><table id="top10-grid"></table></div></div>
+      <div><h3>Each fixed stop / take-profit pair, in hindsight</h3><p class="hint">Sharpe ratio over the whole period; rows the stop, columns the take-profit, in multiples of the stock's volatility over the holding period. The live portfolio never sees this table: each day it uses the pair that had grown most up to then.</p><div class="table-scroll"><table id="top10-grid"></table></div></div>
     </div>
   </section>
 
@@ -107,6 +107,6 @@
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=18"></script>
+<script type="module" src="app.js?v=19"></script>
 </body>
 </html>
