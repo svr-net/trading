@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
 <div class="wrap">
@@ -19,10 +19,11 @@
 
   <section id="top10" aria-labelledby="top10-title">
     <h2 id="top10-title">Trades for the next open</h2>
-    <p class="muted" id="top10-note">Loading the latest UK scan…</p>
+    <p class="muted" id="top10-asof">Loading the latest UK scan…</p>
     <div class="tabs" role="group" aria-label="Ranking" id="top10-tabs"></div>
     <div class="table-scroll"><table id="top10-plan"></table></div>
     <p class="hint" id="top10-plan-note"></p>
+    <p class="muted" id="top10-note"></p>
 
     <h3 style="margin-top:22px">How this portfolio did</h3>
     <div class="verdict" id="top10-verdict"></div>
@@ -106,6 +107,6 @@
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js?v=17"></script>
 </body>
 </html>

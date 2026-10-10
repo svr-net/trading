@@ -251,7 +251,8 @@ function renderTop(r) {
     b.addEventListener('click', () => { topPick = k; renderTop(r); });
     $('top10-tabs').append(b);
   });
-  $('top10-note').textContent = `UK scan · as of the close on ${r.asOf} · ${r.stocks} stocks. Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility over the forecast's life (${x.life.toFixed(1)} days), checked against each day's high and low; the multiples are the pair whose shadow portfolio has grown most so far (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)}). "Largest" ranks by traded value, the nearest measure of size in the bars.`;
+  $('top10-asof').textContent = `UK, ${r.stocks} most traded shares · close of ${r.asOf} · orders for the next open. Levels are relative to the last close.`;
+  $('top10-note').textContent = `Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility over the forecast's life (${x.life.toFixed(1)} days), checked against each day's high and low; the multiples are the pair whose shadow portfolio has grown most so far (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)}). "Largest" ranks by traded value, the nearest measure of size in the bars.`;
   const sgn = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(100 * v).toFixed(d)}%`);
   const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
   const act = { 1: 'buy at open', 0: 'hold', '-1': 'sell at open' };
@@ -300,7 +301,7 @@ fetch('data/uk.json', { cache: 'no-cache' })
     renderTop(r);
     render(r, '', 0);
   })
-  .catch(() => { $('top10-note').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
+  .catch(() => { $('top10-asof').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
 
 createOfm().then((m) => {
   ofm = m;
