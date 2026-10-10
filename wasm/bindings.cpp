@@ -86,6 +86,8 @@ class Session {
   std::string finishGpu(double buyBps, double sellBps, double futBps, double gpuMs, const std::string& adapter) {
     forecast_.mean = forecaster_->mean, forecast_.tstat = forecaster_->tstat, forecast_.premium = forecaster_->premium;
     forecast_.records = forecaster_->records();
+    forecast_.familyReturns = forecaster_->familyReturns;
+    forecast_.horizons = plan_.horizons;
     forecast_.kernelMs = gpuMs;
     forecast_.engine = "WebGPU (" + adapter + ")";
     return report(buyBps, sellBps, futBps);
@@ -114,8 +116,9 @@ class Session {
   std::string report(double buyBps, double sellBps, double futBps) {
     ofm::Costs c;
     c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps;
-    const ofm::Backtest bt = ofm::backtest(market_, forecast_, c, series_);
-    return ofm::reportJson(market_, forecast_, bt, c);
+    const ofm::MarketStructure ms = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
+    const ofm::Backtest bt = ofm::backtest(market_, forecast_, c, series_, &ms);
+    return ofm::reportJson(market_, forecast_, bt, c, &ms);
   }
 
   ofm::Market market_;

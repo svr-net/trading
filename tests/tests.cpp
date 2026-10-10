@@ -8,6 +8,7 @@
 
 #include "ofm/kernels.hpp"
 #include "ofm/report.hpp"
+#include "ofm/structure.hpp"
 
 namespace {
 
@@ -155,6 +156,33 @@ TEST(csv_round_trip_and_report) {
   const auto bt = ofm::backtest(syn.market, f, ofm::Costs{}, syn.series);
   const std::string j = ofm::reportJson(syn.market, f, bt, ofm::Costs{});
   CHECK(j.front() == '{' && j.back() == '}' && j.find("\"expected\":[") != std::string::npos);
+}
+
+TEST(market_structure_sees_one_factor_and_independent_stocks) {
+  // Independent stocks: effective dimension near 1, long tree; one common factor: dimension near
+  // 1/n, short tree.
+  auto make = [](double common) {
+    ofm::Market m;
+    const std::size_t T = 400, N = 30;
+    m.close = m.open = m.high = m.low = m.volume = ofm::Panel(T, N, 1.0);
+    std::uint64_t x = 99;
+    auto nrm = [&]() {
+      x = x * 6364136223846793005ull + 1442695040888963407ull;
+      const double u1 = (static_cast<double>(x >> 11) + 0.5) * 0x1.0p-53;
+      x = x * 6364136223846793005ull + 1442695040888963407ull;
+      const double u2 = (static_cast<double>(x >> 11) + 0.5) * 0x1.0p-53;
+      return std::sqrt(-2 * std::log(u1)) * std::cos(6.283185307179586 * u2);
+    };
+    for (std::size_t t = 1; t < T; ++t) {
+      const double f = nrm();
+      for (std::size_t i = 0; i < N; ++i) m.close(t, i) = m.close(t - 1, i) * (1 + 0.01 * (common * f + (1 - common) * nrm()));
+    }
+    return ofm::marketStructure(m, {64}, {});
+  };
+  const auto ind = make(0.0), one = make(0.98);
+  const std::size_t t = 399;
+  CHECK(ind.dimension(t, 0) > 0.4 && one.dimension(t, 0) < 0.1);
+  CHECK(ind.treeLength(t, 0) > 1.2 && one.treeLength(t, 0) < 0.5);
 }
 
 TEST(kernel_sources_declare_their_entry_points) {

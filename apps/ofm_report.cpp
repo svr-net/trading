@@ -52,9 +52,10 @@ int main(int argc, char** argv) {
       if (!series.empty()) s = ofm::parseSeriesCsv(readFile(series), m.dates);
     }
     const ofm::Forecast f = ofm::runModel(m, engine);
-    const ofm::Backtest bt = ofm::backtest(m, f, costs, s);
-    std::cout << ofm::reportText(m, f, bt, costs);
-    if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs);
+    const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
+    const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);
+    std::cout << ofm::reportText(m, f, bt, costs, &ms);
+    if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms);
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

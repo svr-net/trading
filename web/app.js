@@ -140,7 +140,50 @@ function render(r, note, ms) {
   const used = r.factors.filter((f) => f.premium !== 0 && f.premium != null).sort((a, b) => Math.abs(b.t) - Math.abs(a.t));
   table($('factors'), [['Signal'], ['t', 'num'], ['Premium (bp/day)', 'num']],
     used.length ? used.map((f) => [[f.name], [f.t.toFixed(2), 'num'], [bp(f.premium, 2), `num ${f.premium >= 0 ? 'pos' : 'neg'}`]]) : [{ gap: 'no factor has enough evidence yet' }]);
+  renderStructure(r);
   $('facts').textContent = `${r.stocks} stocks, ${r.days} days (${r.from} – ${r.to}); horizons ${r.horizons.join(', ')} days; ${r.records} daily factor records; ${r.engine}.`;
+}
+
+function renderStructure(r) {
+  const st = r.structure;
+  const box = $('structure').closest('.two');
+  box.hidden = !st;
+  if (!st) return;
+  const f = (x, d = 3) => (x == null ? '–' : x.toFixed(d));
+  table($('structure'), [['Half-life'], ['Tree length', 'num'], ['Dimension', 'num'], ['Geodesic', 'num']],
+    st.latest.map((x) => [[`${x.halfLife} days`], [f(x.treeLength), 'num'], [f(x.dimension), 'num'], [f(x.geodesic, 2), 'num']]));
+  const canvas = $('structure-chart');
+  const css = getComputedStyle(document.documentElement);
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr, canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const lines = [['treeLength', '--model', 'tree length'], ['dimension', '--hedged', 'effective dimension']];
+  const pad = { l: 8, r: 8, t: 8, b: 20 };
+  lines.forEach(([key, color]) => {
+    const v = st.series[key];
+    const ok = v.filter((x) => x != null);
+    if (!ok.length) return;
+    const lo = Math.min(...ok), hi = Math.max(...ok);
+    ctx.strokeStyle = css.getPropertyValue(color).trim();
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    v.forEach((x, i) => {
+      if (x == null) { started = false; return; }
+      const X = pad.l + (i / Math.max(1, v.length - 1)) * (w - pad.l - pad.r);
+      const Y = pad.t + (1 - (x - lo) / Math.max(hi - lo, 1e-12)) * (h - pad.t - pad.b);
+      if (started) ctx.lineTo(X, Y); else ctx.moveTo(X, Y), started = true;
+    });
+    ctx.stroke();
+  });
+  ctx.fillStyle = css.getPropertyValue('--muted').trim();
+  ctx.font = '11px "IBM Plex Mono", monospace';
+  ctx.fillText(r.dates[0].slice(0, 4), pad.l, h - 5);
+  ctx.fillText(r.dates[r.dates.length - 1].slice(0, 4), w - pad.r - 30, h - 5);
+  $('structure-legend').innerHTML = lines.map(([, color, name]) => `<span><i style="background:${css.getPropertyValue(color).trim()}"></i>${name} (half-life ${st.series.halfLife} days, each scaled to its range)</span>`).join('');
 }
 
 function drawChart(r) {
@@ -186,7 +229,7 @@ $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
 $('expected-all').addEventListener('click', () => { showAll = !showAll; if (last) render(last, '', 0); });
-window.addEventListener('resize', () => { if (last) drawChart(last); });
+window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } });
 
 createOfm().then((m) => {
   ofm = m;

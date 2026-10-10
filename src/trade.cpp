@@ -74,7 +74,8 @@ std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::ve
   return best;
 }
 
-Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const std::map<std::string, std::vector<double>>& series) {
+Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const std::map<std::string, std::vector<double>>& series,
+                  const MarketStructure* ms) {
   const std::size_t T = m.T(), N = m.N();
   const double buy = costs.buyBps * 1e-4, sell = costs.sellBps * 1e-4, hurdle = buy + sell, fut = costs.futuresBps * 1e-4;
   Backtest bt;
@@ -137,11 +138,13 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
   bt.hedgeSeries = pickHedgeSeries(m, series, s);
   std::vector<double> idx;
   if (!bt.hedgeSeries.empty()) idx = series.at(bt.hedgeSeries);
-  // Index features at dyadic horizons up to an eighth of the history (as for the stocks).
-  std::vector<std::size_t> hz;
-  for (std::size_t q = 2; q <= T / 8; q *= 2) hz.push_back(q);
+  // Hedge features: the index future's trends at the model's horizons, and the market's
+  // topology and geometry (tree length, effective dimension, geodesic distance) at each half-life.
+  const std::vector<std::uint32_t> hz = f.horizons;
   const std::size_t HZ = hz.size();
-  std::vector<double> mean(HZ, 0.0), cov(HZ * HZ, 0.0), recS(HZ, 0.0), recS2(HZ, 0.0);
+  const std::size_t HS = ms ? ms->halfLives.size() : 0;
+  const std::size_t G = HZ + (HS ? 3 * HS - 1 : 0);
+  std::vector<double> mean(G, 0.0), cov(G * G, 0.0), recS(G, 0.0), recS2(G, 0.0);
   double featN = 0, recN = 0;
   std::vector<std::vector<double>> pendingRec;  // x_t of the last close, waiting for its next return
   // Persistence of the index forecast: lag-one correlation of its daily values so far.
@@ -162,67 +165,45 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
     // Hedge decision at close t.
     double hedgeWant = 0;
     if (!idx.empty() && std::isfinite(idx[t])) {
-      std::vector<double> g(HZ, kNaN);
+      std::vector<double> g(G, kNaN);
       bool ok = true;
       for (std::size_t j = 0; j < HZ; ++j) {
         if (t < hz[j] || !(idx[t - hz[j]] > 0)) ok = false;
         else g[j] = std::log(idx[t] / idx[t - hz[j]]);
       }
+      for (std::size_t j = 0, q = HZ; j < HS; ++j) {
+        g[q++] = ms->treeLength(t, j);
+        g[q++] = ms->dimension(t, j);
+        if (j + 1 < HS) g[q++] = ms->geodesic(t, j);
+      }
+      for (double x : g) ok = ok && std::isfinite(x);
       if (ok) {
         featN += 1;
-        for (std::size_t j = 0; j < HZ; ++j) {
-          const double d = g[j] - mean[j];
-          mean[j] += d / featN;
-          for (std::size_t k = 0; k < HZ; ++k) cov[j * HZ + k] += d * (g[k] - mean[k]);
+        for (std::size_t j = 0; j < G; ++j) {
+          const double dd = g[j] - mean[j];
+          mean[j] += dd / featN;
+          for (std::size_t k = 0; k < G; ++k) cov[j * G + k] += dd * (g[k] - mean[k]);
         }
-        if (featN > static_cast<double>(HZ) + 1) {
+        if (featN > static_cast<double>(G) + 1) {
           // Whiten by the expanding covariance (symmetric inverse square root).
-          std::vector<double> C(cov);
+          std::vector<double> C(cov), V, w;
           for (double& c : C) c /= (featN - 1);
-          // Jacobi on a small matrix.
-          std::vector<double> V(HZ * HZ, 0.0), w(HZ);
-          for (std::size_t j = 0; j < HZ; ++j) V[j * HZ + j] = 1;
-          for (int sweep = 0; sweep < 50; ++sweep) {
-            double off = 0;
-            for (std::size_t p = 0; p < HZ; ++p)
-              for (std::size_t q = p + 1; q < HZ; ++q) off += C[p * HZ + q] * C[p * HZ + q];
-            if (off < 1e-30) break;
-            for (std::size_t p = 0; p < HZ; ++p)
-              for (std::size_t q = p + 1; q < HZ; ++q) {
-                const double apq = C[p * HZ + q];
-                if (std::fabs(apq) < 1e-300) continue;
-                const double th = (C[q * HZ + q] - C[p * HZ + p]) / (2 * apq);
-                const double tt = (th >= 0 ? 1.0 : -1.0) / (std::fabs(th) + std::sqrt(th * th + 1));
-                const double c = 1 / std::sqrt(tt * tt + 1), sn = tt * c;
-                for (std::size_t k = 0; k < HZ; ++k) {
-                  const double akp = C[k * HZ + p], akq = C[k * HZ + q];
-                  C[k * HZ + p] = c * akp - sn * akq, C[k * HZ + q] = sn * akp + c * akq;
-                }
-                for (std::size_t k = 0; k < HZ; ++k) {
-                  const double apk = C[p * HZ + k], aqk = C[q * HZ + k];
-                  C[p * HZ + k] = c * apk - sn * aqk, C[q * HZ + k] = sn * apk + c * aqk;
-                }
-                for (std::size_t k = 0; k < HZ; ++k) {
-                  const double vkp = V[k * HZ + p], vkq = V[k * HZ + q];
-                  V[k * HZ + p] = c * vkp - sn * vkq, V[k * HZ + q] = sn * vkp + c * vkq;
-                }
-              }
-          }
+          eigenSym(C, G, w, V);
           double top = 0;
-          for (std::size_t j = 0; j < HZ; ++j) w[j] = C[j * HZ + j], top = std::max(top, w[j]);
-          std::vector<double> x(HZ, 0.0);
-          for (std::size_t k = 0; k < HZ; ++k) {
+          for (double x : w) top = std::max(top, x);
+          std::vector<double> x(G, 0.0);
+          for (std::size_t k = 0; k < G; ++k) {
             if (!(w[k] > top * 1e-12)) continue;
             double proj = 0;
-            for (std::size_t j = 0; j < HZ; ++j) proj += V[j * HZ + k] * (g[j] - mean[j]);
+            for (std::size_t j = 0; j < G; ++j) proj += V[j * G + k] * (g[j] - mean[j]);
             proj /= std::sqrt(w[k]);
-            for (std::size_t j = 0; j < HZ; ++j) x[j] += V[j * HZ + k] * proj;
+            for (std::size_t j = 0; j < G; ++j) x[j] += V[j * G + k] * proj;
           }
           pendingRec.clear();
           pendingRec.push_back(x);
           double e = 0;
           if (recN >= 3)
-            for (std::size_t j = 0; j < HZ; ++j) {
+            for (std::size_t j = 0; j < G; ++j) {
               const double mu = recS[j] / recN, var = std::max(0.0, (recS2[j] - recN * mu * mu) / (recN - 1));
               if (var <= 0) continue;
               const double tz = mu / std::sqrt(var / recN);
@@ -364,7 +345,7 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
       // Record of the index forecast's features against this return.
       if (!pendingRec.empty()) {
         const auto& x = pendingRec.back();
-        for (std::size_t j = 0; j < HZ; ++j) recS[j] += x[j] * rf, recS2[j] += x[j] * rf * x[j] * rf;
+        for (std::size_t j = 0; j < G; ++j) recS[j] += x[j] * rf, recS2[j] += x[j] * rf * x[j] * rf;
         recN += 1;
         pendingRec.clear();
       }

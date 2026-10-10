@@ -25,6 +25,7 @@
 
 #include "ofm/data.hpp"
 #include "ofm/model.hpp"
+#include "ofm/structure.hpp"
 
 namespace ofm {
 
@@ -55,7 +56,9 @@ struct Backtest {
   std::string hedgeSeries;
 };
 
-Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const std::map<std::string, std::vector<double>>& series);
+/// ms: the market's topology and geometry (structure.hpp), added to the hedge forecast's features.
+Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const std::map<std::string, std::vector<double>>& series,
+                  const MarketStructure* ms = nullptr);
 
 /// The series used for the hedge: the one whose daily moves were most correlated with the stock
 /// market's before the first trading day (no later data is looked at); empty if none overlaps.

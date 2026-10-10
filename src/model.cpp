@@ -209,6 +209,12 @@ void eigenSymmetric(std::vector<double>& a, std::size_t n, std::vector<double>& 
   w = d;
 }
 
+}  // namespace
+
+void eigenSym(std::vector<double>& a, std::size_t n, std::vector<double>& w, std::vector<double>& V) { eigenSymmetric(a, n, w, V); }
+
+namespace {
+
 // (G)^(-1/2) of a symmetric positive semi-definite matrix; directions with no variance are dropped.
 std::vector<double> invSqrt(std::vector<double> G, std::size_t n) {
   std::vector<double> w, V;
@@ -228,6 +234,7 @@ std::vector<double> invSqrt(std::vector<double> G, std::size_t n) {
 
 Forecaster::Forecaster(const Plan& plan) : plan_(plan), s1_(plan.K, 0.0), s2_(plan.K, 0.0) {
   mean.assign(plan.K, 0.0), tstat.assign(plan.K, 0.0), premium.assign(plan.K, 0.0);
+  familyReturns.assign(plan.T, {});
 }
 
 std::vector<double> Forecaster::absorb(std::size_t t, const double* g) {
@@ -244,6 +251,12 @@ std::vector<double> Forecaster::absorb(std::size_t t, const double* g) {
     }
   }
   const double eligible = g[P + K], targets = g[P + K + 1];
+  if (targets > 0) {
+    // Each family's return on day t (its z-weighted next-day return, averaged over horizons).
+    auto& fr = familyReturns[t];
+    fr.assign(kFamilies, 0.0);
+    for (std::size_t k = 0; k < K; ++k) fr[k / plan_.H] += g[P + k] / (targets * static_cast<double>(plan_.H));
+  }
   if (!(eligible > static_cast<double>(K) + 1)) return {};
   std::vector<double> G(K * K);
   for (std::size_t k = 0, p = 0; k < K; ++k)
@@ -366,6 +379,8 @@ Forecast runModel(const Market& m, const std::string& engine) {
     }
   }
   out.mean = fc.mean, out.tstat = fc.tstat, out.premium = fc.premium, out.records = fc.records();
+  out.familyReturns = fc.familyReturns;
+  out.horizons = p.horizons;
   out.kernelMs = engine == "reference" ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() : kernelMs;
   return out;
 }

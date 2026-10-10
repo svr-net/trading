@@ -82,7 +82,7 @@ std::vector<std::size_t> byExpected(const Forecast& f, std::size_t t) {
 
 }  // namespace
 
-std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs) {
+std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms) {
   const Facts F = facts(m, bt);
   const Plan p = compilePlan(m);
   std::ostringstream o;
@@ -151,11 +151,28 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
   o << "],\"pass\":" << (F.pass ? "true" : "false") << ",\"passHedged\":" << (F.passHedged ? "true" : "false") << ",\"trades\":{\"count\":"
     << bt.trades.size() << ",\"wins\":" << F.wins << ",\"losses\":" << F.losses << ",\"meanWin\":" << num(F.meanWin) << ",\"meanLoss\":"
     << num(F.meanLoss) << ",\"turnoverPerYear\":" << num(F.modelTurnoverYear) << ",\"meanHoldings\":" << num(F.meanHoldings)
-    << ",\"hedgeShare\":" << num(F.hedgeShare) << "}}";
+    << ",\"hedgeShare\":" << num(F.hedgeShare) << "}";
+  if (ms && !ms->halfLives.empty()) {
+    const std::size_t H = ms->halfLives.size(), mid = H / 2;
+    o << ",\"structure\":{\"halfLives\":[";
+    for (std::size_t j = 0; j < H; ++j) o << (j ? "," : "") << ms->halfLives[j];
+    o << "],\"latest\":[";
+    for (std::size_t j = 0; j < H; ++j)
+      o << (j ? "," : "") << "{\"halfLife\":" << ms->halfLives[j] << ",\"treeLength\":" << num(ms->treeLength(F.last, j))
+        << ",\"dimension\":" << num(ms->dimension(F.last, j)) << ",\"geodesic\":" << num(ms->geodesic(F.last, j)) << "}";
+    o << "],\"series\":{\"halfLife\":" << ms->halfLives[mid] << ",\"treeLength\":[";
+    for (std::size_t k = 0; k < F.n; k += step) o << (k ? "," : "") << num(ms->treeLength(bt.start + k, mid), 5);
+    o << "],\"dimension\":[";
+    for (std::size_t k = 0; k < F.n; k += step) o << (k ? "," : "") << num(ms->dimension(bt.start + k, mid), 5);
+    o << "],\"geodesic\":[";
+    for (std::size_t k = 0; k < F.n; k += step) o << (k ? "," : "") << num(ms->geodesic(bt.start + k, mid), 5);
+    o << "]}}";
+  }
+  o << "}";
   return o.str();
 }
 
-std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs) {
+std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms) {
   const Facts F = facts(m, bt);
   const Plan p = compilePlan(m);
   std::ostringstream o;
@@ -201,6 +218,14 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       std::snprintf(b, sizeof b, "  %-22s %+.5f  t %+5.2f  %+.5f\n", p.signalName(k).c_str(), f.mean[k], f.tstat[k], f.premium[k]);
       o << b;
     }
+  if (ms && !ms->halfLives.empty()) {
+    o << "\nMarket topology and geometry at the last close (per half-life: MST tree length = H0 persistence, effective dimension, geodesic distance to the longest half-life)\n";
+    for (std::size_t j = 0; j < ms->halfLives.size(); ++j) {
+      std::snprintf(b, sizeof b, "  %4ud  tree %.4f  dimension %.4f  geodesic %s\n", ms->halfLives[j], ms->treeLength(F.last, j), ms->dimension(F.last, j),
+                    std::isfinite(ms->geodesic(F.last, j)) ? num(ms->geodesic(F.last, j), 4).c_str() : "-");
+      o << b;
+    }
+  }
   o << "\nCalendar years (net return)\n  year   model    hedged   market\n";
   std::string year;
   std::vector<double> acc(3, 1.0);

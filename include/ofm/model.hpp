@@ -65,6 +65,8 @@ class Forecaster {
   /// Factor statistics at the last absorbed day: mean, t-statistic and shrunk premium per factor.
   std::vector<double> mean, tstat, premium;
   std::size_t records() const { return n_; }
+  /// Per day, the signal families' returns (empty where unknown); day t is known at t + 2.
+  std::vector<std::vector<double>> familyReturns;
 
  private:
   const Plan& plan_;
@@ -79,6 +81,8 @@ struct Forecast {
   Panel E;                     ///< expected next-day excess return (NaN: no forecast)
   std::vector<double> mean, tstat, premium;  ///< factor statistics at the last day
   std::size_t records = 0;
+  std::vector<std::vector<double>> familyReturns;
+  std::vector<std::uint32_t> horizons;
   double kernelMs = 0;
   std::string engine;
 };
@@ -86,6 +90,10 @@ struct Forecast {
 /// Runs the whole model on the CPU: "reference" (double precision) or "emulated" (the kernels'
 /// single-precision arithmetic, executed invocation by invocation).
 Forecast runModel(const Market& m, const std::string& engine = "reference");
+
+/// Eigen decomposition of a symmetric matrix (Householder + implicit QL); a is overwritten,
+/// eigenvectors are the columns of V.
+void eigenSym(std::vector<double>& a, std::size_t n, std::vector<double>& w, std::vector<double>& V);
 
 /// Pieces of runModel, for hosts that run the kernels themselves (WebGPU from JavaScript).
 void referenceChunk(const Plan& p, std::size_t c, std::vector<double>& z, std::vector<double>& gram);

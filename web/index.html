@@ -67,6 +67,13 @@
     <div class="table-scroll"><table id="parts"></table></div>
     <p class="muted" id="trades"></p>
 
+    <h2>Market topology &amp; geometry</h2>
+    <p class="muted">Per half-life of the stocks' correlations: the minimum spanning tree's mean edge length (the total dimension-0 persistence of the correlation filtration; it contracts when stocks move together), the effective dimension of the correlation matrix (participation ratio over the number of stocks), and the Riemannian (affine-invariant) distance of the signal families' recent covariance from its long-run shape. These feed the futures hedge forecast.</p>
+    <div class="two">
+      <div class="table-scroll"><table id="structure"></table></div>
+      <div class="chart"><canvas id="structure-chart" height="220" aria-label="Tree length and effective dimension over time"></canvas><div class="legend" id="structure-legend"></div></div>
+    </div>
+
     <div class="two">
       <div><h3>Calendar years</h3><div class="table-scroll"><table id="years"></table></div></div>
       <div><h3>Factors the model uses</h3><div class="table-scroll"><table id="factors"></table></div></div>

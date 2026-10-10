@@ -12,6 +12,7 @@ add_library(ofm
   src/model.cpp
   src/kernels.cpp
   src/trade.cpp
+  src/structure.cpp
   src/report.cpp)
 target_include_directories(ofm PUBLIC include)
 if(NOT MSVC)
