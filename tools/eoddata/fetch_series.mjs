@@ -7,6 +7,7 @@
 // The key is read from the environment only; it is never written to disk or printed. Responses
 // are cached under data/eoddata/ (git-ignored: EODData's licence does not allow redistributing
 // its data). Prints each series' first and last date and bar count (no prices).
+// With --cached, no request is made: every cached response of each series is merged.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,8 +16,9 @@ const opt = (name, fallback) => { const i = argv.indexOf(`--${name}`); return i 
 const symbols = String(opt('symbols', '')).split(',').filter(Boolean);
 const years = Number(opt('years', 20));
 const out = opt('out', 'data/futures.csv');
+const cached = argv.includes('--cached');
 const key = process.env.EODDATA_API_KEY;
-if (!key) {
+if (!key && !cached) {
   console.error('Set EODDATA_API_KEY in the environment (never pass it on the command line).');
   process.exit(2);
 }
@@ -55,7 +57,19 @@ for (const s of symbols) {
   // Ask year by year, so a plan limit on how far back one request may reach does not empty the
   // whole series; years the plan does not serve simply come back empty.
   const bars = new Map();
-  for (let y = 0; y < years; y++) {
+  const add = (list) => {
+    for (const b of list) {
+      const d = day(field(b, 'dateStamp', 'date'));
+      const c = +field(b, 'close');
+      if (d && c > 0) bars.set(d, { o: +field(b, 'open') || c, h: +field(b, 'high') || c, l: +field(b, 'low') || c, c, v: +field(b, 'volume') || 0 });
+    }
+  };
+  if (cached) {
+    const stem = `${exchange}-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-`;
+    for (const f of fs.readdirSync(cacheDir).filter((x) => x.startsWith(stem)).sort())
+      add(asList(JSON.parse(fs.readFileSync(path.join(cacheDir, f), 'utf8'))));
+  }
+  for (let y = 0; y < (cached ? 0 : years); y++) {
     const to = new Date(today.getTime() - y * 365.25 * 864e5);
     const from = new Date(to.getTime() - 365.25 * 864e5);
     const f = from.toISOString().slice(0, 10), t = to.toISOString().slice(0, 10);
