@@ -7,6 +7,9 @@
 name: UK portfolio
 
 on:
+  # After the London close on weekdays: download the day, scan, publish the proposals.
+  schedule:
+    - cron: '20 21 * * 1-5'
   workflow_dispatch:
     inputs:
       universe: { description: 'Most traded shares to download', default: '250' }
@@ -16,7 +19,8 @@ on:
       refresh: { description: 'Download fresh data from EODData (otherwise the cached download is used)', type: boolean, default: false }
 
 permissions:
-  contents: read
+  contents: write   # commit the scan (results only) to main
+  actions: write    # start the Pages deployment
 
 jobs:
   data:
@@ -52,7 +56,7 @@ jobs:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           ARGS=(--exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv)
-          if [ "${{ inputs.refresh }}" != "true" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
+          if [ "${{ inputs.refresh }}" != "true" ] && [ "${{ github.event_name }}" != "schedule" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
             echo "Used the cached download" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             node tools/eoddata/fetch.mjs "${ARGS[@]}"
@@ -63,8 +67,13 @@ jobs:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
-          if [ "${{ inputs.refresh }}" != "true" ]; then MODE=--cached; else MODE=; fi
-          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.refresh }}" != "true" ] && [ "${{ github.event_name }}" != "schedule" ]; then
+            node tools/eoddata/fetch_series.mjs --cached --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # Nothing cached (a first run on this branch): download.
+          if [ ! -s data/futures.csv ] || [ "$(wc -l < data/futures.csv)" -le 1 ]; then
+            node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |
@@ -108,3 +117,17 @@ jobs:
           name: uk-report
           path: report/
           retention-days: 14
+      - name: Publish the scan to the page (results only, main branch)
+        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p web/data
+          cp report/ofm.json web/data/uk.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/data/uk.json
+          if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
+          git commit -m "UK scan $(date -u +%Y-%m-%d) (results only)"
+          git push origin HEAD:main
+          gh workflow run pages.yml --ref main

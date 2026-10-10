@@ -85,6 +85,7 @@ async function run() {
     }
     last = JSON.parse(json);
     render(last, note, performance.now() - t0);
+    renderTrades(last, 'Your run');
   } catch (e) {
     status(`Could not run: ${e.message}`);
   } finally {
@@ -188,6 +189,20 @@ function renderStructure(r) {
   $('structure-legend').innerHTML = lines.map(([, color, name]) => `<span><i style="background:${css.getPropertyValue(color).trim()}"></i>${name} (half-life ${st.series.halfLife} days, each scaled to its range)</span>`).join('');
 }
 
+// The proposals of a report: buys and sells at the next open, and the holdings kept.
+function renderTrades(r, source) {
+  const ex = r.expected;
+  const buys = ex.filter((x) => x.order > 0), sells = ex.filter((x) => x.order < 0);
+  const held = ex.filter((x) => x.held && x.order >= 0);
+  const row = (x) => [[x.ticker], [bp(x.daily, 2), `num ${x.daily >= 0 ? 'pos' : 'neg'}`], [bp(x.overLife), `num ${x.overLife >= 0 ? 'pos' : 'neg'}`]];
+  const head = [['Stock'], ['Next day (bp)', 'num'], ['Over life (bp)', 'num']];
+  table($('buys'), head, buys.length ? buys.map(row) : [{ gap: 'no stock clears the round-trip cost' }]);
+  table($('sells'), head, sells.length ? sells.map(row) : [{ gap: 'nothing to sell' }]);
+  $('trade-lists').hidden = false;
+  $('scan-note').textContent = `${source} · as of the close on ${r.asOf} · ${r.stocks} stocks · costs ${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales. A buy is proposed when the expected return over a forecast's life (${r.life.toFixed(1)} days) beats the round trip; a holding is sold when it is expected to lag the market by more.`;
+  $('holdings').textContent = held.length ? `Holding ${held.length} stocks: ${held.map((x) => x.ticker).join(', ')}.` : '';
+}
+
 function drawChart(r) {
   const canvas = $('chart');
   const css = getComputedStyle(document.documentElement);
@@ -232,6 +247,16 @@ $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
 $('expected-all').addEventListener('click', () => { showAll = !showAll; if (last) render(last, '', 0); });
 window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } });
+
+// The latest UK scan, published by the scheduled UK workflow (results only, no prices).
+fetch('data/uk.json', { cache: 'no-cache' })
+  .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+  .then((r) => {
+    last = r;
+    renderTrades(r, 'UK scan');
+    render(r, '', 0);
+  })
+  .catch(() => { $('scan-note').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
 
 createOfm().then((m) => {
   ofm = m;
