@@ -214,14 +214,13 @@ TEST(rolling_top_ten_holds_ten_and_uses_no_future) {
   const auto bt = ofm::backtest(s.market, f, ofm::Costs{}, s.series);
   const auto r = ofm::topKBacktests(s.market, f, ofm::Costs{}, bt, 10);
   CHECK(r.size() == 1 && r[0].dayTrades);
-  // The daily ranking holds exactly the 10 best at the last close after the next open's orders.
-  std::size_t kept = 0;
-  for (const auto& o : r[0].plan)
-    if (o.action >= 0) {
-      CHECK(o.rank >= 1 && o.rank <= 10);
-      ++kept;
-    }
-  CHECK(kept == 10);
+  // The plan books, down the ranking, the first stocks whose learnt levels beat cash: at most 10,
+  // every line a booking, in rank order.
+  CHECK(r[0].plan.size() <= 10);
+  for (std::size_t k = 0; k < r[0].plan.size(); ++k) {
+    CHECK(r[0].plan[k].action == 1);
+    if (k) CHECK(r[0].plan[k].rank > r[0].plan[k - 1].rank);
+  }
   for (const auto& x : r) {
     CHECK(x.daily.size() == bt.model.size() && x.noStops.size() == bt.model.size());
     CHECK(x.positions.size() <= 10 && (x.dayTrades || !x.positions.empty()));

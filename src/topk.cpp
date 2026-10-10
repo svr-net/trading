@@ -375,8 +375,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     }
     const double mean = na > 0 ? sa / na : 0;
     std::vector<Trade> day;
-    for (std::size_t i : in.order[t]) {
-      if (day.size() == K) break;
+    for (std::size_t i : in.order[t]) {  // every candidate, best expected return first
       const double o = m.open(d, i), h = m.high(d, i), l = m.low(d, i), c = m.close(d, i);
       if (!(o > 0 && h > 0 && l > 0 && c > 0) || !std::isfinite(iv(t, i))) continue;
       // A bar must hold together: the low at or below the open and the close, the high at or above.
@@ -491,30 +490,47 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     return best;
   };
 
-  // The live portfolio, its trades and the evaluation against the bars.
+  // The live portfolio, its trades and the evaluation against the bars. Each day the ranking is
+  // walked from the best expected return down, and every stock whose learnt levels beat cash is
+  // booked, until K are booked: every slot that can be filled with a trade worth making is.
   const std::size_t D = days.size();
   TopKEvaluation& ev = r.eval;
   double sxy = 0, sxx = 0, syy = 0, sx = 0, sy = 0;
+  struct Decision { bool trade = false; double a = kInf, b = kInf, score = kNaN; std::size_t day = SIZE_MAX; };
+  std::vector<std::vector<Decision>> memo(3, std::vector<Decision>(N));
+  auto decide = [&](int w, std::size_t t, std::size_t i) -> const Decision& {
+    Decision& dc = memo[static_cast<std::size_t>(w)][i];
+    if (dc.day != t) dc.day = t, dc.trade = learnerOf(w, t, i).learn(dc.a, dc.b, dc.score);
+    return dc;
+  };
+  auto bookings = [&](int w, std::size_t t, const std::vector<Trade>& cands) {
+    std::vector<std::size_t> idx;
+    for (std::size_t q = 0; q < cands.size() && idx.size() < K; ++q)
+      if (decide(w, t, cands[q].i).trade) idx.push_back(q);
+    return idx;
+  };
   for (std::size_t j = 0; j < D; ++j) {
-    const std::size_t d = s + 1 + j;
+    const std::size_t d = s + 1 + j, t = d - 1;
+    const auto& cands = days[j];
+    const std::size_t slots = std::min(K, cands.size());
     const int way = bestWay();
     r.ways.push_back(way);
-    double sum = 0, sum0 = 0, top = 0, aSum = 0, bSum = 0, nTraded = 0, waySum[3] = {0, 0, 0};
-    for (const auto& x : days[j])
-      for (int w = 0; w < 3; ++w) {
-        double a, b, score;
+    double waySum[3] = {0, 0, 0};
+    for (int w = 0; w < 3; ++w)
+      for (std::size_t q : bookings(w, t, cands)) {
+        const Decision& dc = decide(w, t, cands[q].i);
         Exit why;
-        if (learnerOf(w, d - 1, x.i).learn(a, b, score)) waySum[w] += outcome(x, a, b, why);
+        waySum[w] += outcome(cands[q], dc.a, dc.b, why);
       }
-    for (const auto& x : days[j]) {
-      double a, b, score;
-      const Learner& ln = learnerOf(way, d - 1, x.i);
-      const bool trade = ln.learn(a, b, score);
-      const auto [pS, pT] = ln.probs(a, b);
-      Exit why, why0;
-      const double ret = outcome(x, a, b, why);
-      sum += trade ? ret : 0.0, sum0 += outcome(x, kInf, kInf, why0);
-      if (trade) nTraded += 1, aSum += a, bSum += b;
+    double sum = 0, sum0 = 0, top = 0, aSum = 0, bSum = 0;
+    const auto booked = bookings(way, t, cands);
+    for (std::size_t q : booked) {
+      const Trade& x = cands[q];
+      const Decision& dc = decide(way, t, x.i);
+      const auto [pS, pT] = learnerOf(way, t, x.i).probs(dc.a, dc.b);
+      Exit why;
+      const double ret = outcome(x, dc.a, dc.b, why);
+      sum += ret, aSum += dc.a, bSum += dc.b;
       r.trades.push_back({x.i, d, d, ret, why});
       ++ev.trades;
       ev.predStop += pS, ev.predTake += pT, ev.realStop += why == Exit::Stop, ev.realTake += why == Exit::Take;
@@ -522,38 +538,40 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       const double e = std::isfinite(x.e) ? x.e : 0.0;
       ev.expected += e, ev.realised += x.ex, ev.signHit += (e > 0) == (x.ex > 0);
       sx += e, sy += x.ex, sxx += e * e, syy += x.ex * x.ex, sxy += e * x.ex;
-      top += x.c / x.o - 1;
     }
-    const double nd = static_cast<double>(days[j].size());
+    for (std::size_t q = 0; q < slots; ++q) {  // the plain day's K best, for comparison
+      Exit why0;
+      sum0 += outcome(cands[q], kInf, kInf, why0), top += cands[q].c / cands[q].o - 1;
+    }
+    const double nTraded = static_cast<double>(booked.size()), nd = static_cast<double>(slots);
     r.daily.push_back(nd > 0 ? sum / nd : 0.0);  // each of the K slots: its trade, or cash
     r.traded.push_back(nTraded > 0);
     r.booked.push_back(static_cast<int>(nTraded));
     r.noStops.push_back(nd > 0 ? sum0 / nd : 0.0);
     r.kStop.push_back(nTraded > 0 ? aSum / nTraded : kNaN), r.kTake.push_back(nTraded > 0 ? bSum / nTraded : kNaN);
-    r.turnover.push_back(nd > 0 ? 2.0 : 0.0);
+    r.turnover.push_back(nd > 0 ? 2.0 * nTraded / nd : 0.0);
     if (nd > 0) ++ev.days, ev.grossTop += top / nd, ev.grossAll += all[j];
     if (j + 1 == D) {
       r.lastDate = m.dates[d];
-      for (const auto& x : days[j]) {
-        double a, b, score;
-        const Learner& ln = learnerOf(way, d - 1, x.i);
-        const bool trade = ln.learn(a, b, score);
-        const auto [pS, pT] = ln.probs(a, b);
+      for (std::size_t q : booked) {
+        const Trade& x = cands[q];
+        const Decision& dc = decide(way, t, x.i);
+        const auto [pS, pT] = learnerOf(way, t, x.i).probs(dc.a, dc.b);
         Exit why;
-        const double ret = trade ? outcome(x, a, b, why) : 0.0;
-        if (!trade) why = Exit::Open;  // not traded
-        r.lastDay.push_back({x.i, std::isfinite(a) ? std::exp(-std::max(a * x.sig, -kcRound)) - 1 : kNaN, std::isfinite(b) ? std::exp(std::max(b * x.sig, -kcRound)) - 1 : kNaN,
+        const double ret = outcome(x, dc.a, dc.b, why);
+        r.lastDay.push_back({x.i, std::exp(-std::max(dc.a * x.sig, -kcRound)) - 1, std::exp(std::max(dc.b * x.sig, -kcRound)) - 1,
                              std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS, pT, x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
       }
     }
     // Then each way's day joins its record, and the day's bars and trades join what is learnt from.
-    if (!days[j].empty())
+    if (slots > 0)
       for (int w = 0; w < 3; ++w) {
-        const double v = waySum[w] / static_cast<double>(days[j].size());
+        const double v = waySum[w] / static_cast<double>(slots);
         wayS1[w] += v, wayS2[w] += v * v, wayN[w] += 1;
       }
     feedStocks(d);
-    for (const auto& x : days[j]) {
+    for (std::size_t q = 0; q < slots; ++q) {
+      const Trade& x = cands[q];
       const double lo = -std::log(x.l / x.o) / x.sig, hi = std::log(x.h / x.o) / x.sig, cl = std::log(x.c / x.o);
       const int c = state[(d - 1) * N + x.i];
       if (c >= 0) perState[static_cast<std::size_t>(c)].add(lo, hi, cl, x.sig);
@@ -567,7 +585,8 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     ev.ic = vx > 0 && vy > 0 ? cv / std::sqrt(vx * vy) : 0.0;
   }
   if (ev.days) ev.grossTop /= static_cast<double>(ev.days), ev.grossAll /= static_cast<double>(ev.days);
-  // The plan for the next day: the 10 best at the last close, each bought at the open and sold by the close.
+  // The plan for the next day: down the ranking at the last close, the first K whose learnt levels beat
+  // cash, each bought at the open and sold by the close.
   const std::size_t L = T - 1;
   r.tradeNext = false, r.learntRatio = kNaN;
   r.wayNow = wayName[bestWay()];
@@ -575,13 +594,14 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   r.kStop.push_back(kNaN), r.kTake.push_back(kNaN);
   r.life = in.life[L];
   r.orders.assign(N, 0);
-  for (std::size_t q = 0; q < in.order[L].size() && r.plan.size() < K; ++q) {
+  for (std::size_t q = 0; q < in.order[L].size() && r.plan.size() < K; ++q) {  // down the ranking until K are booked
     const std::size_t i = in.order[L][q];
     if (!std::isfinite(iv(L, i))) continue;
     TopKOrder o;
     double a, b, score;
     const Learner& ln = learnerOf(bestWay(), L, i);
     const bool trade = ln.learn(a, b, score);
+    if (!trade) continue;
     const auto [pS, pT] = ln.probs(a, b);
     o.state = state[L * N + i];
     r.tradeNext = r.tradeNext || trade;
@@ -995,7 +1015,7 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
     if (r.dayTrades) {
       std::size_t nTrade = 0;
       for (const auto& p : r.plan) nTrade += p.action > 0;
-      std::snprintf(b, sizeof b, "next open: %zu of the %zu traded (their own learnt levels beat cash after costs); the rest in cash\n", nTrade, r.plan.size());
+      std::snprintf(b, sizeof b, "next open: %zu trades to book (down the ranking, the first whose learnt levels beat cash after costs)\n", nTrade);
       o << b << "levels learnt from: " << r.wayNow << " (each way's record, annualised return per unit of risk:";
       for (const auto& [name, sr] : r.wayRatios) std::snprintf(b, sizeof b, " %s %.2f;", name.c_str(), sr), o << b;
       o << ")\n";
