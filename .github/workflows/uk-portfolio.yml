@@ -18,7 +18,7 @@ on:
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
       refresh: { description: 'Download fresh data from EODData (otherwise the cached download is used)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
-      stamp_pct: { description: 'UK stamp duty on purchases, percent (0.50; 0 for CFDs, spread bets, AIM)', default: '0.50' }
+      stamp_pct: { description: 'Stamp duty on purchases, percent (0 for CFDs, spread bets, AIM; 0.50 for UK shares bought directly)', default: '0' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -98,17 +98,17 @@ jobs:
         if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0.50' }}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, hedged with the stocks' own index (stand-in for FTSE 250 futures)
         if: ${{ !inputs.probe }}
         run: |
           ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --universe-index-hedge --json report/ofm-universe-hedge.json | tee report/ofm-universe-hedge.txt
           { echo '```'; cat report/ofm-universe-hedge.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: 'Without stamp duty (CFDs, spread bets, AIM shares): dealing cost only'
+      - name: 'With UK stamp duty (shares bought directly): 0.50% on purchases'
         if: ${{ !inputs.probe }}
         run: |
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct 0 --json report/ofm-no-stamp.json > report/ofm-no-stamp.txt
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct 0.50 --json report/ofm-no-stamp.json > report/ofm-no-stamp.txt
           { echo '```'; grep -A40 'Rolling portfolio' report/ofm-no-stamp.txt | grep -v '^ *[0-9.]* sd\|^        '; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, emulated GPU kernels (agreement check)
         if: ${{ !inputs.probe }}

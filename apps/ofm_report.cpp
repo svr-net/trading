@@ -1,11 +1,11 @@
 // Runs the model and the backtest and prints the report (results only, no prices).
 //
 //   ofm_report [--csv stocks.csv] [--series futures.csv] [--engine reference|emulated]
-//              [--cost-pct 0.10] [--stamp-pct 0.50] [--futures-bps 1] [--json out.json] [--universe-index-hedge]
+//              [--cost-pct 0.10] [--stamp-pct 0] [--futures-bps 1] [--json out.json] [--universe-index-hedge]
 //
 // --cost-pct: transaction cost per side in percent of the value traded (commission and half the
-// spread; market standard 0.10). --stamp-pct: UK stamp duty on purchases in percent (0.50; 0 for
-// CFDs, spread bets and AIM shares). --buy-bps / --sell-bps set the two sides directly instead.
+// spread; market standard 0.10). --stamp-pct: stamp duty on purchases in percent (0: CFDs, spread
+// bets and AIM shares; 0.50 for UK shares bought directly). --buy-bps / --sell-bps set the two sides directly instead.
 //
 // --universe-index-hedge adds the stocks' own equal-weight index as a hedge series, a stand-in for
 // an index future on these stocks (FTSE 250 futures for a UK universe).

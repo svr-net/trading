@@ -116,7 +116,7 @@ TEST(finds_the_built_in_effects_and_beats_the_market_on_the_sample) {
   std::size_t nonzero = 0;
   for (double p : f.premium) nonzero += p != 0 ? 1 : 0;
   CHECK(nonzero > 0);
-  const auto bt = ofm::backtest(s.market, f, ofm::Costs{}, s.series);
+  const auto bt = ofm::backtest(s.market, f, ofm::Costs::fromPercent(0.10, 0.50), s.series);
   CHECK(ofm::metrics(bt.model).sharpe > ofm::metrics(bt.market).sharpe);
 }
 
@@ -138,7 +138,7 @@ TEST(pure_noise_gives_little_trading) {
     }
   }
   const auto f = ofm::runModel(m);
-  const auto bt = ofm::backtest(m, f, ofm::Costs{}, {});
+  const auto bt = ofm::backtest(m, f, ofm::Costs::fromPercent(0.10, 0.50), {});
   double turn = 0;
   for (double v : bt.turnover) turn += v;
   CHECK(turn / (static_cast<double>(bt.turnover.size()) / 252.0) < 3.0);
