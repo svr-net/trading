@@ -21,7 +21,8 @@ cross a barrier. Native builds run the workgroups on all CPU threads.
 - **expect**: the day's factor weights staged in workgroup memory, four signals a step.
 - **levels** (one workgroup per stock): lane 0 keeps the running state; the 64 lanes share the
   sorted insertion, the stop and take-profit sweeps (two-pass parallel scans), the reductions and,
-  fused, the trade on the next day's bar.
+  fused, the trade on the next day's bar. Its width is a WGSL `override`: 64 on WebGPU, one in the
+  C++ translation, where the same code is the sequential sweep.
 
 Engines on the page: the GPU; where there is no graphics support, the browser's software WebGPU
 adapter (a GPU simulated on the CPU, running the same WGSL); without WebGPU, the WebAssembly

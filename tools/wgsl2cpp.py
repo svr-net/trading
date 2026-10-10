@@ -291,8 +291,9 @@ def escapes(stmts, in_loop=False):
 
 
 class Emitter:
-    def __init__(self, structs, barrier_fns, lanes, private_vars):
-        self.structs, self.barrier_fns, self.lanes = structs, barrier_fns, lanes
+    def __init__(self, structs, barrier_fns, lanes, private_vars, lane_names=()):
+        self.structs, self.barrier_fns, self.lanes, self.lane_names = structs, barrier_fns, lanes, set(lane_names)
+        self.arrays = set()
         self.priv = {v: f"{v}_p[L]" for v in private_vars} if barrier_fns else {}
 
     def is_wg(self, s):
@@ -355,30 +356,54 @@ class Emitter:
         out += self.flush(run, names, ind, prelude)
         return out
 
+    def lane0(self, s):
+        """Whether the statement only runs on lane 0: if (<lane index> == 0u) { ... } without else."""
+        c = s.cond
+        return s.kind == "if" and s.els is None and len(c) == 3 and c[0] in self.lane_names and c[1] == "==" and c[2] in ("0u", "0")
+
     def flush(self, run, names, ind, prelude):
         if not run:
             return []
         pad = "  " * ind
-        decls, body = [], []
-        for s in run:
-            if s.kind == "simple" and s.toks[0] in ("let", "var"):
-                vname = s.toks[1]
-                if s.toks[2] != ":":
+        if all(self.lane0(s) for s in run):
+            # Only lane 0 does anything: run it alone (the other lanes would skip every statement).
+            body = []
+            for s in run:
+                body += self.plain(s.body, names, ind + 1)
+            return [f"{pad}{{", f"{pad}  L = 0;"] + [pad + "  " + x for x in prelude] + body + [f"{pad}}}"]
+        decls, body, cached = [], [], []
+        used = {t for st in run for t in st.tokens()}
+        local = dict(names)
+        # Per-lane variables the stretch uses live in locals while a lane runs it (registers, not
+        # memory the compiler must assume aliased), stored back at its end.
+        for v in [v for v, r in names.items() if r == f"{v}_w[L]" and v in used and v not in self.arrays]:
+            body.append(f"{pad}  auto {v} = {v}_w[L];")
+            local.pop(v)
+            cached.append(v)
+        for st in run:
+            if st.kind == "simple" and st.toks[0] in ("let", "var"):
+                vname = st.toks[1]
+                if st.toks[2] != ":":
                     raise Error(f"{vname}: a variable declared between barriers needs an explicit type")
-                ty, rest = split_type(s.toks[3:])
+                ty, rest = split_type(st.toks[3:])
                 base, suffix = ctype(ty, self.structs)
                 init = rest[1:-1] if rest and rest[0] == "=" else None
-                value = self.tr(init, names) if init is not None else None
-                decls.append(f"{pad}{base} {vname}_w[{self.lanes}]{suffix}{{}};")
+                decls.append(f"{pad}[[maybe_unused]] {base} {vname}_w[{self.lanes}]{suffix}{{}};")
                 names[vname] = f"{vname}_w[L]"
-                if value is not None:
-                    body.append(f"{pad}  {vname}_w[L] = {value};")
-                elif suffix:
+                if suffix:
+                    self.arrays.add(vname)
+                    local[vname] = f"{vname}_w[L]"
                     body.append(f"{pad}  for (auto& x_ : {vname}_w[L]) x_ = {{}};")
-                else:
-                    body.append(f"{pad}  {vname}_w[L] = {{}};")
+                    if init is not None:
+                        raise Error(f"{vname}: per-lane arrays cannot be initialised")
+                    continue
+                value = self.tr(init, local) if init is not None else "{}"
+                body.append(f"{pad}  {base} {vname} = {value};")
+                local.pop(vname, None)
+                cached.append(vname)
             else:
-                body += self.plain_stmt(s, names, ind + 1)
+                body += self.plain_stmt(st, local, ind + 1)
+        body += [f"{pad}  {v}_w[L] = {v};" for v in cached]
         return decls + [f"{pad}for (L = 0; L < kLanes; ++L) {{"] + [pad + "  " + x for x in prelude] + body + [f"{pad}}}", f"{pad}L = 0;"]
 
     def lowered_stmt(self, s, names, ind, prelude, prefix=""):
@@ -429,6 +454,9 @@ def lane_vec(wg, var):
 
 
 def translate(source, structs, struct_defs, name):
+    # "// wgsl2cpp: override NAME = value": the value the CPU translation gives an override constant.
+    cpu = {m.group(1): m.group(2) for m in re.finditer(r"//\s*wgsl2cpp:\s*override\s+(\w+)\s*=\s*(\w+)", source)}
+    ints = {}
     toks = tokenize(source)
     members, fns, private_vars, workgroup_vars = [], [], [], []
     entry, wg = None, [1, 1, 1]
@@ -491,11 +519,16 @@ def translate(source, structs, struct_defs, name):
                 members.append(f"{base} {vname}{suffix}{{}};  // workgroup")
             else:
                 raise Error(f"var<{','.join(space)}> {vname} is not supported")
-        elif kw == "const":
+        elif kw in ("const", "override"):
             cname = toks[i + 1]
             j = toks.index("=", i)
             e = toks.index(";", j)
-            members.append(f"static constexpr {ctype(toks[i + 3:j], structs)[0]} {cname} = {render(expr(toks[j + 1:e], structs))};")
+            value = toks[j + 1:e]
+            if kw == "override" and cname in cpu:
+                value = tokenize(cpu[cname])
+            if len(value) == 1 and re.fullmatch(r"\d+u?", value[0]):
+                ints[cname] = int(value[0].rstrip("u"))
+            members.append(f"static constexpr {ctype(toks[i + 3:j], structs)[0]} {cname} = {render(expr(value, structs))};")
             i = e + 1
         elif kw == "fn":
             fname = toks[i + 1]
@@ -525,7 +558,7 @@ def translate(source, structs, struct_defs, name):
             fns.append((fname, plist, ret, body))
             if "compute" in attrs:
                 entry = fname
-                size = [int(x.rstrip("u")) for x in attrs["workgroup_size"]]
+                size = [ints[x] if x in ints else int(x.rstrip("u")) for x in attrs["workgroup_size"]]
                 wg = size + [1] * (3 - len(size))
         else:
             raise Error(f"unexpected {kw!r}")
@@ -544,7 +577,14 @@ def translate(source, structs, struct_defs, name):
                 barrier_fns.add(f)
                 changed = True
     lanes = wg[0] * wg[1] * wg[2]
-    em = Emitter(structs, barrier_fns, lanes, private_vars)
+    # Names holding the lane index: the entry's local_invocation_index, and private variables the
+    # entry sets to it ("LID = lane;").
+    _, eparams, _, ebody = next(f for f in fns if f[0] == entry)
+    lane_names = {p for p, _, b in eparams if b == "local_invocation_index"}
+    for st in ebody:
+        if st.kind == "simple" and len(st.toks) == 4 and st.toks[0] in private_vars and st.toks[1] == "=" and st.toks[2] in lane_names:
+            lane_names.add(st.toks[0])
+    em = Emitter(structs, barrier_fns, lanes, private_vars, lane_names)
 
     out = ["template <class F>", f"struct {name} {{",
            f"  static constexpr std::uint32_t kWorkgroup[3] = {{{wg[0]}u, {wg[1]}u, {wg[2]}u}};",

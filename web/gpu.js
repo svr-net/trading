@@ -40,12 +40,12 @@ async function open(adapter, software) {
   return { device, name: software ? `CPU-simulated GPU: ${name}` : name, software };
 }
 
-async function pipeline(device, code, label) {
+async function pipeline(device, code, label, constants = undefined) {
   const module = device.createShaderModule({ code, label });
   const info = await module.getCompilationInfo();
   const errors = info.messages.filter((m) => m.type === 'error');
   if (errors.length) throw new Error(`${label}: ${errors.map((e) => `${e.lineNum}:${e.linePos} ${e.message}`).join('; ')}`);
-  return device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main' }, label });
+  return device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main', ...(constants ? { constants } : {}) }, label });
 }
 
 async function readBack(device, src, bytes, Type = Float32Array) {
@@ -118,6 +118,8 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
   const plan = session.dayTradePlan();
   if (!plan.ok) return null;
   const { device } = await openDevice(mode);
+  // 64 lanes per stock in the levels kernel on every adapter: a software adapter (SwiftShader) runs
+  // the lanes as SIMD and is faster with 64 than with one (150 s against 250 s on the sample).
   const [levels, book] = await Promise.all([pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.book, 'book')]);
   const { T, N, K, s } = plan;
   const S = GPUBufferUsage.STORAGE, DST = GPUBufferUsage.COPY_DST, SRC = GPUBufferUsage.COPY_SRC;

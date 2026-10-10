@@ -12,7 +12,11 @@
 @group(0) @binding(6) var<storage, read_write> lev : array<f32>;
 @group(0) @binding(7) var<storage, read_write> tra : array<f32>;
 
-const WG : u32 = 64u;
+// The lanes per stock: 64 on WebGPU (hardware, or a software adapter running lanes as SIMD). The C++
+// translation runs one lane (wgsl2cpp pragma below): there the same code is the sequential sweep,
+// without the 64-lane bookkeeping a scalar CPU thread gains nothing from.
+// wgsl2cpp: override WG = 1
+override WG : u32 = 64u;
 
 var<private> I : u32;
 var<private> LID : u32;
@@ -61,18 +65,20 @@ fn ratio(s1 : f32, s2 : f32, n : f32) -> f32 {
   return select(-NONE, NONE, mu > 0.0);
 }
 
-// Inserts record q (key: its value of field f) into the order by f: the position is the number of
-// recorded values below the key; the entries above it move up one, 64 at a time from the top.
+// Inserts record q (key: its value of field f) into the order by f: lane 0 finds the position (the
+// number of recorded values below the key) by bisection; the entries above it move up one, 64 at a
+// time from the top.
 fn insert(f : u32, key : f32, q : u32) {
   let o : u32 = (I * 2u + f) * P.T;
-  var c : u32 = 0u;
-  for (var k = LID; k < q; k = k + WG) { if (value(f, idx[o + k]) < key) { c = c + 1u; } }
-  RU[LID] = c;
-  workgroupBarrier();
   if (LID == 0u) {
-    var s = 0u;
-    for (var j = 0u; j < WG; j = j + 1u) { s = s + RU[j]; }
-    UP = s;
+    var lo0 = 0u;
+    var hi0 = q;
+    loop {
+      if (lo0 >= hi0) { break; }
+      let mid = (lo0 + hi0) / 2u;
+      if (value(f, idx[o + mid]) < key) { lo0 = mid + 1u; } else { hi0 = mid; }
+    }
+    UP = lo0;
   }
   let pos : u32 = workgroupUniformLoad(&UP);
   for (var top = q; top > pos; top = top - min(top - pos, WG)) {
@@ -122,19 +128,28 @@ fn plausibleMax(f : u32, nn : u32) -> f32 {
   let q2 : f32 = value(f, sorted(f, nn / 2u));
   let q3 : f32 = value(f, sorted(f, 3u * nn / 4u));
   let sc : f32 = (q3 - q1) / 1.349;
-  var best : u32 = 0u;
-  for (var k = LID + 1u; k <= nn; k = k + WG) {
-    let v = value(f, sorted(f, k - 1u));
-    if (!(sc > 0.0) || f32(nn) * erfcApprox((v - q2) / sc / 1.4142135623730951) >= 0.5) { best = max(best, k); }
+  // From the top, 64 values at a time, until a block holds a plausible one.
+  var kb : u32 = 0u;
+  for (var top = nn; top > 0u; top = top - min(top, WG)) {
+    var best : u32 = 0u;
+    if (LID < top) {
+      let k = top - LID;
+      let v = value(f, sorted(f, k - 1u));
+      if (!(sc > 0.0) || f32(nn) * erfcApprox((v - q2) / sc / 1.4142135623730951) >= 0.5) { best = k; }
+    }
+    RU[LID] = best;
+    workgroupBarrier();
+    if (LID == 0u) {
+      var m = 0u;
+      for (var j = 0u; j < WG; j = j + 1u) { m = max(m, RU[j]); }
+      UP = m;
+    }
+    let found : u32 = workgroupUniformLoad(&UP);
+    if (found > 0u) {
+      kb = found;
+      break;
+    }
   }
-  RU[LID] = best;
-  workgroupBarrier();
-  if (LID == 0u) {
-    var m = 0u;
-    for (var j = 0u; j < WG; j = j + 1u) { m = max(m, RU[j]); }
-    UP = m;
-  }
-  let kb : u32 = workgroupUniformLoad(&UP);
   if (kb > 0u) { return value(f, sorted(f, kb - 1u)); }
   return value(f, sorted(f, nn - 1u));
 }
@@ -391,7 +406,7 @@ fn updateState(t : u32) {
   setS(22u, code);
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(WG)
 fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index) lane : u32) {
   I = wid.x;
   LID = lane;
