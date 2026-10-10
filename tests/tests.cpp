@@ -224,7 +224,8 @@ TEST(rolling_top_ten_holds_ten_and_uses_no_future) {
   CHECK(kept == 10);
   for (const auto& x : r) {
     CHECK(x.daily.size() == bt.model.size() && x.noStops.size() == bt.model.size());
-    CHECK(x.positions.size() <= 10 && !x.positions.empty());
+    CHECK(x.positions.size() <= 10 && (x.dayTrades || !x.positions.empty()));
+    CHECK(x.plan.size() >= 10 || !x.dayTrades);
     CHECK(x.grid.size() == x.gridK.size() * x.gridK.size());
     for (double v : x.daily) CHECK(std::isfinite(v) && v > -1);
   }

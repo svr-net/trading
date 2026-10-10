@@ -28,7 +28,7 @@
 
 namespace ofm {
 
-enum class Exit : char { Stop = 's', Take = 't', Rotate = 'r', Open = 'o' };
+enum class Exit : char { Stop = 's', Take = 't', Close = 'c', Rotate = 'r', Open = 'o' };
 
 struct TopKTrade {
   std::size_t asset = 0, entryDay = 0, exitDay = 0;
@@ -60,6 +60,25 @@ struct TopKOrder {
   double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;
 };
 
+/// The daily trades judged against the day's actual bars: what was expected at the close before
+/// (levels, probabilities, expected return) against what the open, high, low, close and volume did.
+struct TopKEvaluation {
+  std::size_t trades = 0, days = 0;
+  double predStop = 0, realStop = 0, predTake = 0, realTake = 0;  ///< mean probability vs frequency
+  double expected = 0, realised = 0;  ///< mean expected excess return vs realised (open to close, over all ranked)
+  double ic = 0, signHit = 0;         ///< correlation of the two over all trades; share with the same sign
+  double grossTop = 0, grossAll = 0;  ///< mean open-to-close return before costs: the 10, all ranked
+};
+
+/// One trade of the last completed day: the plan made at the close before against the bars.
+struct TopKCheck {
+  std::size_t asset = 0;
+  double stop = 0, take = 0, expected = 0, pStop = 0, pTake = 0;  ///< planned, relative to the open
+  double high = 0, low = 0, close = 0, volume = 0;  ///< actual, relative to the open (volume: to its usual)
+  double ret = 0;  ///< net of costs
+  Exit reason = Exit::Close;
+};
+
 struct TopKResult {
   std::string name;
   std::size_t K = 0, start = 0;
@@ -76,6 +95,10 @@ struct TopKResult {
   double life = 1;                ///< the forecast's life at the last close (days)
   bool oneDay = false;            ///< positions held one day: levels reset from each open, one day's volatility
   std::vector<double> grossTop, grossAll;  ///< before costs, open to open: the day's 10 best and all ranked stocks
+  bool dayTrades = false;         ///< bought at the open, sold at the stop, the take-profit or the close
+  TopKEvaluation eval;
+  std::vector<TopKCheck> lastDay; ///< the last completed day's trades against the bars
+  std::string lastDate;
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).
