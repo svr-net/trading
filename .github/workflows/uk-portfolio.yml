@@ -47,6 +47,11 @@ jobs:
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: node tools/eoddata/fetch.mjs --exchange LSE --universe "${{ inputs.universe || '120' }}" --years "${{ inputs.years || '6' }}" --currency GBP --out data/LSE.csv
+      - name: Download futures, index and currency series
+        if: ${{ !inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols LIFFE:XY00,LIFFE:YY00,LIFFE:GY00,CFE:VIY00,EUREX:GGY00,INDEX:SG2C,FOREX:GBPUSD | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |
