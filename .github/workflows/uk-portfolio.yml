@@ -64,18 +64,30 @@ jobs:
             echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Backtest the model (results only)
+      - name: Build the C++ model
         if: ${{ !inputs.probe }}
         run: |
-          python model/run.py data/LSE.csv | tee model-report.txt
-          { echo '```'; cat model-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Daily backtest with stop-loss and take-profit (results only)
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+          cmake -S . -B build -G Ninja
+          cmake --build build
+          ./build/ofm_tests
+      - name: Adaptive model, reference engine (results only)
         if: ${{ !inputs.probe }}
         run: |
-          python model/run_daily.py data/LSE.csv 2>/dev/null | tee daily-report.txt
-          { echo '```'; cat daily-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Model with futures inputs (results only)
+          mkdir -p report
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --json report/ofm.json | tee report/ofm.txt
+          { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Adaptive model, emulated GPU kernels (agreement check)
+        if: ${{ !inputs.probe }}
+        run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24
+      - name: 'Benchmark - first Python model, fixed look-backs, monthly (results only)'
         if: ${{ !inputs.probe }}
         run: |
-          python model/run_futures.py data/LSE.csv data/futures.csv | tee futures-report.txt
-          { echo '```'; cat futures-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          python model/run.py data/LSE.csv | tee report/benchmark.txt
+          { echo '```'; cat report/benchmark.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.probe }}
+        with:
+          name: uk-report
+          path: report/
+          retention-days: 14

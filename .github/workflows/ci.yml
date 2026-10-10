@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Build and test (gcc)
+        run: |
+          cmake -S . -B build -G Ninja
+          cmake --build build
+          ./build/ofm_tests
+      - name: Build and test with sanitizers (clang)
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          cmake --build build-asan
+          ./build-asan/ofm_tests
+      - name: Report on the sample market
+        run: ./build/ofm_report
+
+  wasm:
+    runs-on: ubuntu-24.04
+    container: emscripten/emsdk:4.0.10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the WebAssembly module
+        run: |
+          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-wasm -j"$(nproc)"
+      - name: Node test
+        run: node web/tests/wasm.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: web/
+          if-no-files-found: error
+
+  e2e:
+    needs: wasm
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.56.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: web
+      - name: Install Playwright
+        run: npm install --no-save --no-audit --no-fund playwright@1.56.1
+      - name: Browser test (WebGPU on SwiftShader, emulated GPU, reference)
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
+        run: node web/tests/e2e.mjs

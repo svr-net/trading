@@ -1,4 +1,7 @@
-"""Orthonormal shrinkage factor model with cost-hurdle trading.
+"""Benchmark: the first (Python) version of the model, with fixed look-backs and monthly rebalancing.
+
+Kept to compare the fully adaptive C++ model (ofm_report) against. Orthonormal shrinkage factor
+model with cost-hurdle trading.
 
 Each month-end, for every stock with a year of history:
 
