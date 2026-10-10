@@ -41,15 +41,22 @@ const rows = exchanges.map((e) => ({
 for (const r of rows) console.log(`  ${String(r.code).padEnd(10)} ${String(r.type ?? '').padEnd(10)} ${String(r.country ?? '').padEnd(4)} ${String(r.currency ?? '').padEnd(4)} ${String(r.symbols ?? '').padStart(6)}  ${r.name}`);
 const futuresLike = rows.filter((r) => /fut|ice|liffe|cme|cbot|nymex|comex|eurex|cboe|lme|options|commod/i.test(`${r.code} ${r.name} ${r.type}`));
 console.log(`\nfutures-like exchanges: ${futuresLike.map((r) => r.code).join(', ') || 'none'}`);
+// Named symbols only (contract months carry no name), and a keyword search for the series a
+// UK equity model can use: index futures, gilts, volatility, oil, sterling.
+const wanted = /ftse|footsie|gilt|sterling|sonia|vix|volatility|brent|crude|dax|stoxx|bund|gbp|pound|msci/i;
 const samples = {};
-for (const r of futuresLike) {
+for (const code of [...futuresLike.map((r) => r.code), 'FOREX']) {
   try {
-    const syms = asList(await get(`/Symbol/List/${encodeURIComponent(r.code)}`));
-    samples[r.code] = syms.slice(0, 40).map((s) => `${field(s, 'code', 'symbolCode')}: ${field(s, 'name', 'description')}`);
-    console.log(`\n${r.code}: ${syms.length} symbols, e.g.`);
-    for (const s of samples[r.code].slice(0, 25)) console.log(`  ${s}`);
+    const syms = asList(await get(`/Symbol/List/${encodeURIComponent(code)}`));
+    const named = syms
+      .map((s) => ({ code: field(s, 'code', 'symbolCode'), name: field(s, 'name', 'description') }))
+      .filter((s) => s.name && s.name !== 'undefined');
+    const hits = named.filter((s) => wanted.test(s.name) || (code === 'FOREX' && /GBP/.test(s.code)));
+    samples[code] = hits;
+    console.log(`\n${code}: ${syms.length} symbols, ${named.length} named, ${hits.length} relevant`);
+    for (const s of hits.slice(0, 60)) console.log(`  ${s.code}: ${s.name}`);
   } catch (e) {
-    console.log(`\n${r.code}: not available (${e.message})`);
+    console.log(`\n${code}: not available (${e.message})`);
   }
 }
 fs.mkdirSync(path.dirname(out), { recursive: true });

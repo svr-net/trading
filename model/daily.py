@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from orthofactor import QUARTER, YEAR, loewdin, month_ends, shrunk_premia, signals_at, zscores
+from orthofactor import YEAR, loewdin, month_ends, shrunk_premia, signals_at, zscores
 
 
 @dataclass
@@ -57,6 +57,7 @@ class DailyResult:
     exposure: float = 0.0
     turnover: float = 0.0
     positions: float = 0.0
+    weights: np.ndarray | None = None  # daily end-of-day weights (with keep_weights)
 
 
 def atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, n: int = 14) -> np.ndarray:
@@ -86,32 +87,70 @@ def monthly_records(C: np.ndarray, V: np.ndarray, ends: np.ndarray):
     return np.array(records)
 
 
-def run_daily(bars: dict[str, pd.DataFrame], spec: DailySpec = DailySpec()) -> DailyResult:
+@dataclass
+class Prepared:
+    """Everything the daily rules need that does not depend on their settings."""
+    C: np.ndarray
+    Cf: np.ndarray
+    O: np.ndarray
+    H: np.ndarray
+    L: np.ndarray
+    A: np.ndarray
+    E: np.ndarray      # expected excess return per day and stock, decided at that close (NaN = ineligible)
+    life: np.ndarray   # expected life of an expected return (months), per day
+    start: int
+    dates: pd.DatetimeIndex
+    tickers: list
+
+
+def prepare_daily(bars: dict[str, pd.DataFrame], min_months: int = 12) -> Prepared:
     C, O, H, L, V = (bars[k].to_numpy() for k in ["close", "open", "high", "low", "volume"])
     Cf = bars["close"].ffill().to_numpy()  # valuation at the last traded price on days a stock has no bar
-    tickers = list(bars["close"].columns)
     T, N = C.shape
     ends = month_ends(bars["close"].index)
     ends = ends[ends >= YEAR]
-    if len(ends) < spec.min_months + 3:
+    if len(ends) < min_months + 3:
         raise ValueError("not enough history: need a year for signals and a year of factor records")
     rec = monthly_records(C, V, ends)  # rec[m] resolves at ends[m + 1]
     A = atr(H, L, C)
+    start = int(ends[min_months])
+    E_all = np.full((T, N), np.nan)
+    life = np.ones(T)
+    end_set = set(int(e) for e in ends)
+    prev_E, rho_hist = None, []
+    for d in range(start, T):
+        m_res = int(np.searchsorted(ends, d, side="right")) - 1  # months whose end <= d
+        prem = shrunk_premia(rec[: max(m_res, 0)], min_months) if m_res > 0 else np.zeros(6)
+        raw = signals_at(C, V, d)
+        ok = np.isfinite(raw).all(axis=1) & np.isfinite(A[d]) & (A[d] > 0)
+        if ok.sum() > 12:
+            E_all[d, ok] = loewdin(zscores(raw[ok])) @ prem
+        E = E_all[d]
+        if d in end_set:
+            if prev_E is not None:
+                both = np.isfinite(E) & np.isfinite(prev_E)
+                if both.sum() > 10 and np.nanstd(E[both]) > 0 and np.nanstd(prev_E[both]) > 0:
+                    rho_hist.append(float(np.corrcoef(zscores(E[both][:, None])[:, 0], zscores(prev_E[both][:, None])[:, 0])[0, 1]))
+            prev_E = E.copy()
+        rho = float(np.clip(np.mean(rho_hist), 0.0, 0.95)) if rho_hist else 0.0
+        life[d] = 1.0 / (1.0 - rho)
+    return Prepared(C, Cf, O, H, L, A, E_all, life, start, bars["close"].index, list(bars["close"].columns))
+
+
+def simulate_daily(pr: Prepared, spec: DailySpec, keep_weights: bool = False) -> DailyResult:
+    C, Cf, O, H, L, A = pr.C, pr.Cf, pr.O, pr.H, pr.L, pr.A
+    T, N = C.shape
     buy, sell = spec.buy_bps * 1e-4, spec.sell_bps * 1e-4
     hurdle = buy + sell
-
-    start = ends[spec.min_months]  # first decision close: min_months records resolved
+    start = pr.start
     cash, shares = 1.0, np.zeros(N)
     stop, take, entry_px, entry_day = np.full(N, np.nan), np.full(N, np.nan), np.zeros(N), np.zeros(N, int)
     last_stop = np.full(N, -10**9)
     trades: list[Trade] = []
-    rets, mkt = [], []
-    prev_E, rho_hist = None, []
+    rets, mkt, weights = [], [], []
     orders_buy, orders_sell = [], []
     traded_value, exposure_sum, pos_sum = 0.0, 0.0, 0.0
     mkt_w = None
-
-    end_set = set(int(e) for e in ends)
     eq_ref = 1.0  # equity at the previous close: the base of the turnover figure
 
     def equity(d):
@@ -124,7 +163,7 @@ def run_daily(bars: dict[str, pd.DataFrame], spec: DailySpec = DailySpec()) -> D
         cash += value * (1 - sell)
         traded_value += value / eq_ref
         cost_in = shares[i] * entry_px[i] * (1 + buy)
-        trades.append(Trade(tickers[i], int(entry_day[i]), d, float(entry_px[i]), float(px), reason, float(value * (1 - sell) / cost_in - 1)))
+        trades.append(Trade(pr.tickers[i], int(entry_day[i]), d, float(entry_px[i]), float(px), reason, float(value * (1 - sell) / cost_in - 1)))
         if reason == "stop":
             last_stop[i] = d
         shares[i] = 0.0
@@ -165,6 +204,8 @@ def run_daily(bars: dict[str, pd.DataFrame], spec: DailySpec = DailySpec()) -> D
             rets.append(eq_after / eq_before - 1.0)
             exposure_sum += 1.0 - cash / eq_after
             pos_sum += (shares > 0).sum()
+            if keep_weights:
+                weights.append(shares * np.where(np.isfinite(Cf[d]), Cf[d], 0.0) / eq_after)
             # Market: equal weight in the stocks eligible on the first day, bought once.
             r = np.nan_to_num(C[d] / C[d - 1] - 1.0)
             before = mkt_w.sum()
@@ -172,32 +213,27 @@ def run_daily(bars: dict[str, pd.DataFrame], spec: DailySpec = DailySpec()) -> D
             mkt.append(mkt_w.sum() / before - 1.0 - (buy if d == start + 1 else 0.0))
 
         # Decide at today's close.
-        m_res = int(np.searchsorted(ends, d, side="right")) - 1  # months whose end <= d
-        prem = shrunk_premia(rec[: max(m_res, 0)], spec.min_months) if m_res > 0 else np.zeros(6)
-        raw = signals_at(C, V, d)
-        ok = np.isfinite(raw).all(axis=1) & np.isfinite(A[d]) & (A[d] > 0)
-        E = np.full(N, np.nan)
-        if ok.sum() > 12:
-            E[ok] = loewdin(zscores(raw[ok])) @ prem
+        E = pr.E[d]
+        ok = np.isfinite(E)
         if mkt_w is None:
             mkt_w = ok / ok.sum()
-        if d in end_set:
-            if prev_E is not None:
-                both = np.isfinite(E) & np.isfinite(prev_E)
-                if both.sum() > 10 and np.nanstd(E[both]) > 0 and np.nanstd(prev_E[both]) > 0:
-                    rho_hist.append(float(np.corrcoef(zscores(E[both][:, None])[:, 0], zscores(prev_E[both][:, None])[:, 0])[0, 1]))
-            prev_E = E.copy()
-        rho = float(np.clip(np.mean(rho_hist), 0.0, 0.95)) if rho_hist else 0.0
-        life = 1.0 / (1.0 - rho)
+        life = pr.life[d]
         held = shares > 0
-        orders_sell = [i for i in np.flatnonzero(held & np.isfinite(E)) if -E[i] * life > hurdle]
+        orders_sell = [i for i in np.flatnonzero(held & ok) if -E[i] * life > hurdle]
         free = spec.max_positions - (int(held.sum()) - len(orders_sell))
-        cand = np.flatnonzero(~held & np.isfinite(E) & (E * life > hurdle) & (d - last_stop > spec.cooldown))
+        cand = np.flatnonzero(~held & ok & (E * life > hurdle) & (d - last_stop > spec.cooldown))
         cand = cand[np.argsort(-E[cand])][: max(free, 0)]
         orders_buy = [(i, spec.sl_atr * A[d, i], spec.tp_atr * A[d, i]) for i in cand]
 
-    days = bars["close"].index[start + 1 : start + 1 + len(rets)]
+    days = pr.dates[start + 1 : start + 1 + len(rets)]
     years = len(rets) / YEAR
-    return DailyResult(dates=days, returns={"model (daily, SL/TP)": np.array(rets), "market (buy and hold)": np.array(mkt)},
-                       trades=trades, exposure=exposure_sum / max(len(rets), 1), turnover=traded_value / max(years, 1e-9),
-                       positions=pos_sum / max(len(rets), 1))
+    res = DailyResult(dates=days, returns={"model (daily, SL/TP)": np.array(rets), "market (buy and hold)": np.array(mkt)},
+                      trades=trades, exposure=exposure_sum / max(len(rets), 1), turnover=traded_value / max(years, 1e-9),
+                      positions=pos_sum / max(len(rets), 1))
+    if keep_weights:
+        res.weights = np.array(weights)
+    return res
+
+
+def run_daily(bars: dict[str, pd.DataFrame], spec: DailySpec = DailySpec()) -> DailyResult:
+    return simulate_daily(prepare_daily(bars, spec.min_months), spec)
