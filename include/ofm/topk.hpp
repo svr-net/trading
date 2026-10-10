@@ -68,6 +68,7 @@ struct TopKEvaluation {
   double expected = 0, realised = 0;  ///< mean expected excess return vs realised (open to close, over all ranked)
   double ic = 0, signHit = 0;         ///< correlation of the two over all trades; share with the same sign
   double grossTop = 0, grossAll = 0;  ///< mean open-to-close return before costs: the 10, all ranked
+  double lowAtOpen = 0;               ///< share of trades whose day never traded below the open
 };
 
 /// One trade of the last completed day: the plan made at the close before against the bars.
