@@ -60,8 +60,8 @@ Facts facts(const Market& m, const Backtest& bt) {
   const double years = static_cast<double>(F.n) / 252.0;
   F.modelTurnoverYear = std::accumulate(bt.turnover.begin(), bt.turnover.end(), 0.0) / std::max(years, 1e-9);
   F.meanHoldings = bt.holdings.empty() ? 0 : std::accumulate(bt.holdings.begin(), bt.holdings.end(), 0.0) / static_cast<double>(bt.holdings.size());
-  F.hedgeShare = bt.hedge.empty() ? 0 : static_cast<double>(std::count_if(bt.hedge.begin(), bt.hedge.end(), [](double x) { return x > 0; })) /
-                                             static_cast<double>(bt.hedge.size());
+  // Average hedge, as a fraction of the book's value (beta times the hedge ratio).
+  F.hedgeShare = bt.hedge.empty() ? 0 : std::accumulate(bt.hedge.begin(), bt.hedge.end(), 0.0) / static_cast<double>(bt.hedge.size());
   for (const auto& t : bt.trades) {
     if (t.ret > 0) ++F.wins, F.meanWin += t.ret;
     else ++F.losses, F.meanLoss += t.ret;
@@ -197,7 +197,7 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       o << b;
     }
   }
-  std::snprintf(b, sizeof b, "\ntrades %zu (won %zu, mean %+.2f%%; lost %zu, mean %+.2f%%); turnover %.1fx a year; %.1f stocks held on average; hedged %.0f%% of days\n",
+  std::snprintf(b, sizeof b, "\ntrades %zu (won %zu, mean %+.2f%%; lost %zu, mean %+.2f%%); turnover %.1fx a year; %.1f stocks held on average; average hedge %.0f%% of the book\n",
                 bt.trades.size(), F.wins, 100 * F.meanWin, F.losses, 100 * F.meanLoss, F.modelTurnoverYear, F.meanHoldings, 100 * F.hedgeShare);
   o << b;
   const double life = bt.life.empty() ? 1.0 : bt.life.back();

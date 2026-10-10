@@ -100,7 +100,7 @@ function render(r, note, ms) {
   $('verdict').innerHTML = `
     <div class="tile"><span class="k">Model, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year · ${pass(r.pass)}</span></div>
     <div class="tile"><span class="k">Market, bought and held</span><span class="v">${k.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(k.annualReturn)} a year</span></div>
-    <div class="tile"><span class="k">Model + futures hedge</span><span class="v">${h.sharpe.toFixed(2)}</span><span class="s">${r.hedgeSeries ? `hedged with ${r.hedgeSeries} on ${pct(r.trades.hedgeShare, 0)} of days` : 'no futures series'} · ${pass(r.passHedged)}</span></div>`;
+    <div class="tile"><span class="k">Model + futures hedge</span><span class="v">${h.sharpe.toFixed(2)}</span><span class="s">${r.hedgeSeries ? `hedged with ${r.hedgeSeries}, on average ${pct(r.trades.hedgeShare, 0)} of the book` : 'no futures series'} · ${pass(r.passHedged)}</span></div>`;
 
   // Expected returns.
   $('expected-note').textContent = `As of the close on ${r.asOf}: expected return over the market for the next day, and over a forecast's expected life of ${r.life.toFixed(1)} days. A stock is bought when that beats the round trip of ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp, and sold when it lags by more.`;

@@ -47,7 +47,7 @@ double twoSided(double z) { return std::erfc(std::fabs(z) / std::sqrt(2.0)); }
 
 }  // namespace
 
-std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::vector<double>>& series, std::size_t before) {
+std::vector<std::string> rankHedgeSeries(const Market& m, const std::map<std::string, std::vector<double>>& series, std::size_t before) {
   const std::size_t N = m.N();
   std::vector<double> mkt(m.T(), kNaN);
   for (std::size_t t = 1; t < m.T(); ++t) {
@@ -58,8 +58,7 @@ std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::ve
     }
     if (n > 0) mkt[t] = s / n;
   }
-  std::string best;
-  double bestCorr = 0;
+  std::vector<std::pair<double, std::string>> ranked;
   for (const auto& [name, px] : series) {
     double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, n = 0;
     for (std::size_t t = 1; t < std::min(before, px.size()); ++t) {
@@ -69,9 +68,17 @@ std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::ve
     }
     if (n < 3) continue;
     const double c = (sxy - sx * sy / n) / std::sqrt(std::max((sxx - sx * sx / n) * (syy - sy * sy / n), 1e-300));
-    if (c > bestCorr) bestCorr = c, best = name;
+    if (c > 0) ranked.push_back({c, name});
   }
-  return best;
+  std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+  std::vector<std::string> out;
+  for (const auto& r : ranked) out.push_back(r.second);
+  return out;
+}
+
+std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::vector<double>>& series, std::size_t before) {
+  const auto r = rankHedgeSeries(m, series, before);
+  return r.empty() ? std::string() : r.front();
 }
 
 Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const std::map<std::string, std::vector<double>>& series,
@@ -135,9 +142,19 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
   };
 
   // Hedge signal from the chosen series.
-  bt.hedgeSeries = pickHedgeSeries(m, series, s);
+  // Hedge series: ranked by correlation with the market before trading starts. The first drives
+  // the sign forecast; the hedge trades the first one with bars on both days, so it carries on
+  // when a continuation series ends.
+  const std::vector<std::string> ranked = rankHedgeSeries(m, series, s);
+  bt.hedgeSeries = ranked.empty() ? std::string() : ranked.front();
   std::vector<double> idx;
   if (!bt.hedgeSeries.empty()) idx = series.at(bt.hedgeSeries);
+  // Volatility management (Moreira and Muir 2017): exposure cut to (long-run variance / predicted
+  // variance) of the book when that is below one. The prediction is the exponentially weighted
+  // variance whose half-life (among the model's horizons) has forecast next-day variance best so
+  // far (QLIKE loss).
+  std::vector<double> ewVar(f.horizons.size(), 0.0), qlike(f.horizons.size(), 0.0);
+  double varSum = 0, varN = 0, hVol = 0;
   // Hedge features: the index future's trends at the model's horizons, and the market's
   // topology and geometry (tree length, effective dimension, geodesic distance) at each half-life.
   const std::vector<std::uint32_t> hz = f.horizons;
@@ -145,7 +162,7 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
   const std::size_t HS = ms ? ms->halfLives.size() : 0;
   const std::size_t G = HZ + (HS ? 3 * HS - 1 : 0);
   std::vector<double> mean(G, 0.0), cov(G * G, 0.0), recS(G, 0.0), recS2(G, 0.0);
-  double featN = 0, recN = 0;
+  double featN = 0, recN = 0, yS = 0, yS2 = 0;
   std::vector<std::vector<double>> pendingRec;  // x_t of the last close, waiting for its next return
   // Persistence of the index forecast: lag-one correlation of its daily values so far.
   double eIdxPrev = kNaN, ea = 0, eb = 0, eaa = 0, ebb = 0, eab = 0, en = 0, hedgeOn = 0;
@@ -164,6 +181,14 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
     }
     // Hedge decision at close t.
     double hedgeWant = 0;
+    hVol = 0;
+    if (varN >= 2 && !ewVar.empty() && ewVar[0] > 0) {
+      std::size_t best = 0;
+      for (std::size_t j = 1; j < ewVar.size(); ++j)
+        if (qlike[j] < qlike[best]) best = j;
+      const double predicted = ewVar[best], longRun = varSum / varN;
+      if (predicted > 0) hVol = std::max(0.0, std::min(1.0, 1.0 - longRun / predicted));
+    }
     if (!idx.empty() && std::isfinite(idx[t])) {
       std::vector<double> g(G, kNaN);
       bool ok = true;
@@ -201,16 +226,33 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
           }
           pendingRec.clear();
           pendingRec.push_back(x);
-          double e = 0;
-          if (recN >= 3)
-            for (std::size_t j = 0; j < G; ++j) {
-              const double mu = recS[j] / recN, var = std::max(0.0, (recS2[j] - recN * mu * mu) / (recN - 1));
-              if (var <= 0) continue;
-              const double tz = mu / std::sqrt(var / recN);
-              e += x[j] * mu * std::max(0.0, 1 - 1 / (tz * tz));
+          // Expected next-day return of the future: its average return (shrunk by its own
+          // t-statistic) plus the features' conditional part. The features' premia are shrunk
+          // jointly (positive-part James-Stein over the G of them): unless together they carry
+          // more evidence than G - 2 chance t-statistics would, the conditional part is zero.
+          double base = 0, cond = 0;
+          if (recN >= 3) {
+            const double ybar = yS / recN, vy = std::max(0.0, (yS2 - recN * ybar * ybar) / (recN - 1));
+            if (vy > 0) {
+              const double ty = ybar / std::sqrt(vy / recN);
+              base = ybar * std::max(0.0, 1 - 1 / (ty * ty));
             }
-          if (std::isfinite(eIdxPrev)) ea += e, eb += eIdxPrev, eaa += e * e, ebb += eIdxPrev * eIdxPrev, eab += e * eIdxPrev, en += 1;
-          eIdxPrev = e;
+            std::vector<double> mu(G, 0.0), tz(G, 0.0);
+            double sumT2 = 0;
+            for (std::size_t j = 0; j < G; ++j) {
+              mu[j] = recS[j] / recN;
+              const double var = std::max(0.0, (recS2[j] - recN * mu[j] * mu[j]) / (recN - 1));
+              if (var > 0) tz[j] = mu[j] / std::sqrt(var / recN), sumT2 += tz[j] * tz[j];
+            }
+            const double shrink = G > 2 ? (sumT2 > 0 ? std::max(0.0, 1 - (static_cast<double>(G) - 2) / sumT2) : 0.0) : 1.0;
+            for (std::size_t j = 0; j < G; ++j) {
+              const double own = tz[j] != 0 ? std::max(0.0, 1 - 1 / (tz[j] * tz[j])) : 0.0;
+              cond += x[j] * mu[j] * (G > 2 ? shrink : own);
+            }
+          }
+          const double e = base + cond;
+          if (std::isfinite(eIdxPrev)) ea += cond, eb += eIdxPrev, eaa += cond * cond, ebb += eIdxPrev * eIdxPrev, eab += cond * eIdxPrev, en += 1;
+          eIdxPrev = cond;
           double rho = 0;
           if (en > 2) {
             const double cv = eab - ea * eb / en, va = eaa - ea * ea / en, vb = ebb - eb * eb / en;
@@ -320,8 +362,16 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
 
     // Hedge over day d: decided at close t, sized by the book's beta to the future so far.
     double rf = kNaN, rm = 0;
-    if (!idx.empty() && idx[t] > 0 && idx[d] > 0 && d < idx.size()) {
-      rf = idx[d] / idx[t] - 1;
+    const std::vector<double>* used = nullptr;
+    for (const auto& name : ranked) {
+      const auto& px = series.at(name);
+      if (d < px.size() && px[t] > 0 && px[d] > 0) {
+        used = &px;
+        break;
+      }
+    }
+    if (used) {
+      rf = (*used)[d] / (*used)[t] - 1;
       double sm = 0, nm = 0;
       for (std::size_t i = 0; i < N; ++i)
         if (cf(t, i) > 0 && cf(d, i) > 0) sm += cf(d, i) / cf(t, i) - 1, nm += 1;
@@ -342,21 +392,29 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
       if (roll) rf = bm * rm;
       else resid.push_back(e);
       mx += rm, my += rf, mxx += rm * rm, mxy += rm * rf, mn += 1;
-      // Record of the index forecast's features against this return.
-      if (!pendingRec.empty()) {
+      // Record of the index forecast's features against this return (primary series only).
+      if (!pendingRec.empty() && used == &series.at(bt.hedgeSeries)) {
         const auto& x = pendingRec.back();
         for (std::size_t j = 0; j < G; ++j) recS[j] += x[j] * rf, recS2[j] += x[j] * rf * x[j] * rf;
+        yS += rf, yS2 += rf * rf;
         recN += 1;
         pendingRec.clear();
       }
     }
     const double beta = bn > 2 ? (bxy - bx * by / bn) / std::max(bxx - bx * bx / bn, 1e-300) : 1.0;
-    const double want = hedgeWant > 0 && std::isfinite(rf) ? std::max(0.0, beta) : 0.0;
+    const double want = std::isfinite(rf) ? std::max(hedgeWant, hVol) * std::max(0.0, beta) : 0.0;
     double hcost = std::fabs(want - hedgeOn) * fut;
     hedgeOn = want;
     bt.hedged.push_back(r - (std::isfinite(rf) ? hedgeOn * rf : 0.0) - hcost);
     bt.hedge.push_back(hedgeOn);
     if (std::isfinite(rf)) bx += rf, by += r, bxx += rf * rf, bxy += rf * r, bn += 1;
+    // The book's variance forecasts, scored on today's return before they are updated.
+    for (std::size_t j = 0; j < ewVar.size(); ++j) {
+      if (ewVar[j] > 0) qlike[j] += std::log(ewVar[j]) + r * r / ewVar[j];
+      const double lam = std::pow(2.0, -1.0 / static_cast<double>(f.horizons[j]));
+      ewVar[j] = ewVar[j] > 0 ? lam * ewVar[j] + (1 - lam) * r * r : r * r;
+    }
+    varSum += r * r, varN += 1;
   }
   // The last close's state: what is held and what would be traded at the next open.
   bt.held.assign(N, 0), bt.orders.assign(N, 0);

@@ -12,10 +12,17 @@
 //    sold when its updated forecast says so: these are the adaptive stop-loss and take-profit.
 //  - a bought stock gets an equal share of the portfolio, funded from cash and then pro rata
 //    from the other holdings; sale proceeds with nothing to buy go back pro rata.
-// Index futures hedge (optional): the index future's own expected next-day return, from its
-// trends at the model's horizons (whitened by their expanding covariance, premia shrunk as for
-// the stocks), decides a short hedge sized by the book's expanding beta to the future, when the
-// expected fall over the signal's life exceeds the futures round trip. Days the continuation
+// Index futures hedge (optional): the index future's own expected next-day return decides a short
+// hedge sized by the book's expanding beta to the future, when the expected fall over the
+// forecast's life exceeds the futures round trip. The forecast is the future's average return
+// (shrunk by its own t-statistic) plus a conditional part from its trends at the model's horizons
+// and the market's topology and geometry (whitened by their expanding covariance; premia shrunk
+// jointly by positive-part James-Stein, so features that together carry no more evidence than
+// chance add nothing). The hedge is also volatility managed (Moreira and Muir 2017): when the
+// book's predicted variance exceeds its long-run variance, exposure is cut to their ratio. The
+// variance forecast is the exponentially weighted variance whose half-life (among the model's
+// horizons) has predicted next-day variance best so far. The hedge is the larger of the two; it
+// trades the most market-correlated series that has bars, so it continues when a series ends. Days the continuation
 // series jumps at a roll (its move against the stock market's is an outlier by Chauvenet's
 // criterion) count as the stock market's move.
 
@@ -63,5 +70,7 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
 /// The series used for the hedge: the one whose daily moves were most correlated with the stock
 /// market's before the first trading day (no later data is looked at); empty if none overlaps.
 std::string pickHedgeSeries(const Market& m, const std::map<std::string, std::vector<double>>& series, std::size_t before);
+/// All series positively correlated with the market before `before`, most correlated first.
+std::vector<std::string> rankHedgeSeries(const Market& m, const std::map<std::string, std::vector<double>>& series, std::size_t before);
 
 }  // namespace ofm
