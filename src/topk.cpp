@@ -527,6 +527,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     const double nd = static_cast<double>(days[j].size());
     r.daily.push_back(nd > 0 ? sum / nd : 0.0);  // each of the K slots: its trade, or cash
     r.traded.push_back(nTraded > 0);
+    r.booked.push_back(static_cast<int>(nTraded));
     r.noStops.push_back(nd > 0 ? sum0 / nd : 0.0);
     r.kStop.push_back(nTraded > 0 ? aSum / nTraded : kNaN), r.kTake.push_back(nTraded > 0 ? bSum / nTraded : kNaN);
     r.turnover.push_back(nd > 0 ? 2.0 : 0.0);
@@ -907,7 +908,13 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
         << ",\"realStop\":" << num(e.realStop) << ",\"predTake\":" << num(e.predTake) << ",\"realTake\":" << num(e.realTake)
         << ",\"expected\":" << num(e.expected) << ",\"realised\":" << num(e.realised) << ",\"ic\":" << num(e.ic) << ",\"signHit\":"
         << num(e.signHit) << ",\"lowAtOpen\":" << num(e.lowAtOpen) << ",\"grossTop\":" << num(e.grossTop) << ",\"grossAll\":" << num(e.grossAll) << "},\"lastDate\":" << str(r.lastDate)
-        << ",\"lastDay\":[";
+        << ",\"recent\":[";
+      // The learnt policy's last days (net, the day's mean over the 10 slots, cash slots earning nothing).
+      const std::size_t nd = r.daily.size(), from = nd > 20 ? nd - 20 : 0;
+      for (std::size_t k = from; k < nd; ++k)
+        o << (k > from ? "," : "") << "{\"date\":" << str(m.dates[r.start + k]) << ",\"ret\":" << num(r.daily[k]) << ",\"booked\":"
+          << (k < r.booked.size() ? r.booked[k] : 0) << "}";
+      o << "],\"lastDay\":[";
       for (std::size_t k = 0; k < r.lastDay.size(); ++k) {
         const auto& c = r.lastDay[k];
         o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[c.asset]) << ",\"stop\":" << num(c.stop) << ",\"take\":" << num(c.take)
