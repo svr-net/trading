@@ -89,3 +89,4 @@ tr.gap td { text-align: center; color: var(--muted); font-size: 12px; }
 .foot { font-size: 13px; }
 footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.tabs[hidden] { display: none; }

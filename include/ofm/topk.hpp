@@ -99,6 +99,8 @@ struct TopKResult {
   TopKEvaluation eval;
   std::vector<TopKCheck> lastDay; ///< the last completed day's trades against the bars
   std::string lastDate;
+  std::vector<bool> traded;       ///< per day: the learnt levels had a positive return per unit of risk, so the day was traded
+  bool tradeNext = false;         ///< the same for the next day
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).
