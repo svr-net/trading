@@ -101,6 +101,7 @@ struct TopKResult {
   std::string lastDate;
   std::vector<bool> traded;       ///< per day: the learnt levels had a positive return per unit of risk, so the day was traded
   bool tradeNext = false;         ///< the same for the next day
+  double learntRatio = 0;         ///< the learnt levels' mean net return over its deviation per trade, on the trades before
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).

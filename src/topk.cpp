@@ -234,6 +234,8 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       if (day.size() == K) break;
       const double o = m.open(d, i), h = m.high(d, i), l = m.low(d, i), c = m.close(d, i);
       if (!(o > 0 && h > 0 && l > 0 && c > 0) || !std::isfinite(iv(t, i))) continue;
+      // A bar must hold together: the low at or below the open and the close, the high at or above.
+      if (l > std::min(o, c) || h < std::max(o, c)) continue;
       double vs = 0, vn = 0;  // usual volume: the mean over the forecast's life before the day
       for (std::size_t k = 1; k <= static_cast<std::size_t>(std::ceil(in.life[t])) && k <= d; ++k)
         if (std::isfinite(m.volume(d - k, i))) vs += m.volume(d - k, i), vn += 1;
@@ -281,6 +283,11 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     for (std::size_t q = 0; q < byLo.size(); ++q) {
       const Obs& x = obs[byLo[q]];
       const double a = x.lo;  // this low and all deeper ones stop at -a sig
+      if (!(a > 0)) {  // a stop at the open is no trade at all, at the cost of one
+        const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
+        h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
+        continue;
+      }
       const double s1 = h1 - a * t1 + tm * kc, s2 = h2 + a * a * t2 - 2 * a * kc * t1 + tm * kc * kc;
       const double rr = ratio(s1, s2, n);
       if (rr > score + 1e-12) score = rr, bestA = a;
@@ -308,6 +315,11 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       const Obs& x = obs[byHi[q]];
       if (x.lo >= a) continue;
       const double b = x.hi;  // this high and all higher ones take profit at b sig
+      if (!(b > 0)) {
+        const double v = x.c + kc;
+        h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
+        continue;
+      }
       const double s1 = c1 + h1 + b * t1 + tm * kc, s2 = c2 + h2 + b * b * t2 + 2 * b * kc * t1 + tm * kc * kc;
       const double rr = ratio(s1, s2, n);
       if (rr > score + 1e-12) score = rr, bestB = b;
@@ -317,6 +329,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     return bestB;
   };
   // Returns whether to trade: the best levels' ratio is above zero.
+  double lastScore = kNaN;
   auto learn = [&](double& a, double& b) {
     a = kInf, b = kInf;
     if (obs.size() < 2) return false;
@@ -328,6 +341,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
       if (na == a && nb == b) break;
       a = na, b = nb;
     }
+    lastScore = score;
     return score > 0;
   };
   auto probs = [&](double a, double b) {
@@ -397,6 +411,7 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
   // The plan for the next day: the 10 best at the last close, each bought at the open and sold by the close.
   double a, b;
   r.tradeNext = learn(a, b);
+  r.learntRatio = lastScore;
   r.kStop.push_back(a), r.kTake.push_back(b);
   const auto [pS, pT] = probs(a, b);
   const std::size_t L = T - 1;
@@ -798,6 +813,11 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
     std::snprintf(b, sizeof b, "stop now %s, take-profit now %s (of the volatility over %s%s)\n",
                   kName(r.kStop.empty() ? kInf : r.kStop.back()).c_str(), kName(r.kTake.empty() ? kInf : r.kTake.back()).c_str(),
                   r.oneDay ? "one day" : "the forecast's life", r.dayTrades ? "; learnt from the bars of the trades before" : "; the shadow that has grown most");
+    if (r.dayTrades) {
+      std::snprintf(b, sizeof b, "learnt return per unit of risk per trade, on the trades before: %.4f -> %s\n", r.learntRatio,
+                    r.tradeNext ? "trade" : "no trade (cash)");
+      o << b;
+    }
     o << b;
     if (r.gridK.empty()) continue;
     o << "hindsight Sharpe of each fixed pair (rows stop, columns take-profit):\n        ";

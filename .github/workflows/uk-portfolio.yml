@@ -109,7 +109,7 @@ jobs:
         if: ${{ !inputs.probe }}
         run: |
           ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct 0 --json report/ofm-no-stamp.json > report/ofm-no-stamp.txt
-          { echo '```'; grep -A20 'Rolling portfolio' report/ofm-no-stamp.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep -A40 'Rolling portfolio' report/ofm-no-stamp.txt | grep -v '^ *[0-9.]* sd\|^        '; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, emulated GPU kernels (agreement check)
         if: ${{ !inputs.probe }}
         run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24
