@@ -294,6 +294,11 @@ struct Learner {
       if (na == a && nb == b) break;
       a = na, b = nb;
     }
+    // A level reached on at most one day the stock has had is no level at all.
+    double ns = 0, nt = 0;
+    for (const auto& x : obs) ns += x.lo >= a, nt += x.lo < a && x.hi >= b;
+    if (ns <= 1) a = kInf;
+    if (nt <= 1) b = kInf;
     lastScore = score;
     return score > 0;
   }
@@ -839,8 +844,9 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
                   kName(r.kStop.empty() ? kInf : r.kStop.back()).c_str(), kName(r.kTake.empty() ? kInf : r.kTake.back()).c_str(),
                   r.oneDay ? "one day" : "the forecast's life", r.dayTrades ? "; learnt from the bars of the trades before" : "; the shadow that has grown most");
     if (r.dayTrades) {
-      std::snprintf(b, sizeof b, "learnt return per unit of risk per trade, on the trades before: %.4f -> %s\n", r.learntRatio,
-                    r.tradeNext ? "trade" : "no trade (cash)");
+      std::size_t nTrade = 0;
+      for (const auto& p : r.plan) nTrade += p.action > 0;
+      std::snprintf(b, sizeof b, "next open: %zu of the %zu traded (their own learnt levels beat cash after costs); the rest in cash\n", nTrade, r.plan.size());
       o << b;
     }
     o << b;
