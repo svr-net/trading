@@ -36,10 +36,20 @@
 
 namespace ofm {
 
+/// Market-standard transaction costs, in percent of the value traded.
+constexpr double kDealingPct = 0.10;  ///< per side: commission and half the spread
+constexpr double kStampPct = 0.50;    ///< UK stamp duty on purchases (0 for CFDs, spread bets, AIM shares)
+
 struct Costs {
-  double buyBps = 60;     ///< dealing plus stamp duty on purchases (UK: 10 + 50)
-  double sellBps = 10;
+  double buyBps = 100 * (kDealingPct + kStampPct);  ///< dealing plus stamp duty on purchases
+  double sellBps = 100 * kDealingPct;
   double futuresBps = 1;  ///< per unit of futures notional traded
+  /// From percentages: dealing per side, stamp duty on purchases.
+  static Costs fromPercent(double dealingPct, double stampPct, double futuresBps = 1) {
+    Costs c;
+    c.buyBps = 100 * (dealingPct + stampPct), c.sellBps = 100 * dealingPct, c.futuresBps = futuresBps;
+    return c;
+  }
 };
 
 struct Metrics {
