@@ -240,6 +240,8 @@ function renderTop(r) {
   topPick = Math.min(topPick, all.length - 1);
   const kName = (k) => (k == null ? 'none' : `${k} sd`);
   const x = all[topPick];
+  x.plan = x.plan || [];
+  x.life = x.life || 1;
   $('top10-tabs').innerHTML = '';
   all.forEach((s, k) => {
     const b = document.createElement('button');
