@@ -17,6 +17,21 @@ add_library(ofm
   src/topk.cpp
   src/daytrade.cpp)
 target_include_directories(ofm PUBLIC include)
+# The kernels' one source is WGSL (kernels/<group>/*.wgsl); the CPU backends compile its C++ translation.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(OFM_GENERATED ${CMAKE_BINARY_DIR}/generated)
+foreach(group daytrade)
+  file(GLOB wgsl CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/kernels/${group}/*.wgsl)
+  add_custom_command(OUTPUT ${OFM_GENERATED}/${group}_kernels.hpp
+    COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py ${CMAKE_SOURCE_DIR}/kernels/${group} ofm::${group}::gen
+            ${OFM_GENERATED}/${group}_kernels.hpp
+    DEPENDS ${wgsl} ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py
+    COMMENT "Translating kernels/${group}/*.wgsl to C++")
+  list(APPEND ofm_generated ${OFM_GENERATED}/${group}_kernels.hpp)
+endforeach()
+add_custom_target(ofm_kernels DEPENDS ${ofm_generated})
+add_dependencies(ofm ofm_kernels)
+target_include_directories(ofm PRIVATE ${OFM_GENERATED})
 if(NOT MSVC)
   target_compile_options(ofm PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
 endif()
