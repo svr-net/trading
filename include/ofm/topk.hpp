@@ -41,6 +41,22 @@ struct TopKPosition {
   double ret = 0;       ///< net of the purchase cost, to the last close
   double stopDist = 0;  ///< stop level / last close - 1 (NaN: no stop)
   double takeDist = 0;  ///< take-profit level / last close - 1 (NaN: none)
+  double entryRel = 1;  ///< entry price / last close
+  double width = 0;     ///< sigma sqrt(life) at entry
+};
+
+/// One line of the plan for the next day, relative to the last close (fractions; NaN: none).
+/// The rule's levels of a held stock are fixed at its entry; a purchase's are set from the next
+/// open, taken as the last close. Where the rule has no stop (or no take-profit), the best finite
+/// level so far is shown as advice, set from the last close. Probabilities: of touching the stop / the take-profit first, during the next
+/// day and over the forecast's life, for a log price with the model's expected daily return as
+/// drift and the stock's daily volatility (simulated, 2 x 10^4 paths, 48 steps a day).
+struct TopKOrder {
+  std::size_t asset = 0;
+  int action = 0;  ///< +1 buy at the open, 0 hold, -1 sell at the open
+  bool advisoryStop = false, advisoryTake = false;  ///< the rule has none: best finite level so far
+  double open = 0, stop = 0, take = 0, close = 0, sigma = 0;
+  double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;
 };
 
 struct TopKResult {
@@ -55,6 +71,8 @@ struct TopKResult {
   std::vector<double> gridK;      ///< the multipliers of the grid (inf: none)
   std::vector<TopKPosition> positions;  ///< at the last close
   std::vector<int> orders;        ///< at the last close: +1 buy, -1 sell at the next open
+  std::vector<TopKOrder> plan;    ///< the next day: the 10 held after the open, then the sales
+  double life = 1;                ///< the forecast's life at the last close (days)
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).

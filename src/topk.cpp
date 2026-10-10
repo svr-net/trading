@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <numeric>
@@ -155,10 +156,38 @@ Sim simulate(const Inputs& in, const std::vector<double>& kStop, const std::vect
         out.trades.push_back({i, entryDay[i], L, h[i] / entryValue[i] - 1, Exit::Open});
         const double c = in.close(L, i);
         out.positions.push_back({i, entryDay[i], h[i] / entryValue[i] - 1, std::isfinite(a) ? entryPx[i] * std::exp(-a * w[i]) / c - 1 : kNaN,
-                                 std::isfinite(b) ? entryPx[i] * std::exp(b * w[i]) / c - 1 : kNaN});
+                                 std::isfinite(b) ? entryPx[i] * std::exp(b * w[i]) / c - 1 : kNaN, entryPx[i] / c, w[i]});
       }
   }
   return out;
+}
+
+// Probability that a Brownian log price from 0 (drift mu, volatility sigma a day) touches lo
+// before hi, and hi before lo, within `days` (Monte Carlo, fixed seed: the same inputs give the
+// same answer).
+std::pair<double, double> firstTouch(double mu, double sigma, double lo, double hi, double days, std::uint64_t seed) {
+  if (!(sigma > 0) || !(days > 0)) return {0.0, 0.0};
+  const int perDay = 48, paths = 20000;
+  const int steps = std::max(1, static_cast<int>(std::lround(days * perDay)));
+  const double dt = days / steps, drift = (mu - 0.5 * sigma * sigma) * dt, sd = sigma * std::sqrt(dt);
+  std::uint64_t x = seed * 0x9E3779B97F4A7C15ull + 1;
+  auto uniform = [&x]() {
+    x += 0x9E3779B97F4A7C15ull;
+    std::uint64_t z = x;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull, z = (z ^ (z >> 27)) * 0x94D049BB133111EBull, z ^= z >> 31;
+    return (static_cast<double>(z >> 11) + 0.5) / 9007199254740992.0;
+  };
+  int nLo = 0, nHi = 0;
+  for (int p = 0; p < paths; ++p) {
+    double y = 0;
+    for (int k = 0; k < steps; ++k) {
+      const double g = std::sqrt(-2 * std::log(uniform())) * std::cos(6.283185307179586 * uniform());
+      y += drift + sd * g;
+      if (y <= lo) { ++nLo; break; }
+      if (y >= hi) { ++nHi; break; }
+    }
+  }
+  return {static_cast<double>(nLo) / paths, static_cast<double>(nHi) / paths};
 }
 
 }  // namespace
@@ -252,6 +281,50 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     r.kStop.push_back(kS[D]), r.kTake.push_back(kT[D]);
     r.trades = std::move(live.trades), r.positions = std::move(live.positions), r.orders = std::move(live.orders);
     r.noStops = shadow[G * G - 1];
+    // The plan for the next day.
+    const std::size_t L = T - 1;
+    r.life = in.life[L];
+    // Where the rule has no stop (or take-profit), the best finite level so far, as advice.
+    double a = kS[D], b = kT[D];
+    const bool advA = !std::isfinite(a), advB = !std::isfinite(b);
+    {
+      std::size_t bs = G * G, bt2 = G * G;
+      for (std::size_t c = 0; c < G * G; ++c) {
+        if (std::isfinite(gridK[c / G]) && gridK[c % G] == b && (bs == G * G || growth[c] > growth[bs])) bs = c;
+        if (std::isfinite(gridK[c % G]) && gridK[c / G] == a && (bt2 == G * G || growth[c] > growth[bt2])) bt2 = c;
+      }
+      if (advA && bs < G * G) a = gridK[bs / G];
+      if (advB && bt2 < G * G) b = gridK[bt2 % G];
+    }
+    auto add = [&](std::size_t i, int action, double stop, double take) {
+      TopKOrder o;
+      o.asset = i, o.action = action, o.open = 0, o.advisoryStop = advA, o.advisoryTake = advB;
+      const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
+      o.sigma = std::isfinite(in.width(L, i)) ? in.width(L, i) / std::sqrt(r.life) : kNaN;
+      if (action < 0) {
+        o.stop = o.take = o.close = o.pStopDay = o.pTakeDay = o.pStopLife = o.pTakeLife = kNaN;
+      } else {
+        o.stop = stop, o.take = take, o.close = std::expm1(e);
+        const double lo = std::isfinite(stop) ? std::log1p(stop) : -kInf, hi = std::isfinite(take) ? std::log1p(take) : kInf;
+        std::tie(o.pStopDay, o.pTakeDay) = firstTouch(e, o.sigma, lo, hi, 1.0, i + 1);
+        std::tie(o.pStopLife, o.pTakeLife) = firstTouch(e, o.sigma, lo, hi, r.life, i + 1);
+      }
+      r.plan.push_back(o);
+    };
+    for (const auto& p : r.positions)
+      if (r.orders[p.asset] >= 0) {
+        // The rule's levels stay where they were set at entry; advisory ones are set from the last close.
+        const double wNow = in.width(L, p.asset);
+        add(p.asset, 0, advA ? std::exp(-a * wNow) - 1 : p.entryRel * std::exp(-a * p.width) - 1,
+            advB ? std::exp(b * wNow) - 1 : p.entryRel * std::exp(b * p.width) - 1);
+      }
+    for (std::size_t i = 0; i < N; ++i)
+      if (r.orders[i] > 0) {
+        const double w = in.width(L, i);
+        add(i, 1, std::isfinite(a) ? std::exp(-a * w) - 1 : kNaN, std::isfinite(b) ? std::exp(b * w) - 1 : kNaN);
+      }
+    for (const auto& p : r.positions)
+      if (r.orders[p.asset] < 0) add(p.asset, -1, kNaN, kNaN);
     for (const auto& sh : shadow) r.grid.push_back(metrics(sh).sharpe);
     results.push_back(std::move(r));
   }
@@ -378,6 +451,15 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
       const auto& p = r.positions[k];
       o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"since\":" << str(m.dates[p.entryDay]) << ",\"ret\":" << num(p.ret)
         << ",\"stop\":" << num(p.stopDist) << ",\"take\":" << num(p.takeDist) << ",\"sell\":" << (r.orders[p.asset] < 0 ? 1 : 0) << "}";
+    }
+    o << "],\"life\":" << num(r.life) << ",\"plan\":[";
+    for (std::size_t k = 0; k < r.plan.size(); ++k) {
+      const auto& p = r.plan[k];
+      o << (k ? "," : "") << "{\"ticker\":" << str(m.tickers[p.asset]) << ",\"action\":" << p.action << ",\"open\":" << num(p.open)
+        << ",\"stop\":" << num(p.stop) << ",\"take\":" << num(p.take) << ",\"close\":" << num(p.close) << ",\"sigma\":" << num(p.sigma)
+        << ",\"pStopDay\":" << num(p.pStopDay) << ",\"pTakeDay\":" << num(p.pTakeDay) << ",\"pStopLife\":" << num(p.pStopLife)
+        << ",\"pTakeLife\":" << num(p.pTakeLife) << ",\"advisoryStop\":" << (p.advisoryStop ? "true" : "false")
+        << ",\"advisoryTake\":" << (p.advisoryTake ? "true" : "false") << "}";
     }
     o << "],\"buys\":[";
     first = true;

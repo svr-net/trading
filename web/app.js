@@ -86,7 +86,6 @@ async function run() {
     }
     last = JSON.parse(json);
     render(last, note, performance.now() - t0);
-    renderTrades(last, 'Your run');
   } catch (e) {
     status(`Could not run: ${e.message}`);
   } finally {
@@ -190,20 +189,6 @@ function renderStructure(r) {
   $('structure-legend').innerHTML = lines.map(([, color, name]) => `<span><i style="background:${css.getPropertyValue(color).trim()}"></i>${name} (half-life ${st.series.halfLife} days, each scaled to its range)</span>`).join('');
 }
 
-// The proposals of a report: buys and sells at the next open, and the holdings kept.
-function renderTrades(r, source) {
-  const ex = r.expected;
-  const buys = ex.filter((x) => x.order > 0), sells = ex.filter((x) => x.order < 0);
-  const held = ex.filter((x) => x.held && x.order >= 0);
-  const row = (x) => [[x.ticker], [bp(x.daily, 2), `num ${x.daily >= 0 ? 'pos' : 'neg'}`], [bp(x.overLife), `num ${x.overLife >= 0 ? 'pos' : 'neg'}`]];
-  const head = [['Stock'], ['Next day (bp)', 'num'], ['Over life (bp)', 'num']];
-  table($('buys'), head, buys.length ? buys.map(row) : [{ gap: 'no stock clears the round-trip cost' }]);
-  table($('sells'), head, sells.length ? sells.map(row) : [{ gap: 'nothing to sell' }]);
-  $('trade-lists').hidden = false;
-  $('scan-note').textContent = `${source} · as of the close on ${r.asOf} · ${r.stocks} stocks · costs ${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales. A buy is proposed when the expected return over a forecast's life (${r.life.toFixed(1)} days) beats the round trip; a holding is sold when it is expected to lag the market by more.`;
-  $('holdings').textContent = held.length ? `Holding ${held.length} stocks: ${held.map((x) => x.ticker).join(', ')}.` : '';
-}
-
 function drawChart(r) {
   const css = getComputedStyle(document.documentElement);
   drawCurves($('chart'), $('legend'), r.dates, SERIES.map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'model' })));
@@ -252,9 +237,11 @@ let topPick = 0;
 function renderTop(r) {
   const all = r.top10 && r.top10.strategies;
   if (!all || !all.length) return;
-  $('top10').hidden = false;
   topPick = Math.min(topPick, all.length - 1);
+  const kName = (k) => (k == null ? 'none' : `${k} sd`);
   const x = all[topPick];
+  x.plan = x.plan || [];
+  x.life = x.life || 1;
   $('top10-tabs').innerHTML = '';
   all.forEach((s, k) => {
     const b = document.createElement('button');
@@ -264,8 +251,18 @@ function renderTop(r) {
     b.addEventListener('click', () => { topPick = k; renderTop(r); });
     $('top10-tabs').append(b);
   });
-  const kName = (k) => (k == null ? 'none' : `${k} sd`);
-  $('top10-note').textContent = `Each close: the 10 stocks ranked best, bought in equal shares at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Every position has a stop-loss and a take-profit at multiples of the stock's volatility over the forecast's life, checked against each day's high and low (gaps fill at the open; the stop first when both are touched). The multiples are chosen each day by which fixed pair had grown most so far; an exit frees the slot for the best stock outside. "Largest" ranks by traded value, the nearest measure of size in the bars.`;
+  $('top10-note').textContent = `UK scan · as of the close on ${r.asOf} · ${r.stocks} stocks. Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility over the forecast's life (${x.life.toFixed(1)} days), checked against each day's high and low; the multiples are the pair whose shadow portfolio has grown most so far (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)}). "Largest" ranks by traded value, the nearest measure of size in the bars.`;
+  const sgn = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(100 * v).toFixed(d)}%`);
+  const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
+  const act = { 1: 'buy at open', 0: 'hold', '-1': 'sell at open' };
+  table($('top10-plan'), [['Stock'], ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
+    ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], [`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']],
+    x.plan.length ? x.plan.map((p) => [[p.ticker], [act[p.action]], [sgn(p.open), 'num'],
+      [`${sgn(p.stop)}${p.advisoryStop && p.stop != null ? '*' : ''}`, 'num neg'], [`${sgn(p.take)}${p.advisoryTake && p.take != null ? '*' : ''}`, 'num pos'],
+      [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'], [prob(p.pStopLife), 'num'], [prob(p.pTakeLife), 'num']])
+      : [{ gap: 'no positions' }]);
+  const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
+  $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. Probabilities: of touching the stop or the take-profit first, for the stock's daily volatility (simulated, 20,000 paths). Held stocks keep the levels set at entry.${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
   const whole = x.parts[0].rows;
   const [a, b, m] = TOP_SERIES.map(([n]) => whole.find((y) => y.name === n));
   $('top10-verdict').innerHTML = `
@@ -282,9 +279,6 @@ function renderTop(r) {
   table($('top10-parts'), [['Strategy'], ['Return / yr', 'num'], ['Sharpe', 'num'], ['Max DD', 'num']], rows);
   table($('top10-exits'), [['Exit'], ['Positions', 'num'], ['Gained', 'num'], ['Mean return', 'num'], ['Days held', 'num']],
     x.exits.map((e) => [[e.reason], [String(e.count), 'num'], [e.count ? pct(e.wins / e.count, 0) : '–', 'num'], [e.count ? pct(e.meanReturn, 2) : '–', `num ${e.meanReturn >= 0 ? 'pos' : 'neg'}`], [e.count ? e.meanDays.toFixed(0) : '–', 'num']]));
-  table($('top10-pos'), [['Stock'], ['Since'], ['Return', 'num'], ['Stop', 'num'], ['Take-profit', 'num'], ['Order']],
-    x.positions.map((p) => [[p.ticker], [p.since], [pct(p.ret, 1), `num ${p.ret >= 0 ? 'pos' : 'neg'}`], [p.stop == null ? '–' : pct(p.stop, 1), 'num'], [p.take == null ? '–' : pct(p.take, 1), 'num'], [p.sell ? 'sell at next open' : '']]));
-  $('top10-orders').textContent = `Stop now ${kName(x.stopNow)}, take-profit now ${kName(x.takeNow)} (stop and take-profit columns: distance from the last close). ${x.buys.length ? `Buy at the next open: ${x.buys.join(', ')}.` : 'No purchases at the next open.'} Turnover ${x.turnoverPerYear.toFixed(1)}× a year.`;
   table($('top10-years'), [['Year'], ['With stops', 'num'], ['Without', 'num'], ['Market', 'num']],
     x.years.map((y) => [[y.year], ...y.returns.map((v) => [pct(v), `num ${v >= 0 ? 'pos' : 'neg'}`])]));
   const G = x.gridK.length;
@@ -303,11 +297,10 @@ fetch('data/uk.json', { cache: 'no-cache' })
   .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
   .then((r) => {
     last = scan = r;
-    renderTrades(r, 'UK scan');
     renderTop(r);
     render(r, '', 0);
   })
-  .catch(() => { $('scan-note').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
+  .catch(() => { $('top10-note').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
 
 createOfm().then((m) => {
   ofm = m;
