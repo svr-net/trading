@@ -72,7 +72,7 @@ node_modules/
 dist/
 
 # Market data downloads (EODData licence: not for redistribution)
-data/
+/data/
 
 # Builds
 build/
