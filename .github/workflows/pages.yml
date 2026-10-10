@@ -3,7 +3,7 @@ name: Pages
 # Publishes the page (web/ with the WebAssembly module built by CI) to GitHub Pages after CI passes.
 on:
   push:
-    branches: [main, claude/stock-price-ml-strategy-3bm61v]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

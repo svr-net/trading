@@ -31,7 +31,8 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['emulated', 'Emulated GPU'],
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  // A server without a published UK scan answers data/uk.json with 404; the page says so.
+  page.on('console', (m) => { if (m.type() === 'error' && !/404/.test(m.text())) errors.push(m.text()); });
   try {
     await page.goto(`${base}/index.html`);
     await page.waitForFunction(() => /ready/.test(document.getElementById('status').textContent), null, { timeout: 60000 });

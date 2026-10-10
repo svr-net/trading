@@ -14,9 +14,48 @@
   <header>
     <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
     <h1>UK Factor Model</h1>
-    <p class="lede">Expected returns for every stock and a daily backtest against holding the market, after real costs. Every setting comes from the data: signal horizons, factor premia, trade timing and the hedge. The only inputs are the costs.</p>
+    <p class="lede">A daily scan of the 250 most traded UK shares: the trades the model proposes for the next open, every stock's expected return, and the backtest against holding the market after real costs. Every setting comes from the data; the only inputs are the costs.</p>
   </header>
 
+  <section id="scan" aria-labelledby="scan-title">
+    <h2 id="scan-title">Proposed trades</h2>
+    <p class="muted" id="scan-note">Loading the latest UK scan…</p>
+    <div class="trades-grid" id="trade-lists" hidden>
+      <div><h3>Buy at the next open</h3><div class="table-scroll"><table id="buys"></table></div></div>
+      <div><h3>Sell at the next open</h3><div class="table-scroll"><table id="sells"></table></div></div>
+    </div>
+    <p class="muted" id="holdings"></p>
+  </section>
+
+  <section id="results" hidden>
+    <div class="verdict" id="verdict"></div>
+
+    <h2>Expected returns</h2>
+    <p class="muted" id="expected-note"></p>
+    <div class="table-scroll"><table id="expected"></table></div>
+    <button type="button" class="link" id="expected-all">Show every stock</button>
+
+    <h2>Backtest</h2>
+    <div class="chart"><canvas id="chart" height="320" aria-label="Growth of 1 for the model, the hedged model and the market"></canvas><div class="legend" id="legend"></div></div>
+    <div class="table-scroll"><table id="parts"></table></div>
+    <p class="muted" id="trades"></p>
+
+    <h2>Market topology &amp; geometry</h2>
+    <p class="muted">Per half-life of the stocks' correlations: the minimum spanning tree's mean edge length (the total dimension-0 persistence of the correlation filtration; it contracts when stocks move together), the effective dimension of the correlation matrix (participation ratio over the number of stocks), and the Riemannian (affine-invariant) distance of the signal families' recent covariance from its long-run shape. These feed the futures hedge forecast.</p>
+    <div class="two">
+      <div class="table-scroll"><table id="structure"></table></div>
+      <div class="chart"><canvas id="structure-chart" height="220" aria-label="Tree length and effective dimension over time"></canvas><div class="legend" id="structure-legend"></div></div>
+    </div>
+
+    <div class="two">
+      <div><h3>Calendar years</h3><div class="table-scroll"><table id="years"></table></div></div>
+      <div><h3>Factors the model uses</h3><div class="table-scroll"><table id="factors"></table></div></div>
+    </div>
+    <p class="muted foot" id="facts"></p>
+  </section>
+
+  <h2>Run it yourself</h2>
+  <p class="muted">On the sample market or your own daily bars, in this browser.</p>
   <section class="controls" aria-label="Run">
     <div class="field">
       <span class="label">Data</span>
@@ -53,33 +92,6 @@
       <button id="run" type="button">Run model</button>
       <p class="status" id="status" role="status">Loading the model…</p>
     </div>
-  </section>
-
-  <section id="results" hidden>
-    <div class="verdict" id="verdict"></div>
-
-    <h2>Expected returns</h2>
-    <p class="muted" id="expected-note"></p>
-    <div class="table-scroll"><table id="expected"></table></div>
-    <button type="button" class="link" id="expected-all">Show every stock</button>
-
-    <h2>Backtest</h2>
-    <div class="chart"><canvas id="chart" height="320" aria-label="Growth of 1 for the model, the hedged model and the market"></canvas><div class="legend" id="legend"></div></div>
-    <div class="table-scroll"><table id="parts"></table></div>
-    <p class="muted" id="trades"></p>
-
-    <h2>Market topology &amp; geometry</h2>
-    <p class="muted">Per half-life of the stocks' correlations: the minimum spanning tree's mean edge length (the total dimension-0 persistence of the correlation filtration; it contracts when stocks move together), the effective dimension of the correlation matrix (participation ratio over the number of stocks), and the Riemannian (affine-invariant) distance of the signal families' recent covariance from its long-run shape. These feed the futures hedge forecast.</p>
-    <div class="two">
-      <div class="table-scroll"><table id="structure"></table></div>
-      <div class="chart"><canvas id="structure-chart" height="220" aria-label="Tree length and effective dimension over time"></canvas><div class="legend" id="structure-legend"></div></div>
-    </div>
-
-    <div class="two">
-      <div><h3>Calendar years</h3><div class="table-scroll"><table id="years"></table></div></div>
-      <div><h3>Factors the model uses</h3><div class="table-scroll"><table id="factors"></table></div></div>
-    </div>
-    <p class="muted foot" id="facts"></p>
   </section>
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
