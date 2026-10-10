@@ -27,7 +27,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSAT_BUILD_TESTS=OFF
-          cmake --build build --target uk_portfolio pool_ablation forecast_study
+          cmake --build build --target uk_portfolio pool_ablation forecast_study sign_study
       - name: Restore the EODData cache
         uses: actions/cache@v4
         with:
@@ -53,6 +53,10 @@ jobs:
         run: |
           ./build/forecast_study 0 --csv data/LSE.csv | tee report/forecast-study.txt
           { echo '```'; cat report/forecast-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Why the forecasts point the wrong way on UK data (diagnosis and fixes)
+        run: |
+          ./build/sign_study 6 2520 --csv data/LSE.csv | tee report/sign-study.txt
+          { echo '```'; cat report/sign-study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Report (for reading from the log)
         run: |
           echo "----- BEGIN REPORT -----"

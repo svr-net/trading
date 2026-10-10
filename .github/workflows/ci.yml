@@ -52,6 +52,7 @@ jobs:
         run: |
           ./build/self_adaptive_trading_demo
           ./build/forecast_study 1 1260
+          ./build/sign_study 1 1260
 
   sanitizers:
     name: native (ASan + UBSan)
