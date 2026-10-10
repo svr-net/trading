@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "sat/adaptive/composite.hpp"
 #include "sat/core/matrix.hpp"
 #include "sat/core/panel.hpp"
 #include "sat/ml/walk_forward.hpp"
@@ -102,6 +103,14 @@ struct SelectorSpec {
   std::size_t topM = 1;
   bool allowCash = true;
   double minScore = 0.0;
+  /// How long each candidate's record is remembered. Fixed: the last `lookback` days, re-scored
+  /// every `adaptEvery` days (the paper's rule). Adwin and MarketAdwin set no length and no
+  /// cadence: each candidate's record is an ADWIN window over its daily net returns, which grows
+  /// while the record is stable and drops its older part when it changes (MarketAdwin: also cut
+  /// back to the start of the current market state, from an ADWIN on the size of the market's
+  /// daily moves), and the candidates are re-scored every day.
+  ScoringWindow window = ScoringWindow::Fixed;
+  double adwinDelta = 1e-4;  ///< Adwin, MarketAdwin: confidence of a cut
   std::string label() const;
 };
 

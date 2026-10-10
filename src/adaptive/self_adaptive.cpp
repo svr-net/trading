@@ -1,5 +1,7 @@
 #include "sat/adaptive/self_adaptive.hpp"
 
+#include "sat/adaptive/adwin.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -122,6 +124,10 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
   if (spec.lookback < 2 || spec.adaptEvery < 1) throw std::invalid_argument("selector look-back must be >= 2 and step >= 1");
   if (evalFrom == SIZE_MAX) evalFrom = std::min(spec.lookback, D - 1);
   if (evalFrom >= D) throw std::invalid_argument("selector: nothing left to trade after the look-back");
+  const bool adaptive = spec.window != ScoringWindow::Fixed;
+  if (adaptive && spec.window != ScoringWindow::Adwin && spec.window != ScoringWindow::MarketAdwin)
+    throw std::invalid_argument("selector memory: fixed, adwin or market-adwin");
+  if (adaptive && !(spec.adwinDelta > 0 && spec.adwinDelta < 1)) throw std::invalid_argument("selector: ADWIN confidence must be in (0, 1)");
   const std::size_t M = std::clamp<std::size_t>(spec.topM, 1, C);
   const double cost = book.costBps() * 1e-4, stamp = book.stampBps() * 1e-4;
 
@@ -135,6 +141,24 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
       pd(c, d + 1) = pd(c, d) + (r < 0 ? r * r : 0.0);
     }
 
+  // Adaptive memory: an ADWIN per candidate over its net returns and one over the size of the
+  // market's daily moves, fed every day once the day's return is known.
+  std::vector<Adwin> records;
+  Adwin market(spec.adwinDelta);
+  auto feed = [&](std::size_t day) {
+    for (std::size_t c = 0; c < C; ++c) records[c].push(book.net(c, day));
+    double sum = 0, n = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+      const double r = book.nextReturns()(book.start() + day, i);
+      if (std::isfinite(r)) sum += r, n += 1;
+    }
+    market.push(n > 0 ? std::fabs(sum / n) : 0.0);
+  };
+  if (adaptive) {
+    records.assign(C, Adwin(spec.adwinDelta));
+    for (std::size_t day = 0; day < evalFrom; ++day) feed(day);
+  }
+
   AdaptiveResult out;
   out.spec = spec;
   out.evalFrom = evalFrom;
@@ -143,12 +167,15 @@ AdaptiveResult runSelector(const CandidateBook& book, const SelectorSpec& spec, 
   std::vector<double> w(N), wMeta(N, 0.0), wPrev(N, 0.0), scores(C);
   std::vector<std::size_t> order(C);
   for (std::size_t d = evalFrom; d < D; ++d) {
-    if ((d - evalFrom) % spec.adaptEvery == 0) {
+    if (adaptive && d > evalFrom) feed(d - 1);
+    if (adaptive || (d - evalFrom) % spec.adaptEvery == 0) {
       out.adaptations.push_back(d);
-      const std::size_t from = d > spec.lookback ? d - spec.lookback : 0;
-      const double n = static_cast<double>(d - from);
-      for (std::size_t c = 0; c < C; ++c)
+      for (std::size_t c = 0; c < C; ++c) {
+        std::size_t from = d > spec.lookback ? d - spec.lookback : 0;
+        if (adaptive) from = spec.window == ScoringWindow::MarketAdwin ? std::max(records[c].from(), market.from()) : records[c].from();
+        const double n = static_cast<double>(d - from);
         scores[c] = windowScore(spec.metric, n, p1(c, d) - p1(c, from), p2(c, d) - p2(c, from), pd(c, d) - pd(c, from));
+      }
       for (std::size_t c = 0; c < C; ++c) order[c] = c;
       std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return scores[a] > scores[b]; });
       held.clear();

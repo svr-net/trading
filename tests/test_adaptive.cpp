@@ -79,6 +79,29 @@ TEST(selector_switches_to_the_winning_model) {
   CHECK_NEAR(share, 1.0, 1e-12);
 }
 
+TEST(selector_adaptive_memory_follows_the_regime_without_a_set_window) {
+  TwoRegimeWorld w;
+  const CandidateBook book(w.models, {{StrategyKind::LongTopK, 1, 1}}, w.next, 10.0);
+  for (auto win : {ScoringWindow::Adwin, ScoringWindow::MarketAdwin}) {
+    SelectorSpec s;
+    s.window = win;
+    s.metric = ScoreMetric::Return;
+    const AdaptiveResult a = runSelector(book, s, 40);
+    // Re-scored every day; A before the regime change (date 100 = day 90), B well after it.
+    CHECK(a.adaptations.size() == a.net.size());
+    CHECK(a.selection[60 - 40] == 0);
+    CHECK(a.selection[180 - 40] == 1);
+    // The look-back and cadence play no part.
+    s.lookback = 5;
+    s.adaptEvery = 50;
+    const AdaptiveResult b = runSelector(book, s, 40);
+    CHECK(a.selection == b.selection && a.net == b.net);
+  }
+  SelectorSpec bad;
+  bad.window = ScoringWindow::SimilarState;
+  CHECK_THROWS(runSelector(book, bad));
+}
+
 TEST(selector_risk_control_goes_to_cash) {
   TwoRegimeWorld w;
   // Long-only in a stock that only falls: nothing ever scores above zero.
