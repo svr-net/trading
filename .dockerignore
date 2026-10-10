@@ -1,7 +1,0 @@
-.git
-build
-build-*
-**/node_modules
-Dockerfile
-.dockerignore
-dist
