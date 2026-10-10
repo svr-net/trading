@@ -53,3 +53,7 @@ jobs:
         run: |
           python model/run.py data/LSE.csv | tee model-report.txt
           { echo '```'; cat model-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Daily backtest with stop-loss and take-profit (results only)
+        run: |
+          python model/run_daily.py data/LSE.csv 2>/dev/null | tee daily-report.txt
+          { echo '```'; cat daily-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

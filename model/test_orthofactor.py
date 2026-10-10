@@ -75,6 +75,32 @@ def test_finds_planted_momentum_and_stays_put_without_it():
     assert res.turnover["model"] < 1.0, res.turnover["model"]
 
 
+def _bars(close, volume):
+    rng = np.random.default_rng(9)
+    spread = 1 + 0.004 * rng.random(close.shape)
+    return {"close": close, "open": close.shift(1).fillna(close) * (1 + 0.002 * rng.standard_normal(close.shape)),
+            "high": close * spread, "low": close / spread, "volume": volume}
+
+
+def test_daily_no_lookahead_and_stops_fill_correctly():
+    from daily import DailySpec, run_daily
+    close, volume = synthetic(30, 252 * 3 + 40, momentum=0.0015, seed=4)
+    a = run_daily(_bars(close, volume), DailySpec())
+    c2 = close.copy()
+    c2.iloc[-30:] *= 1.5
+    b = run_daily(_bars(c2, volume), DailySpec())
+    cut = len(a.returns["model (daily, SL/TP)"]) - 30
+    for k in a.returns:
+        assert np.allclose(a.returns[k][: cut - 1], b.returns[k][: cut - 1]), k
+    assert len(a.trades) > 0
+    for t in a.trades:
+        # A stop never fills above its entry, a take-profit never below it.
+        if t.reason == "stop":
+            assert t.exit <= t.entry
+        if t.reason == "take":
+            assert t.exit >= t.entry
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

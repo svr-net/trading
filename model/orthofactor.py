@@ -44,6 +44,20 @@ def load_csv(path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     return close.astype(float), volume.astype(float)
 
 
+def load_bars(path: str) -> dict[str, pd.DataFrame]:
+    """Long CSV -> open, high, low, close and volume panels (dates x tickers)."""
+    df = pd.read_csv(path, usecols=["date", "ticker", "open", "high", "low", "close", "volume"])
+    out = {}
+    for k in ["close", "open", "high", "low", "volume"]:
+        out[k] = df.pivot(index="date", columns="ticker", values=k).sort_index().astype(float)
+    raw_idx = out["close"].index
+    idx = pd.to_datetime(raw_idx)
+    for k in out:
+        out[k] = out[k].reindex(raw_idx)
+        out[k].index = idx
+    return out
+
+
 def month_ends(index: pd.DatetimeIndex) -> np.ndarray:
     """Positions of the last trading day of each month."""
     s = pd.Series(np.arange(len(index)), index=index)
