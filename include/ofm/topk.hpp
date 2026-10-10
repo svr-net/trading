@@ -103,6 +103,7 @@ struct TopKResult {
   std::vector<TopKCheck> lastDay; ///< the last completed day's trades against the bars
   std::string lastDate;
   std::vector<bool> traded;       ///< per day: the learnt levels had a positive return per unit of risk, so the day was traded
+  std::vector<int> booked;        ///< per day: the number of trades booked
   bool tradeNext = false;         ///< the same for the next day
   std::vector<int> ways;          ///< per day: the way of learning the levels that was followed
   std::string wayNow;             ///< the way followed for the next day

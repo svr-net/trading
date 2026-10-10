@@ -7,9 +7,10 @@
 name: UK portfolio
 
 on:
-  # After the London close on weekdays: download the day, scan, publish the proposals.
+  # Weekday evenings at 19:00 UTC (20:00 UK summer time, 19:00 winter): download the day, scan,
+  # publish the proposals and email the daily report.
   schedule:
-    - cron: '20 21 * * 1-5'
+    - cron: '0 19 * * 1-5'
   workflow_dispatch:
     inputs:
       universe: { description: 'Most traded shares to download', default: '250' }
@@ -17,6 +18,7 @@ on:
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
       refresh: { description: 'Download fresh data from EODData (otherwise the cached download is used)', type: boolean, default: false }
+      email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       stamp_pct: { description: 'Stamp duty on purchases, percent (0 for CFDs, spread bets, AIM; 0.50 for UK shares bought directly)', default: '0' }
 
@@ -131,10 +133,21 @@ jobs:
         run: |
           mkdir -p web/data
           cp report/ofm.json web/data/uk.json
+          python tools/report/daily_email.py track report/ofm.json web/data/track.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add web/data/uk.json
+          git add web/data/uk.json web/data/track.json
           if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
           git commit -m "UK scan $(date -u +%Y-%m-%d) (results only)"
           git push origin HEAD:main
           gh workflow run pages.yml --ref main
+      - name: Email the daily report (scheduled runs, or when asked)
+        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.email) }}
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+        run: python tools/report/daily_email.py send report/ofm.json web/data/track.json
