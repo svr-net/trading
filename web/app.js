@@ -13,6 +13,7 @@ const SERIES = [['model', '--model'], ['model + futures hedge', '--hedged'], ['m
 let ofm = null;
 let last = null;
 let showAll = false;
+let scan = null;
 
 function cell(tag, text, cls) {
   const c = document.createElement(tag);
@@ -204,7 +205,11 @@ function renderTrades(r, source) {
 }
 
 function drawChart(r) {
-  const canvas = $('chart');
+  const css = getComputedStyle(document.documentElement);
+  drawCurves($('chart'), $('legend'), r.dates, SERIES.map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'model' })));
+}
+
+function drawCurves(canvas, legend, dates, curves) {
   const css = getComputedStyle(document.documentElement);
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -212,48 +217,94 @@ function drawChart(r) {
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-  const curves = SERIES.map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name] }));
   const all = curves.flatMap((c) => c.v);
   const lo = Math.log(Math.min(...all)), hi = Math.log(Math.max(...all));
   const pad = { l: 46, r: 10, t: 10, b: 24 };
-  const X = (i) => pad.l + (i / (r.dates.length - 1)) * (w - pad.l - pad.r);
+  const X = (i) => pad.l + (i / (dates.length - 1)) * (w - pad.l - pad.r);
   const Y = (v) => pad.t + (1 - (Math.log(v) - lo) / Math.max(hi - lo, 1e-9)) * (h - pad.t - pad.b);
   ctx.font = '11px "IBM Plex Mono", monospace';
   ctx.fillStyle = css.getPropertyValue('--muted').trim();
   ctx.strokeStyle = css.getPropertyValue('--rule').trim();
   ctx.lineWidth = 1;
-  const ticks = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
+  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
   ticks.forEach((v) => {
     const y = Y(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
     ctx.fillText(`${v}×`, 4, y + 4);
   });
   const years = [];
-  r.dates.forEach((d, i) => { if (i === 0 || d.slice(0, 4) !== r.dates[i - 1].slice(0, 4)) years.push([i, d.slice(0, 4)]); });
+  dates.forEach((d, i) => { if (i === 0 || d.slice(0, 4) !== dates[i - 1].slice(0, 4)) years.push([i, d.slice(0, 4)]); });
   const every = Math.ceil(years.length / Math.max(1, Math.floor((w - pad.l) / 60)));
   years.forEach(([i, y], k) => { if (k % every === 0) ctx.fillText(y, X(i) - 12, h - 6); });
   curves.forEach((c) => {
     ctx.strokeStyle = c.color;
-    ctx.lineWidth = c.name === 'model' ? 2 : 1.5;
+    ctx.lineWidth = c.bold ? 2 : 1.5;
     ctx.beginPath();
     c.v.forEach((v, i) => (i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))));
     ctx.stroke();
   });
-  $('legend').innerHTML = curves.map((c) => `<span><i style="background:${c.color}"></i>${c.name} ${c.v[c.v.length - 1].toFixed(2)}×</span>`).join('');
+  legend.innerHTML = curves.map((c) => `<span><i style="background:${c.color}"></i>${c.name} ${c.v[c.v.length - 1].toFixed(2)}×</span>`).join('');
+}
+
+// Rolling top-10 portfolios (from the published UK scan).
+const TOP_SERIES = [['with adaptive stops', '--model'], ['without stops', '--hedged'], ['market (bought and held)', '--market']];
+let topPick = 0;
+function renderTop(r) {
+  const all = r.top10 && r.top10.strategies;
+  if (!all || !all.length) return;
+  $('top10').hidden = false;
+  topPick = Math.min(topPick, all.length - 1);
+  const x = all[topPick];
+  $('top10-tabs').innerHTML = '';
+  all.forEach((s, k) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = s.name.replace(/^top 10 /, '');
+    b.setAttribute('aria-pressed', k === topPick ? 'true' : 'false');
+    b.addEventListener('click', () => { topPick = k; renderTop(r); });
+    $('top10-tabs').append(b);
+  });
+  const kName = (k) => (k == null ? 'none' : `${k} sd`);
+  $('top10-note').textContent = `Each close: the 10 stocks ranked best, bought in equal shares at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Every position has a stop-loss and a take-profit at multiples of the stock's volatility over the forecast's life, checked against each day's high and low (gaps fill at the open; the stop first when both are touched). The multiples are chosen each day by which fixed pair had grown most so far; an exit frees the slot for the best stock outside. "Largest" ranks by traded value, the nearest measure of size in the bars.`;
+  const whole = x.parts[0].rows;
+  const [a, b, m] = TOP_SERIES.map(([n]) => whole.find((y) => y.name === n));
+  $('top10-verdict').innerHTML = `
+    <div class="tile"><span class="k">With adaptive stops, ${x.parts[0].from} – ${x.parts[0].to}</span><span class="v">${a.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(a.annualReturn)} a year, max drawdown ${pct(a.maxDrawdown)}</span></div>
+    <div class="tile"><span class="k">Same portfolio without stops</span><span class="v">${b.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(b.annualReturn)} a year, max drawdown ${pct(b.maxDrawdown)}</span></div>
+    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year, max drawdown ${pct(m.maxDrawdown)}</span></div>`;
+  const css = getComputedStyle(document.documentElement);
+  drawCurves($('top10-chart'), $('top10-legend'), x.dates, TOP_SERIES.map(([n, c], k) => ({ name: n, color: css.getPropertyValue(c).trim(), v: x.curves[n], bold: k === 0 })));
+  const rows = [];
+  x.parts.forEach((p) => {
+    rows.push({ gap: `${p.name}: ${p.from} – ${p.to}` });
+    p.rows.forEach((y) => rows.push([[y.name], [pct(y.annualReturn), 'num'], [y.sharpe.toFixed(2), 'num'], [pct(y.maxDrawdown), 'num']]));
+  });
+  table($('top10-parts'), [['Strategy'], ['Return / yr', 'num'], ['Sharpe', 'num'], ['Max DD', 'num']], rows);
+  table($('top10-exits'), [['Exit'], ['Positions', 'num'], ['Gained', 'num'], ['Mean return', 'num'], ['Days held', 'num']],
+    x.exits.map((e) => [[e.reason], [String(e.count), 'num'], [e.count ? pct(e.wins / e.count, 0) : '–', 'num'], [e.count ? pct(e.meanReturn, 2) : '–', `num ${e.meanReturn >= 0 ? 'pos' : 'neg'}`], [e.count ? e.meanDays.toFixed(0) : '–', 'num']]));
+  table($('top10-pos'), [['Stock'], ['Since'], ['Return', 'num'], ['Stop', 'num'], ['Take-profit', 'num'], ['Order']],
+    x.positions.map((p) => [[p.ticker], [p.since], [pct(p.ret, 1), `num ${p.ret >= 0 ? 'pos' : 'neg'}`], [p.stop == null ? '–' : pct(p.stop, 1), 'num'], [p.take == null ? '–' : pct(p.take, 1), 'num'], [p.sell ? 'sell at next open' : '']]));
+  $('top10-orders').textContent = `Stop now ${kName(x.stopNow)}, take-profit now ${kName(x.takeNow)} (stop and take-profit columns: distance from the last close). ${x.buys.length ? `Buy at the next open: ${x.buys.join(', ')}.` : 'No purchases at the next open.'} Turnover ${x.turnoverPerYear.toFixed(1)}× a year.`;
+  table($('top10-years'), [['Year'], ['With stops', 'num'], ['Without', 'num'], ['Market', 'num']],
+    x.years.map((y) => [[y.year], ...y.returns.map((v) => [pct(v), `num ${v >= 0 ? 'pos' : 'neg'}`])]));
+  const G = x.gridK.length;
+  table($('top10-grid'), [['Stop \\ take'], ...x.gridK.map((k) => [kName(k), 'num'])],
+    x.gridK.map((ks, p) => [[kName(ks)], ...x.gridK.map((_, q) => { const v = x.grid[p * G + q]; return [v == null ? '–' : v.toFixed(2), `num ${v >= m.sharpe ? 'pos' : ''}`]; })]));
 }
 
 $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
 $('expected-all').addEventListener('click', () => { showAll = !showAll; if (last) render(last, '', 0); });
-window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } });
+window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } if (scan) renderTop(scan); });
 
 // The latest UK scan, published by the scheduled UK workflow (results only, no prices).
 fetch('data/uk.json', { cache: 'no-cache' })
   .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
   .then((r) => {
-    last = r;
+    last = scan = r;
     renderTrades(r, 'UK scan');
+    renderTop(r);
     render(r, '', 0);
   })
   .catch(() => { $('scan-note').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
