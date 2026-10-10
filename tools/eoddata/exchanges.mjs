@@ -16,9 +16,15 @@ const out = argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : 'data/exc
 async function get(route) {
   const url = new URL('https://api.eoddata.com' + route);
   url.searchParams.set('ApiKey', key);
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${route}: HTTP ${r.status}`);  // the URL holds the key: never print it
-  return r.json();
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url);
+    if (r.ok) return r.json();
+    if ((r.status === 429 || r.status >= 500) && attempt < 6) {  // rate limit: wait 5 s, 10 s, ... 160 s
+      await new Promise((ok) => setTimeout(ok, 5000 * 2 ** attempt));
+      continue;
+    }
+    throw new Error(`${route}: HTTP ${r.status}`);  // the URL holds the key: never print it
+  }
 }
 const field = (o, ...names) => {
   for (const n of names) for (const k of Object.keys(o)) if (k.toLowerCase() === n.toLowerCase()) return o[k];
