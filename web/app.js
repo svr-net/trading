@@ -246,7 +246,7 @@ function renderCheck(x, sgn, prob) {
   table($('top10-check'), [['Stock'], ['Stop', 'num'], ['Take', 'num'], ['Expected', 'num'], ['P(stop)', 'num'], ['P(take)', 'num'], ['High', 'num'], ['Low', 'num'], ['Close', 'num'], ['Volume', 'num'], ['Exit'], ['Net', 'num']],
     x.lastDay.map((c) => [[c.ticker], [c.stop <= -0.999 ? 'none' : sgn(c.stop), 'num'], [c.take == null ? 'none' : sgn(c.take), 'num'], [sgn(c.expected, 2), 'num'],
       [prob(c.pStop), 'num'], [prob(c.pTake), 'num'], [sgn(c.high), 'num pos'], [sgn(c.low), 'num neg'], [sgn(c.close, 2), `num ${c.close >= 0 ? 'pos' : 'neg'}`],
-      [c.volume == null ? '–' : `${c.volume.toFixed(2)}×`, 'num'], [c.exit], [sgn(c.ret, 2), `num ${c.ret >= 0 ? 'pos' : 'neg'}`]]));
+      [c.volume == null ? '–' : `${c.volume.toFixed(2)}×`, 'num'], [c.exit === 'still open' ? 'not traded' : c.exit], [sgn(c.ret, 2), `num ${c.ret >= 0 ? 'pos' : 'neg'}`]]));
 }
 
 // Rolling top-10 portfolios (from the published UK scan).
@@ -272,25 +272,27 @@ function renderTop(r) {
     $('top10-tabs').append(b);
   });
   $('top10-asof').textContent = `UK, ${r.stocks} most traded shares · close of ${r.asOf} · orders for the next open. Levels are relative to the last close.`;
-  $('top10-note').textContent = `Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility ${x.oneDay ? 'over one day (the holding period)' : `over the forecast's life (${x.life.toFixed(1)} days)`}, checked against each day's high and low; ${x.dayTrades ? 'the multiples are learnt from the bars: each morning, the stop and take-profit that would have earned most on all the trades before, from any value the data allow, none included' : 'the multiples are the pair whose shadow portfolio has grown most so far'} (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)}).${x.dayTrades ? '' : ' "Largest" ranks by traded value, the nearest measure of size in the bars.'}`;
+  $('top10-note').textContent = `Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility ${x.oneDay ? 'over one day (the holding period)' : `over the forecast's life (${x.life.toFixed(1)} days)`}, checked against each day's high and low; ${x.dayTrades ? 'each stock learns its own: each morning, the stop and take-profit with the best return per unit of risk over all its earlier days, from any value the data allow, none included, and it is traded only if that beats cash after costs' : `the multiples are the pair whose shadow portfolio has grown most so far (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)})`}.${x.dayTrades ? '' : ' "Largest" ranks by traded value, the nearest measure of size in the bars.'}`;
   const sgn = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(100 * v).toFixed(d)}%`);
   const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
   const act = x.dayTrades ? { 1: 'buy at open, sell by close', 0: 'no trade' } : { 1: 'buy at open', 0: 'hold', '-1': 'sell at open' };
   const lifeCols = !x.oneDay;
   const head = [['Stock'], [x.name.includes('largest') ? 'Size rank' : 'Rank today', 'num'], ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
-    ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], ...(lifeCols ? [[`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']] : [])];
+    ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], ...(x.dayTrades ? [['Return / risk', 'num']] : []), ...(lifeCols ? [[`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']] : [])];
   table($('top10-plan'), head,
     x.plan.length ? x.plan.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], [act[p.action]], [sgn(p.open), 'num'],
       [`${sgn(p.stop)}${p.advisoryStop && p.stop != null ? '*' : ''}`, 'num neg'], [`${sgn(p.take)}${p.advisoryTake && p.take != null ? '*' : ''}`, 'num pos'],
       [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'],
+      ...(x.dayTrades ? [[p.ratio == null ? '–' : p.ratio.toFixed(3), `num ${p.ratio > 0 ? 'pos' : 'neg'}`]] : []),
       ...(lifeCols ? [[prob(p.pStopLife), 'num'], [prob(p.pTakeLife), 'num']] : [])])
       : [{ gap: 'no positions' }]);
   renderCheck(x, sgn, prob);
-  if (x.dayTrades) $('top10-asof').textContent += x.tradeNext
-    ? ' The learnt levels have a positive return per unit of risk after costs: trade.'
-    : ` No trade: no stop-loss and take-profit the data allow give these trades a positive return per unit of risk after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip, so cash (no return, no risk) is better. Shown: the levels that come closest. Traded on ${x.tradedDays} of ${x.eval.days} days.`;
+  if (x.dayTrades) {
+    const n = x.plan.filter((p) => p.action === 1).length;
+    $('top10-asof').textContent += ` ${n} of the 10 have learnt levels with a positive return per unit of risk after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip and are traded; the others stay in cash. Some trade on ${x.tradedDays} of ${x.eval.days} days.`;
+  }
   const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
-  $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. ${x.dayTrades ? '' : 'Probabilities: of touching the stop or the take-profit first, for the stock\'s daily volatility (simulated, 20,000 paths).'} ${x.oneDay ? 'Every position is a one-day trade: bought at the open and sold the same day at its stop-loss, its take-profit (the stop first when both are touched) or the close, each paying the round trip. Levels are multiples of the stock\'s open-to-close volatility, learnt from the trades before; probabilities are how often those levels were touched in them.' : 'Held stocks keep the levels set at entry.'}${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
+  $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. ${x.dayTrades ? '' : 'Probabilities: of touching the stop or the take-profit first, for the stock\'s daily volatility (simulated, 20,000 paths).'} ${x.oneDay ? 'Every position is a one-day trade: bought at the open and sold the same day at its stop-loss, its take-profit (the stop first when both are touched) or the close, each paying the round trip. Levels are multiples of the stock\'s open-to-close volatility, learnt from its own earlier days; probabilities are how often those levels were touched on them; return / risk is the learnt levels\' mean net return over its deviation per trade.' : 'Held stocks keep the levels set at entry.'}${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
   const whole = x.parts[0].rows;
   const [a, b, m] = TS.map(([n]) => whole.find((y) => y.name === n));
   $('top10-verdict').innerHTML = `

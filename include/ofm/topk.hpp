@@ -58,6 +58,7 @@ struct TopKOrder {
   bool advisoryStop = false, advisoryTake = false;  ///< the rule has none: best finite level so far
   double open = 0, stop = 0, take = 0, close = 0, sigma = 0;
   double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;
+  double ratio = 0;  ///< the stock's learnt return per unit of risk per trade, on its days before
 };
 
 /// The daily trades judged against the day's actual bars: what was expected at the close before
