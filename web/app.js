@@ -1,7 +1,7 @@
 // The page: loads the C++ library (WebAssembly), runs it on the chosen engine and shows the
 // report it returns. Rendering only; every number comes from the library.
 import createOfm from './wasm/ofm.js';
-import { runKernels } from './gpu.js';
+import { runKernels, runDayTrades } from './gpu.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (t) => { $('status').textContent = t; };
@@ -14,6 +14,7 @@ let ofm = null;
 let last = null;
 let showAll = false;
 let scan = null;
+let shownTop = null;  // [report, source] of the day trades on show
 
 function cell(tag, text, cls) {
   const c = document.createElement(tag);
@@ -67,12 +68,16 @@ async function run() {
       await cpu(engine, '');
     } else {
       try {
+        const mode = engine === 'gpu-cpu' ? 'software' : 'auto';
         status('Running the kernels on WebGPU…');
-        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`));
+        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`), mode);
         json = session.finishGpu(...costs, g.ms, g.adapter);
+        status('Running the day-trade kernels on WebGPU…');
+        const dt = await runDayTrades(session, (m) => status(m), mode);
+        if (dt) json = dt.json;
         note = '';
       } catch (e) {
-        if (engine === 'gpu') throw e;
+        if (engine === 'gpu' || engine === 'gpu-cpu') throw e;
         session.delete();
         const fresh = new ofm.Session();
         if ($('src-files').checked) fresh.loadCsv(await readFile($('stocks-file')), await readFile($('series-file')));
@@ -87,6 +92,7 @@ async function run() {
     }
     last = JSON.parse(json);
     render(last, note, performance.now() - t0);
+    if (last.top10) renderTop(last, $('src-files').checked ? 'Your data' : 'Sample market (synthetic)');
   } catch (e) {
     status(`Could not run: ${e.message}`);
   } finally {
@@ -252,7 +258,8 @@ function renderCheck(x, sgn, prob) {
 // Rolling top-10 portfolios (from the published UK scan).
 const TOP_SERIES = [['with adaptive stops', '--model'], ['without stops', '--hedged'], ['market (bought and held)', '--market']];
 let topPick = 0;
-function renderTop(r) {
+function renderTop(r, source = 'UK') {
+  shownTop = [r, source];
   const all = r.top10 && r.top10.strategies;
   if (!all || !all.length) return;
   topPick = Math.min(topPick, all.length - 1);
@@ -268,10 +275,10 @@ function renderTop(r) {
     b.type = 'button';
     b.textContent = s.name.replace(/^top 10 /, '');
     b.setAttribute('aria-pressed', k === topPick ? 'true' : 'false');
-    b.addEventListener('click', () => { topPick = k; renderTop(r); });
+    b.addEventListener('click', () => { topPick = k; renderTop(r, source); });
     $('top10-tabs').append(b);
   });
-  $('top10-asof').textContent = `UK, ${r.stocks} most traded shares · close of ${r.asOf} · orders for the next open. Levels are relative to the last close.`;
+  $('top10-asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · orders for the next open. Levels are relative to the last close.`;
   $('top10-note').textContent = `Each close the 10 stocks ranked best are held in equal shares, bought at the next open (${r.costs.buyBps} bp on purchases, ${r.costs.sellBps} bp on sales). Each position has a stop-loss and a take-profit at multiples of the stock's volatility ${x.oneDay ? 'over one day (the holding period)' : `over the forecast's life (${x.life.toFixed(1)} days)`}, checked against each day's high and low; ${x.dayTrades ? 'each stock learns its own: each morning, the stop and take-profit with the best return per unit of risk over all its earlier days, from any value the data allow, none included, and it is traded only if that beats cash after costs' : `the multiples are the pair whose shadow portfolio has grown most so far (now: stop ${kName(x.stopNow)}, take-profit ${kName(x.takeNow)})`}.${x.dayTrades ? '' : ' "Largest" ranks by traded value, the nearest measure of size in the bars.'}`;
   const sgn = (v, d = 1) => (v == null ? '–' : `${v > 0 ? '+' : ''}${(100 * v).toFixed(d)}%`);
   const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
@@ -293,7 +300,7 @@ function renderTop(r) {
     const n = x.plan.filter((p) => p.action === 1).length;
     const ways = (x.wayRatios || []).map((w) => `${w.name} ${w.sharpe == null ? '–' : w.sharpe.toFixed(2)}`).join(', ');
     if (x.wayNow) $('top10-asof').textContent += ` Levels learnt from ${x.wayNow}, the way with the best record so far (return per unit of risk, a year: ${ways}).`;
-    $('top10-asof').textContent += ` ${n} trade${n === 1 ? '' : 's'} to book: of today's 10 best, those whose learnt levels beat cash after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip (the rest stay in cash and are not listed). Trades were booked on ${x.tradedDays} of ${x.eval.days} days.`;
+    $('top10-asof').textContent += ` ${n} trade${n === 1 ? '' : 's'} to book: going down the ranking from the best expected return, the first (up to 10) whose own learnt levels beat cash after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip; stocks that would not are skipped. Trades were booked on ${x.tradedDays} of ${x.eval.days} days.`;
   }
   const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
   $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. ${x.dayTrades ? '' : 'Probabilities: of touching the stop or the take-profit first, for the stock\'s daily volatility (simulated, 20,000 paths).'} ${x.oneDay ? 'Every position is a one-day trade: bought at the open and sold the same day at its stop-loss, its take-profit (the stop first when both are touched) or the close, each paying the round trip. Levels are multiples of the stock\'s open-to-close volatility, learnt from its own earlier days; probabilities are how often those levels were touched on them; return / risk is the learnt levels\' mean net return over its deviation per trade.' : 'Held stocks keep the levels set at entry.'}${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
@@ -326,7 +333,7 @@ $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
 $('expected-all').addEventListener('click', () => { showAll = !showAll; if (last) render(last, '', 0); });
-window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } if (scan) renderTop(scan); });
+window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } if (shownTop) renderTop(...shownTop); });
 
 // The latest UK scan, published by the scheduled UK workflow (results only, no prices).
 fetch('data/uk.json', { cache: 'no-cache' })
