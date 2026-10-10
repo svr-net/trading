@@ -58,7 +58,8 @@ struct TopKOrder {
   bool advisoryStop = false, advisoryTake = false;  ///< the rule has none: best finite level so far
   double open = 0, stop = 0, take = 0, close = 0, sigma = 0;
   double pStopDay = 0, pTakeDay = 0, pStopLife = 0, pTakeLife = 0;
-  double ratio = 0;  ///< the stock's learnt return per unit of risk per trade, on its days before
+  double ratio = 0;  ///< the learnt levels' return per unit of risk per trade, on the earlier trades of the same state
+  int state = -1;    ///< SAR trend up (4) + RSI above 50 (2) + ADX above its average (1); -1 unknown
 };
 
 /// The daily trades judged against the day's actual bars: what was expected at the close before
@@ -103,6 +104,9 @@ struct TopKResult {
   std::string lastDate;
   std::vector<bool> traded;       ///< per day: the learnt levels had a positive return per unit of risk, so the day was traded
   bool tradeNext = false;         ///< the same for the next day
+  std::vector<int> ways;          ///< per day: the way of learning the levels that was followed
+  std::string wayNow;             ///< the way followed for the next day
+  std::vector<std::pair<std::string, double>> wayRatios;  ///< each way's record: annualised return per unit of risk
   double learntRatio = 0;         ///< the learnt levels' mean net return over its deviation per trade, on the trades before
 };
 

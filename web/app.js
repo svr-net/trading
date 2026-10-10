@@ -277,10 +277,10 @@ function renderTop(r) {
   const prob = (v) => (v == null ? '–' : v < 0.0005 ? '<0.1%' : v > 0.9995 ? '>99.9%' : `${(100 * v).toFixed(1)}%`);
   const act = x.dayTrades ? { 1: 'buy at open, sell by close', 0: 'no trade' } : { 1: 'buy at open', 0: 'hold', '-1': 'sell at open' };
   const lifeCols = !x.oneDay;
-  const head = [['Stock'], [x.name.includes('largest') ? 'Size rank' : 'Rank today', 'num'], ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
+  const head = [['Stock'], [x.name.includes('largest') ? 'Size rank' : 'Rank today', 'num'], ...(x.dayTrades ? [['SAR · RSI · ADX']] : []), ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
     ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], ...(x.dayTrades ? [['Return / risk', 'num']] : []), ...(lifeCols ? [[`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']] : [])];
   table($('top10-plan'), head,
-    x.plan.length ? x.plan.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], [act[p.action]], [sgn(p.open), 'num'],
+    x.plan.length ? x.plan.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], ...(x.dayTrades ? [[p.state == null || p.state < 0 ? '–' : `${p.state & 4 ? '↑' : '↓'} · ${p.state & 2 ? '>50' : '<50'} · ${p.state & 1 ? 'strong' : 'weak'}`]] : []), [act[p.action]], [sgn(p.open), 'num'],
       [`${sgn(p.stop)}${p.advisoryStop && p.stop != null ? '*' : ''}`, 'num neg'], [`${sgn(p.take)}${p.advisoryTake && p.take != null ? '*' : ''}`, 'num pos'],
       [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'],
       ...(x.dayTrades ? [[p.ratio == null ? '–' : p.ratio.toFixed(3), `num ${p.ratio > 0 ? 'pos' : 'neg'}`]] : []),
@@ -289,6 +289,8 @@ function renderTop(r) {
   renderCheck(x, sgn, prob);
   if (x.dayTrades) {
     const n = x.plan.filter((p) => p.action === 1).length;
+    const ways = (x.wayRatios || []).map((w) => `${w.name} ${w.sharpe == null ? '–' : w.sharpe.toFixed(2)}`).join(', ');
+    if (x.wayNow) $('top10-asof').textContent += ` Levels learnt from ${x.wayNow}, the way with the best record so far (return per unit of risk, a year: ${ways}).`;
     $('top10-asof').textContent += ` ${n} of the 10 have learnt levels with a positive return per unit of risk after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip and are traded; the others stay in cash. Some trade on ${x.tradedDays} of ${x.eval.days} days.`;
   }
   const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
