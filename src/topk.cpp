@@ -246,14 +246,16 @@ struct Learner {
     double h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;  // head: sums of base, base^2; tail: sig, sig^2, count
     for (const auto& x : obs) t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
     // Every trade has a stop: the best among the lows at least the round trip below the open.
-    const double floorA = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
+    // ...and no nearer the open than the median fall: touched on at most half the days, beyond the
+    // early moves that would hit a tighter stop on most days.
+    const double floorA = obs.empty() ? 0.0 : std::max(minMove / (sigSum / static_cast<double>(obs.size())), obs[byLo[byLo.size() / 2]].lo);
     const double capA = plausibleMax(byLo, &Obs::lo);
     double bestA = byLo.empty() ? kInf : capA;
     score = -kInf;
     for (std::size_t q = 0; q < byLo.size(); ++q) {
       const Obs& x = obs[byLo[q]];
       const double a = x.lo;  // this low and all deeper ones stop at -a sig
-      if (!(a > 0) || a < floorA || a > capA) {  // nearer the open than the round trip, or beyond any plausible fall
+      if (!(a > 0) || a < floorA || a > capA) {  // nearer the open than the round trip or the median fall, or beyond any plausible fall
         const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
         h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
         continue;
