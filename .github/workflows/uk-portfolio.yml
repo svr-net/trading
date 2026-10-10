@@ -1,6 +1,7 @@
 # Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret) into the runner's
-# cache and reports only what was downloaded (dates, symbols, rows). EODData's licence does not
-# allow redistributing the raw data, so the prices stay in the cache and are never published.
+# cache, reports what was downloaded (dates, symbols, rows) and backtests the model on it
+# (results only). EODData's licence does not allow redistributing the raw data, so the prices
+# stay in the cache and are never published.
 name: UK portfolio
 
 on:
@@ -21,6 +22,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and test the model
+        run: |
+          pip install -r requirements.txt
+          python model/test_orthofactor.py
       - name: Restore the EODData cache
         uses: actions/cache@v4
         with:
@@ -41,3 +49,7 @@ jobs:
             echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Backtest the model (results only)
+        run: |
+          python model/run.py data/LSE.csv | tee model-report.txt
+          { echo '```'; cat model-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
