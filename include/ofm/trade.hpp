@@ -38,7 +38,7 @@ namespace ofm {
 
 /// Market-standard transaction costs, in percent of the value traded.
 constexpr double kDealingPct = 0.10;  ///< per side: commission and half the spread
-constexpr double kStampPct = 0.50;    ///< UK stamp duty on purchases (0 for CFDs, spread bets, AIM shares)
+constexpr double kStampPct = 0.0;     ///< stamp duty on purchases: none (CFDs, spread bets, AIM shares; UK shares directly: 0.50)
 
 struct Costs {
   double buyBps = 100 * (kDealingPct + kStampPct);  ///< dealing plus stamp duty on purchases
