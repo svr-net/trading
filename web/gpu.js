@@ -4,7 +4,7 @@
 // it returns, dispatches expect, and hands that read-back back (takeExpected).
 
 const ADAPTERS = [{ powerPreference: 'high-performance' }, {}, { featureLevel: 'compatibility' }];
-const NEED = { maxComputeInvocationsPerWorkgroup: 256, maxComputeWorkgroupSizeX: 256, maxStorageBuffersPerShaderStage: 3 };
+const NEED = { maxComputeInvocationsPerWorkgroup: 256, maxComputeWorkgroupSizeX: 256, maxStorageBuffersPerShaderStage: 8 };
 
 export async function openDevice() {
   if (!('gpu' in navigator)) throw new Error('this browser has no WebGPU');
@@ -30,13 +30,13 @@ async function pipeline(device, code, label) {
   return device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main' }, label });
 }
 
-async function readBack(device, src, bytes) {
+async function readBack(device, src, bytes, Type = Float32Array) {
   const dst = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   const enc = device.createCommandEncoder();
   enc.copyBufferToBuffer(src, 0, dst, 0, bytes);
   device.queue.submit([enc.finish()]);
   await dst.mapAsync(GPUMapMode.READ);
-  const out = new Float32Array(dst.getMappedRange(0, bytes)).slice();
+  const out = new Type(dst.getMappedRange(0, bytes)).slice();
   dst.unmap();
   dst.destroy();
   return out;
@@ -92,4 +92,56 @@ export async function runKernels(session, onProgress = () => {}) {
   for (const b of [tables, uniform, z, g, v, e]) b.destroy();
   device.destroy();
   return { ms, adapter: name };
+}
+
+/** Runs the day-trade kernels (levels per chunk of days, then trades, then book) on the model's
+ * expected returns, and hands the read-backs to the library. Resolves to the report (JSON text). */
+export async function runDayTrades(session, onProgress = () => {}) {
+  const plan = session.dayTradePlan();
+  if (!plan.ok) return null;
+  const { device } = await openDevice();
+  const [levels, trades, book] = await Promise.all([
+    pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.trades, 'trades'), pipeline(device, plan.sources.book, 'book'),
+  ]);
+  const { T, N, K, s } = plan;
+  const S = GPUBufferUsage.STORAGE, DST = GPUBufferUsage.COPY_DST, SRC = GPUBufferUsage.COPY_SRC;
+  const buffer = (bytes, usage) => device.createBuffer({ size: Math.max(16, Math.ceil(bytes / 4) * 4), usage });
+  const upload = (data) => { const b = buffer(data.byteLength, S | DST); device.queue.writeBuffer(b, 0, data); return b; };
+  const uniform = buffer(112, GPUBufferUsage.UNIFORM | DST);
+  const bars = upload(plan.bars), life = upload(plan.life), state = upload(plan.initialState);
+  const expected = upload(plan.expected), elig = upload(plan.elig);
+  const obs = buffer(N * 4 * T * 4, S), idx = buffer(N * 2 * T * 4, S);
+  const lev = buffer(T * N * plan.level * 4, S | SRC), tra = buffer(T * N * plan.trade * 4, S | SRC);
+  const days = buffer(T * plan.day * 4, S | SRC), booked = buffer((T + 1) * K * 4, S | SRC);
+  const group = (p, entries) => device.createBindGroup({
+    layout: p.getBindGroupLayout(0),
+    entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
+  });
+  const gL = group(levels, [[0, uniform], [1, bars], [2, life], [3, state], [4, obs], [5, idx], [6, lev]]);
+  const gT = group(trades, [[0, uniform], [1, bars], [2, life], [6, lev], [7, tra]]);
+  const gB = group(book, [[0, uniform], [1, bars], [6, lev], [7, tra], [8, expected], [9, elig], [10, days], [11, booked]]);
+  const step = (p, g, x, y = 1) => {
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(p); pass.setBindGroup(0, g); pass.dispatchWorkgroups(x, y);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  };
+  const t0 = performance.now();
+  for (let a = 0; a < T; a += plan.chunkDays) {
+    device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(a, Math.min(T, a + plan.chunkDays)));
+    step(levels, gL, Math.ceil(N / 64));
+    await device.queue.onSubmittedWorkDone();
+    onProgress(`Day trades on WebGPU: day ${Math.min(T, a + plan.chunkDays)} of ${T}`);
+  }
+  device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(0, T));
+  step(trades, gT, Math.ceil(N / 64), T - s);
+  step(book, gB, Math.ceil((T - s) / 64));
+  const [L, R, D, B] = await Promise.all([
+    readBack(device, lev, T * N * plan.level * 4), readBack(device, tra, T * N * plan.trade * 4),
+    readBack(device, days, T * plan.day * 4), readBack(device, booked, (T + 1) * K * 4, Uint32Array),
+  ]);
+  const ms = performance.now() - t0;
+  device.destroy();
+  return { json: session.finishDayTrades(L, R, D, B), ms };
 }

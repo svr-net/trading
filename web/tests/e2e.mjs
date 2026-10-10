@@ -48,8 +48,12 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['emulated', 'Emulated GPU'],
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
     if (!drawn || !Number.isFinite(sharpe)) throw new Error('backtest not rendered');
     if (errors.length) throw new Error(errors.join(' | '));
-    results[engine] = { sharpe, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
-    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)}  ${statusText}`);
+    // The day trades (fused kernels: levels, trades, book) on the same engine.
+    const plan = await page.$$eval('#top10-plan tbody tr td:first-child', (t) => t.map((x) => x.textContent));
+    if (!plan.length || !/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('day trades not rendered');
+    const daySharpe = await page.$eval('#top10-verdict .tile .v', (e) => +e.textContent);
+    results[engine] = { sharpe, daySharpe, plan, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
+    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)}, day trades ${daySharpe.toFixed(2)} (${plan.length} to book)  ${statusText}`);
   } catch (e) {
     failed++;
     console.log(`FAIL ${engine}: ${e.message}`);
@@ -58,8 +62,10 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['emulated', 'Emulated GPU'],
 }
 if (results.gpu && results.emulated) {
   const overlap = results.gpu.top.filter((t) => results.emulated.top.includes(t)).length;
-  const ok = Math.abs(results.gpu.sharpe - results.emulated.sharpe) < 0.1 && overlap >= 8;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: Sharpe ${results.gpu.sharpe} vs ${results.emulated.sharpe}, top-10 overlap ${overlap}/10`);
+  const planOverlap = results.gpu.plan.filter((t) => results.emulated.plan.includes(t)).length;
+  const ok = Math.abs(results.gpu.sharpe - results.emulated.sharpe) < 0.1 && overlap >= 8 &&
+    Math.abs(results.gpu.daySharpe - results.emulated.daySharpe) < 0.15 && planOverlap >= Math.min(results.gpu.plan.length, results.emulated.plan.length) - 2;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: Sharpe ${results.gpu.sharpe} vs ${results.emulated.sharpe}, top-10 overlap ${overlap}/10; day trades ${results.gpu.daySharpe} vs ${results.emulated.daySharpe}, plan overlap ${planOverlap}/${results.gpu.plan.length}`);
   if (!ok) failed++;
 }
 await browser.close();

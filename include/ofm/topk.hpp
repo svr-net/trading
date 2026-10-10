@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ofm/data.hpp"
+#include "ofm/daytrade.hpp"
 #include "ofm/model.hpp"
 #include "ofm/trade.hpp"
 
@@ -113,6 +114,17 @@ struct TopKResult {
 
 /// Both rankings, from the same start as the backtest (bt.start).
 std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const Costs& costs, const Backtest& bt, std::size_t K = 10);
+
+/// For a host that runs the day-trade kernels itself (WebGPU): the packed buffers, and the result
+/// once the kernels' outputs (levels, trades, days, booked) are in them.
+struct DayTradeJob {
+  daytrade::Buffers<float> buffers;
+  std::size_t start = 0, K = 10;
+  std::vector<double> life;
+  bool ok = false;
+};
+DayTradeJob prepareDayTrades(const Market& m, const Forecast& f, const Costs& costs, const Backtest& bt, std::size_t K = 10);
+std::vector<TopKResult> finishDayTrades(const Market& m, const Forecast& f, const Costs& costs, const DayTradeJob& job);
 
 std::string topKJson(const Market& m, const std::vector<TopKResult>& r, const Backtest& bt);
 std::string topKText(const Market& m, const std::vector<TopKResult>& r, const Backtest& bt);

@@ -5,6 +5,7 @@
 #include <emscripten/val.h>
 
 #include <chrono>
+#include <cstring>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -13,6 +14,7 @@
 
 #include "ofm/kernels.hpp"
 #include "ofm/report.hpp"
+#include "ofm/topk.hpp"
 
 using emscripten::val;
 
@@ -90,6 +92,7 @@ class Session {
   }
 
   std::string finishGpu(double buyBps, double sellBps, double futBps, double gpuMs, const std::string& adapter) {
+    costs_.buyBps = buyBps, costs_.sellBps = sellBps, costs_.futuresBps = futBps;
     forecast_.mean = forecaster_->mean, forecast_.tstat = forecaster_->tstat, forecast_.premium = forecaster_->premium;
     forecast_.records = forecaster_->records();
     forecast_.familyReturns = forecaster_->familyReturns;
@@ -97,6 +100,45 @@ class Session {
     forecast_.kernelMs = gpuMs;
     forecast_.engine = "WebGPU (" + adapter + ")";
     return report(buyBps, sellBps, futBps);
+  }
+
+  /// The day-trade kernels on WebGPU, after the model: sizes, sources and the inputs to upload.
+  val dayTradePlan() {
+    const ofm::Costs c = costs_;
+    ms_ = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
+    bt_ = ofm::backtest(market_, forecast_, c, series_, &ms_);
+    job_ = ofm::prepareDayTrades(market_, forecast_, c, bt_, 10);
+    val o = val::object();
+    o.set("ok", job_.ok);
+    if (!job_.ok) return o;
+    const auto& b = job_.buffers;
+    o.set("T", b.T), o.set("N", b.N), o.set("K", b.K), o.set("s", b.s), o.set("chunkDays", 64);
+    o.set("state", ofm::daytrade::kState), o.set("level", ofm::daytrade::kLevel), o.set("trade", ofm::daytrade::kTrade), o.set("day", ofm::daytrade::kDay);
+    val src = val::object();
+    src.set("levels", ofm::daytrade::levelsSource()), src.set("trades", ofm::daytrade::tradesSource()), src.set("book", ofm::daytrade::bookSource());
+    o.set("sources", src);
+    o.set("bars", copyOut(b.bars)), o.set("expected", copyOut(b.expected)), o.set("elig", copyOut(b.elig));
+    o.set("life", copyOut(b.life)), o.set("initialState", copyOut(b.state));
+    return o;
+  }
+  /// The uniform header of the day-trade kernels for days [t0, t1).
+  val dayTradeHeader(int t0, int t1) const {
+    const auto& b = job_.buffers;
+    std::vector<std::uint32_t> h(28, 0u);
+    h[0] = b.T, h[1] = b.N, h[2] = b.K, h[3] = b.s, h[4] = static_cast<std::uint32_t>(t0), h[5] = static_cast<std::uint32_t>(t1), h[6] = b.H;
+    std::memcpy(&h[8], &b.buy, 4), std::memcpy(&h[9], &b.sell, 4);
+    for (std::uint32_t k = 0; k < b.H && k < 16; ++k) h[12 + k] = b.hz[k];
+    return copyOut(h);
+  }
+  /// The kernels' read-backs: the report with the day trades.
+  std::string finishDayTrades(val levels, val trades, val days, val booked) {
+    auto& b = job_.buffers;
+    b.levels = emscripten::convertJSArrayToNumberVector<float>(levels);
+    b.trades = emscripten::convertJSArrayToNumberVector<float>(trades);
+    b.days = emscripten::convertJSArrayToNumberVector<float>(days);
+    b.booked = emscripten::convertJSArrayToNumberVector<std::uint32_t>(booked);
+    const auto top = ofm::finishDayTrades(market_, forecast_, costs_, job_);
+    return withTop(ofm::reportJson(market_, forecast_, bt_, costs_, &ms_), top);
   }
 
   /// The whole run on the CPU: "emulated" (the kernels in single precision) or "reference".
@@ -122,9 +164,18 @@ class Session {
   std::string report(double buyBps, double sellBps, double futBps) {
     ofm::Costs c;
     c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps;
-    const ofm::MarketStructure ms = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
-    const ofm::Backtest bt = ofm::backtest(market_, forecast_, c, series_, &ms);
-    return ofm::reportJson(market_, forecast_, bt, c, &ms);
+    costs_ = c;
+    ms_ = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
+    bt_ = ofm::backtest(market_, forecast_, c, series_, &ms_);
+    const std::string j = ofm::reportJson(market_, forecast_, bt_, c, &ms_);
+    // On the CPU engines the day-trade kernels run here (double or single precision).
+    if (forecast_.engine.rfind("WebGPU", 0) == 0) return j;
+    return withTop(j, ofm::topKBacktests(market_, forecast_, c, bt_, 10));
+  }
+  std::string withTop(std::string j, const std::vector<ofm::TopKResult>& top) {
+    if (top.empty()) return j;
+    j.pop_back();
+    return j + ",\"top10\":" + ofm::topKJson(market_, top, bt_) + "}";
   }
 
   ofm::Market market_;
@@ -133,6 +184,10 @@ class Session {
   std::unique_ptr<ofm::Forecaster> forecaster_;
   ofm::Forecast forecast_;
   std::vector<char> valid_;
+  ofm::Costs costs_;
+  ofm::MarketStructure ms_;
+  ofm::Backtest bt_;
+  ofm::DayTradeJob job_;
 };
 
 std::string version() { return OFM_VERSION; }
@@ -153,5 +208,8 @@ EMSCRIPTEN_BINDINGS(ofm) {
       .function("takeExpected", &Session::takeExpected)
       .function("setUniverseHedge", &Session::setUniverseHedge)
       .function("finishGpu", &Session::finishGpu)
-      .function("runCpu", &Session::runCpu);
+      .function("runCpu", &Session::runCpu)
+      .function("dayTradePlan", &Session::dayTradePlan)
+      .function("dayTradeHeader", &Session::dayTradeHeader)
+      .function("finishDayTrades", &Session::finishDayTrades);
 }

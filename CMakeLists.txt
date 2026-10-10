@@ -14,7 +14,8 @@ add_library(ofm
   src/trade.cpp
   src/structure.cpp
   src/report.cpp
-  src/topk.cpp)
+  src/topk.cpp
+  src/daytrade.cpp)
 target_include_directories(ofm PUBLIC include)
 if(NOT MSVC)
   target_compile_options(ofm PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)

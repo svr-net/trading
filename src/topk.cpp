@@ -1,5 +1,7 @@
 #include "ofm/topk.hpp"
 
+#include "ofm/daytrade.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -195,389 +197,77 @@ std::pair<double, double> firstTouch(double mu, double sigma, double lo, double 
   return {static_cast<double>(nLo) / paths, static_cast<double>(nHi) / paths};
 }
 
-// A stock's stop-loss and take-profit, learnt from its own days: how far below the open each day's
-// low went (lo) and how far above the high went (hi), in the stock's volatility, and the close (log).
-// The levels are those with the best return per unit of risk (the mean net log return of a day's
-// trade over its standard deviation; the round trip is in every trade and a stop fills worse than
-// its level by a side's cost), searched over every value the data allow, none included, by turns
-// (the best stop for the current take-profit, then the best take-profit for that stop, until
-// neither moves). Not trading earns nothing at no risk, so the stock is traded only while the best
-// levels' ratio is above zero.
-struct Learner {
-  struct Obs { double lo, hi, c, sig; };
-  std::vector<Obs> obs;
-  std::vector<std::size_t> byLo, byHi;  // obs sorted by lo and by hi
-  double kc = 0, kcs = 0;               // log of the round trip; the same for a stopped trade
-  double maxDrop = 0, maxRise = 0;      // the largest fall and rise from the open ever seen (log)
-  double minMove = 0;                   // the nearest a level may be to the open (log): the round trip
-  double sigSum = 0;
+// Today's ranking by expected return, walked down until K trades worth making are booked, each bought
+// at the next open and sold the same day at its stop-loss, its take-profit (stop first when both are
+// touched) or the close; every number comes from the fused kernels of daytrade.hpp (double precision
+// for the reference engine, single precision otherwise, as on the GPU).
+template <class R>
+daytrade::Buffers<R> packDayTrades(const Market& m, const Forecast& f, const Costs& costs, std::size_t K, std::size_t s, const std::vector<double>& life) {
+  namespace dt = daytrade;
+  const std::size_t T = m.T(), N = m.N();
+  dt::Buffers<R> b;
+  b.T = static_cast<std::uint32_t>(T), b.N = static_cast<std::uint32_t>(N), b.K = static_cast<std::uint32_t>(K), b.s = static_cast<std::uint32_t>(s);
+  b.buy = R(costs.buyBps * 1e-4), b.sell = R(costs.sellBps * 1e-4);
+  b.hz.assign(f.horizons.begin(), f.horizons.end()), b.H = static_cast<std::uint32_t>(b.hz.size());
+  b.bars.assign(5 * T * N, R(0));
+  const Panel* panels[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
+  for (std::size_t k = 0; k < 5; ++k)
+    for (std::size_t t = 0; t < T; ++t)
+      for (std::size_t i = 0; i < N; ++i) {
+        const double v = (*panels[k])(t, i);
+        b.bars[(k * T + t) * N + i] = std::isfinite(v) ? R(v) : R(k == 4 ? -1 : 0);
+      }
+  b.expected.assign(T * N, R(0)), b.elig.assign(T * N, 0u);
+  for (std::size_t t = 0; t < T; ++t)
+    for (std::size_t i = 0; i < N; ++i)
+      if (std::isfinite(f.E(t, i)) && m.close(t, i) > 0) b.expected[t * N + i] = R(f.E(t, i)), b.elig[t * N + i] = 1u;
+  b.life.assign(life.begin(), life.end());
+  b.state.assign(N * dt::kState, R(0));
+  for (std::size_t i = 0; i < N; ++i) b.state[i * dt::kState] = R(-1);  // no volatility yet
+  b.obs.assign(N * 4 * T, R(0)), b.idx.assign(N * 2 * T, 0u);
+  b.levels.assign(T * N * dt::kLevel, R(0)), b.trades.assign(T * N * dt::kTrade, R(0)), b.days.assign(T * dt::kDay, R(0));
+  b.booked.assign((T + 1) * K, 0u);
+  return b;
+}
 
-  void add(double lo, double hi, double c, double sig) {
-    obs.push_back({lo, hi, c, sig});
-    maxDrop = std::max(maxDrop, lo * sig), maxRise = std::max(maxRise, hi * sig), sigSum += sig;
-    const std::size_t idx = obs.size() - 1;
-    auto put = [&](std::vector<std::size_t>& v, double Obs::*key) {
-      const double kv = obs[idx].*key;
-      v.insert(std::lower_bound(v.begin(), v.end(), kv, [&](std::size_t q, double val) { return obs[q].*key < val; }), idx);
-    };
-    put(byLo, &Obs::lo), put(byHi, &Obs::hi);
-  }
-  // The largest value of a sorted field that is not an outlier by Chauvenet's criterion (robust
-  // centre and scale from the quartiles): moves beyond it are taken for data errors.
-  double plausibleMax(const std::vector<std::size_t>& sorted, double Obs::*key) const {
-    const std::size_t n = sorted.size();
-    if (n < 4) return n ? obs[sorted.back()].*key : kInf;
-    const double q1 = obs[sorted[n / 4]].*key, q2 = obs[sorted[n / 2]].*key, q3 = obs[sorted[3 * n / 4]].*key;
-    const double sc = (q3 - q1) / 1.349;
-    for (std::size_t k = n; k-- > 0;) {
-      const double v = obs[sorted[k]].*key;
-      if (!(sc > 0) || static_cast<double>(n) * std::erfc((v - q2) / sc / std::sqrt(2.0)) >= 0.5) return v;
-    }
-    return obs[sorted.back()].*key;
-  }
-  static double ratio(double s1, double s2, double n) {
-    if (n < 2) return -kInf;
-    const double mu = s1 / n, vr = std::max(0.0, s2 / n - mu * mu);
-    return vr > 0 ? mu / std::sqrt(vr) : (mu > 0 ? kInf : -kInf);
-  }
-  double bestStop(double b, double& score) const {
-    // Stopped when lo >= a: earns -a sig; otherwise the take-profit (hi >= b: b sig) or the close.
-    const double n = static_cast<double>(obs.size());
-    double h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;  // head: sums of base, base^2; tail: sig, sig^2, count
-    for (const auto& x : obs) t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
-    // Every trade has a stop: the best among the lows at least the round trip below the open.
-    // ...and no nearer the open than the median fall: touched on at most half the days, beyond the
-    // early moves that would hit a tighter stop on most days.
-    const double floorA = obs.empty() ? 0.0 : std::max(minMove / (sigSum / static_cast<double>(obs.size())), obs[byLo[byLo.size() / 2]].lo);
-    const double capA = plausibleMax(byLo, &Obs::lo);
-    double bestA = byLo.empty() ? kInf : capA;
-    score = -kInf;
-    for (std::size_t q = 0; q < byLo.size(); ++q) {
-      const Obs& x = obs[byLo[q]];
-      const double a = x.lo;  // this low and all deeper ones stop at -a sig
-      if (!(a > 0) || a < floorA || a > capA) {  // nearer the open than the round trip or the median fall, or beyond any plausible fall
-        const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
-        h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
-        continue;
-      }
-      const double s1 = h1 - a * t1 + tm * kcs, s2 = h2 + a * a * t2 - 2 * a * kcs * t1 + tm * kcs * kcs;
-      const double rr = ratio(s1, s2, n);
-      if (rr > score + 1e-12) score = rr, bestA = a;
-      const double v = (x.hi >= b ? b * x.sig : x.c) + kc;
-      h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
-    }
-    return bestA;
-  }
-  double bestTake(double a, double& score) const {
-    // The stopped trades are fixed; among the others, hi >= b takes profit at b sig, else the close.
-    const double n = static_cast<double>(obs.size());
-    double c1 = 0, c2 = 0, h1 = 0, h2 = 0, t1 = 0, t2 = 0, tm = 0;
-    for (const auto& x : obs) {
-      if (x.lo >= a) {
-        const double v = -a * x.sig + kcs;
-        c1 += v, c2 += v * v;
-      } else {
-        t1 += x.sig, t2 += x.sig * x.sig, tm += 1;
-      }
-    }
-    // Every trade has a take-profit: the best among the highs at least the round trip above the open.
-    const double floorB = obs.empty() ? 0.0 : minMove / (sigSum / static_cast<double>(obs.size()));
-    const double capB = plausibleMax(byHi, &Obs::hi);
-    double bestB = byHi.empty() ? kInf : capB;
-    score = -kInf;
-    for (std::size_t q = 0; q < byHi.size(); ++q) {
-      const Obs& x = obs[byHi[q]];
-      if (x.lo >= a) continue;
-      const double b = x.hi;  // this high and all higher ones take profit at b sig
-      if (!(b > 0) || b < floorB || b > capB) {
-        const double v = x.c + kc;
-        h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
-        continue;
-      }
-      const double s1 = c1 + h1 + b * t1 + tm * kc, s2 = c2 + h2 + b * b * t2 + 2 * b * kc * t1 + tm * kc * kc;
-      const double rr = ratio(s1, s2, n);
-      if (rr > score + 1e-12) score = rr, bestB = b;
-      const double v = x.c + kc;
-      h1 += v, h2 += v * v, t1 -= x.sig, t2 -= x.sig * x.sig, tm -= 1;
-    }
-    return bestB;
-  }
-  // Whether to trade, with the levels and their ratio.
-  // Two targets learnt separately: how often the stop is touched and how often the take-profit
-  // is. Both start at 50% (the stop at the median fall below the open, the take-profit at the median
-  // rise above it); then, in turns, the take-profit for the current stop and the stop for that
-  // take-profit move to whatever touch rate gives the best return per unit of risk on the days so
-  // far, until neither moves. The stock is traded when that is above zero.
-  bool learn(double& a, double& b, double& lastScore) const {
-    a = kInf, b = kInf, lastScore = kNaN;
-    if (obs.size() < 2) return false;
-    const double floorL = minMove / (sigSum / static_cast<double>(obs.size()));
-    a = std::max(obs[byLo[byLo.size() / 2]].lo, floorL), b = std::max(obs[byHi[byHi.size() / 2]].hi, floorL);
-    auto score = [&](double sa, double sb) {
-      double s1 = 0, s2 = 0;
-      for (const auto& x : obs) {
-        const double v = x.lo >= sa ? -sa * x.sig + kcs : (x.hi >= sb ? sb * x.sig : x.c) + kc;
-        s1 += v, s2 += v * v;
-      }
-      return ratio(s1, s2, static_cast<double>(obs.size()));
-    };
-    double best = score(a, b);
-    for (int it = 0; it < 50; ++it) {
-      double s1, s2;
-      const double nb = bestTake(a, s1);
-      const double na = bestStop(nb, s2);
-      if (!(s2 > best + 1e-12)) break;  // only a better pair replaces the current one
-      best = s2;
-      if (na == a && nb == b) break;
-      a = na, b = nb;
-    }
-    lastScore = best;
-    return best > 0;
-  }
-  std::pair<double, double> probs(double a, double b) const {
-    double ns = 0, nt = 0;
-    for (const auto& x : obs) ns += x.lo >= a, nt += x.lo < a && x.hi >= b;
-    const double n = std::max<double>(1, static_cast<double>(obs.size()));
-    return std::make_pair(obs.empty() ? 0.0 : ns / n, obs.empty() ? 0.0 : nt / n);
-  }
-};
-
-// Today's 10 best by expected return, each bought at the next open and sold the same day at its
-// stop-loss, its take-profit (stop first when both are touched) or the close. Levels are multiples
-// of the stock's open-to-close volatility (exponentially weighted, half-life the forecast's life),
-// learnt from the bars of the trades before (below). Every trade pays a round trip.
-TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const Costs& costs, std::size_t K, std::size_t start) {
-  const std::size_t T = m.T(), N = m.N(), s = in.s;
-  const double buy = costs.buyBps * 1e-4, sell = costs.sellBps * 1e-4;
+template <class R>
+TopKResult assembleDayTrades(const Market& m, const Forecast& f, const Costs& costs, const daytrade::Buffers<R>& b, std::size_t K, std::size_t start,
+                             const std::vector<double>& life) {
+  namespace dt = daytrade;
+  const std::size_t T = m.T(), N = m.N(), s0 = b.s;
   TopKResult r;
   r.name = "top 10 by expected return", r.K = K, r.start = start, r.oneDay = r.dayTrades = true;
-  // Open-to-close volatility known at each close.
-  Panel iv(T, N);
-  std::vector<double> var(N, kNaN);
-  for (std::size_t t = 0; t < T; ++t) {
-    const double lam = std::pow(2.0, -1.0 / std::max(1.0, in.life[t]));
-    for (std::size_t i = 0; i < N; ++i) {
-      const double o = m.open(t, i), c = m.close(t, i);
-      if (o > 0 && c > 0) {
-        const double x = std::log(c / o);
-        var[i] = std::isfinite(var[i]) ? lam * var[i] + (1 - lam) * x * x : x * x;
-      }
-      if (std::isfinite(var[i]) && var[i] > 0) iv(t, i) = std::sqrt(var[i]);
-    }
-  }
-  struct Trade { std::size_t i; double o, h, l, c, sig, e, ex, v; };
-  std::vector<std::vector<Trade>> days;
-  std::vector<double> all;  // the day's mean open-to-close over all ranked stocks
-  for (std::size_t t = s; t + 1 < T; ++t) {
-    const std::size_t d = t + 1;
-    double sa = 0, na = 0;
-    for (std::size_t i : in.order[t]) {
-      const double o = m.open(d, i), c = m.close(d, i);
-      if (o > 0 && c > 0) sa += c / o - 1, na += 1;
-    }
-    const double mean = na > 0 ? sa / na : 0;
-    std::vector<Trade> day;
-    for (std::size_t i : in.order[t]) {  // every candidate, best expected return first
-      const double o = m.open(d, i), h = m.high(d, i), l = m.low(d, i), c = m.close(d, i);
-      if (!(o > 0 && h > 0 && l > 0 && c > 0) || !std::isfinite(iv(t, i))) continue;
-      // A bar must hold together: the low at or below the open and the close, the high at or above.
-      if (l > std::min(o, c) || h < std::max(o, c)) continue;
-      double vs = 0, vn = 0;  // usual volume: the mean over the forecast's life before the day
-      for (std::size_t k = 1; k <= static_cast<std::size_t>(std::ceil(in.life[t])) && k <= d; ++k)
-        if (std::isfinite(m.volume(d - k, i))) vs += m.volume(d - k, i), vn += 1;
-      day.push_back({i, o, h, l, c, iv(t, i), f.E(t, i), c / o - 1 - mean, vn > 0 && vs > 0 ? m.volume(d, i) / (vs / vn) : kNaN});
-    }
-    days.push_back(std::move(day));
-    all.push_back(mean);
-  }
-  const double kcRound = std::log((1 - sell) / (1 + buy));
-  auto outcome = [&](const Trade& x, double a, double b, Exit& why) {
-    // No level nearer the open than the round trip.
-    const double stop = x.o * std::exp(-std::max(a * x.sig, -kcRound)), take = x.o * std::exp(std::max(b * x.sig, -kcRound));
-    double px = x.c;
-    why = Exit::Close;
-    if (x.l <= stop) px = stop * (1 - sell), why = Exit::Stop;  // a stop fills worse than its level, by a side's cost
-    else if (x.h >= take) px = take, why = Exit::Take;
-    return (px / x.o) * (1 - sell) / (1 + buy) - 1;
-  };
-  // The state of each stock at each close, from three indicators: the parabolic SAR's trend (price
-  // above or below it), the RSI (above or below 50, its neutral point) and the ADX (trend strength,
-  // above or below its average so far over all stocks). Their lookback is the forecast's life,
-  // rounded up to the model's next horizon (the RSI's and ADX's Wilder smoothing 1/h; the SAR's
-  // acceleration rising by 1/h with each new extreme, up to 1). Eight states: the trades of each
-  // state teach that state its own stop-loss and take-profit (how the levels respond to the trend,
-  // its momentum and its strength).
-  const std::vector<std::uint32_t>& H = f.horizons;
-  auto lookback = [&](std::size_t t) {
-    for (auto h : H)
-      if (h >= in.life[t]) return static_cast<double>(h);
-    return H.empty() ? 1.0 : static_cast<double>(H.back());
-  };
-  std::vector<int> state(T * N, -1);
-  {
-    struct Ind { double g = kNaN, l = kNaN, pdm = kNaN, ndm = kNaN, tr = kNaN, adx = kNaN, sar = kNaN, ep = kNaN, af = 0; bool up = true; };
-    std::vector<Ind> st(N);
-    double adxSum = 0, adxN = 0;
-    for (std::size_t t = 1; t < T; ++t) {
-      const double hz = lookback(t), al = 1 / hz;
-      for (std::size_t i = 0; i < N; ++i) {
-        const double h = m.high(t, i), l = m.low(t, i), c = m.close(t, i), ph = m.high(t - 1, i), pl = m.low(t - 1, i), pc = m.close(t - 1, i);
-        if (!(h > 0 && l > 0 && c > 0 && ph > 0 && pl > 0 && pc > 0)) continue;
-        Ind& x = st[i];
-        auto ema = [al](double& v, double z) { v = std::isfinite(v) ? v + al * (z - v) : z; };
-        // RSI
-        ema(x.g, std::max(0.0, c - pc)), ema(x.l, std::max(0.0, pc - c));
-        // ADX
-        const double up = h - ph, dn = pl - l;
-        ema(x.pdm, up > dn && up > 0 ? up : 0.0), ema(x.ndm, dn > up && dn > 0 ? dn : 0.0);
-        ema(x.tr, std::max({h - l, std::fabs(h - pc), std::fabs(l - pc)}));
-        if (x.tr > 0) {
-          const double pdi = x.pdm / x.tr, ndi = x.ndm / x.tr;
-          if (pdi + ndi > 0) ema(x.adx, 100 * std::fabs(pdi - ndi) / (pdi + ndi));
-        }
-        // Parabolic SAR
-        if (!std::isfinite(x.sar)) {
-          x.up = c >= pc, x.sar = x.up ? pl : ph, x.ep = x.up ? h : l, x.af = al;
-        } else if (x.up) {
-          x.sar = std::min(x.sar + x.af * (x.ep - x.sar), pl);
-          if (l < x.sar) x.up = false, x.sar = x.ep, x.ep = l, x.af = al;
-          else if (h > x.ep) x.ep = h, x.af = std::min(1.0, x.af + al);
-        } else {
-          x.sar = std::max(x.sar + x.af * (x.ep - x.sar), ph);
-          if (h > x.sar) x.up = true, x.sar = x.ep, x.ep = h, x.af = al;
-          else if (l < x.ep) x.ep = l, x.af = std::min(1.0, x.af + al);
-        }
-        if (std::isfinite(x.adx)) adxSum += x.adx, adxN += 1;
-      }
-      for (std::size_t i = 0; i < N; ++i) {
-        const Ind& x = st[i];
-        if (!std::isfinite(x.adx) || !std::isfinite(x.g) || !(x.g + x.l > 0) || adxN < 1) continue;
-        const bool rsiUp = x.g / (x.g + x.l) > 0.5, strong = x.adx > adxSum / adxN;
-        state[t * N + i] = (x.up ? 4 : 0) + (rsiUp ? 2 : 0) + (strong ? 1 : 0);
-      }
-    }
-  }
-  // Three ways to learn the levels, run side by side: each stock from all its own days (0), each
-  // indicator state from the earlier trades in it (1), all the earlier trades together (2). Each
-  // proposes its levels for every trade; the trades follow the way whose own record so far has
-  // the best return per unit of risk (each way's record is what its proposals would have earned).
-  const double kc = std::log((1 - sell) / (1 + buy));
-  std::vector<Learner> perStock(N), perState(8), pooled(1);
-  for (auto* v : {&perStock, &perState, &pooled})
-    for (auto& l : *v) l.kc = kc, l.kcs = kc + std::log(1 - sell), l.minMove = -kc;
-  static const Learner none;
-  auto learnerOf = [&](int way, std::size_t t, std::size_t i) -> const Learner& {
-    if (way == 0) return perStock[i].obs.size() < 2 ? pooled[0] : perStock[i];
-    if (way == 2) return pooled[0];
-    const int c = state[t * N + i];
-    return c < 0 ? none : perState[static_cast<std::size_t>(c)];
-  };
-  auto feedStocks = [&](std::size_t d) {
-    for (std::size_t i = 0; i < N; ++i) {
-      const double o = m.open(d, i), h = m.high(d, i), l = m.low(d, i), c = m.close(d, i), sg = iv(d - 1, i);
-      if (!(o > 0 && h > 0 && l > 0 && c > 0) || !std::isfinite(sg) || l > std::min(o, c) || h < std::max(o, c)) continue;
-      perStock[i].add(-std::log(l / o) / sg, std::log(h / o) / sg, std::log(c / o), sg);
-    }
-  };
-  for (std::size_t d = 1; d <= s; ++d) feedStocks(d);
-  const char* wayName[3] = {"each stock", "each indicator state", "all trades together"};
-  double wayS1[3] = {0, 0, 0}, wayS2[3] = {0, 0, 0}, wayN[3] = {0, 0, 0};
-  auto bestWay = [&]() {
-    int best = 2;
-    double bestR = -kInf;
-    for (int w = 0; w < 3; ++w) {
-      const double rr = Learner::ratio(wayS1[w], wayS2[w], wayN[w]);
-      if (wayN[w] >= 2 && rr > bestR) bestR = rr, best = w;
-    }
-    return best;
-  };
-
-  // The live portfolio, its trades and the evaluation against the bars. Each day the ranking is
-  // walked from the best expected return down, and every stock whose learnt levels beat cash is
-  // booked, until K are booked: every slot that can be filled with a trade worth making is.
-  const std::size_t D = days.size();
+  const double buy = costs.buyBps * 1e-4, sell = costs.sellBps * 1e-4, rt = -std::log((1 - sell) / (1 + buy));
+  auto lv = [&](std::size_t t, std::size_t i, std::size_t k) { return double(b.levels[(t * N + i) * dt::kLevel + k]); };
+  auto tr = [&](std::size_t t, std::size_t i, std::size_t k) { return double(b.trades[(t * N + i) * dt::kTrade + k]); };
+  auto dy = [&](std::size_t t, std::size_t k) { return double(b.days[t * dt::kDay + k]); };
+  auto finite = [](double v) { return v < 0.5 * double(dt::kNone); };
+  const Exit exits[3] = {Exit::Close, Exit::Stop, Exit::Take};
   TopKEvaluation& ev = r.eval;
-  double sxy = 0, sxx = 0, syy = 0, sx = 0, sy = 0;
-  struct Decision { bool trade = false; double a = kInf, b = kInf, score = kNaN; std::size_t day = SIZE_MAX; };
-  std::vector<std::vector<Decision>> memo(3, std::vector<Decision>(N));
-  auto decide = [&](int w, std::size_t t, std::size_t i) -> const Decision& {
-    Decision& dc = memo[static_cast<std::size_t>(w)][i];
-    if (dc.day != t) dc.day = t, dc.trade = learnerOf(w, t, i).learn(dc.a, dc.b, dc.score);
-    return dc;
-  };
-  auto bookings = [&](int w, std::size_t t, const std::vector<Trade>& cands) {
-    std::vector<std::size_t> idx;
-    for (std::size_t q = 0; q < cands.size() && idx.size() < K; ++q)
-      if (decide(w, t, cands[q].i).trade) idx.push_back(q);
-    return idx;
-  };
-  for (std::size_t j = 0; j < D; ++j) {
-    const std::size_t d = s + 1 + j, t = d - 1;
-    const auto& cands = days[j];
-    const std::size_t slots = std::min(K, cands.size());
-    const int way = bestWay();
-    r.ways.push_back(way);
-    double waySum[3] = {0, 0, 0};
-    for (int w = 0; w < 3; ++w)
-      for (std::size_t q : bookings(w, t, cands)) {
-        const Decision& dc = decide(w, t, cands[q].i);
-        Exit why;
-        waySum[w] += outcome(cands[q], dc.a, dc.b, why);
+  double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  for (std::size_t t = s0; t + 1 < T; ++t) {
+    const std::size_t nb = static_cast<std::size_t>(dy(t, 1)), d = t + 1;
+    const double slots = dy(t, 3);
+    r.daily.push_back(dy(t, 0)), r.noStops.push_back(dy(t, 2));
+    r.booked.push_back(static_cast<int>(nb)), r.traded.push_back(nb > 0);
+    r.kStop.push_back(nb ? dy(t, 6) / double(nb) : kNaN), r.kTake.push_back(nb ? dy(t, 7) / double(nb) : kNaN);
+    r.turnover.push_back(slots > 0 ? 2.0 * double(nb) / slots : 0.0);
+    if (slots > 0) ++ev.days, ev.grossTop += dy(t, 4), ev.grossAll += dy(t, 5);
+    ev.trades += nb;
+    ev.predStop += dy(t, 8), ev.predTake += dy(t, 9), ev.realStop += dy(t, 10), ev.realTake += dy(t, 11), ev.lowAtOpen += dy(t, 12);
+    ev.expected += dy(t, 13), ev.realised += dy(t, 14), ev.signHit += dy(t, 15);
+    sx += dy(t, 16), sy += dy(t, 17), sxx += dy(t, 18), syy += dy(t, 19), sxy += dy(t, 20);
+    for (std::size_t k = 0; k < nb; ++k) {
+      const std::size_t i = b.booked[t * K + k];
+      r.trades.push_back({i, d, d, tr(t, i, 1), exits[static_cast<int>(tr(t, i, 2))]});
+      if (t + 2 == T) {  // the last completed day, against its bar
+        r.lastDate = m.dates[d];
+        const double sg = lv(t, i, 6), o = m.open(d, i);
+        r.lastDay.push_back({i, finite(lv(t, i, 0)) ? std::exp(-std::max(lv(t, i, 0) * sg, rt)) - 1 : kNaN,
+                             finite(lv(t, i, 1)) ? std::exp(std::max(lv(t, i, 1) * sg, rt)) - 1 : kNaN, std::expm1(f.E(t, i)), lv(t, i, 4),
+                             lv(t, i, 5), m.high(d, i) / o - 1, m.low(d, i) / o - 1, m.close(d, i) / o - 1, tr(t, i, 4) >= 0 ? tr(t, i, 4) : kNaN,
+                             tr(t, i, 1), exits[static_cast<int>(tr(t, i, 2))]});
       }
-    double sum = 0, sum0 = 0, top = 0, aSum = 0, bSum = 0;
-    const auto booked = bookings(way, t, cands);
-    for (std::size_t q : booked) {
-      const Trade& x = cands[q];
-      const Decision& dc = decide(way, t, x.i);
-      const auto [pS, pT] = learnerOf(way, t, x.i).probs(dc.a, dc.b);
-      Exit why;
-      const double ret = outcome(x, dc.a, dc.b, why);
-      sum += ret, aSum += dc.a, bSum += dc.b;
-      r.trades.push_back({x.i, d, d, ret, why});
-      ++ev.trades;
-      ev.predStop += pS, ev.predTake += pT, ev.realStop += why == Exit::Stop, ev.realTake += why == Exit::Take;
-      ev.lowAtOpen += x.l >= x.o;
-      const double e = std::isfinite(x.e) ? x.e : 0.0;
-      ev.expected += e, ev.realised += x.ex, ev.signHit += (e > 0) == (x.ex > 0);
-      sx += e, sy += x.ex, sxx += e * e, syy += x.ex * x.ex, sxy += e * x.ex;
-    }
-    for (std::size_t q = 0; q < slots; ++q) {  // the plain day's K best, for comparison
-      Exit why0;
-      sum0 += outcome(cands[q], kInf, kInf, why0), top += cands[q].c / cands[q].o - 1;
-    }
-    const double nTraded = static_cast<double>(booked.size()), nd = static_cast<double>(slots);
-    r.daily.push_back(nd > 0 ? sum / nd : 0.0);  // each of the K slots: its trade, or cash
-    r.traded.push_back(nTraded > 0);
-    r.booked.push_back(static_cast<int>(nTraded));
-    r.noStops.push_back(nd > 0 ? sum0 / nd : 0.0);
-    r.kStop.push_back(nTraded > 0 ? aSum / nTraded : kNaN), r.kTake.push_back(nTraded > 0 ? bSum / nTraded : kNaN);
-    r.turnover.push_back(nd > 0 ? 2.0 * nTraded / nd : 0.0);
-    if (nd > 0) ++ev.days, ev.grossTop += top / nd, ev.grossAll += all[j];
-    if (j + 1 == D) {
-      r.lastDate = m.dates[d];
-      for (std::size_t q : booked) {
-        const Trade& x = cands[q];
-        const Decision& dc = decide(way, t, x.i);
-        const auto [pS, pT] = learnerOf(way, t, x.i).probs(dc.a, dc.b);
-        Exit why;
-        const double ret = outcome(x, dc.a, dc.b, why);
-        r.lastDay.push_back({x.i, std::exp(-std::max(dc.a * x.sig, -kcRound)) - 1, std::exp(std::max(dc.b * x.sig, -kcRound)) - 1,
-                             std::isfinite(x.e) ? std::expm1(x.e) : kNaN, pS, pT, x.h / x.o - 1, x.l / x.o - 1, x.c / x.o - 1, x.v, ret, why});
-      }
-    }
-    // Then each way's day joins its record, and the day's bars and trades join what is learnt from.
-    if (slots > 0)
-      for (int w = 0; w < 3; ++w) {
-        const double v = waySum[w] / static_cast<double>(slots);
-        wayS1[w] += v, wayS2[w] += v * v, wayN[w] += 1;
-      }
-    feedStocks(d);
-    for (std::size_t q = 0; q < slots; ++q) {
-      const Trade& x = cands[q];
-      const double lo = -std::log(x.l / x.o) / x.sig, hi = std::log(x.h / x.o) / x.sig, cl = std::log(x.c / x.o);
-      const int c = state[(d - 1) * N + x.i];
-      if (c >= 0) perState[static_cast<std::size_t>(c)].add(lo, hi, cl, x.sig);
-      pooled[0].add(lo, hi, cl, x.sig);
     }
   }
   if (ev.trades) {
@@ -587,37 +277,48 @@ TopKResult dayTrades(const Market& m, const Forecast& f, const Inputs& in, const
     ev.ic = vx > 0 && vy > 0 ? cv / std::sqrt(vx * vy) : 0.0;
   }
   if (ev.days) ev.grossTop /= static_cast<double>(ev.days), ev.grossAll /= static_cast<double>(ev.days);
-  // The plan for the next day: down the ranking at the last close, the first K whose learnt levels beat
-  // cash, each bought at the open and sold by the close.
-  const std::size_t L = T - 1;
-  r.tradeNext = false, r.learntRatio = kNaN;
-  r.wayNow = wayName[bestWay()];
-  for (int w = 0; w < 3; ++w) r.wayRatios.push_back({wayName[w], Learner::ratio(wayS1[w], wayS2[w], wayN[w]) * std::sqrt(252.0)});
+  // The plan for the next open, from the last close's levels.
+  const std::size_t L = T - 1, nPlan = static_cast<std::size_t>(dy(L, 1));
+  r.life = life[L], r.wayNow = "each stock";
+  r.wayRatios.push_back({"each stock", metrics(r.daily).sharpe});
   r.kStop.push_back(kNaN), r.kTake.push_back(kNaN);
-  r.life = in.life[L];
   r.orders.assign(N, 0);
-  for (std::size_t q = 0; q < in.order[L].size() && r.plan.size() < K; ++q) {  // down the ranking until K are booked
-    const std::size_t i = in.order[L][q];
-    if (!std::isfinite(iv(L, i))) continue;
+  for (std::size_t k = 0; k < nPlan; ++k) {
+    const std::size_t i = b.booked[L * K + k];
     TopKOrder o;
-    double a, b, score;
-    const Learner& ln = learnerOf(bestWay(), L, i);
-    const bool trade = ln.learn(a, b, score);
-    if (!trade) continue;
-    const auto [pS, pT] = ln.probs(a, b);
-    o.state = state[L * N + i];
-    r.tradeNext = r.tradeNext || trade;
-    o.asset = i, o.action = trade ? 1 : 0, o.rank = q + 1, o.open = 0, o.sigma = iv(L, i), o.ratio = score;
-    const double e = std::isfinite(f.E(L, i)) ? f.E(L, i) : 0.0;
-    // Levels between the round trip and the furthest move the trades learnt from.
-    const double sd = std::isfinite(a) ? std::min(std::max(a * o.sigma, ln.minMove), std::max(ln.maxDrop, ln.minMove)) : kNaN;
-    const double td = std::isfinite(b) ? std::min(std::max(b * o.sigma, ln.minMove), std::max(ln.maxRise, ln.minMove)) : kNaN;
-    o.stop = std::isfinite(sd) ? std::exp(-sd) - 1 : kNaN, o.take = std::isfinite(td) ? std::exp(td) - 1 : kNaN, o.close = std::expm1(e);
-    o.pStopDay = pS, o.pTakeDay = pT, o.pStopLife = o.pTakeLife = kNaN;
-    r.orders[i] = trade ? 1 : 0;
+    o.asset = i, o.action = 1, o.rank = b.booked[T * K + k], o.open = 0, o.sigma = lv(L, i, 6), o.ratio = lv(L, i, 2);
+    o.state = static_cast<int>(lv(L, i, 9));
+    const double sd = finite(lv(L, i, 0)) ? std::min(std::max(lv(L, i, 0) * o.sigma, rt), std::max(lv(L, i, 7), rt)) : kNaN;
+    const double td = finite(lv(L, i, 1)) ? std::min(std::max(lv(L, i, 1) * o.sigma, rt), std::max(lv(L, i, 8), rt)) : kNaN;
+    o.stop = std::isfinite(sd) ? std::exp(-sd) - 1 : kNaN, o.take = std::isfinite(td) ? std::exp(td) - 1 : kNaN, o.close = std::expm1(f.E(L, i));
+    o.pStopDay = lv(L, i, 4), o.pTakeDay = lv(L, i, 5), o.pStopLife = o.pTakeLife = kNaN;
+    r.orders[i] = 1, r.tradeNext = true;
     r.plan.push_back(o);
   }
   return r;
+}
+
+template <class R>
+TopKResult dayTradesWith(const Market& m, const Forecast& f, const Costs& costs, std::size_t K, std::size_t start, const std::vector<double>& life) {
+  auto b = packDayTrades<R>(m, f, costs, K, start - 1, life);
+  daytrade::run(b, 64);
+  return assembleDayTrades(m, f, costs, b, K, start, life);
+}
+
+// The forecast's life: 1 / (1 - rho), rho the mean day-to-day rank correlation of E so far.
+std::vector<double> forecastLife(const Market& m, const Forecast& f) {
+  const std::size_t T = m.T(), N = m.N();
+  std::vector<double> life(T, 1.0);
+  double rhoSum = 0, rhoN = 0;
+  for (std::size_t t = 1; t < T; ++t) {
+    std::vector<double> a, b;
+    for (std::size_t i = 0; i < N; ++i)
+      if (std::isfinite(f.E(t, i)) && std::isfinite(f.E(t - 1, i))) a.push_back(f.E(t, i)), b.push_back(f.E(t - 1, i));
+    const double r = rankCorrelation(a, b);
+    if (std::isfinite(r)) rhoSum += r, rhoN += 1;
+    if (rhoN >= 1) life[t] = 1.0 / (1.0 - std::max(0.0, std::min(rhoSum / rhoN, 1.0 - 1.0 / (rhoN + 1.0))));
+  }
+  return life;
 }
 
 }  // namespace
@@ -693,7 +394,9 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
       std::stable_sort(o.begin(), o.end(), [&](std::size_t p, std::size_t q) { return in.score(t, p) > in.score(t, q); });
     }
     if (which == 0) {
-      results.push_back(dayTrades(m, f, in, costs, K, bt.start));
+      const bool reference = f.engine == "reference" || f.engine.rfind("Reference", 0) == 0;
+      results.push_back(reference ? dayTradesWith<double>(m, f, costs, K, bt.start, in.life)
+                                                : dayTradesWith<float>(m, f, costs, K, bt.start, in.life));
       continue;
     }
     TopKResult r;
@@ -833,6 +536,21 @@ const char* reasonName(Exit e) {
 std::string kName(double k) { return std::isfinite(k) ? num(k, 3) + " sd" : "none"; }
 
 }  // namespace
+
+DayTradeJob prepareDayTrades(const Market& m, const Forecast& f, const Costs& costs, const Backtest& bt, std::size_t K) {
+  DayTradeJob job;
+  job.start = bt.start, job.K = K;
+  if (bt.start == 0 || bt.start + 1 >= m.T() || m.N() <= K) return job;
+  job.life = forecastLife(m, f);
+  job.buffers = packDayTrades<float>(m, f, costs, K, bt.start - 1, job.life);
+  job.ok = true;
+  return job;
+}
+
+std::vector<TopKResult> finishDayTrades(const Market& m, const Forecast& f, const Costs& costs, const DayTradeJob& job) {
+  if (!job.ok) return {};
+  return {assembleDayTrades(m, f, costs, job.buffers, job.K, job.start, job.life)};
+}
 
 std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const Backtest& bt) {
   std::ostringstream o;
