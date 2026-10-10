@@ -279,19 +279,21 @@ function renderTop(r) {
   const lifeCols = !x.oneDay;
   const head = [['Stock'], [x.name.includes('largest') ? 'Size rank' : 'Rank today', 'num'], ...(x.dayTrades ? [['SAR · RSI · ADX']] : []), ['Action'], ['Open', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num'], ['Expected close', 'num'],
     ['P(stop) 1 d', 'num'], ['P(take) 1 d', 'num'], ...(x.dayTrades ? [['Return / risk', 'num']] : []), ...(lifeCols ? [[`P(stop) ${x.life.toFixed(1)} d`, 'num'], [`P(take) ${x.life.toFixed(1)} d`, 'num']] : [])];
+  // Only the trades to book (same-day trades); the stocks left in cash are not listed.
+  const book = x.dayTrades ? x.plan.filter((p) => p.action === 1) : x.plan;
   table($('top10-plan'), head,
-    x.plan.length ? x.plan.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], ...(x.dayTrades ? [[p.state == null || p.state < 0 ? '–' : `${p.state & 4 ? '↑' : '↓'} · ${p.state & 2 ? '>50' : '<50'} · ${p.state & 1 ? 'strong' : 'weak'}`]] : []), [act[p.action]], [sgn(p.open), 'num'],
+    book.length ? book.map((p) => [[p.ticker], [p.rank ? String(p.rank) : '–', 'num'], ...(x.dayTrades ? [[p.state == null || p.state < 0 ? '–' : `${p.state & 4 ? '↑' : '↓'} · ${p.state & 2 ? '>50' : '<50'} · ${p.state & 1 ? 'strong' : 'weak'}`]] : []), [act[p.action]], [sgn(p.open), 'num'],
       [`${sgn(p.stop)}${p.advisoryStop && p.stop != null ? '*' : ''}`, 'num neg'], [`${sgn(p.take)}${p.advisoryTake && p.take != null ? '*' : ''}`, 'num pos'],
       [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'],
       ...(x.dayTrades ? [[p.ratio == null ? '–' : p.ratio.toFixed(3), `num ${p.ratio > 0 ? 'pos' : 'neg'}`]] : []),
       ...(lifeCols ? [[prob(p.pStopLife), 'num'], [prob(p.pTakeLife), 'num']] : [])])
-      : [{ gap: 'no positions' }]);
+      : [{ gap: x.dayTrades ? 'no trades to book: none of the 10 has learnt levels that beat cash after costs' : 'no positions' }]);
   renderCheck(x, sgn, prob);
   if (x.dayTrades) {
     const n = x.plan.filter((p) => p.action === 1).length;
     const ways = (x.wayRatios || []).map((w) => `${w.name} ${w.sharpe == null ? '–' : w.sharpe.toFixed(2)}`).join(', ');
     if (x.wayNow) $('top10-asof').textContent += ` Levels learnt from ${x.wayNow}, the way with the best record so far (return per unit of risk, a year: ${ways}).`;
-    $('top10-asof').textContent += ` ${n} of the 10 have learnt levels with a positive return per unit of risk after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip and are traded; the others stay in cash. Some trade on ${x.tradedDays} of ${x.eval.days} days.`;
+    $('top10-asof').textContent += ` ${n} trade${n === 1 ? '' : 's'} to book: of today's 10 best, those whose learnt levels beat cash after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip (the rest stay in cash and are not listed). Trades were booked on ${x.tradedDays} of ${x.eval.days} days.`;
   }
   const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
   $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. ${x.dayTrades ? '' : 'Probabilities: of touching the stop or the take-profit first, for the stock\'s daily volatility (simulated, 20,000 paths).'} ${x.oneDay ? 'Every position is a one-day trade: bought at the open and sold the same day at its stop-loss, its take-profit (the stop first when both are touched) or the close, each paying the round trip. Levels are multiples of the stock\'s open-to-close volatility, learnt from its own earlier days; probabilities are how often those levels were touched on them; return / risk is the learnt levels\' mean net return over its deviation per trade.' : 'Held stocks keep the levels set at entry.'}${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
