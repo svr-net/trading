@@ -5,6 +5,7 @@
 #include "ofm/daytrade.hpp"
 
 #include "daytrade_kernels.hpp"
+#include "invoke.hpp"
 
 #include <algorithm>
 
@@ -61,10 +62,12 @@ void book(Buffers<R>& b, std::uint32_t t) {
 template <class R>
 void run(Buffers<R>& b, std::uint32_t chunk) {
   for (std::uint32_t t0 = 0; t0 < b.T; t0 += chunk)
-    for (std::uint32_t i = 0; i < b.N; ++i) levels(b, i, t0, std::min(b.T, t0 + chunk));
-  for (std::uint32_t t = b.s; t + 1 < b.T; ++t)
-    for (std::uint32_t i = 0; i < b.N; ++i) trades(b, t, i);
-  for (std::uint32_t t = b.s; t < b.T; ++t) book(b, t);
+    detail::invokeAll(b.N, [&](std::uint32_t i) { levels(b, i, t0, std::min(b.T, t0 + chunk)); });
+  if (b.s + 1 < b.T)
+    detail::invokeAll(b.T - 1 - b.s, [&](std::uint32_t d) {
+      for (std::uint32_t i = 0; i < b.N; ++i) trades(b, b.s + d, i);
+    });
+  if (b.s < b.T) detail::invokeAll(b.T - b.s, [&](std::uint32_t d) { book(b, b.s + d); });
 }
 
 const std::string& levelsSource() {

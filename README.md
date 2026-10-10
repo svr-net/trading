@@ -4,6 +4,14 @@ A C++ factor model for UK shares whose every setting is derived from the data, w
 kernels (and their exact CPU emulation as fallback), a WebAssembly build and a small page that shows
 each stock's expected return and a daily backtest against holding the market, after real costs.
 
+## One kernel source for every backend
+
+The maths runs in kernels written once, in WGSL (`kernels/model`: signal, rank, gram, expect;
+`kernels/daytrade`: levels, trades, book). WebGPU runs the WGSL as written. At build time
+`tools/wgsl2cpp.py` translates the same files into C++ templated on the float type, which the CPU
+backends run invocation by invocation: `float` is the emulated GPU (the WebAssembly fallback where
+WebGPU is missing), `double` the reference. A change to a kernel is one edit to its `.wgsl` file.
+
 ## The model
 
 - **Signals** in five families (return, low volatility, nearness to the high, trend quality, small

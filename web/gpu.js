@@ -1,10 +1,10 @@
 // WebGPU host for the model's fused kernels. No numerics here: the C++ library (WebAssembly)
 // supplies the WGSL sources, the packed tables and each chunk's header; this file uploads them,
-// dispatches zscore -> gram, hands the Gram read-back to the library (absorb), uploads the vector
+// dispatches signal -> rank -> gram, hands the Gram read-back to the library (absorb), uploads the vector
 // it returns, dispatches expect, and hands that read-back back (takeExpected).
 
 const ADAPTERS = [{ powerPreference: 'high-performance' }, {}, { featureLevel: 'compatibility' }];
-const NEED = { maxComputeInvocationsPerWorkgroup: 256, maxComputeWorkgroupSizeX: 256, maxStorageBuffersPerShaderStage: 8 };
+const NEED = { maxComputeInvocationsPerWorkgroup: 64, maxComputeWorkgroupSizeX: 64, maxStorageBuffersPerShaderStage: 8 };
 
 export async function openDevice() {
   if (!('gpu' in navigator)) throw new Error('this browser has no WebGPU');
@@ -45,10 +45,10 @@ async function readBack(device, src, bytes, Type = Float32Array) {
 /** Runs the model's kernels for every chunk of days. Resolves to { ms, adapter }. */
 export async function runKernels(session, onProgress = () => {}) {
   const plan = session.plan();
-  if (plan.N > plan.maxAssets) throw new Error(`the kernels rank at most ${plan.maxAssets} stocks a day`);
   const { device, name } = await openDevice();
-  const [zscore, gram, expect] = await Promise.all([
-    pipeline(device, plan.sources.zscore, 'zscore'), pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
+  const [signal, rank, gram, expect] = await Promise.all([
+    pipeline(device, plan.sources.signal, 'signal'), pipeline(device, plan.sources.rank, 'rank'),
+    pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
   ]);
   const t0 = performance.now();
   const S = GPUBufferUsage.STORAGE;
@@ -58,6 +58,7 @@ export async function runKernels(session, onProgress = () => {}) {
   device.queue.writeBuffer(tables, 0, tablesData);
   const uniform = buffer(128, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const cdMax = plan.chunkDays;
+  const sig = buffer(cdMax * plan.N * plan.K * 4, S);
   const z = buffer(cdMax * plan.N * plan.K * 4, S);
   const g = buffer(cdMax * plan.stride * 4, S | GPUBufferUsage.COPY_SRC);
   const v = buffer(cdMax * plan.K * 4, S | GPUBufferUsage.COPY_DST);
@@ -66,7 +67,8 @@ export async function runKernels(session, onProgress = () => {}) {
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
-  const gZ = group(zscore, [[0, uniform], [1, tables], [2, z]]);
+  const gS = group(signal, [[0, uniform], [1, tables], [2, sig]]);
+  const gR = group(rank, [[0, uniform], [1, tables], [2, sig], [3, z]]);
   const gG = group(gram, [[0, uniform], [1, tables], [2, z], [3, g]]);
   const gE = group(expect, [[0, uniform], [2, z], [3, v], [4, e]]);
   for (let c = 0; c < plan.chunks; c++) {
@@ -74,7 +76,8 @@ export async function runKernels(session, onProgress = () => {}) {
     device.queue.writeBuffer(uniform, 0, session.header(c));
     let enc = device.createCommandEncoder();
     let pass = enc.beginComputePass();
-    pass.setPipeline(zscore); pass.setBindGroup(0, gZ); pass.dispatchWorkgroups(plan.K, cd);
+    pass.setPipeline(signal); pass.setBindGroup(0, gS); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), plan.K, cd);
+    pass.setPipeline(rank); pass.setBindGroup(0, gR); pass.dispatchWorkgroups(Math.ceil(plan.N / 64), plan.K, cd);
     pass.setPipeline(gram); pass.setBindGroup(0, gG); pass.dispatchWorkgroups(Math.ceil(plan.stride / 64), cd);
     pass.end();
     device.queue.submit([enc.finish()]);
@@ -89,7 +92,7 @@ export async function runKernels(session, onProgress = () => {}) {
     onProgress((c + 1) / plan.chunks);
   }
   const ms = performance.now() - t0;
-  for (const b of [tables, uniform, z, g, v, e]) b.destroy();
+  for (const b of [tables, uniform, sig, z, g, v, e]) b.destroy();
   device.destroy();
   return { ms, adapter: name };
 }

@@ -7,7 +7,7 @@
 // horizons than keep the signals fewer than the stocks: return, low
 // volatility, nearness to the high, trend quality (return over volatility x sqrt(h)), small
 // traded value, and the technical indicators RSI, Bollinger z-score, stochastic %K, money flow and
-// intraday range (src/signals.hpp).
+// intraday range (kernels/model/signal.wgsl).
 // Each day: cross-sectional rank z-scores of every signal (ties broken by asset order), made
 // exactly orthonormal by symmetric (Loewdin) orthogonalisation S = Z (Z'Z)^(-1/2). Each factor's
 // record is its return the day a position decided at that close earns (next open to the open
@@ -31,7 +31,6 @@ namespace ofm {
 
 constexpr std::size_t kFamilies = 10;
 constexpr std::size_t kTables = 10;
-constexpr std::size_t kMaxAssets = 256;   ///< one workgroup ranks a day's universe
 constexpr std::size_t kMaxHorizons = 16;  ///< uniform block
 const char* familyName(std::size_t f);
 
@@ -94,10 +93,5 @@ Forecast runModel(const Market& m, const std::string& engine = "reference");
 /// Eigen decomposition of a symmetric matrix (Householder + implicit QL); a is overwritten,
 /// eigenvectors are the columns of V.
 void eigenSym(std::vector<double>& a, std::size_t n, std::vector<double>& w, std::vector<double>& V);
-
-/// Pieces of runModel, for hosts that run the kernels themselves (WebGPU from JavaScript).
-void referenceChunk(const Plan& p, std::size_t c, std::vector<double>& z, std::vector<double>& gram);
-void referenceExpect(const Plan& p, std::size_t c, const std::vector<double>& z, const std::vector<std::vector<double>>& v,
-                     Panel& E);
 
 }  // namespace ofm

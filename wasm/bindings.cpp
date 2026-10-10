@@ -44,9 +44,8 @@ class Session {
     val o = val::object();
     o.set("T", plan_.T), o.set("N", plan_.N), o.set("K", plan_.K), o.set("H", plan_.H);
     o.set("stride", plan_.stride), o.set("chunks", plan_.numChunks()), o.set("chunkDays", plan_.chunkDays);
-    o.set("maxAssets", ofm::kMaxAssets);
     val src = val::object();
-    src.set("zscore", ofm::kernels::zscoreSource()), src.set("gram", ofm::kernels::gramSource()), src.set("expect", ofm::kernels::expectSource());
+    src.set("signal", ofm::kernels::signalSource()), src.set("rank", ofm::kernels::rankSource()), src.set("gram", ofm::kernels::gramSource()), src.set("expect", ofm::kernels::expectSource());
     o.set("sources", src);
     return o;
   }

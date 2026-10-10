@@ -7,7 +7,6 @@
 #include <stdexcept>
 
 #include "ofm/kernels.hpp"
-#include "signals.hpp"
 
 namespace ofm {
 
@@ -285,99 +284,45 @@ std::vector<double> Forecaster::absorb(std::size_t t, const double* g) {
   return v;
 }
 
-void referenceChunk(const Plan& p, std::size_t c, std::vector<double>& z, std::vector<double>& gram) {
-  const std::size_t N = p.N, K = p.K, H = p.H, TN = p.T * N, c0 = p.chunkStart(c), cd = p.chunkLength(c);
-  const float* tab = p.tables.data();
-  auto at = [&](std::size_t table, std::size_t t, std::size_t a) { return static_cast<double>(tab[table * TN + t * N + a]); };
-  z.assign(cd * N * K, 0.0);
-  gram.assign(cd * p.stride, 0.0);
-  std::vector<double> val(N);
-  std::vector<std::size_t> order;
-  for (std::size_t td = 0; td < cd; ++td) {
-    const std::size_t t = c0 + td;
-    std::vector<std::size_t> el;
-    for (std::size_t a = 0; a < N; ++a)
-      if (at(4, t, a) > 0.5) el.push_back(a);
-    for (std::size_t k = 0; k < K; ++k) {
-      const std::size_t fam = k / H, h = p.horizons[k % H];
-      for (std::size_t a : el) val[a] = detail::signal<double>(fam, h, t, [&](std::size_t tb, std::size_t u) { return at(tb, u, a); });
-      order = el;
-      std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return val[x] < val[y]; });
-      const double n = static_cast<double>(el.size()), sd = std::sqrt(std::max((n * n - 1) / 12.0, 1e-12));
-      for (std::size_t r = 0; r < order.size(); ++r) z[(td * N + order[r]) * K + k] = (static_cast<double>(r) - 0.5 * (n - 1)) / sd;
-    }
-    double* g = &gram[td * p.stride];
-    for (std::size_t k = 0, q = 0; k < K; ++k)
-      for (std::size_t l = k; l < K; ++l, ++q) {
-        double s = 0;
-        for (std::size_t a = 0; a < N; ++a) s += z[(td * N + a) * K + k] * z[(td * N + a) * K + l];
-        g[q] = s;
-      }
-    for (std::size_t k = 0; k < K; ++k) {
-      double s = 0;
-      for (std::size_t a = 0; a < N; ++a) s += z[(td * N + a) * K + k] * at(6, t, a) * at(5, t, a);
-      g[p.pairs() + k] = s;
-    }
-    double ne = 0, nt = 0;
-    for (std::size_t a = 0; a < N; ++a) ne += at(4, t, a), nt += at(4, t, a) * at(6, t, a);
-    g[p.pairs() + K] = ne, g[p.pairs() + K + 1] = nt;
-  }
-}
-
-void referenceExpect(const Plan& p, std::size_t c, const std::vector<double>& z, const std::vector<std::vector<double>>& v, Panel& E) {
-  const std::size_t N = p.N, K = p.K, c0 = p.chunkStart(c), cd = p.chunkLength(c), TN = p.T * N;
-  for (std::size_t td = 0; td < cd; ++td) {
-    if (v[td].empty()) continue;
-    for (std::size_t a = 0; a < N; ++a) {
-      if (!(p.tables[4 * TN + (c0 + td) * N + a] > 0.5f)) continue;
-      double s = 0;
-      for (std::size_t k = 0; k < K; ++k) s += z[(td * N + a) * K + k] * v[td][k];
-      E(c0 + td, a) = s;
-    }
-  }
-}
-
 Forecast runModel(const Market& m, const std::string& engine) {
   const auto t0 = std::chrono::steady_clock::now();
   const Plan p = compilePlan(m);
-  if (engine == "emulated" && p.N > kMaxAssets) throw std::invalid_argument("the kernels rank at most 256 stocks a day");
   Forecaster fc(p);
   Forecast out;
   out.engine = engine;
   out.E = Panel(p.T, p.N);
   double kernelMs = 0;
-  for (std::size_t c = 0; c < p.numChunks(); ++c) {
-    const std::size_t cd = p.chunkLength(c), c0 = p.chunkStart(c);
-    std::vector<std::vector<double>> v(cd);
-    if (engine == "reference") {
-      std::vector<double> z, g;
-      referenceChunk(p, c, z, g);
-      for (std::size_t td = 0; td < cd; ++td) v[td] = fc.absorb(c0 + td, &g[td * p.stride]);
-      referenceExpect(p, c, z, v, out.E);
-    } else if (engine == "emulated") {
+  // Both CPU engines run the kernels' translation (kernels.hpp): float emulates the GPU, double is the reference.
+  auto run = [&](auto zero) {
+    using F = decltype(zero);
+    const std::vector<F> tables(p.tables.begin(), p.tables.end());
+    for (std::size_t c = 0; c < p.numChunks(); ++c) {
+      const std::size_t cd = p.chunkLength(c), c0 = p.chunkStart(c);
       const auto k0 = std::chrono::steady_clock::now();
-      std::vector<float> z, g, e;
-      kernels::emulateZscore(p, c, z);
-      kernels::emulateGram(p, c, z, g);
+      std::vector<F> z, g, e;
+      kernels::zscore<F>(p, c, tables.data(), z);
+      kernels::gram<F>(p, c, tables.data(), z, g);
       kernelMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
-      std::vector<double> gd(g.begin(), g.end());
-      std::vector<float> vf(cd * p.K, 0.0f);
+      const std::vector<double> gd(g.begin(), g.end());
+      std::vector<std::vector<double>> v(cd);
+      std::vector<F> vf(cd * p.K, F(0));
       for (std::size_t td = 0; td < cd; ++td) {
         v[td] = fc.absorb(c0 + td, &gd[td * p.stride]);
-        for (std::size_t k = 0; k < v[td].size(); ++k) vf[td * p.K + k] = static_cast<float>(v[td][k]);
+        for (std::size_t k = 0; k < v[td].size(); ++k) vf[td * p.K + k] = static_cast<F>(v[td][k]);
       }
       const auto k1 = std::chrono::steady_clock::now();
-      kernels::emulateExpect(p, c, z, vf, e);
+      kernels::expect<F>(p, c, z, vf, e);
       kernelMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k1).count();
       for (std::size_t td = 0; td < cd; ++td) {
         if (v[td].empty()) continue;
         for (std::size_t a = 0; a < p.N; ++a)
-          if (p.tables[4 * p.T * p.N + (c0 + td) * p.N + a] > 0.5f) out.E(c0 + td, a) = e[td * p.N + a];
+          if (p.tables[4 * p.T * p.N + (c0 + td) * p.N + a] > 0.5f) out.E(c0 + td, a) = static_cast<double>(e[td * p.N + a]);
       }
-    } else {
-      throw std::invalid_argument("engine: reference or emulated");
     }
-  }
+  };
+  if (engine == "reference") run(0.0);
+  else if (engine == "emulated") run(0.0f);
+  else throw std::invalid_argument("engine: reference or emulated");
   out.mean = fc.mean, out.tstat = fc.tstat, out.premium = fc.premium, out.records = fc.records();
   out.familyReturns = fc.familyReturns;
   out.horizons = p.horizons;

@@ -1,12 +1,13 @@
 #pragma once
 
-// Fused WebGPU kernels of the model (WGSL), and their execution on the CPU in single precision
-// (the emulated GPU: same inputs, same arithmetic, same outputs, used where WebGPU is missing).
+// The model's fused kernels. Their one source is the WGSL in kernels/model: WebGPU runs it, and the
+// CPU runs its C++ translation (tools/wgsl2cpp.py) in single precision (F = float: the emulated GPU,
+// same inputs, same arithmetic, same outputs) or in double precision (F = double: the reference).
 //
 // Bindings: 0 uniform header (Plan::header), 1 tables (Plan::tables).
-//  zscore  (workgroup 256 = one day's universe; grid K x days): every invocation computes one
-//          stock's signal into workgroup memory, then ranks it against the rest of the day and
-//          writes its rank z-score. 2: z [day][stock][signal] (read_write).
+//  signal  (workgroup 64; grid ceil(N/64) x K x days): one stock's signal. 2: sig [day][stock][signal].
+//  rank    (workgroup 64; grid ceil(N/64) x K x days): its rank z-score among the day's eligible
+//          stocks (ties by stock index). 2: sig (read), 3: z [day][stock][signal] (read_write).
 //  gram    (workgroup 64; grid ceil(stride/64) x days): per day, the Gram matrix of the z-scores
 //          (upper triangle), each signal's projection on the next-day targets, and the counts of
 //          eligible and targeted stocks. 2: z (read), 3: gram [day][stride] (read_write).
@@ -20,12 +21,18 @@
 
 namespace ofm::kernels {
 
-const std::string& zscoreSource();
+const std::string& signalSource();
+const std::string& rankSource();
 const std::string& gramSource();
 const std::string& expectSource();
 
-void emulateZscore(const Plan& p, std::size_t chunk, std::vector<float>& z);
-void emulateGram(const Plan& p, std::size_t chunk, const std::vector<float>& z, std::vector<float>& gram);
-void emulateExpect(const Plan& p, std::size_t chunk, const std::vector<float>& z, const std::vector<float>& v, std::vector<float>& e);
+/// The kernels on the CPU for chunk c, in F (float: emulated GPU; double: reference). tables are
+/// Plan::tables in F.
+template <class F>
+void zscore(const Plan& p, std::size_t chunk, const F* tables, std::vector<F>& z);
+template <class F>
+void gram(const Plan& p, std::size_t chunk, const F* tables, std::vector<F>& z, std::vector<F>& gram);
+template <class F>
+void expect(const Plan& p, std::size_t chunk, std::vector<F>& z, std::vector<F>& v, std::vector<F>& e);
 
 }  // namespace ofm::kernels

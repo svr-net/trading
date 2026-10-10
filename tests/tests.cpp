@@ -49,9 +49,11 @@ TEST(emulated_kernels_match_the_reference) {
   const ofm::Plan p = ofm::compilePlan(sample().market);
   std::vector<double> zr, gr;
   std::vector<float> ze, ge;
-  ofm::referenceChunk(p, 0, zr, gr);
-  ofm::kernels::emulateZscore(p, 0, ze);
-  ofm::kernels::emulateGram(p, 0, ze, ge);
+  const std::vector<double> td(p.tables.begin(), p.tables.end());
+  ofm::kernels::zscore<double>(p, 0, td.data(), zr);
+  ofm::kernels::gram<double>(p, 0, td.data(), zr, gr);
+  ofm::kernels::zscore<float>(p, 0, p.tables.data(), ze);
+  ofm::kernels::gram<float>(p, 0, p.tables.data(), ze, ge);
   CHECK(zr.size() == ze.size() && gr.size() == ge.size());
   std::size_t differ = 0;
   for (std::size_t k = 0; k < zr.size(); ++k) differ += std::fabs(zr[k] - ze[k]) > 1e-3 ? 1 : 0;
@@ -189,7 +191,7 @@ TEST(market_structure_sees_one_factor_and_independent_stocks) {
 }
 
 TEST(kernel_sources_declare_their_entry_points) {
-  for (const std::string* s : {&ofm::kernels::zscoreSource(), &ofm::kernels::gramSource(), &ofm::kernels::expectSource()})
+  for (const std::string* s : {&ofm::kernels::signalSource(), &ofm::kernels::rankSource(), &ofm::kernels::gramSource(), &ofm::kernels::expectSource()})
     CHECK(s->find("fn main") != std::string::npos && s->find("struct Header") != std::string::npos);
 }
 

@@ -20,10 +20,12 @@ target_include_directories(ofm PUBLIC include)
 # The kernels' one source is WGSL (kernels/<group>/*.wgsl); the CPU backends compile its C++ translation.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(OFM_GENERATED ${CMAKE_BINARY_DIR}/generated)
-foreach(group daytrade)
+set(ns_daytrade ofm::daytrade::gen)
+set(ns_model ofm::kernels::gen)
+foreach(group daytrade model)
   file(GLOB wgsl CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/kernels/${group}/*.wgsl)
   add_custom_command(OUTPUT ${OFM_GENERATED}/${group}_kernels.hpp
-    COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py ${CMAKE_SOURCE_DIR}/kernels/${group} ofm::${group}::gen
+    COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py ${CMAKE_SOURCE_DIR}/kernels/${group} ${ns_${group}}
             ${OFM_GENERATED}/${group}_kernels.hpp
     DEPENDS ${wgsl} ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py
     COMMENT "Translating kernels/${group}/*.wgsl to C++")
@@ -32,6 +34,10 @@ endforeach()
 add_custom_target(ofm_kernels DEPENDS ${ofm_generated})
 add_dependencies(ofm ofm_kernels)
 target_include_directories(ofm PRIVATE ${OFM_GENERATED})
+if(NOT EMSCRIPTEN)
+  find_package(Threads REQUIRED)
+  target_link_libraries(ofm PUBLIC Threads::Threads)
+endif()
 if(NOT MSVC)
   target_compile_options(ofm PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
 endif()
