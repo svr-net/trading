@@ -175,6 +175,45 @@ struct Scaler {
   }
 };
 
+
+// The self-adaptive selector's memory and score (as the factor premia and the selector kernel):
+// an ADWIN window (Bifet and Gavalda 2007; scale-free bound, confidence 1/T, each side at least the
+// square root of the window) over a record of net log returns, which drops its older part when the
+// record changes; the score is the window's mean shrunk by its t-statistic, m * max(0, 1 - 1/t^2),
+// so a record no better than noise scores 0 (cash).
+struct Adwin {
+  std::vector<double> p1{0.0}, p2{0.0};
+  std::size_t from = 0;
+  double horizon = 1;  // T: one false cut expected over the whole history
+  void push(double x) {
+    p1.push_back(p1.back() + x), p2.push_back(p2.back() + x * x);
+    for (bool moved = true; moved;) {
+      moved = false;
+      const std::size_t end = p1.size() - 1, n = end - from;
+      const std::size_t side = std::max<std::size_t>(2, std::size_t(std::ceil(std::sqrt(double(n)))));
+      if (n < 2 * side) return;
+      const double lt = std::log(2.0 * std::log(double(n)) * horizon);
+      for (std::size_t k = from + side; k + side <= end; ++k) {
+        const double n0 = double(k - from), n1 = double(end - k);
+        const double m0 = (p1[k] - p1[from]) / n0, m1 = (p1[end] - p1[k]) / n1;
+        const double v0 = std::max(0.0, (p2[k] - p2[from]) / n0 - m0 * m0), v1 = std::max(0.0, (p2[end] - p2[k]) / n1 - m1 * m1);
+        if (std::fabs(m0 - m1) > std::sqrt(2.0 * lt * (v0 / n0 + v1 / n1))) {
+          from = k, moved = true;
+          break;
+        }
+      }
+    }
+  }
+  double score() const {
+    const std::size_t end = p1.size() - 1;
+    const double n = double(end - from);
+    if (n < 2) return 0.0;
+    const double m = (p1[end] - p1[from]) / n, v = std::max(0.0, ((p2[end] - p2[from]) - n * m * m) / (n - 1));
+    if (!(v > 0)) return 0.0;
+    return m * std::max(0.0, 1.0 - v / n / (m * m));
+  }
+};
+
 void row(const char* name, const std::vector<double>& r, std::size_t lo, std::size_t hi) {
   const ofm::Metrics m = ofm::metrics(std::vector<double>(r.begin() + lo, r.begin() + hi));
   double w = 1;
@@ -241,7 +280,7 @@ int main(int argc, char** argv) {
     for (std::size_t t = 0; t + 1 < bt.start; ++t) addVol(t);
 
     // Strategies: no stops; learnt pair (worst-case fills); the same pair with optimistic fills.
-    std::vector<double> plain, learnt, optimistic, gross, model, market, neural, neuralOpt;
+    std::vector<double> plain, learnt, optimistic, gross, model, market, neural, neuralOpt, gated, selected;
     std::vector<Stats> pairRecord(G * G);
     // Neural levels: features of stock i at the close t (empty if its recent bars are missing).
     constexpr std::size_t F = 10;
@@ -265,6 +304,19 @@ int main(int argc, char** argv) {
     std::vector<std::map<std::size_t, int>> perStock(N);  // pairs each stock was given
     std::size_t nnStops = 0, nnTakes = 0, nnTrades = 0;
     Stats nnGain;  // realised log-return gain of the chosen pair over none/none, per trade
+    // Self-adaptive selection: each stock's record of its own neural-level day trades (gate), and
+    // the books' records (book selector: 0 no stops, 1 neural levels, 2 gated, or cash).
+    std::vector<Adwin> stockRecord(N);
+    std::vector<Adwin> bookRecord(3);
+    for (auto& a : stockRecord) a.horizon = double(bt.model.size());
+    for (auto& a : bookRecord) a.horizon = double(bt.model.size());
+    std::size_t gatedTrades = 0;
+    std::map<std::string, int> bookUse;
+    auto netPick = [&](const std::vector<double>& x) {
+      if (x.empty() || net.step == 0) return G * G - 1;
+      const auto y = net.predict(scaler.apply(x));
+      return std::size_t(std::max_element(y.begin(), y.end()) - y.begin());
+    };
     std::size_t days = 0, trades = 0, both = 0, lowIsOpen = 0, stops = 0, takes = 0, full = 0;
     std::map<std::string, int> pairUse;
     for (std::size_t k = 0; k < bt.model.size(); ++k) {
@@ -354,6 +406,37 @@ int main(int argc, char** argv) {
       for (std::size_t i = 0; i < N; ++i)
         if (barAt(d, i, &b)) logVolume[i].add(std::log(b.v));
       for (std::size_t p = 0; p < G * G; ++p) pairRecord[p].add(rPair[p] / n);
+      // Gated selection: down the ranking, the stocks whose own record beats cash, until 10.
+      std::vector<std::size_t> ranked = candidates;
+      std::stable_sort(ranked.begin(), ranked.end(), [&](std::size_t x, std::size_t y) { return f.E(t, x) > f.E(t, y); });
+      double rGated = 0;
+      std::size_t booked = 0;
+      for (std::size_t i : ranked) {
+        if (booked == K) break;
+        if (!(stockRecord[i].score() > 0)) continue;
+        barAt(d, i, &b);
+        const std::size_t pick = netPick(features(t, i, medSig, mkt));
+        int e;
+        rGated += tradeReturn(b, sigmaOf(i), kGrid[pick / G], kGrid[pick % G], buy, sell, true, &e);
+        ++booked, ++gatedTrades;
+      }
+      gated.push_back(rGated / n);
+      // Book selector: the book with the best record so far, or cash.
+      const double books[3] = {rPlain / n, rNeural / n, rGated / n};
+      int choice = -1;
+      double bestScore = 0;
+      for (int q = 0; q < 3; ++q)
+        if (bookRecord[q].score() > bestScore) bestScore = bookRecord[q].score(), choice = q;
+      selected.push_back(choice < 0 ? 0.0 : books[choice]);
+      ++bookUse[choice < 0 ? "cash" : choice == 0 ? "top 10, no stops" : choice == 1 ? "top 10, neural levels" : "gated top 10"];
+      for (int q = 0; q < 3; ++q) bookRecord[q].push(std::log1p(books[q]));
+      // Every eligible stock's record: its own neural-level day trade on day d (known at its close).
+      for (std::size_t i : candidates) {
+        barAt(d, i, &b);
+        const std::size_t pick = netPick(features(t, i, medSig, mkt));
+        int e;
+        stockRecord[i].push(std::log1p(tradeReturn(b, sigmaOf(i), kGrid[pick / G], kGrid[pick % G], buy, sell, true, &e)));
+      }
       model.push_back(bt.model[k]), market.push_back(bt.market[k]);
       ++days;
     }
@@ -372,6 +455,8 @@ int main(int argc, char** argv) {
       row("top 10, learnt stop/take, optimistic fills", optimistic, range.first, range.second);
       row("top 10, neural per-stock levels, worst-case", neural, range.first, range.second);
       row("top 10, neural per-stock levels, optimistic", neuralOpt, range.first, range.second);
+      row("gated top 10 (each stock's own record)", gated, range.first, range.second);
+      row("self-adaptive selector over the books + cash", selected, range.first, range.second);
       row("model portfolio (multi-day), after costs", model, range.first, range.second);
       row("market (bought and held)", market, range.first, range.second);
       std::printf("\n");
@@ -383,6 +468,8 @@ int main(int argc, char** argv) {
     compare("top 10, neural levels, worst-case", neural, model);
     compare("neural levels vs no stops (both after costs)", neural, plain);
     compare("neural levels vs shared learnt levels", neural, learnt);
+    compare("gated top 10 vs model portfolio", gated, model);
+    compare("self-adaptive selector vs model portfolio", selected, model);
     std::printf("\nExits (learnt levels, worst case): %zu at the stop, %zu at the take-profit, %zu at the close\n", stops, takes,
                 trades - stops - takes);
     std::printf("Trades that touched both levels (order unknown on daily bars): %zu (%.1f%%); the low was the open: %.1f%%\n", both,
@@ -408,6 +495,10 @@ int main(int argc, char** argv) {
     for (const auto& ps : perStock)
       if (!ps.empty()) ++traded, varied += ps.size() > 1;
     std::printf("Stocks traded: %zu; given more than one pair over time: %zu\n", traded, varied);
+    std::printf("Gated top 10: %zu trades (%.2f a day); the rest of the slots in cash\n", gatedTrades, double(gatedTrades) / n);
+    std::printf("Self-adaptive selector, days in each:");
+    for (const auto& [bname, c] : bookUse) std::printf(" %s %d (%.0f%%);", bname.c_str(), c, 100.0 * c / n);
+    std::printf("\n");
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
