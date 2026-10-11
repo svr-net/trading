@@ -9,7 +9,6 @@
 #include "ofm/kernels.hpp"
 #include "ofm/report.hpp"
 #include "ofm/structure.hpp"
-#include "ofm/topk.hpp"
 
 namespace {
 
@@ -208,37 +207,4 @@ int main() {
   }
   std::printf("%zu passed, %d failed\n", tests().size() - static_cast<std::size_t>(failed), failed);
   return failed ? 1 : 0;
-}
-
-TEST(rolling_top_ten_holds_ten_and_uses_no_future) {
-  const auto& s = sample();
-  const auto f = ofm::runModel(s.market);
-  const auto bt = ofm::backtest(s.market, f, ofm::Costs{}, s.series);
-  const auto r = ofm::topKBacktests(s.market, f, ofm::Costs{}, bt, 10);
-  CHECK(r.size() == 1 && r[0].dayTrades);
-  // The selector picks one of its candidates; following the learnt policy, the plan books, down the
-  // ranking, the first stocks whose learnt levels beat cash: at most 10, every line a booking, in
-  // rank order.
-  CHECK(r[0].choiceNow >= 0 && r[0].choiceNow <= 4 && r[0].choices.size() == bt.model.size() && r[0].selected.size() == bt.model.size());
-  for (double v : r[0].selected) CHECK(std::isfinite(v) && v > -1);
-  if (r[0].choiceNow == 1) CHECK(r[0].plan.size() <= 10);
-  for (std::size_t k = 0; r[0].choiceNow == 1 && k < r[0].plan.size(); ++k) {
-    CHECK(r[0].plan[k].action == 1);
-    if (k) CHECK(r[0].plan[k].rank > r[0].plan[k - 1].rank);
-  }
-  for (const auto& x : r) {
-    CHECK(x.daily.size() == bt.model.size() && x.noStops.size() == bt.model.size());
-    CHECK(x.positions.size() <= 10 && (x.dayTrades || !x.positions.empty()));
-    CHECK(x.grid.size() == x.gridK.size() * x.gridK.size());
-    for (double v : x.daily) CHECK(std::isfinite(v) && v > -1);
-  }
-  // Changing the last day's bars leaves every earlier day's return unchanged.
-  ofm::Market m2 = s.market;
-  const std::size_t L = m2.T() - 1;
-  for (std::size_t i = 0; i < m2.N(); ++i) m2.close(L, i) *= 1.5, m2.high(L, i) *= 1.5;
-  const auto f2 = ofm::runModel(m2);
-  const auto bt2 = ofm::backtest(m2, f2, ofm::Costs{}, s.series);
-  const auto r2 = ofm::topKBacktests(m2, f2, ofm::Costs{}, bt2, 10);
-  for (std::size_t q = 0; q < r.size(); ++q)
-    for (std::size_t k = 0; k + 1 < r[q].daily.size(); ++k) CHECK(r[q].daily[k] == r2[q].daily[k]);
 }

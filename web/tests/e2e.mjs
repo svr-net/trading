@@ -48,17 +48,12 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
     if (!drawn || !Number.isFinite(sharpe)) throw new Error('backtest not rendered');
     if (errors.length) throw new Error(errors.join(' | '));
-    // The day trades (fused kernels: levels with trades, book) on the same engine.
-    const plan = await page.$$eval('#top10-plan tbody tr td:first-child', (t) => t.map((x) => x.textContent));
-    if (!plan.length || !/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('day trades not rendered');
-    // The learnt policy's tile (engines must agree on it); the selector's tile, if shown, is checked
-    // to be finite only: its day-by-day switches can flip on last-bit differences between engines.
-    const tiles = await page.$$eval('#top10-verdict .tile', (ts) => ts.map((t) => [t.querySelector('.k').textContent, +t.querySelector('.v').textContent]));
-    const daySharpe = (tiles.find(([k]) => /^Learnt policy/.test(k)) || tiles[0])[1];
-    const selector = tiles.find(([k]) => /^Self-adaptive selector/.test(k));
-    if (selector && !Number.isFinite(selector[1])) throw new Error('selector not rendered');
-    results[engine] = { sharpe, daySharpe, selector: selector ? selector[1] : null, plan, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
-    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)}, learnt policy ${daySharpe.toFixed(2)}, selector ${selector ? selector[1].toFixed(2) : '–'} (${plan.length} to book)  ${statusText}`);
+    // The model portfolio's orders for the next open.
+    if (!/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('orders not rendered');
+    const orders = await page.$$eval('#top10-plan tbody tr', (r) => r.length);
+    if (!orders) throw new Error('orders table empty');
+    results[engine] = { sharpe, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
+    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)} (${orders} order rows)  ${statusText}`);
   } catch (e) {
     failed++;
     console.log(`FAIL ${engine}: ${e.message}`);
@@ -67,10 +62,8 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
 }
 if (results.gpu && results.emulated) {
   const overlap = results.gpu.top.filter((t) => results.emulated.top.includes(t)).length;
-  const planOverlap = results.gpu.plan.filter((t) => results.emulated.plan.includes(t)).length;
-  const ok = Math.abs(results.gpu.sharpe - results.emulated.sharpe) < 0.1 && overlap >= 8 &&
-    Math.abs(results.gpu.daySharpe - results.emulated.daySharpe) < 0.15 && planOverlap >= Math.min(results.gpu.plan.length, results.emulated.plan.length) - 2;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: Sharpe ${results.gpu.sharpe} vs ${results.emulated.sharpe}, top-10 overlap ${overlap}/10; day trades ${results.gpu.daySharpe} vs ${results.emulated.daySharpe}, plan overlap ${planOverlap}/${results.gpu.plan.length}`);
+  const ok = Math.abs(results.gpu.sharpe - results.emulated.sharpe) < 0.1 && overlap >= 8;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: Sharpe ${results.gpu.sharpe} vs ${results.emulated.sharpe}, top-10 overlap ${overlap}/10`);
   if (!ok) failed++;
 }
 await browser.close();

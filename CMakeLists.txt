@@ -13,16 +13,13 @@ add_library(ofm
   src/kernels.cpp
   src/trade.cpp
   src/structure.cpp
-  src/report.cpp
-  src/topk.cpp
-  src/daytrade.cpp)
+  src/report.cpp)
 target_include_directories(ofm PUBLIC include)
 # The kernels' one source is WGSL (kernels/<group>/*.wgsl); the CPU backends compile its C++ translation.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(OFM_GENERATED ${CMAKE_BINARY_DIR}/generated)
-set(ns_daytrade ofm::daytrade::gen)
 set(ns_model ofm::kernels::gen)
-foreach(group daytrade model)
+foreach(group model)
   file(GLOB wgsl CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/kernels/${group}/*.wgsl)
   add_custom_command(OUTPUT ${OFM_GENERATED}/${group}_kernels.hpp
     COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/wgsl2cpp.py ${CMAKE_SOURCE_DIR}/kernels/${group} ${ns_${group}}

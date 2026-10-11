@@ -101,6 +101,11 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
       << ",\"held\":" << (bt.held.empty() ? 0 : bt.held[i]) << ",\"order\":" << (bt.orders.empty() ? 0 : bt.orders[i]) << "}";
     first = false;
   }
+  // The model portfolio's last 20 days (net), for the daily report and the live record.
+  o << "],\"recent\":[";
+  const std::size_t from = F.n > 20 ? F.n - 20 : 0;
+  for (std::size_t k = from; k < F.n; ++k)
+    o << (k > from ? "," : "") << "{\"date\":" << str(m.dates[bt.start + k]) << ",\"ret\":" << num(bt.model[k]) << ",\"market\":" << num(bt.market[k]) << "}";
   o << "],\"factors\":[";
   for (std::size_t k = 0; k < p.K && k < f.mean.size(); ++k)
     o << (k ? "," : "") << "{\"name\":" << str(p.signalName(k)) << ",\"mean\":" << num(f.mean[k]) << ",\"t\":" << num(f.tstat[k])
