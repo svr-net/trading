@@ -168,14 +168,14 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
   const obs = buffer(N * 4 * T * 4, S), idx = buffer(N * 2 * T * 4, S);
   const lev = buffer(T * N * plan.level * 4, S | SRC), tra = buffer(T * N * plan.trade * 4, S | SRC);
   const days = buffer(T * plan.day * 4, S | SRC), booked = buffer((T + 1) * K * 4, S | SRC);
-  const market = upload(plan.market), sel = buffer(3 * (T + 1) * 2 * 4, S);
+  const ext = upload(plan.ext), sel = buffer(4 * (T + 1) * 2 * 4, S);
   const group = (p, entries) => device.createBindGroup({
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
   const gL = group(levels, [[0, uniform], [1, bars], [2, life], [3, state], [4, obs], [5, idx], [6, lev], [7, tra]]);
   const gB = group(book, [[0, uniform], [1, bars], [6, lev], [7, tra], [8, expected], [9, elig], [10, days], [11, booked]]);
-  const gS = group(select, [[0, uniform], [10, days], [12, market], [13, sel]]);
+  const gS = group(select, [[0, uniform], [10, days], [12, ext], [13, sel]]);
   const step = (p, g, x, y = 1) => {
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();

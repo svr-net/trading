@@ -117,7 +117,7 @@ class Session {
     src.set("levels", ofm::daytrade::levelsSource()), src.set("book", ofm::daytrade::bookSource()), src.set("select", ofm::daytrade::selectSource());
     o.set("sources", src);
     o.set("bars", copyOut(b.bars)), o.set("expected", copyOut(b.expected)), o.set("elig", copyOut(b.elig));
-    o.set("life", copyOut(b.life)), o.set("initialState", copyOut(b.state)), o.set("market", copyOut(b.market));
+    o.set("life", copyOut(b.life)), o.set("initialState", copyOut(b.state)), o.set("ext", copyOut(b.ext));
     return o;
   }
   /// The uniform header of the day-trade kernels for days [t0, t1).
