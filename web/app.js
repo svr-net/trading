@@ -109,8 +109,6 @@ function render(r, note, ms) {
   const pass = (ok) => `<span class="pill ${ok ? 'pass' : 'fail'}">${ok ? 'passes' : 'fails'}</span>`;
   $('verdict').innerHTML = `
     <div class="tile"><span class="k">Model, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year · ${pass(r.pass)}</span></div>
-${mp ? `
-    <div class="tile"><span class="k">Model portfolio (multi-day)</span><span class="v">${mp.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(mp.annualReturn)} a year, max drawdown ${pct(mp.maxDrawdown)}</span></div>` : ''}
     <div class="tile"><span class="k">Market, bought and held</span><span class="v">${k.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(k.annualReturn)} a year</span></div>
     <div class="tile"><span class="k">Model + futures hedge</span><span class="v">${h.sharpe.toFixed(2)}</span><span class="s">${r.hedgeSeries ? `hedged with ${r.hedgeSeries}, on average ${pct(r.trades.hedgeShare, 0)} of the book` : 'no futures series'} · ${pass(r.passHedged)}</span></div>`;
 
