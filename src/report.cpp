@@ -274,9 +274,9 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
   }
   if (hasDay(F)) {
     const Lead L = lead(day->ret, bt.model);
-    std::snprintf(b, sizeof b, "\nDaily book (gated top 10; %.2f%% per side): %.2f trades a day, %zu at the stop, %zu at the take-profit; ahead of the model portfolio by %+.3f%% a day (t %+.2f)\n",
+    std::snprintf(b, sizeof b, "\nDaily trades (%.2f%% per side): %.2f trades a day, %zu at the stop, %zu at the take-profit; ahead of the model portfolio by %+.3f%% a day (t %+.2f)\n",
                   100 * day->buy, static_cast<double>(day->trades) / static_cast<double>(F.n), day->stops, day->takes, 100 * L.mean, L.t);
-    o << b << "Daily book orders for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
+    o << b << "Trades for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
     for (const DayOrder& d : day->orders) {
       std::snprintf(b, sizeof b, "  %-10s trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.tradeReturn,
                     std::isfinite(d.stop) ? (num(100 * (std::exp(-d.stop * d.sigma) - 1), 3) + "%").c_str() : "none",
