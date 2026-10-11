@@ -4,7 +4,9 @@
 // for accounts that deal cheaply (CFDs, spread bets, futures; about 0.05% per side or less).
 //
 // Each close t, the stocks are taken down the ranking of expected return; a stock is booked only
-// if its own record of day trades beats cash (self-adaptive gate), until 10. Each booked stock is
+// if the trade is expected to make money: its forecast beats the market, the network expects the
+// trade to gain after costs, and its own record of day trades beats cash (self-adaptive gate);
+// at most 10. Empty slots stay in cash. Each booked stock is
 // bought at the next open with a tenth of the capital and sold the same day at its stop, its
 // take-profit or the close. The levels are multiples of the stock's own open-to-close volatility,
 // picked per stock by a small network that predicts the net log return of each of the 36 stop /
@@ -93,7 +95,8 @@ struct Adwin {
 
 struct DayOrder {
   std::size_t asset = 0;
-  double expected = 0;      ///< the model's expected excess return for the next day
+  double expected = 0;      ///< the model's expected excess return over the market for the next day
+  double tradeReturn = 0;   ///< the network's expected net return of the trade (after costs)
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)

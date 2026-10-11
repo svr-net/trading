@@ -45,7 +45,7 @@ struct Facts {
   double meanWin = 0, meanLoss = 0;
 };
 
-constexpr const char* kDayName = "daily book (gated top 10)";
+constexpr const char* kDayName = "daily trades";
 
 Facts facts(const Market& m, const Backtest& bt, const DayBook* day) {
   Facts F;
@@ -192,7 +192,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     for (std::size_t q = 0; q < day->orders.size(); ++q) {
       const DayOrder& d = day->orders[q];
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
-      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"sigma\":" << num(d.sigma)
+      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"sigma\":" << num(d.sigma)
         << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
     }
@@ -278,12 +278,12 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
                   100 * day->buy, static_cast<double>(day->trades) / static_cast<double>(F.n), day->stops, day->takes, 100 * L.mean, L.t);
     o << b << "Daily book orders for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
     for (const DayOrder& d : day->orders) {
-      std::snprintf(b, sizeof b, "  %-10s %+8.2f bp  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 1e4 * d.expected,
+      std::snprintf(b, sizeof b, "  %-10s trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.tradeReturn,
                     std::isfinite(d.stop) ? (num(100 * (std::exp(-d.stop * d.sigma) - 1), 3) + "%").c_str() : "none",
                     std::isfinite(d.take) ? (num(100 * (std::exp(d.take * d.sigma) - 1), 3) + "%").c_str() : "none", 100 * d.record, d.window);
       o << b;
     }
-    if (day->orders.empty()) o << "  none: no stock's record beats cash\n";
+    if (day->orders.empty()) o << "  none: no trade is expected to make money\n";
   }
   o << "\nCalendar years (net return)\n  year   model    hedged   market" << (hasDay(F) ? "   daily" : "") << "\n";
   std::string year;

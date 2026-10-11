@@ -26,32 +26,20 @@ translation.
 
 ## What is traded
 
-Two books, each with its orders for the next open on the page and in the daily email.
+The page and the daily email give one thing: up to 10 day trades for the next open
+(`include/ofm/daybook.hpp`). Each is bought at the open with a tenth of the capital and sold at its
+stop-loss, its take-profit or the close. A trade is listed, and taken in the backtest, only when it
+is expected to make money: the stock is forecast to beat the market, a small network expects the
+trade to gain after costs, and the stock's own record of these trades (an ADWIN window, its mean
+shrunk by its t-statistic) beats cash. Unused slots stay in cash. The stop and take-profit,
+multiples of the stock's open-to-close volatility, are the pair the network rates best from the
+stock's features at the close; it learns every day, after the close, from every stock's outcomes
+for all 36 pairs. Backtest fills come from the real high, low and close (the stop when a day
+touched both levels). It needs cheap dealing (CFDs, spread bets): the cost per side, slippage
+included, is its one input (`--day-cost-pct`, default 0.05; the page's "Cost per side").
 
-**The model portfolio**: the stocks it holds over several days in equal shares, traded at the open
-only when a stock's expected return over the forecast's life beats the round trip. On the UK data
-(Oct 2018 – Oct 2026, 250 stocks, 0.10% a side) it made 9.4% a year (Sharpe 0.61) against 2.8%
-(0.25) for the market, and beat the market in both halves.
-
-**The daily book** (`include/ofm/daybook.hpp`), for accounts that deal cheaply (CFDs, spread
-bets): up to 10 day trades, bought at the open and sold at each stock's own stop, take-profit or
-the close. Down the ranking of expected returns, a stock is booked only if its own record of these
-day trades (an ADWIN window, its mean shrunk by its t-statistic) beats cash; its stop and
-take-profit, multiples of its open-to-close volatility, are the pair a small network rates best
-from its features at the close. The network learns every day, after the close, from every stock's
-outcomes for all 36 pairs. Backtest fills come from the real high, low and close (the stop when a
-day touched both levels). On the UK data, against the model portfolio paying the same costs:
-
-| Cost per side | Daily book | Sharpe | Model portfolio | Daily lead (t) |
-|---|---|---|---|---|
-| 0%    | +41.9% a year | 2.70 | +16.0% | +0.078% a day (3.6) |
-| 0.03% | +29.1% | 2.06 | +10.8% | +0.059% (2.6) |
-| 0.05% | +19.6% | 1.56 | +10.0% | +0.030% (1.3) |
-| 0.10% | loses to the model portfolio | | | |
-
-It beat the model portfolio in both halves at 0.05%, but its lead is not significant there; it
-needs dealing at 0.05% per side or less, slippage included (`--day-cost-pct`, the page's "Daily
-book, per side").
+The multi-day model portfolio (below) is still computed and reported by `ofm_report` as the
+benchmark the daily trades are tested against.
 
 ## The model
 

@@ -198,11 +198,20 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   Scaler scaler(F);
   std::vector<Adwin> record(N);
   for (auto& a : record) a.horizon = double(T - start);
-  auto pickOf = [&](const std::vector<double>& x) {
-    if (x.empty() || net.step == 0) return P - 1;  // none / none
+  // The pair the network rates best for a stock, and its expected net log return in the stock's
+  // volatility (after costs); none / none and no expectation before the network has learnt.
+  auto pickOf = [&](const std::vector<double>& x, double* expect) {
+    *expect = -kNone;
+    if (x.empty() || net.step == 0) return P - 1;
     const auto y = net.predict(scaler.apply(x));
-    return std::size_t(std::max_element(y.begin(), y.end()) - y.begin());
+    const std::size_t p = std::size_t(std::max_element(y.begin(), y.end()) - y.begin());
+    *expect = y[p];
+    return p;
   };
+  // A trade is booked only when it is expected to make money: the stock is forecast to beat the
+  // market, the network expects the trade to gain after costs, and the stock's own record of these
+  // trades beats cash.
+  auto worthIt = [&](std::size_t t, std::size_t i, double expect) { return f.E(t, i) > 0 && expect > 0 && record[i].score() > 0; };
   // The day's median volatility over the candidates and the market's close-to-close move at t.
   auto dayContext = [&](std::size_t t, const std::vector<std::size_t>& cand, double* medSig, double* mkt) {
     std::vector<double> sigs;
@@ -233,13 +242,14 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     // Each candidate's features and pair, from what was known at the close t.
     std::vector<std::vector<double>> x(N);
     std::vector<std::size_t> pick(N, P - 1);
-    for (std::size_t i : cand) x[i] = features(t, i, medSig, mkt), pick[i] = pickOf(x[i]);
-    // The book: down the ranking, the stocks whose own record beats cash, until 10.
+    std::vector<double> expect(N, -kNone);
+    for (std::size_t i : cand) x[i] = features(t, i, medSig, mkt), pick[i] = pickOf(x[i], &expect[i]);
+    // The book: down the ranking, the trades expected to make money, until 10.
     double r = 0;
     int booked = 0;
     for (std::size_t i : ranked(cand, t)) {
       if (std::size_t(booked) == K) break;
-      if (!(record[i].score() > 0)) continue;
+      if (!worthIt(t, i, expect[i])) continue;
       barAt(d, i, &b);
       int e;
       r += tradeReturn(b, sigmaOf(i), G1[pick[i] / G], G1[pick[i] % G], buy, sell, true, &e);
@@ -279,10 +289,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   dayContext(t, cand, &medSig, &mkt);
   for (std::size_t i : ranked(cand, t)) {
     if (book.orders.size() == K) break;
-    if (!(record[i].score() > 0)) continue;
-    const std::size_t p = pickOf(features(t, i, medSig, mkt));
+    double expect;
+    const std::size_t p = pickOf(features(t, i, medSig, mkt), &expect);
+    if (!worthIt(t, i, expect)) continue;
     DayOrder o;
     o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = G1[p / G], o.take = G1[p % G];
+    o.tradeReturn = std::expm1(expect * o.sigma);
     o.record = record[i].score(), o.window = record[i].window();
     book.orders.push_back(o);
   }

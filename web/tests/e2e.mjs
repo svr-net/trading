@@ -1,7 +1,7 @@
 // Browser test of the page in headless Chromium (Playwright): node web/tests/e2e.mjs
 // Serves web/, runs the sample market on WebGPU (SwiftShader in headless mode), on the emulated
-// GPU and on the reference engine, and checks that each run renders expected returns and the
-// backtest, without page errors, and that the WebGPU kernels agree with their emulation.
+// GPU and on the reference engine, and checks that each run renders the trades for the next open and
+// the backtest, without page errors, and that the WebGPU kernels agree with their emulation.
 // Environment: PLAYWRIGHT_MODULE (path to playwright's index.mjs), CHROMIUM_PATH.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -42,21 +42,18 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
     const statusText = await page.textContent('#status');
     if (!statusText.startsWith('Done')) throw new Error(statusText);
     if (!statusText.includes(expect)) throw new Error(`ran on the wrong engine: ${statusText}`);
-    const rows = await page.$$eval('#expected tbody tr', (r) => r.length);
-    if (rows < 20) throw new Error(`expected-returns table has ${rows} rows`);
-    const sharpe = await page.$eval('#verdict .tile .v', (e) => +e.textContent);
+    const annual = await page.$eval('#verdict .tile .v', (e) => parseFloat(e.textContent) / 100);
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
-    if (!drawn || !Number.isFinite(sharpe)) throw new Error('backtest not rendered');
+    if (!drawn || !Number.isFinite(annual)) throw new Error('backtest not rendered');
     if (errors.length) throw new Error(errors.join(' | '));
-    // The model portfolio's orders for the next open.
-    if (!/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('orders not rendered');
-    const dayRows = await page.$$eval('#day-plan tbody tr', (r) => r.length);
-    if (dayRows < 1 || !(await page.isVisible('#daybook'))) throw new Error('the daily book is not shown');
-    if (!(await page.textContent('#parts')).includes('daily book')) throw new Error('the daily book is missing from the backtest');
-    const orders = await page.$$eval('#top10-plan tbody tr', (r) => r.length);
-    if (!orders) throw new Error('orders table empty');
-    results[engine] = { sharpe, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
-    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)} (${orders} order rows)  ${statusText}`);
+    // The trades for the next open: at most 10, each expected to make money after costs.
+    if (!/Sample market/.test(await page.textContent('#asof'))) throw new Error('trades not rendered');
+    const trades = await page.$$eval('#plan tbody tr:not(.gap)', (rows) => rows.map((r) => [r.cells[0].textContent, parseFloat(r.cells[1].textContent)]));
+    if (trades.length > 10 || trades.some(([, e]) => !(e > 0))) throw new Error(`bad trades: ${JSON.stringify(trades)}`);
+    const recent = await page.$$eval('#recent tbody tr', (r) => r.length);
+    if (recent < 1) throw new Error('last 20 days not rendered');
+    results[engine] = { annual, top: trades.map(([t]) => t) };
+    console.log(`ok   ${engine.padEnd(9)} daily trades ${(100 * annual).toFixed(1)}% a year, ${trades.length} trades  ${statusText}`);
   } catch (e) {
     failed++;
     console.log(`FAIL ${engine}: ${e.message}`);
@@ -65,8 +62,9 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
 }
 if (results.gpu && results.emulated) {
   const overlap = results.gpu.top.filter((t) => results.emulated.top.includes(t)).length;
-  const ok = Math.abs(results.gpu.sharpe - results.emulated.sharpe) < 0.1 && overlap >= 8;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: Sharpe ${results.gpu.sharpe} vs ${results.emulated.sharpe}, top-10 overlap ${overlap}/10`);
+  const n = Math.max(results.gpu.top.length, results.emulated.top.length);
+  const ok = Math.abs(results.gpu.annual - results.emulated.annual) < 0.05 && overlap >= n - 2;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} WebGPU vs emulated: ${(100 * results.gpu.annual).toFixed(1)}% vs ${(100 * results.emulated.annual).toFixed(1)}% a year, trades in common ${overlap}/${n}`);
   if (!ok) failed++;
 }
 await browser.close();
