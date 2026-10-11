@@ -1,7 +1,6 @@
-# Downloads LSE daily bars from EODData (key in the EODDATA_API_KEY secret) into the runner's
-# cache, reports what was downloaded (dates, symbols, rows) and backtests the model on it. By
-# default the data already downloaded is reused from the cache (no API calls); 'refresh' downloads
-# again, and an incomplete cache falls back to a download
+# Keeps LSE daily bars from EODData (key in the EODDATA_API_KEY secret) in a persistent store in
+# the runner's cache, adding only the days missing (see the store step), reports what it holds
+# (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in the cache and are never published.
 name: UK portfolio
@@ -17,7 +16,7 @@ on:
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
-      refresh: { description: 'Download fresh data from EODData (otherwise the cached download is used)', type: boolean, default: false }
+      refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       stamp_pct: { description: 'Stamp duty on purchases, percent (0 for CFDs, spread bets, AIM; 0.50 for UK shares bought directly)', default: '0' }
@@ -47,35 +46,47 @@ jobs:
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: node tools/eoddata/exchanges.mjs | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Restore the EODData cache
+      # The EODData store (tools/eoddata/store.mjs): every symbol's bars, kept between runs by
+      # actions/cache (never committed or published: EODData's licence). Runs on main add only the
+      # days each symbol is missing (the latest day from the exchange's quote list, a short request
+      # for a longer gap, a full history only for a stock new to the universe) and save the store
+      # under a new key; other branches read main's store and make no requests. The weekday
+      # schedule keeps the cache in use, so it is never evicted.
+      - name: Restore the EODData store
         if: ${{ !inputs.probe }}
         uses: actions/cache@v4
         with:
           path: data/eoddata
-          key: eoddata-${{ github.run_id }}
-          restore-keys: eoddata-
-      - name: Download LSE bars
+          key: eoddata-store-${{ github.run_id }}
+          restore-keys: |
+            eoddata-store-
+            eoddata-
+      - name: Update LSE bars (only the days missing from the store)
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
+          set -o pipefail
           ARGS=(--exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv)
-          if [ "${{ inputs.refresh }}" != "true" ] && [ "${{ github.event_name }}" != "schedule" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
-            echo "Used the cached download" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.refresh }}" = "true" ]; then
+            node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
+          elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
+            echo "Branch run: used main's store, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            node tools/eoddata/fetch.mjs "${ARGS[@]}"
+            node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Download futures, index and currency series
+      - name: Update futures, index and currency series (only the days missing)
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
+          set -o pipefail
           SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
-          if [ "${{ inputs.refresh }}" != "true" ] && [ "${{ github.event_name }}" != "schedule" ]; then
-            node tools/eoddata/fetch_series.mjs --cached --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-          # Nothing cached (a first run on this branch): download.
-          if [ ! -s data/futures.csv ] || [ "$(wc -l < data/futures.csv)" -le 1 ]; then
+          MODE=""
+          if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; elif [ "${{ github.ref }}" != "refs/heads/main" ]; then MODE="--cached"; fi
+          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
+          # A branch with no store yet: download.
+          if [ "$(wc -l < data/futures.csv)" -le 1 ]; then
             node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
       - name: Summary (no prices)
