@@ -90,7 +90,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     for (var c = 0u; c < NC; c = c + 1u) {
       let s = score(c);
       days[t * KD + 23u + c] = s;
-      if (s > best) { best = s; choice = c + 1u; }
+      if (c == 3u && s > best) { best = s; choice = c + 1u; }  // experiment: the model portfolio or cash only
     }
     days[t * KD + 21u] = f32(choice);
     var r = 0.0;
