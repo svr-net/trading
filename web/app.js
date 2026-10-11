@@ -1,20 +1,17 @@
 // The page: loads the C++ library (WebAssembly), runs it on the chosen engine and shows the
-// report it returns. Rendering only; every number comes from the library.
+// daily trades it recommends. Rendering only; every number comes from the library.
 import createOfm from './wasm/ofm.js';
 import { runKernels } from './gpu.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (t) => { $('status').textContent = t; };
-const pct = (x, d = 1) => (x == null ? '–' : `${(100 * x).toFixed(d)}%`);
-const bp = (x, d = 1) => (x == null ? '–' : `${(1e4 * x >= 0 ? '+' : '')}${(1e4 * x).toFixed(d)}`);
+const pct = (x, d = 1) => (x == null ? '–' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(d)}%`);
 const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-const SERIES = [['model', '--model'], ['model + futures hedge', '--hedged'], ['market (bought and held)', '--market'], ['daily book (gated top 10)', '--daybook']];
+const MODEL_COSTS = [10, 10, 1];  // the model portfolio's costs (bp); not shown, the forecasts do not depend on them
+const SERIES = [['daily trades', '--daybook'], ['market (bought and held)', '--market']];
 
 let ofm = null;
-let last = null;
-let showAll = false;
-let scan = null;
-let shownTop = null;  // [report, source] of the day trades on show
+let shown = null;  // [report, source]
 
 function cell(tag, text, cls) {
   const c = document.createElement(tag);
@@ -30,69 +27,61 @@ function table(el, head, rows) {
   rows.forEach((r) => {
     const tr = body.insertRow();
     if (r.gap) { tr.className = 'gap'; const td = cell('td', r.gap); td.colSpan = head.length; tr.append(td); return; }
-    r.forEach((c) => (c instanceof Node ? tr.append(c) : tr.append(cell('td', c[0], c[1]))));
+    r.forEach((c) => tr.append(cell('td', c[0], c[1])));
   });
 }
+const signed = (x, d = 2) => [pct(x, d), `num ${x >= 0 ? 'pos' : 'neg'}`];
 
 async function readFile(input) {
   const f = input.files && input.files[0];
   return f ? f.text() : '';
 }
 
+async function load(session) {
+  if ($('src-files').checked) {
+    const stocks = await readFile($('stocks-file'));
+    if (!stocks) throw new Error('choose a stocks CSV file first');
+    session.loadCsv(stocks, await readFile($('series-file')));
+  } else {
+    session.loadSample();
+  }
+  session.setDayCost(100 * (+$('cost-pct').value || 0));
+}
+
 async function run() {
   $('run').disabled = true;
   try {
-    const session = new ofm.Session();
+    let session = new ofm.Session();
     status('Reading the data…');
     await yieldToPaint();
-    if ($('src-files').checked) {
-      const stocks = await readFile($('stocks-file'));
-      if (!stocks) throw new Error('choose a stocks CSV file first');
-      session.loadCsv(stocks, await readFile($('series-file')));
-    } else {
-      session.loadSample();
-    }
-    const dealing = +$('cost-pct').value || 0, stamp = +$('stamp-pct').value || 0;
-    const costs = [100 * (dealing + stamp), 100 * dealing, +$('fut-bps').value || 0];
-    const dayBps = 100 * (+$('day-pct').value || 0);
-    session.setUniverseHedge($('universe-hedge').checked);
-    session.setDayCost(dayBps);
+    await load(session);
     const engine = $('engine').value;
-    let json, note;
+    let json, note = '';
     const t0 = performance.now();
-    const cpu = async (which, why) => {
-      status(`Running on the ${which === 'emulated' ? 'emulated GPU' : 'reference engine'}…`);
-      await yieldToPaint();
-      json = session.runCpu(which, ...costs);
-      note = why;
-    };
     if (engine === 'emulated' || engine === 'reference') {
-      await cpu(engine, '');
+      status(`Running on the ${engine === 'emulated' ? 'emulated GPU' : 'reference engine'}…`);
+      await yieldToPaint();
+      json = session.runCpu(engine, ...MODEL_COSTS);
     } else {
       try {
-        const mode = engine === 'gpu-cpu' ? 'software' : 'auto';
         status('Running the kernels on WebGPU…');
-        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`), mode);
-        json = session.finishGpu(...costs, g.ms, g.adapter);
-        note = '';
+        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`), engine === 'gpu-cpu' ? 'software' : 'auto');
+        json = session.finishGpu(...MODEL_COSTS, g.ms, g.adapter);
       } catch (e) {
         if (engine === 'gpu' || engine === 'gpu-cpu') throw e;
         session.delete();
-        const fresh = new ofm.Session();
-        if ($('src-files').checked) fresh.loadCsv(await readFile($('stocks-file')), await readFile($('series-file')));
-        else fresh.loadSample();
-        fresh.setUniverseHedge($('universe-hedge').checked);
-        fresh.setDayCost(dayBps);
+        session = new ofm.Session();
+        await load(session);
         status('WebGPU unavailable; running the emulated GPU…');
         await yieldToPaint();
-        json = fresh.runCpu('emulated', ...costs);
-        note = `WebGPU unavailable (${e.message}); the same kernels ran on the CPU.`;
-        fresh.delete();
+        json = session.runCpu('emulated', ...MODEL_COSTS);
+        note = ` · WebGPU unavailable (${e.message}); the same kernels ran on the CPU`;
       }
     }
-    last = JSON.parse(json);
-    render(last, note, performance.now() - t0);
-    renderOrders(last, $('src-files').checked ? 'Your data' : 'Sample market (synthetic)');
+    session.delete();
+    const r = JSON.parse(json);
+    status(`Done in ${Math.round(performance.now() - t0).toLocaleString('en-GB')} ms · ${r.engine}${note}`);
+    render(r, $('src-files').checked ? 'Your data' : 'Sample market (synthetic)');
   } catch (e) {
     status(`Could not run: ${e.message}`);
   } finally {
@@ -100,105 +89,33 @@ async function run() {
   }
 }
 
-function render(r, note, ms) {
-  $('results').hidden = false;
-  if (ms > 0) status(`Done in ${Math.round(ms).toLocaleString('en-GB')} ms · ${r.engine}${note ? ' · ' + note : ''}`);
-  const whole = r.parts[0].rows;
-  const m = whole.find((x) => x.name === 'model'), k = whole.find((x) => x.name.startsWith('market'));
-  const h = whole.find((x) => x.name === 'model + futures hedge');
-  const pass = (ok) => `<span class="pill ${ok ? 'pass' : 'fail'}">${ok ? 'passes' : 'fails'}</span>`;
+// Up to 10 day trades for the next open: buy at the open, sell at the stop, the take-profit or the close.
+function render(r, source = 'UK') {
+  shown = [r, source];
+  const D = r.day;
+  if (!D) { $('asof').textContent = 'This scan has no daily trades yet; they appear after the next scheduled run.'; return; }
+  const n = D.orders.length;
+  $('asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
+  const level = (x) => (x == null ? 'none' : pct(x, 2));
+  table($('plan'), [['Buy at the open'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+    n ? D.orders.map((o) => [[o.ticker], signed(o.tradeReturn, 2), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
+      : [{ gap: 'no trades: none is expected to make money after costs; stay in cash' }]);
+
+  const whole = r.parts[0].rows, b = whole.find((x) => x.name === D.name), k = whole.find((x) => x.name.startsWith('market'));
+  const half = (i) => r.parts[i].rows.find((x) => x.name === D.name);
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Model, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year · ${pass(r.pass)}</span></div>
-    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${k.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(k.annualReturn)} a year</span></div>
-    <div class="tile"><span class="k">Model + futures hedge</span><span class="v">${h.sharpe.toFixed(2)}</span><span class="s">${r.hedgeSeries ? `hedged with ${r.hedgeSeries}, on average ${pct(r.trades.hedgeShare, 0)} of the book` : 'no futures series'} · ${pass(r.passHedged)}</span></div>`;
+    <div class="tile"><span class="k">Daily trades, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${pct(b.annualReturn)}</span><span class="s">a year · Sharpe ${b.sharpe.toFixed(2)} · max drawdown ${pct(b.maxDrawdown, 0).slice(1)} · halves ${pct(half(1).annualReturn)} and ${pct(half(2).annualReturn)}</span></div>
+    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${pct(k.annualReturn)}</span><span class="s">a year · Sharpe ${k.sharpe.toFixed(2)} · max drawdown ${pct(k.maxDrawdown, 0).slice(1)}</span></div>`;
 
-  // Expected returns.
-  $('expected-note').textContent = `As of the close on ${r.asOf}: expected return over the market for the next day, and over a forecast's expected life of ${r.life.toFixed(1)} days. A stock is bought when that beats the round trip of ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp, and sold when it lags by more.`;
-  const ex = r.expected;
-  const maxAbs = Math.max(...ex.map((x) => Math.abs(x.overLife)), 1e-12);
-  const row = (x) => {
-    const bar = document.createElement('td');
-    bar.className = 'bar';
-    const box = document.createElement('div');
-    box.className = 'barbox';
-    const s = document.createElement('span');
-    s.className = x.overLife >= 0 ? 'up' : 'down';
-    s.style.width = `${(50 * Math.abs(x.overLife)) / maxAbs}%`;
-    box.append(s);
-    bar.append(box);
-    return [[x.ticker], [bp(x.daily, 2), `num ${x.daily >= 0 ? 'pos' : 'neg'}`], [bp(x.overLife), `num ${x.overLife >= 0 ? 'pos' : 'neg'}`], bar,
-      [x.held ? 'held' : ''], [x.order > 0 ? 'buy at next open' : x.order < 0 ? 'sell at next open' : '']];
-  };
-  const n = 15;
-  const rows = showAll || ex.length <= 2 * n ? ex.map(row) : [...ex.slice(0, n).map(row), { gap: `${ex.length - 2 * n} more stocks` }, ...ex.slice(-n).map(row)];
-  table($('expected'), [['Stock'], ['Next day (bp)', 'num'], ['Over life (bp)', 'num'], [''], ['Position'], ['Order']], rows);
-  $('expected-all').textContent = showAll ? 'Show the top and bottom 15' : `Show all ${ex.length} stocks`;
-  $('expected-all').hidden = ex.length <= 2 * n;
-
-  // Backtest.
+  const recent = r.recent || [];
+  table($('recent'), [['Day'], ['Daily trades', 'num'], ['Market', 'num']],
+    recent.slice().reverse().map((d) => [[d.date], d.day == null ? ['–', 'num'] : signed(d.day), signed(d.market)]));
   drawChart(r);
-  const partRows = [];
-  r.parts.forEach((p) => {
-    partRows.push({ gap: `${p.name}: ${p.from} – ${p.to}` });
-    p.rows.forEach((x) => partRows.push([[x.name], [pct(x.annualReturn), 'num'], [pct(x.volatility), 'num'], [x.sharpe.toFixed(2), 'num'], [pct(x.maxDrawdown), 'num']]));
-  });
-  table($('parts'), [['Strategy'], ['Return / yr', 'num'], ['Volatility', 'num'], ['Sharpe', 'num'], ['Max drawdown', 'num']], partRows);
-  const t = r.trades;
-  $('trades').textContent = `${t.count} closed trades: ${t.wins} gained (mean ${pct(t.meanWin, 2)}), ${t.losses} lost (mean ${pct(t.meanLoss, 2)}). Turnover ${t.turnoverPerYear.toFixed(1)}× a year; ${t.meanHoldings.toFixed(0)} stocks held on average.`;
-  table($('years'), [['Year'], ['Model', 'num'], ['Hedged', 'num'], ['Market', 'num'], ...(r.day ? [['Daily book', 'num']] : [])],
-    r.years.map((y) => [[y.year], ...y.returns.map((v) => [pct(v), `num ${v >= 0 ? 'pos' : 'neg'}`])]));
-  const used = r.factors.filter((f) => f.premium !== 0 && f.premium != null).sort((a, b) => Math.abs(b.t) - Math.abs(a.t));
-  table($('factors'), [['Signal'], ['t', 'num'], ['Premium (bp/day)', 'num']],
-    used.length ? used.map((f) => [[f.name], [f.t.toFixed(2), 'num'], [bp(f.premium, 2), `num ${f.premium >= 0 ? 'pos' : 'neg'}`]]) : [{ gap: 'no factor has enough evidence yet' }]);
-  renderStructure(r);
-  $('facts').textContent = `${r.stocks} stocks, ${r.days} days (${r.from} – ${r.to}); horizons ${r.horizons.join(', ')} days; ${r.records} daily factor records; ${r.engine}.`;
-}
-
-function renderStructure(r) {
-  const st = r.structure;
-  const box = $('structure').closest('.two');
-  box.hidden = !st;
-  if (!st) return;
-  const f = (x, d = 3) => (x == null ? '–' : x.toFixed(d));
-  table($('structure'), [['Half-life'], ['Tree length', 'num'], ['Dimension', 'num'], ['Geodesic', 'num']],
-    st.latest.map((x) => [[`${x.halfLife} days`], [f(x.treeLength), 'num'], [f(x.dimension), 'num'], [f(x.geodesic, 2), 'num']]));
-  const canvas = $('structure-chart');
-  const css = getComputedStyle(document.documentElement);
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  canvas.width = w * dpr, canvas.height = h * dpr;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
-  const lines = [['treeLength', '--model', 'tree length'], ['dimension', '--hedged', 'effective dimension']];
-  const pad = { l: 8, r: 8, t: 8, b: 20 };
-  lines.forEach(([key, color]) => {
-    const v = st.series[key];
-    const ok = v.filter((x) => x != null);
-    if (!ok.length) return;
-    const lo = Math.min(...ok), hi = Math.max(...ok);
-    ctx.strokeStyle = css.getPropertyValue(color).trim();
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let started = false;
-    v.forEach((x, i) => {
-      if (x == null) { started = false; return; }
-      const X = pad.l + (i / Math.max(1, v.length - 1)) * (w - pad.l - pad.r);
-      const Y = pad.t + (1 - (x - lo) / Math.max(hi - lo, 1e-12)) * (h - pad.t - pad.b);
-      if (started) ctx.lineTo(X, Y); else ctx.moveTo(X, Y), started = true;
-    });
-    ctx.stroke();
-  });
-  ctx.fillStyle = css.getPropertyValue('--muted').trim();
-  ctx.font = '11px "IBM Plex Mono", monospace';
-  ctx.fillText(r.dates[0].slice(0, 4), pad.l, h - 5);
-  ctx.fillText(r.dates[r.dates.length - 1].slice(0, 4), w - pad.r - 30, h - 5);
-  $('structure-legend').innerHTML = lines.map(([, color, name]) => `<span><i style="background:${css.getPropertyValue(color).trim()}"></i>${name} (half-life ${st.series.halfLife} days, each scaled to its range)</span>`).join('');
 }
 
 function drawChart(r) {
   const css = getComputedStyle(document.documentElement);
-  drawCurves($('chart'), $('legend'), r.dates, SERIES.filter(([name]) => r.curves[name]).map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'model' })));
+  drawCurves($('chart'), $('legend'), r.dates, SERIES.filter(([name]) => r.curves[name]).map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'daily trades' })));
 }
 
 function drawCurves(canvas, legend, dates, curves) {
@@ -218,7 +135,7 @@ function drawCurves(canvas, legend, dates, curves) {
   ctx.fillStyle = css.getPropertyValue('--muted').trim();
   ctx.strokeStyle = css.getPropertyValue('--rule').trim();
   ctx.lineWidth = 1;
-  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
+  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
   ticks.forEach((v) => {
     const y = Y(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
@@ -238,61 +155,17 @@ function drawCurves(canvas, legend, dates, curves) {
   legend.innerHTML = curves.map((c) => `<span><i style="background:${c.color}"></i>${c.name} ${c.v[c.v.length - 1].toFixed(2)}×</span>`).join('');
 }
 
-// The model portfolio's orders for the next open (buys and sales; the rest of the book is held).
-function renderOrders(r, source = 'UK') {
-  shownTop = [r, source];
-  const orders = (r.expected || []).filter((e) => e.order !== 0);
-  const held = (r.expected || []).filter((e) => (e.held && e.order >= 0) || e.order > 0).length;
-  const buys = orders.filter((e) => e.order > 0).length, sales = orders.length - buys;
-  const whole = r.parts[0].rows, m = whole.find((x) => x.name === 'model'), k = whole.find((x) => x.name.startsWith('market'));
-  $('top10-asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${buys} purchase${buys === 1 ? '' : 's'} and ${sales} sale${sales === 1 ? '' : 's'} at the next open; ${held} stocks held after them.`;
-  table($('top10-plan'), [['Order'], ['Stock'], ['Expected excess return, a day', 'num'], [`Over the forecast's life (${(r.life || 1).toFixed(1)} days)`, 'num']],
-    orders.length ? orders.map((e) => [[e.order > 0 ? 'buy at open' : 'sell at open'], [e.ticker], [`${bp(e.daily, 2)} bp`, `num ${e.daily >= 0 ? 'pos' : 'neg'}`], [`${bp(e.overLife, 1)} bp`, 'num']])
-      : [{ gap: 'no orders: the portfolio keeps its holdings at the next open' }]);
-  $('top10-plan-note').textContent = `The model portfolio holds its stocks over several days in equal shares and trades only when a stock's expected return over the forecast's life beats the round trip (${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp). Orders are filled at the open. Prices are not published under the data licence.`;
-  $('top10-verdict').innerHTML = `
-    <div class="tile"><span class="k">Model portfolio, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year, max drawdown ${pct(m.maxDrawdown)}</span></div>
-    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${k.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(k.annualReturn)} a year, max drawdown ${pct(k.maxDrawdown)}</span></div>`;
-  const recent = r.recent || [];
-  const signed = (x) => [pct(x, 2), `num ${x >= 0 ? 'pos' : 'neg'}`];
-  table($('top10-recent'), [['Day'], ['Model portfolio', 'num'], ...(r.day ? [['Daily book', 'num']] : []), ['Market', 'num']],
-    recent.slice().reverse().map((d) => [[d.date], signed(d.ret), ...(r.day ? [d.day == null ? ['–', 'num'] : signed(d.day)] : []), signed(d.market)]));
-  renderDay(r);
-}
-
-// The daily book: day trades at the next open, with each stock's stop and take-profit from the open.
-function renderDay(r) {
-  const D = r.day;
-  $('daybook').hidden = !D;
-  if (!D) return;
-  const whole = r.parts[0].rows, row = whole.find((x) => x.name === D.name), m = whole.find((x) => x.name === 'model');
-  const level = (x) => (x == null ? 'none' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(2)}%`);
-  $('day-asof').textContent = `Close of ${r.asOf} · ${D.orders.length} day trade${D.orders.length === 1 ? '' : 's'} for the next open (up to 10, a tenth of the capital each; empty slots stay in cash) · costs ${(D.buyBps / 100).toFixed(2)}% per side.`;
-  table($('day-plan'), [['Stock'], ['Expected, a day', 'num'], ['Stop from the open', 'num'], ['Take-profit from the open', 'num'], ['Record, a day', 'num'], ['Record window', 'num']],
-    D.orders.length ? D.orders.map((o) => [[o.ticker], [`${bp(o.expected, 2)} bp`, `num ${o.expected >= 0 ? 'pos' : 'neg'}`], [level(o.stop), 'num neg'], [level(o.take), 'num pos'],
-      [pct(o.record, 3), 'num'], [`${o.window} days`, 'num']])
-      : [{ gap: 'no day trades: no stock among the best expected has a record that beats cash' }]);
-  $('day-note').textContent = 'Buy at the open; sell at the stop, the take-profit or the close, whichever comes first (a stock is sold at the close if neither level is reached). Stops and take-profits are each stock\'s own pair, picked by a network that learns every day from all the stocks\' outcomes; a stock is booked only if its own record of these day trades, shrunk by its t-statistic, beats cash. Backtest fills: the stop when a day touched both levels. It needs cheap dealing (CFDs or spread bets): at 0.10% per side it loses to the model portfolio.';
-  $('day-verdict').innerHTML = row ? `
-    <div class="tile"><span class="k">Daily book, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${row.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(row.annualReturn)} a year, max drawdown ${pct(row.maxDrawdown)}; ${D.tradesPerDay.toFixed(1)} trades a day</span></div>
-    <div class="tile"><span class="k">Against the model portfolio</span><span class="v">${D.lead.mean >= 0 ? '+' : ''}${(100 * D.lead.mean).toFixed(3)}%</span><span class="s">a day on average (t ${D.lead.t.toFixed(2)}${Math.abs(D.lead.t) < 2 ? ', not significant' : ''}); ahead on ${pct(D.lead.ahead, 0)} of days; model ${pct(m.annualReturn)} a year</span></div>` : '';
-}
 
 $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
-$('expected-all').addEventListener('click', () => { showAll = !showAll; if (last) render(last, '', 0); });
-window.addEventListener('resize', () => { if (last) { drawChart(last); renderStructure(last); } if (shownTop) renderOrders(...shownTop); });
+window.addEventListener('resize', () => { if (shown && shown[0].day) drawChart(shown[0]); });
 
 // The latest UK scan, published by the scheduled UK workflow (results only, no prices).
 fetch('data/uk.json', { cache: 'no-cache' })
   .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-  .then((r) => {
-    last = scan = r;
-    renderOrders(r);
-    render(r, '', 0);
-  })
-  .catch(() => { $('top10-asof').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
+  .then((r) => render(r))
+  .catch(() => { $('asof').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
 
 createOfm().then((m) => {
   ofm = m;
