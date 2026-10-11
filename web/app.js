@@ -98,7 +98,7 @@ function render(r, source = 'UK') {
   $('asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
   table($('plan'), [['Buy at the open'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
-    n ? D.orders.map((o) => [[o.ticker], signed(o.tradeReturn, 2), [level(o.stop), 'num neg'], [level(o.take), 'num pos']])
+    n ? D.orders.map((o) => [[o.ticker], signed(o.tradeReturn, 2), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
       : [{ gap: 'no trades: none is expected to make money after costs; stay in cash' }]);
 
   const whole = r.parts[0].rows, b = whole.find((x) => x.name === D.name), k = whole.find((x) => x.name.startsWith('market'));
@@ -135,7 +135,7 @@ function drawCurves(canvas, legend, dates, curves) {
   ctx.fillStyle = css.getPropertyValue('--muted').trim();
   ctx.strokeStyle = css.getPropertyValue('--rule').trim();
   ctx.lineWidth = 1;
-  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
+  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
   ticks.forEach((v) => {
     const y = Y(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
