@@ -626,10 +626,12 @@ def translate(source, structs, struct_defs, name):
         head = f"void {fname}({', '.join(f'{t} {p}' for p, t, _ in plist)}) {{"
         out += ["  " + head] + em.plain(body, em.priv, 2) + ["  }"]
         args = ", ".join(value[b] for _, _, b in plist)
+        parrays = {m[1] for m in members if isinstance(m, tuple) and m[3]}
+        privs = [f"      for (auto& x_ : {v}) x_ = {{}};" if v in parrays else f"      {v} = {{}};" for v in private_vars]
         out += ["  void workgroup(uvec3 wid_) {"] + reset + [
             "    for (L = 0; L < kLanes; ++L) {",
             f"      const uvec3 lid_ = {lane_vec(wg, 'L')};",
-            "      (void)lid_;"] + [f"      {v} = {{}};" for v in private_vars] + [f"      {fname}({args});", "    }", "    L = 0;", "  }"]
+            "      (void)lid_;"] + privs + [f"      {fname}({args});", "    }", "    L = 0;", "  }"]
     out.append(f'  static const char* wgsl() {{ return R"wgsl({source})wgsl"; }}')
     out.append("};")
     return out

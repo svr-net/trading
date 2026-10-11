@@ -6,8 +6,8 @@ each stock's expected return and a daily backtest against holding the market, af
 
 ## One kernel source for every backend
 
-The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect;
-`kernels/daytrade`: levels, book). WebGPU runs the WGSL as written. At build time
+The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect). WebGPU
+runs the WGSL as written. At build time
 `tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `float` is the
 emulated GPU (the WebAssembly fallback), `double` the reference. Kernels that cooperate through
 workgroup memory and barriers are lowered the way GPU compilers lower to CPUs: each stretch between
@@ -19,14 +19,21 @@ cross a barrier. Native builds run the workgroups on all CPU threads.
 - **gram** (one workgroup per 8 x 8 tile of outputs): `[Z y]'[Z y]` as a tiled matrix product,
   32 stocks a step through workgroup memory as `vec4` dot products.
 - **expect**: the day's factor weights staged in workgroup memory, four signals a step.
-- **levels** (one workgroup per stock): lane 0 keeps the running state; the 64 lanes share the
-  sorted insertion, the stop and take-profit sweeps (two-pass parallel scans), the reductions and,
-  fused, the trade on the next day's bar. Its width is a WGSL `override`: 64 on WebGPU, one in the
-  C++ translation, where the same code is the sequential sweep.
 
 Engines on the page: the GPU; where there is no graphics support, the browser's software WebGPU
 adapter (a GPU simulated on the CPU, running the same WGSL); without WebGPU, the WebAssembly
 translation.
+
+## What is traded
+
+The model portfolio: the stocks it holds over several days in equal shares, traded at the open
+only when a stock's expected return over the forecast's life beats the round trip. On the UK data
+(Oct 2018 – Oct 2026, 250 stocks, 0.10% a side) it made 9.4% a year (Sharpe 0.61) against 2.8%
+(0.25) for the market, and beat the market in both halves. Same-day top-10 trades with learnt
+stops and take-profits, and a self-adaptive selector over them, the market and cash, were tested
+and removed: after costs each did worse than holding the model portfolio (the day trades -12.3% a
+year; the selector +6.8%). The page and the daily email give the portfolio's orders for the next
+open and its record.
 
 ## The model
 

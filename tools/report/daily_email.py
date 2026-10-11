@@ -1,8 +1,8 @@
-"""Daily report of the top-10 same-day trades: the day's booked trades against its bars, the
-running record, and the trades to book at the next open. Results only (no prices).
+"""Daily report of the model portfolio: the day's result against the market, the running record,
+and the orders for the next open. Results only (no prices).
 
   python tools/report/daily_email.py track  report/ofm.json web/data/track.json
-      adds the scan's last completed day to the live track record (once per date)
+      adds the scan's last day to the live track record (once per date)
   python tools/report/daily_email.py send   report/ofm.json web/data/track.json
       sends the report by SMTP; settings from the environment (repository secrets):
       SMTP_SERVER, SMTP_PORT (465: SSL, otherwise STARTTLS), SMTP_USERNAME, SMTP_PASSWORD,
@@ -23,30 +23,18 @@ def pct(x, d=2):
     return "–" if x is None else f"{100 * x:+.{d}f}%"
 
 
-def prob(x):
-    return "–" if x is None else f"{100 * x:.0f}%"
-
-
-def strategy(scan):
-    return next(s for s in scan["top10"]["strategies"] if s.get("dayTrades"))
-
-
-def booked_last_day(s):
-    return [c for c in s.get("lastDay", []) if c["exit"] != "still open"]
+def bp(x, d=2):
+    return "–" if x is None else f"{1e4 * x:+.{d}f} bp"
 
 
 def update_track(scan, track):
-    s = strategy(scan)
-    date = s.get("lastDate")
-    if not date or any(d["date"] == date for d in track["days"]):
+    recent = scan.get("recent", [])
+    if not recent:
         return False
-    day = next((x for x in s.get("recent", []) if x["date"] == date), None)
-    track["days"].append({
-        "date": date,
-        "ret": day["ret"] if day else 0.0,
-        "trades": [{"ticker": c["ticker"], "exit": c["exit"], "ret": c["ret"], "stop": c["stop"], "take": c["take"]}
-                   for c in booked_last_day(s)],
-    })
+    day = recent[-1]
+    if any(d["date"] == day["date"] for d in track["days"]):
+        return False
+    track["days"].append({"date": day["date"], "ret": day["ret"], "market": day.get("market")})
     track["days"].sort(key=lambda d: d["date"])
     return True
 
@@ -59,43 +47,38 @@ def compound(rets):
 
 
 def build(scan, track):
-    s = strategy(scan)
-    costs = scan["costs"]
-    date, as_of = s.get("lastDate"), scan["asOf"]
-    today = booked_last_day(s)
-    recent = s.get("recent", [])
-    day = next((x for x in recent if x["date"] == date), None)
-    plan = [p for p in s["plan"] if p["action"] == 1]
-    whole = s["parts"][0]["rows"]
-    policy, market = whole[0], next(r for r in whole if r["name"].startswith("market"))
+    recent = scan.get("recent", [])
+    day = recent[-1] if recent else None
+    date = day["date"] if day else scan["asOf"]
+    orders = [e for e in scan["expected"] if e["order"] != 0]
+    buys = [e for e in orders if e["order"] > 0]
+    sales = [e for e in orders if e["order"] < 0]
+    held = sum(1 for e in scan["expected"] if (e["held"] and e["order"] >= 0) or e["order"] > 0)
+    whole = scan["parts"][0]["rows"]
+    model = next(r for r in whole if r["name"] == "model")
+    market = next(r for r in whole if r["name"].startswith("market"))
     live = track["days"]
-    live_ret = compound(d["ret"] for d in live)
-    last5, last20 = compound(x["ret"] for x in recent[-5:]), compound(x["ret"] for x in recent[-20:])
+    last5 = compound(x["ret"] for x in recent[-5:])
+    last20 = compound(x["ret"] for x in recent[-20:])
+    costs = scan["costs"]
 
-    subject = (f"UK top-10 · {date}: {pct(day['ret'] if day else None)} ({len(today)} trade{'s' if len(today) != 1 else ''})"
-               f" · {len(plan)} to book for the next open")
-
+    subject = (f"UK model portfolio · {date}: {pct(day['ret'] if day else None)} (market {pct(day.get('market') if day else None)})"
+               f" · next open: {len(buys)} buy, {len(sales)} sell")
     lines = [subject, ""]
-    lines.append(f"Trades of {date} (planned at the close before), against the day's bars, relative to the open:")
-    for c in today:
-        lines.append(f"  {c['ticker']:<6} stop {pct(c['stop'])} take {pct(c['take'])} | high {pct(c['high'])} low {pct(c['low'])}"
-                     f" close {pct(c['close'])} | {c['exit']}, net {pct(c['ret'])}")
-    if not today:
-        lines.append("  none booked")
-    lines.append(f"Day: {pct(day['ret'] if day else None)} (the 10 slots, cash slots earning nothing, after costs)")
+    lines.append(f"Day {date}: portfolio {pct(day['ret'] if day else None)}, market {pct(day.get('market') if day else None)} (net of costs)")
     lines.append(f"Last 5 days {pct(last5)}, last 20 days {pct(last20)}; live record since {live[0]['date'] if live else '–'}:"
-                 f" {pct(live_ret)} over {len(live)} days")
-    lines.append(f"Backtest {s['parts'][0]['from']} – {s['parts'][0]['to']}: {pct(policy['annualReturn'], 1)} a year, Sharpe"
-                 f" {policy['sharpe']:.2f}, max drawdown {100 * policy['maxDrawdown']:.1f}%; market {pct(market['annualReturn'], 1)} a year")
+                 f" {pct(compound(d['ret'] for d in live))} over {len(live)} days")
+    lines.append(f"Backtest {scan['parts'][0]['from']} – {scan['parts'][0]['to']}: {pct(model['annualReturn'], 1)} a year, Sharpe"
+                 f" {model['sharpe']:.2f}, max drawdown {100 * model['maxDrawdown']:.1f}%; market {pct(market['annualReturn'], 1)} a year,"
+                 f" Sharpe {market['sharpe']:.2f}")
     lines.append("")
-    lines.append(f"To book at the next open (after the close of {as_of}): buy at the open, sell at the stop, the take-profit or the close")
-    for p in plan:
-        lines.append(f"  {p['rank']:>2} {p['ticker']:<6} stop {pct(p['stop'])} take {pct(p['take'])} expected close {pct(p['close'])}"
-                     f" | P(stop) {prob(p['pStopDay'])} P(take) {prob(p['pTakeDay'])}")
-    if not plan:
-        lines.append("  none: no stock's learnt levels beat cash after costs")
+    lines.append(f"Orders at the next open (after the close of {scan['asOf']}); {held} stocks held after them:")
+    for e in orders:
+        lines.append(f"  {'BUY ' if e['order'] > 0 else 'SELL'} {e['ticker']:<6} expected {bp(e['daily'])} a day")
+    if not orders:
+        lines.append("  none: keep the holdings")
     lines.append("")
-    lines.append(f"Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Levels relative to the open."
+    lines.append(f"Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Fills at the open."
                  " Research, not investment advice. https://svr-net.github.io/trading/")
     text = "\n".join(lines)
 
@@ -106,20 +89,11 @@ def build(scan, track):
         return f"<table style='border-collapse:collapse;font:13px monospace'><tr>{th}</tr>{body}</table>"
 
     page = [f"<h2 style='font-family:sans-serif'>{html.escape(subject)}</h2>",
-            f"<h3 style='font-family:sans-serif'>Trades of {date} against the day's bars</h3>",
-            table(["Stock", "Stop", "Take", "High", "Low", "Close", "Exit", "Net"],
-                  [[c["ticker"], pct(c["stop"]), pct(c["take"]), pct(c["high"]), pct(c["low"]), pct(c["close"]), c["exit"], pct(c["ret"])]
-                   for c in today] or [["none booked", "", "", "", "", "", "", ""]]),
-            f"<p style='font-family:sans-serif'>Day {pct(day['ret'] if day else None)} · last 5 days {pct(last5)} · last 20 days {pct(last20)}"
-            f" · live record {pct(live_ret)} over {len(live)} days<br>Backtest: {pct(policy['annualReturn'], 1)} a year, Sharpe"
-            f" {policy['sharpe']:.2f}, max drawdown {100 * policy['maxDrawdown']:.1f}% (market {pct(market['annualReturn'], 1)} a year)</p>",
-            f"<h3 style='font-family:sans-serif'>To book at the next open (close of {as_of})</h3>",
-            table(["Rank", "Stock", "Stop", "Take", "Expected close", "P(stop)", "P(take)"],
-                  [[p["rank"], p["ticker"], pct(p["stop"]), pct(p["take"]), pct(p["close"]), prob(p["pStopDay"]), prob(p["pTakeDay"])]
-                   for p in plan] or [["", "none", "", "", "", "", ""]]),
-            "<p style='font-family:sans-serif;color:#666'>Buy at the open, sell at the stop, the take-profit or the close."
-            f" Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Levels relative to the open."
-            " Research, not investment advice. <a href='https://svr-net.github.io/trading/'>svr-net.github.io/trading</a></p>"]
+            "<p style='font-family:sans-serif'>" + "<br>".join(html.escape(x) for x in lines[2:5]) + "</p>",
+            f"<h3 style='font-family:sans-serif'>Orders at the next open ({held} stocks held after them)</h3>",
+            table(["Order", "Stock", "Expected, a day"], [["BUY" if e["order"] > 0 else "SELL", e["ticker"], bp(e["daily"])] for e in orders]
+                  or [["none", "keep the holdings", ""]]),
+            "<p style='font-family:sans-serif;color:#666'>" + html.escape(lines[-1]) + "</p>"]
     return subject, text, "".join(page)
 
 
@@ -157,7 +131,7 @@ def main():
         with open(track_path) as f:
             track = json.load(f)
     except FileNotFoundError:
-        track = {"about": "Live record of the top-10 same-day trades, one entry per day (results only).", "days": []}
+        track = {"about": "Live record of the model portfolio, one entry per day (results only).", "days": []}
     if mode == "track":
         if update_track(scan, track):
             with open(track_path, "w") as f:

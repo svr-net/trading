@@ -7,41 +7,24 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=33">
+<link rel="stylesheet" href="style.css?v=36">
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
     <h1>UK Factor Model</h1>
-    <p class="lede">A daily scan of the 250 most traded UK shares: the trades the model proposes for the next open, every stock's expected return, and the backtest against holding the market after real costs. Every setting comes from the data; the only inputs are the costs.</p>
+    <p class="lede">A daily scan of the 250 most traded UK shares: the model portfolio's orders for the next open, every stock's expected return, and the backtest against holding the market after real costs. Every setting comes from the data; the only inputs are the costs.</p>
   </header>
 
   <section id="top10" aria-labelledby="top10-title">
-    <h2 id="top10-title">Trades for the next open</h2>
+    <h2 id="top10-title">Orders for the next open</h2>
     <p class="muted" id="top10-asof">Loading the latest UK scan…</p>
-    <div class="tabs" role="group" aria-label="Ranking" id="top10-tabs"></div>
     <div class="table-scroll"><table id="top10-plan"></table></div>
     <p class="hint" id="top10-plan-note"></p>
-    <p class="muted" id="top10-note"></p>
-    <div id="top10-check-wrap" hidden>
-      <h3 style="margin-top:22px">Planned vs actual</h3>
-      <div class="verdict" id="top10-eval"></div>
-      <p class="muted" id="top10-check-note"></p>
-      <div class="table-scroll"><table id="top10-check"></table></div>
-    </div>
-
-    <h3 style="margin-top:22px">How this portfolio did</h3>
     <div class="verdict" id="top10-verdict"></div>
-    <div class="chart"><canvas id="top10-chart" height="320" aria-label="Growth of 1 for the rolling top 10 with and without stops, and the market"></canvas><div class="legend" id="top10-legend"></div></div>
-    <div class="two">
-      <div><h3>Performance</h3><div class="table-scroll"><table id="top10-parts"></table></div></div>
-      <div><h3>How positions ended</h3><div class="table-scroll"><table id="top10-exits"></table></div></div>
-    </div>
-    <div class="two">
-      <div><h3>Calendar years</h3><div class="table-scroll"><table id="top10-years"></table></div></div>
-      <div id="top10-grid-wrap"><h3>Each fixed stop / take-profit pair, in hindsight</h3><p class="hint">Sharpe ratio over the whole period; rows the stop, columns the take-profit, in multiples of the stock's volatility over the holding period. The live portfolio never sees this table: each day it uses the pair that had grown most up to then.</p><div class="table-scroll"><table id="top10-grid"></table></div></div>
-    </div>
+    <h3 style="margin-top:22px">Last 20 days</h3>
+    <div class="table-scroll"><table id="top10-recent"></table></div>
   </section>
 
   <section id="results" hidden>
@@ -114,6 +97,6 @@
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=33"></script>
+<script type="module" src="app.js?v=36"></script>
 </body>
 </html>
