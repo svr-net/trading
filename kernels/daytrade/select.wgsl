@@ -1,21 +1,23 @@
 // #include header.wgsl
-// The self-adaptive selector (one invocation; after book). At each close t it scores three
+// The self-adaptive selector (one invocation; after book). At each close t it scores four
 // candidates on their own net records so far: 0 the learnt policy (the booked top 10), 1 the top 10
-// without stops, 2 the market bought and held; cash scores 0. Each record is an ADWIN window
+// without stops, 2 the market bought and held, 3 the model's own portfolio (held over several days,
+// traded only when a forecast beats the costs); cash scores 0. Each record is an ADWIN window
 // (Bifet and Gavalda 2007; scale-free bound, confidence 1/T: one false cut expected over the whole
 // history; each side at least the square root of the window) over the candidate's daily net
 // returns: it grows while the record is stable and drops its older part when it changes. The score
 // is the window's mean return shrunk by its own t-statistic, m * max(0, 1 - 1/t^2), as the factor
 // premia are, so a record no better than noise scores 0 and cash stays. The highest score is
-// followed on day t + 1; moving into or out of the market pays the dealing costs.
-// days[t][21]: the choice (0 cash, 1 learnt policy, 2 no stops, 3 market); [22]: the selector's net
-// return on day t + 1; [23 + c]: candidate c's score.
+// followed on day t + 1; moving into a held portfolio (market, model) pays the purchase cost on the
+// whole book, moving out of one the sale cost (the day trades pay their own round trips).
+// days[t][21]: the choice (0 cash, 1 learnt policy, 2 no stops, 3 market, 4 model portfolio); [22]:
+// the selector's net return on day t + 1; [23 + c]: candidate c's score.
 @group(0) @binding(10) var<storage, read_write> days : array<f32>;
-@group(0) @binding(12) var<storage, read> mkt : array<f32>;
+@group(0) @binding(12) var<storage, read> ext : array<f32>;  // [2][T]: the market's and the model portfolio's net return on day d
 @group(0) @binding(13) var<storage, read_write> sel : array<f32>;
 
-const NC : u32 = 3u;
-var<private> W0 : array<u32, 3>;
+const NC : u32 = 4u;
+var<private> W0 : array<u32, 4>;
 var<private> CNT : u32;
 
 fn rec(c : u32, k : u32, j : u32) -> f32 { return sel[(c * (P.T + 1u) + k) * 2u + j]; }
@@ -25,8 +27,10 @@ fn put(c : u32, k : u32, j : u32, v : f32) { sel[(c * (P.T + 1u) + k) * 2u + j] 
 fn candidate(c : u32, t : u32) -> f32 {
   if (c == 0u) { return days[t * KD]; }
   if (c == 1u) { return days[t * KD + 2u]; }
-  return mkt[t + 1u];
+  return ext[(c - 2u) * P.T + t + 1u];
 }
+
+fn held(choice : u32) -> bool { return choice == 3u || choice == 4u; }
 
 fn cut(c : u32) {
   loop {
@@ -92,8 +96,8 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     var r = 0.0;
     if (t + 1u < P.T) {
       if (choice > 0u) { r = candidate(choice - 1u, t); }
-      if (choice == 3u && prev != 3u) { r = r - P.buy; }
-      if (prev == 3u && choice != 3u) { r = r - P.sell; }
+      if (held(choice) && choice != prev) { r = r - P.buy; }
+      if (held(prev) && choice != prev) { r = r - P.sell; }
     }
     days[t * KD + 22u] = r;
     prev = choice;

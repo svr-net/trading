@@ -198,8 +198,8 @@ std::pair<double, double> firstTouch(double mu, double sigma, double lo, double 
 }
 
 const char* choiceName(int c) {
-  static const char* names[] = {"cash", "learnt policy", "top 10, no stops", "market (bought and held)"};
-  return names[c >= 0 && c < 4 ? c : 0];
+  static const char* names[] = {"cash", "learnt policy", "top 10, no stops", "market (bought and held)", "model portfolio (multi-day)"};
+  return names[c >= 0 && c < 5 ? c : 0];
 }
 
 // Today's ranking by expected return, walked down until K trades worth making are booked, each bought
@@ -208,7 +208,7 @@ const char* choiceName(int c) {
 // for the reference engine, single precision otherwise, as on the GPU).
 template <class R>
 daytrade::Buffers<R> packDayTrades(const Market& m, const Forecast& f, const Costs& costs, std::size_t K, std::size_t s, const std::vector<double>& life,
-                                   const std::vector<double>& market) {
+                                   const Backtest& bt) {
   namespace dt = daytrade;
   const std::size_t T = m.T(), N = m.N();
   dt::Buffers<R> b;
@@ -233,16 +233,18 @@ daytrade::Buffers<R> packDayTrades(const Market& m, const Forecast& f, const Cos
   b.obs.assign(N * 4 * T, R(0)), b.idx.assign(N * 2 * T, 0u);
   b.levels.assign(T * N * dt::kLevel, R(0)), b.trades.assign(T * N * dt::kTrade, R(0)), b.days.assign(T * dt::kDay, R(0));
   b.booked.assign((T + 1) * K, 0u);
-  // The market's day d is market[d - s - 1] (the backtest's series starts the day after s).
-  b.market.assign(T, R(0));
-  for (std::size_t k = 0; k < market.size() && s + 1 + k < T; ++k) b.market[s + 1 + k] = R(market[k]);
-  b.sel.assign(3 * (T + 1) * 2, R(0));
+  // The market's and the model portfolio's day d are their series' [d - s - 1] (the backtest's
+  // series start the day after s).
+  b.ext.assign(2 * T, R(0));
+  for (std::size_t k = 0; k < bt.market.size() && s + 1 + k < T; ++k) b.ext[s + 1 + k] = R(bt.market[k]);
+  for (std::size_t k = 0; k < bt.model.size() && s + 1 + k < T; ++k) b.ext[T + s + 1 + k] = R(bt.model[k]);
+  b.sel.assign(4 * (T + 1) * 2, R(0));
   return b;
 }
 
 template <class R>
 TopKResult assembleDayTrades(const Market& m, const Forecast& f, const Costs& costs, const daytrade::Buffers<R>& b, std::size_t K, std::size_t start,
-                             const std::vector<double>& life) {
+                             const std::vector<double>& life, const std::vector<int>& held, const std::vector<int>& orders) {
   namespace dt = daytrade;
   const std::size_t T = m.T(), N = m.N(), s0 = b.s;
   TopKResult r;
@@ -297,7 +299,25 @@ TopKResult assembleDayTrades(const Market& m, const Forecast& f, const Costs& co
   // The selector decides what the next day does: the learnt policy's trades, the top 10 without
   // stops, the market, or cash.
   r.choiceNow = static_cast<int>(dy(L, 21));
-  for (std::size_t c = 0; c < 3; ++c) r.scoresNow.push_back(dy(L, 23 + c));
+  for (std::size_t c = 0; c < 4; ++c) r.scoresNow.push_back(dy(L, 23 + c));
+  if (r.choiceNow == 4) {
+    // The model portfolio: already followed, its orders for the next open; newly chosen, the whole
+    // book it holds after them is bought at the open.
+    const bool already = !r.choices.empty() && r.choices.back() == 4;
+    for (std::size_t i = 0; i < N && i < orders.size(); ++i) {
+      const bool hold = (i < held.size() && held[i] && orders[i] >= 0) || orders[i] > 0;
+      const int action = already ? orders[i] : (hold ? 1 : 0);
+      if (action == 0) continue;
+      TopKOrder o;
+      o.asset = i, o.action = action, o.rank = 0, o.open = 0, o.sigma = lv(L, i, 6), o.ratio = kNaN, o.state = static_cast<int>(lv(L, i, 9));
+      o.stop = o.take = kNaN, o.close = std::isfinite(f.E(L, i)) ? std::expm1(f.E(L, i)) : kNaN;
+      o.pStopDay = o.pTakeDay = o.pStopLife = o.pTakeLife = kNaN;
+      r.orders[i] = action, r.tradeNext = true;
+      r.plan.push_back(o);
+    }
+    std::stable_sort(r.plan.begin(), r.plan.end(), [](const TopKOrder& x, const TopKOrder& y) { return x.action > y.action || (x.action == y.action && x.close > y.close); });
+    return r;
+  }
   if (r.choiceNow == 2) {
     std::vector<std::size_t> order;
     for (std::size_t i = 0; i < N; ++i)
@@ -332,10 +352,10 @@ TopKResult assembleDayTrades(const Market& m, const Forecast& f, const Costs& co
 
 template <class R>
 TopKResult dayTradesWith(const Market& m, const Forecast& f, const Costs& costs, std::size_t K, std::size_t start, const std::vector<double>& life,
-                         const std::vector<double>& market) {
-  auto b = packDayTrades<R>(m, f, costs, K, start - 1, life, market);
+                         const Backtest& bt) {
+  auto b = packDayTrades<R>(m, f, costs, K, start - 1, life, bt);
   daytrade::run(b, 64);
-  return assembleDayTrades(m, f, costs, b, K, start, life);
+  return assembleDayTrades(m, f, costs, b, K, start, life, bt.held, bt.orders);
 }
 
 // The forecast's life: 1 / (1 - rho), rho the mean day-to-day rank correlation of E so far.
@@ -428,8 +448,8 @@ std::vector<TopKResult> topKBacktests(const Market& m, const Forecast& f, const 
     }
     if (which == 0) {
       const bool reference = f.engine == "reference" || f.engine.rfind("Reference", 0) == 0;
-      results.push_back(reference ? dayTradesWith<double>(m, f, costs, K, bt.start, in.life, bt.market)
-                                                : dayTradesWith<float>(m, f, costs, K, bt.start, in.life, bt.market));
+      results.push_back(reference ? dayTradesWith<double>(m, f, costs, K, bt.start, in.life, bt)
+                                                : dayTradesWith<float>(m, f, costs, K, bt.start, in.life, bt));
       continue;
     }
     TopKResult r;
@@ -575,14 +595,15 @@ DayTradeJob prepareDayTrades(const Market& m, const Forecast& f, const Costs& co
   job.start = bt.start, job.K = K;
   if (bt.start == 0 || bt.start + 1 >= m.T() || m.N() <= K) return job;
   job.life = forecastLife(m, f);
-  job.buffers = packDayTrades<float>(m, f, costs, K, bt.start - 1, job.life, bt.market);
+  job.buffers = packDayTrades<float>(m, f, costs, K, bt.start - 1, job.life, bt);
+  job.held = bt.held, job.orders = bt.orders;
   job.ok = true;
   return job;
 }
 
 std::vector<TopKResult> finishDayTrades(const Market& m, const Forecast& f, const Costs& costs, const DayTradeJob& job) {
   if (!job.ok) return {};
-  return {assembleDayTrades(m, f, costs, job.buffers, job.K, job.start, job.life)};
+  return {assembleDayTrades(m, f, costs, job.buffers, job.K, job.start, job.life, job.held, job.orders)};
 }
 
 std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const Backtest& bt) {
@@ -594,7 +615,7 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
     const std::size_t step = std::max<std::size_t>(1, n / 600);
     std::vector<std::pair<std::string, const std::vector<double>*>> series = {
         {r.dayTrades ? "learnt policy" : "with adaptive stops", &r.daily}, {r.dayTrades ? "every day, no stops" : "without stops", &r.noStops}, {"market (bought and held)", &bt.market}};
-    if (r.dayTrades) series.insert(series.begin(), {"self-adaptive selector", &r.selected});
+    if (r.dayTrades) series.insert(series.begin(), {"self-adaptive selector", &r.selected}), series.insert(series.end() - 1, {"model portfolio (multi-day)", &bt.model});
     o << (q ? "," : "") << "{\"name\":" << str(r.name) << ",\"K\":" << r.K << ",\"dates\":[";
     for (std::size_t k = 0; k < n; k += step) o << (k ? "," : "") << str(m.dates[r.start + k]);
     o << "],\"curves\":{";
@@ -679,12 +700,12 @@ std::string topKJson(const Market& m, const std::vector<TopKResult>& rs, const B
         o << (k ? "," : "") << "{\"name\":" << str(r.wayRatios[k].first) << ",\"sharpe\":" << num(r.wayRatios[k].second) << "}";
       o << "]";
       // The selector: its choice for the next day, the candidates' scores, its share of days in each.
-      std::size_t inChoice[4] = {0, 0, 0, 0};
-      for (int c : r.choices) ++inChoice[c >= 0 && c < 4 ? c : 0];
+      std::size_t inChoice[5] = {0, 0, 0, 0, 0};
+      for (int c : r.choices) ++inChoice[c >= 0 && c < 5 ? c : 0];
       o << ",\"selector\":{\"now\":" << r.choiceNow << ",\"nowName\":" << str(choiceName(r.choiceNow)) << ",\"scores\":[";
       for (std::size_t c = 0; c < r.scoresNow.size(); ++c) o << (c ? "," : "") << num(r.scoresNow[c]);
-      o << "],\"names\":[\"cash\",\"learnt policy\",\"top 10, no stops\",\"market (bought and held)\"],\"share\":[";
-      for (std::size_t c = 0; c < 4; ++c) o << (c ? "," : "") << num(r.choices.empty() ? 0.0 : double(inChoice[c]) / double(r.choices.size()));
+      o << "],\"names\":[\"cash\",\"learnt policy\",\"top 10, no stops\",\"market (bought and held)\",\"model portfolio (multi-day)\"],\"share\":[";
+      for (std::size_t c = 0; c < 5; ++c) o << (c ? "," : "") << num(r.choices.empty() ? 0.0 : double(inChoice[c]) / double(r.choices.size()));
       o << "],\"recent\":[";
       const std::size_t nc = r.choices.size(), c0 = nc > 20 ? nc - 20 : 0;
       for (std::size_t k = c0; k < nc; ++k)
@@ -738,7 +759,7 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
     o << "\n== Rolling portfolio: " << r.name << " ==\n";
     std::vector<std::pair<std::string, const std::vector<double>*>> series = {
         {r.dayTrades ? "learnt policy" : "with adaptive stops", &r.daily}, {r.dayTrades ? "every day, no stops" : "without stops", &r.noStops}, {"market (bought and held)", &bt.market}};
-    if (r.dayTrades) series.insert(series.begin(), {"self-adaptive selector", &r.selected});
+    if (r.dayTrades) series.insert(series.begin(), {"self-adaptive selector", &r.selected}), series.insert(series.end() - 1, {"model portfolio (multi-day)", &bt.model});
     for (const auto& [name, lo, hi] : std::vector<std::tuple<std::string, std::size_t, std::size_t>>{
              {"whole period", 0, n}, {"first half", 0, n / 2}, {"second half", n / 2, n}}) {
       std::snprintf(b, sizeof b, "%s: %s .. %s\n", name.c_str(), m.dates[r.start + lo].c_str(), m.dates[r.start + hi - 1].c_str());
@@ -782,14 +803,16 @@ std::string topKText(const Market& m, const std::vector<TopKResult>& rs, const B
     if (r.dayTrades) {
       std::size_t nTrade = 0;
       for (const auto& p : r.plan) nTrade += p.action > 0;
-      std::snprintf(b, sizeof b, "self-adaptive selector, next day: %s (scores: learnt %+.2f bp, no stops %+.2f bp, market %+.2f bp; cash 0)\n",
-                    choiceName(r.choiceNow), r.scoresNow.size() > 0 ? 1e4 * r.scoresNow[0] : 0.0, r.scoresNow.size() > 1 ? 1e4 * r.scoresNow[1] : 0.0,
-                    r.scoresNow.size() > 2 ? 1e4 * r.scoresNow[2] : 0.0);
+      auto sc = [&](std::size_t c) { return c < r.scoresNow.size() ? 1e4 * r.scoresNow[c] : 0.0; };
+    std::snprintf(b, sizeof b, "self-adaptive selector, next day: %s (scores a day: learnt %+.2f bp, no stops %+.2f bp, market %+.2f bp, model portfolio %+.2f bp; cash 0)\n",
+                  choiceName(r.choiceNow), sc(0), sc(1), sc(2), sc(3));
       o << b;
       std::snprintf(b, sizeof b, "next open: %zu trades to book (%s)\n", nTrade,
                     r.choiceNow == 1 ? "down the ranking, the first whose learnt levels beat cash after costs"
                     : r.choiceNow == 2 ? "the 10 best by expected return, held open to close without stops"
-                    : r.choiceNow == 3 ? "none: hold the market" : "none: stay in cash");
+                    : r.choiceNow == 3 ? "none: hold the market"
+                    : r.choiceNow == 4 ? "the model portfolio's orders at the open (it holds its stocks over several days)"
+                                       : "none: stay in cash");
       o << b << "levels learnt from: " << r.wayNow << " (each way's record, annualised return per unit of risk:";
       for (const auto& [name, sr] : r.wayRatios) std::snprintf(b, sizeof b, " %s %.2f;", name.c_str(), sr), o << b;
       o << ")\n";

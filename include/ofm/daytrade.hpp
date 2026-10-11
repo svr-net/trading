@@ -18,8 +18,8 @@
 //          K stocks whose levels beat cash are booked; the day's result, the plain comparison and the
 //          evaluation sums. On the last day, the plan for the next open.
 //  select  (one invocation): the self-adaptive selector. Each close it scores the learnt policy, the
-//          top 10 without stops and the market on their own net records (ADWIN windows, means shrunk
-//          by their t-statistics; cash scores 0) and follows the best the next day.
+//          top 10 without stops, the market and the model portfolio on their own net records (ADWIN
+//          windows, means shrunk by their t-statistics; cash scores 0) and follows the best the next day.
 
 #include <cstdint>
 #include <string>
@@ -50,8 +50,8 @@ struct Buffers {
   std::vector<R> trades;             // [T][N][kTrade]
   std::vector<R> days;               // [T][kDay]
   std::vector<std::uint32_t> booked; // [T + 1][K]: booked stocks per day; row T: the plan's ranks
-  std::vector<R> market;             // [T]: the market's net return on day d (bought and held), the selector's third candidate
-  std::vector<R> sel;                // [3][T + 1][2]: the selector's running sums of each candidate's record
+  std::vector<R> ext;                // [2][T]: net return on day d of the market (bought and held) and of the model portfolio
+  std::vector<R> sel;                // [4][T + 1][2]: the selector's running sums of each candidate's record
 };
 
 /// Runs the kernels on the CPU (double: reference; float: the emulated GPU), in the GPU's order.

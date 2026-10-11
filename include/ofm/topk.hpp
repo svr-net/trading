@@ -113,7 +113,7 @@ struct TopKResult {
   // The self-adaptive selector (daytrade select kernel): each close it follows the best of the learnt
   // policy, the top 10 without stops and the market by their own records, or holds cash.
   std::vector<double> selected;   ///< its net returns from `start`
-  std::vector<int> choices;       ///< per day: 0 cash, 1 learnt policy, 2 no stops, 3 market
+  std::vector<int> choices;       ///< per day: 0 cash, 1 learnt policy, 2 no stops, 3 market, 4 model portfolio
   int choiceNow = 0;              ///< for the next day
   std::vector<double> scoresNow;  ///< each candidate's score at the last close (cash: 0)
 };
@@ -127,6 +127,7 @@ struct DayTradeJob {
   daytrade::Buffers<float> buffers;
   std::size_t start = 0, K = 10;
   std::vector<double> life;
+  std::vector<int> held, orders;  ///< the model portfolio at the last close (for the selector's plan)
   bool ok = false;
 };
 DayTradeJob prepareDayTrades(const Market& m, const Forecast& f, const Costs& costs, const Backtest& bt, std::size_t K = 10);

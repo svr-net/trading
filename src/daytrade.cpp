@@ -29,7 +29,7 @@ void bind(gen::Levels<R>& k, Buffers<R>& b) {
 }
 template <class R>
 void bind(gen::Select<R>& k, Buffers<R>& b) {
-  k.days = b.days.data(), k.mkt = b.market.data(), k.sel = b.sel.data();
+  k.days = b.days.data(), k.ext = b.ext.data(), k.sel = b.sel.data();
 }
 template <class R>
 void bind(gen::Book<R>& k, Buffers<R>& b) {
