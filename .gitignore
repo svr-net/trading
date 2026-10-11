@@ -78,3 +78,4 @@ dist/
 build/
 build-*/
 web/wasm/
+__pycache__/
