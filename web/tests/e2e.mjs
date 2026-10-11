@@ -51,9 +51,14 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
     // The day trades (fused kernels: levels with trades, book) on the same engine.
     const plan = await page.$$eval('#top10-plan tbody tr td:first-child', (t) => t.map((x) => x.textContent));
     if (!plan.length || !/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('day trades not rendered');
-    const daySharpe = await page.$eval('#top10-verdict .tile .v', (e) => +e.textContent);
-    results[engine] = { sharpe, daySharpe, plan, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
-    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)}, day trades ${daySharpe.toFixed(2)} (${plan.length} to book)  ${statusText}`);
+    // The learnt policy's tile (engines must agree on it); the selector's tile, if shown, is checked
+    // to be finite only: its day-by-day switches can flip on last-bit differences between engines.
+    const tiles = await page.$$eval('#top10-verdict .tile', (ts) => ts.map((t) => [t.querySelector('.k').textContent, +t.querySelector('.v').textContent]));
+    const daySharpe = (tiles.find(([k]) => /^Learnt policy/.test(k)) || tiles[0])[1];
+    const selector = tiles.find(([k]) => /^Self-adaptive selector/.test(k));
+    if (selector && !Number.isFinite(selector[1])) throw new Error('selector not rendered');
+    results[engine] = { sharpe, daySharpe, selector: selector ? selector[1] : null, plan, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
+    console.log(`ok   ${engine.padEnd(9)} Sharpe ${sharpe.toFixed(2)}, learnt policy ${daySharpe.toFixed(2)}, selector ${selector ? selector[1].toFixed(2) : '–'} (${plan.length} to book)  ${statusText}`);
   } catch (e) {
     failed++;
     console.log(`FAIL ${engine}: ${e.message}`);
