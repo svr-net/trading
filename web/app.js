@@ -265,7 +265,9 @@ function renderTop(r, source = 'UK') {
   topPick = Math.min(topPick, all.length - 1);
   const kName = (k) => (k == null ? 'none' : `${(+k).toFixed(2)} sd`);
   const x = all[topPick];
-  const TS = Object.keys(x.curves).map((n, k) => [n, ['--model', '--hedged', '--market'][k]]);
+  const colours = x.dayTrades ? ['--model', '--hedged', '--nostops', '--market'] : ['--model', '--hedged', '--market'];
+  const TS = Object.keys(x.curves).map((n, k) => [n, colours[k]]);
+  const sel = x.selector;
   x.plan = x.plan || [];
   x.life = x.life || 1;
   $('top10-tabs').innerHTML = '';
@@ -294,19 +296,28 @@ function renderTop(r, source = 'UK') {
       [sgn(p.close, 2), `num ${p.close >= 0 ? 'pos' : 'neg'}`], [prob(p.pStopDay), 'num'], [prob(p.pTakeDay), 'num'],
       ...(x.dayTrades ? [[p.ratio == null ? '–' : p.ratio.toFixed(3), `num ${p.ratio > 0 ? 'pos' : 'neg'}`]] : []),
       ...(lifeCols ? [[prob(p.pStopLife), 'num'], [prob(p.pTakeLife), 'num']] : [])])
-      : [{ gap: x.dayTrades ? 'no trades to book: none of the 10 has learnt levels that beat cash after costs' : 'no positions' }]);
+      : [{ gap: !x.dayTrades ? 'no positions' : sel && sel.now === 3 ? 'no trades to book: the selector holds the market (bought and held) for the next day'
+        : sel && sel.now === 0 ? 'no trades to book: the selector stays in cash for the next day (no candidate\'s record beats cash by more than noise)'
+          : 'no trades to book: none has learnt levels that beat cash after costs' }]);
   renderCheck(x, sgn, prob);
   if (x.dayTrades) {
     const n = x.plan.filter((p) => p.action === 1).length;
     const ways = (x.wayRatios || []).map((w) => `${w.name} ${w.sharpe == null ? '–' : w.sharpe.toFixed(2)}`).join(', ');
     if (x.wayNow) $('top10-asof').textContent += ` Levels learnt from ${x.wayNow}, the way with the best record so far (return per unit of risk, a year: ${ways}).`;
-    $('top10-asof').textContent += ` ${n} trade${n === 1 ? '' : 's'} to book: going down the ranking from the best expected return, the first (up to 10) whose own learnt levels beat cash after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip; stocks that would not are skipped. Trades were booked on ${x.tradedDays} of ${x.eval.days} days.`;
+    if (sel) {
+      const bpS = (v) => `${v >= 0 ? '+' : ''}${(1e4 * v).toFixed(2)} bp`;
+      const share = sel.share.map((v, k) => `${sel.names[k]} ${(100 * v).toFixed(0)}%`).join(', ');
+      $('top10-asof').textContent += ` Self-adaptive selector for the next day: ${sel.nowName}. Each close it scores the learnt policy, the top 10 without stops and the market on their own recent net records (an adaptive window that drops the past when the record changes; mean shrunk by its t-statistic; cash scores 0) and follows the best. Scores now: learnt ${bpS(sel.scores[0])}, no stops ${bpS(sel.scores[1])}, market ${bpS(sel.scores[2])} a day. Days in each so far: ${share}.`;
+    }
+    $('top10-asof').textContent += ` ${n} trade${n === 1 ? '' : 's'} to book${sel && sel.now === 2 ? ': the 10 best by expected return, bought at the open and sold at the close' : sel && sel.now !== 1 ? '' : `: going down the ranking from the best expected return, the first (up to 10) whose own learnt levels beat cash after the ${(r.costs.buyBps + r.costs.sellBps).toFixed(0)} bp round trip; stocks that would not are skipped`}. The learnt policy booked trades on ${x.tradedDays} of ${x.eval.days} days.`;
   }
   const adv = x.plan.some((p) => p.advisoryStop || p.advisoryTake);
   $('top10-plan-note').textContent = `Prices relative to the last close (prices themselves are not published under the data licence; apply the percentages to the actual open for a purchase). Open: the expected open, taken as the last close. Expected close: the model's expected return for the day, relative to the market. ${x.dayTrades ? '' : 'Probabilities: of touching the stop or the take-profit first, for the stock\'s daily volatility (simulated, 20,000 paths).'} ${x.oneDay ? 'Every position is a one-day trade: bought at the open and sold the same day at its stop-loss, its take-profit (the stop first when both are touched) or the close, each paying the round trip. Levels are multiples of the stock\'s open-to-close volatility, learnt from its own earlier days; probabilities are how often those levels were touched on them; return / risk is the learnt levels\' mean net return over its deviation per trade.' : 'Held stocks keep the levels set at entry.'}${adv ? ' * The rule has no level here at present (the data favoured none); shown is the best finite level so far, set from the last close, as advice.' : ''} ${x.turnoverPerYear.toFixed(1)}× turnover a year.`;
   const whole = x.parts[0].rows;
-  const [a, b, m] = TS.map(([n]) => whole.find((y) => y.name === n));
-  $('top10-verdict').innerHTML = `
+  const found = TS.map(([n]) => whole.find((y) => y.name === n));
+  const [sv, a, b, m] = x.dayTrades && sel ? found : [null, ...found];
+  $('top10-verdict').innerHTML = `${sv ? `
+    <div class="tile"><span class="k">Self-adaptive selector (learnt policy, no stops, market or cash), ${x.parts[0].from} – ${x.parts[0].to}</span><span class="v">${sv.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(sv.annualReturn)} a year, max drawdown ${pct(sv.maxDrawdown)}</span></div>` : ''}
     <div class="tile"><span class="k">${x.dayTrades ? 'Learnt policy (trades only when worth the risk)' : 'With adaptive stops'}, ${x.parts[0].from} – ${x.parts[0].to}</span><span class="v">${a.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(a.annualReturn)} a year, max drawdown ${pct(a.maxDrawdown)}</span></div>
     <div class="tile"><span class="k">Same portfolio without stops</span><span class="v">${b.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(b.annualReturn)} a year, max drawdown ${pct(b.maxDrawdown)}</span></div>
     <div class="tile"><span class="k">Market, bought and held</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year, max drawdown ${pct(m.maxDrawdown)}</span></div>${x.gross && !x.dayTrades ? `
@@ -321,7 +332,7 @@ function renderTop(r, source = 'UK') {
   table($('top10-parts'), [['Strategy'], ['Return / yr', 'num'], ['Sharpe', 'num'], ['Max DD', 'num']], rows);
   table($('top10-exits'), [['Exit'], ['Positions', 'num'], ['Gained', 'num'], ['Mean return', 'num'], ['Days held', 'num']],
     x.exits.filter((e) => e.count > 0).map((e) => [[e.reason], [String(e.count), 'num'], [e.count ? pct(e.wins / e.count, 0) : '–', 'num'], [e.count ? pct(e.meanReturn, 2) : '–', `num ${e.meanReturn >= 0 ? 'pos' : 'neg'}`], [e.count ? e.meanDays.toFixed(0) : '–', 'num']]));
-  table($('top10-years'), [['Year'], ['With stops', 'num'], ['Without', 'num'], ['Market', 'num']],
+  table($('top10-years'), [['Year'], ...(x.dayTrades && sel ? [['Selector', 'num'], ['Learnt', 'num'], ['No stops', 'num']] : [['With stops', 'num'], ['Without', 'num']]), ['Market', 'num']],
     x.years.map((y) => [[y.year], ...y.returns.map((v) => [pct(v), `num ${v >= 0 ? 'pos' : 'neg'}`])]));
   $('top10-grid-wrap').hidden = !x.gridK.length;
   const G = x.gridK.length;

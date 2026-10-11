@@ -31,6 +31,18 @@ def strategy(scan):
     return next(s for s in scan["top10"]["strategies"] if s.get("dayTrades"))
 
 
+def selector_day(s, date):
+    """The self-adaptive selector's choice and net result on a date (None if not in the report)."""
+    sel = s.get("selector") or {}
+    return next((x for x in sel.get("recent", []) if x["date"] == date), None)
+
+
+def choice_name(s, c):
+    sel = s.get("selector") or {}
+    names = sel.get("names") or ["cash", "learnt policy", "top 10, no stops", "market (bought and held)"]
+    return names[c] if 0 <= c < len(names) else "cash"
+
+
 def booked_last_day(s):
     return [c for c in s.get("lastDay", []) if c["exit"] != "still open"]
 
@@ -40,10 +52,11 @@ def update_track(scan, track):
     date = s.get("lastDate")
     if not date or any(d["date"] == date for d in track["days"]):
         return False
-    day = next((x for x in s.get("recent", []) if x["date"] == date), None)
+    day = selector_day(s, date) or next((x for x in s.get("recent", []) if x["date"] == date), None)
     track["days"].append({
         "date": date,
         "ret": day["ret"] if day else 0.0,
+        "choice": choice_name(s, day["choice"]) if day and "choice" in day else "learnt policy",
         "trades": [{"ticker": c["ticker"], "exit": c["exit"], "ret": c["ret"], "stop": c["stop"], "take": c["take"]}
                    for c in booked_last_day(s)],
     })
@@ -63,8 +76,11 @@ def build(scan, track):
     costs = scan["costs"]
     date, as_of = s.get("lastDate"), scan["asOf"]
     today = booked_last_day(s)
-    recent = s.get("recent", [])
+    sel = s.get("selector") or {}
+    recent = sel.get("recent") or s.get("recent", [])
     day = next((x for x in recent if x["date"] == date), None)
+    followed = choice_name(s, day["choice"]) if day and "choice" in day else "learnt policy"
+    now = sel.get("nowName", "learnt policy")
     plan = [p for p in s["plan"] if p["action"] == 1]
     whole = s["parts"][0]["rows"]
     policy, market = whole[0], next(r for r in whole if r["name"].startswith("market"))
@@ -72,20 +88,21 @@ def build(scan, track):
     live_ret = compound(d["ret"] for d in live)
     last5, last20 = compound(x["ret"] for x in recent[-5:]), compound(x["ret"] for x in recent[-20:])
 
-    subject = (f"UK top-10 · {date}: {pct(day['ret'] if day else None)} ({len(today)} trade{'s' if len(today) != 1 else ''})"
-               f" · {len(plan)} to book for the next open")
+    subject = (f"UK top-10 · {date}: {pct(day['ret'] if day else None)} ({followed})"
+               f" · next day: {now}" + (f", {len(plan)} to book" if plan else ""))
 
     lines = [subject, ""]
-    lines.append(f"Trades of {date} (planned at the close before), against the day's bars, relative to the open:")
+    lines.append(f"Self-adaptive selector: followed {followed} on {date}; for the next day: {now}.")
+    lines.append(f"Learnt policy's trades of {date} (planned at the close before), against the day's bars, relative to the open:")
     for c in today:
         lines.append(f"  {c['ticker']:<6} stop {pct(c['stop'])} take {pct(c['take'])} | high {pct(c['high'])} low {pct(c['low'])}"
                      f" close {pct(c['close'])} | {c['exit']}, net {pct(c['ret'])}")
     if not today:
         lines.append("  none booked")
-    lines.append(f"Day: {pct(day['ret'] if day else None)} (the 10 slots, cash slots earning nothing, after costs)")
+    lines.append(f"Day: {pct(day['ret'] if day else None)} (the selector's net result, after costs)")
     lines.append(f"Last 5 days {pct(last5)}, last 20 days {pct(last20)}; live record since {live[0]['date'] if live else '–'}:"
                  f" {pct(live_ret)} over {len(live)} days")
-    lines.append(f"Backtest {s['parts'][0]['from']} – {s['parts'][0]['to']}: {pct(policy['annualReturn'], 1)} a year, Sharpe"
+    lines.append(f"Selector backtest {s['parts'][0]['from']} – {s['parts'][0]['to']}: {pct(policy['annualReturn'], 1)} a year, Sharpe"
                  f" {policy['sharpe']:.2f}, max drawdown {100 * policy['maxDrawdown']:.1f}%; market {pct(market['annualReturn'], 1)} a year")
     lines.append("")
     lines.append(f"To book at the next open (after the close of {as_of}): buy at the open, sell at the stop, the take-profit or the close")
@@ -93,7 +110,8 @@ def build(scan, track):
         lines.append(f"  {p['rank']:>2} {p['ticker']:<6} stop {pct(p['stop'])} take {pct(p['take'])} expected close {pct(p['close'])}"
                      f" | P(stop) {prob(p['pStopDay'])} P(take) {prob(p['pTakeDay'])}")
     if not plan:
-        lines.append("  none: no stock's learnt levels beat cash after costs")
+        lines.append("  none: " + ("hold the market" if now.startswith("market") else "stay in cash" if now == "cash"
+                                    else "no stock's learnt levels beat cash after costs"))
     lines.append("")
     lines.append(f"Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Levels relative to the open."
                  " Research, not investment advice. https://svr-net.github.io/trading/")
@@ -106,17 +124,18 @@ def build(scan, track):
         return f"<table style='border-collapse:collapse;font:13px monospace'><tr>{th}</tr>{body}</table>"
 
     page = [f"<h2 style='font-family:sans-serif'>{html.escape(subject)}</h2>",
-            f"<h3 style='font-family:sans-serif'>Trades of {date} against the day's bars</h3>",
+            f"<p style='font-family:sans-serif'>Self-adaptive selector: followed <b>{html.escape(followed)}</b> on {date}; for the next day: <b>{html.escape(now)}</b>.</p>",
+            f"<h3 style='font-family:sans-serif'>Learnt policy's trades of {date} against the day's bars</h3>",
             table(["Stock", "Stop", "Take", "High", "Low", "Close", "Exit", "Net"],
                   [[c["ticker"], pct(c["stop"]), pct(c["take"]), pct(c["high"]), pct(c["low"]), pct(c["close"]), c["exit"], pct(c["ret"])]
                    for c in today] or [["none booked", "", "", "", "", "", "", ""]]),
             f"<p style='font-family:sans-serif'>Day {pct(day['ret'] if day else None)} · last 5 days {pct(last5)} · last 20 days {pct(last20)}"
-            f" · live record {pct(live_ret)} over {len(live)} days<br>Backtest: {pct(policy['annualReturn'], 1)} a year, Sharpe"
+            f" · live record {pct(live_ret)} over {len(live)} days<br>Selector backtest: {pct(policy['annualReturn'], 1)} a year, Sharpe"
             f" {policy['sharpe']:.2f}, max drawdown {100 * policy['maxDrawdown']:.1f}% (market {pct(market['annualReturn'], 1)} a year)</p>",
             f"<h3 style='font-family:sans-serif'>To book at the next open (close of {as_of})</h3>",
             table(["Rank", "Stock", "Stop", "Take", "Expected close", "P(stop)", "P(take)"],
                   [[p["rank"], p["ticker"], pct(p["stop"]), pct(p["take"]), pct(p["close"]), prob(p["pStopDay"]), prob(p["pTakeDay"])]
-                   for p in plan] or [["", "none", "", "", "", "", ""]]),
+                   for p in plan] or [["", "none: " + ("hold the market" if now.startswith("market") else "stay in cash" if now == "cash" else "no trade beats cash"), "", "", "", "", ""]]),
             "<p style='font-family:sans-serif;color:#666'>Buy at the open, sell at the stop, the take-profit or the close."
             f" Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Levels relative to the open."
             " Research, not investment advice. <a href='https://svr-net.github.io/trading/'>svr-net.github.io/trading</a></p>"]
