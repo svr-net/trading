@@ -8,7 +8,7 @@ const status = (t) => { $('status').textContent = t; };
 const pct = (x, d = 1) => (x == null ? '–' : `${(100 * x).toFixed(d)}%`);
 const bp = (x, d = 1) => (x == null ? '–' : `${(1e4 * x >= 0 ? '+' : '')}${(1e4 * x).toFixed(d)}`);
 const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-const SERIES = [['model', '--model'], ['model + futures hedge', '--hedged'], ['market (bought and held)', '--market']];
+const SERIES = [['model', '--model'], ['model + futures hedge', '--hedged'], ['market (bought and held)', '--market'], ['daily book (gated top 10)', '--daybook']];
 
 let ofm = null;
 let last = null;
@@ -54,7 +54,9 @@ async function run() {
     }
     const dealing = +$('cost-pct').value || 0, stamp = +$('stamp-pct').value || 0;
     const costs = [100 * (dealing + stamp), 100 * dealing, +$('fut-bps').value || 0];
+    const dayBps = 100 * (+$('day-pct').value || 0);
     session.setUniverseHedge($('universe-hedge').checked);
+    session.setDayCost(dayBps);
     const engine = $('engine').value;
     let json, note;
     const t0 = performance.now();
@@ -80,6 +82,7 @@ async function run() {
         if ($('src-files').checked) fresh.loadCsv(await readFile($('stocks-file')), await readFile($('series-file')));
         else fresh.loadSample();
         fresh.setUniverseHedge($('universe-hedge').checked);
+        fresh.setDayCost(dayBps);
         status('WebGPU unavailable; running the emulated GPU…');
         await yieldToPaint();
         json = fresh.runCpu('emulated', ...costs);
@@ -142,7 +145,7 @@ function render(r, note, ms) {
   table($('parts'), [['Strategy'], ['Return / yr', 'num'], ['Volatility', 'num'], ['Sharpe', 'num'], ['Max drawdown', 'num']], partRows);
   const t = r.trades;
   $('trades').textContent = `${t.count} closed trades: ${t.wins} gained (mean ${pct(t.meanWin, 2)}), ${t.losses} lost (mean ${pct(t.meanLoss, 2)}). Turnover ${t.turnoverPerYear.toFixed(1)}× a year; ${t.meanHoldings.toFixed(0)} stocks held on average.`;
-  table($('years'), [['Year'], ['Model', 'num'], ['Hedged', 'num'], ['Market', 'num']],
+  table($('years'), [['Year'], ['Model', 'num'], ['Hedged', 'num'], ['Market', 'num'], ...(r.day ? [['Daily book', 'num']] : [])],
     r.years.map((y) => [[y.year], ...y.returns.map((v) => [pct(v), `num ${v >= 0 ? 'pos' : 'neg'}`])]));
   const used = r.factors.filter((f) => f.premium !== 0 && f.premium != null).sort((a, b) => Math.abs(b.t) - Math.abs(a.t));
   table($('factors'), [['Signal'], ['t', 'num'], ['Premium (bp/day)', 'num']],
@@ -195,7 +198,7 @@ function renderStructure(r) {
 
 function drawChart(r) {
   const css = getComputedStyle(document.documentElement);
-  drawCurves($('chart'), $('legend'), r.dates, SERIES.map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'model' })));
+  drawCurves($('chart'), $('legend'), r.dates, SERIES.filter(([name]) => r.curves[name]).map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'model' })));
 }
 
 function drawCurves(canvas, legend, dates, curves) {
@@ -251,8 +254,28 @@ function renderOrders(r, source = 'UK') {
     <div class="tile"><span class="k">Model portfolio, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${m.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(m.annualReturn)} a year, max drawdown ${pct(m.maxDrawdown)}</span></div>
     <div class="tile"><span class="k">Market, bought and held</span><span class="v">${k.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(k.annualReturn)} a year, max drawdown ${pct(k.maxDrawdown)}</span></div>`;
   const recent = r.recent || [];
-  table($('top10-recent'), [['Day'], ['Portfolio', 'num'], ['Market', 'num']],
-    recent.slice().reverse().map((d) => [[d.date], [pct(d.ret, 2), `num ${d.ret >= 0 ? 'pos' : 'neg'}`], [pct(d.market, 2), `num ${d.market >= 0 ? 'pos' : 'neg'}`]]));
+  const signed = (x) => [pct(x, 2), `num ${x >= 0 ? 'pos' : 'neg'}`];
+  table($('top10-recent'), [['Day'], ['Model portfolio', 'num'], ...(r.day ? [['Daily book', 'num']] : []), ['Market', 'num']],
+    recent.slice().reverse().map((d) => [[d.date], signed(d.ret), ...(r.day ? [d.day == null ? ['–', 'num'] : signed(d.day)] : []), signed(d.market)]));
+  renderDay(r);
+}
+
+// The daily book: day trades at the next open, with each stock's stop and take-profit from the open.
+function renderDay(r) {
+  const D = r.day;
+  $('daybook').hidden = !D;
+  if (!D) return;
+  const whole = r.parts[0].rows, row = whole.find((x) => x.name === D.name), m = whole.find((x) => x.name === 'model');
+  const level = (x) => (x == null ? 'none' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(2)}%`);
+  $('day-asof').textContent = `Close of ${r.asOf} · ${D.orders.length} day trade${D.orders.length === 1 ? '' : 's'} for the next open (up to 10, a tenth of the capital each; empty slots stay in cash) · costs ${(D.buyBps / 100).toFixed(2)}% per side.`;
+  table($('day-plan'), [['Stock'], ['Expected, a day', 'num'], ['Stop from the open', 'num'], ['Take-profit from the open', 'num'], ['Record, a day', 'num'], ['Record window', 'num']],
+    D.orders.length ? D.orders.map((o) => [[o.ticker], [`${bp(o.expected, 2)} bp`, `num ${o.expected >= 0 ? 'pos' : 'neg'}`], [level(o.stop), 'num neg'], [level(o.take), 'num pos'],
+      [pct(o.record, 3), 'num'], [`${o.window} days`, 'num']])
+      : [{ gap: 'no day trades: no stock among the best expected has a record that beats cash' }]);
+  $('day-note').textContent = 'Buy at the open; sell at the stop, the take-profit or the close, whichever comes first (a stock is sold at the close if neither level is reached). Stops and take-profits are each stock\'s own pair, picked by a network that learns every day from all the stocks\' outcomes; a stock is booked only if its own record of these day trades, shrunk by its t-statistic, beats cash. Backtest fills: the stop when a day touched both levels. It needs cheap dealing (CFDs or spread bets): at 0.10% per side it loses to the model portfolio.';
+  $('day-verdict').innerHTML = row ? `
+    <div class="tile"><span class="k">Daily book, ${r.parts[0].from} – ${r.parts[0].to}</span><span class="v">${row.sharpe.toFixed(2)}</span><span class="s">Sharpe ratio, ${pct(row.annualReturn)} a year, max drawdown ${pct(row.maxDrawdown)}; ${D.tradesPerDay.toFixed(1)} trades a day</span></div>
+    <div class="tile"><span class="k">Against the model portfolio</span><span class="v">${D.lead.mean >= 0 ? '+' : ''}${(100 * D.lead.mean).toFixed(3)}%</span><span class="s">a day on average (t ${D.lead.t.toFixed(2)}${Math.abs(D.lead.t) < 2 ? ', not significant' : ''}); ahead on ${pct(D.lead.ahead, 0)} of days; model ${pct(m.annualReturn)} a year</span></div>` : '';
 }
 
 $('src-files').addEventListener('change', () => { $('files').hidden = false; });

@@ -89,6 +89,9 @@ class Session {
     else series_.erase(ofm::kUniverseIndex);
   }
 
+  /// The daily book's cost per side, in basis points.
+  void setDayCost(double bps) { dayBps_ = bps; }
+
   std::string finishGpu(double buyBps, double sellBps, double futBps, double gpuMs, const std::string& adapter) {
     costs_.buyBps = buyBps, costs_.sellBps = sellBps, costs_.futuresBps = futBps;
     forecast_.mean = forecaster_->mean, forecast_.tstat = forecaster_->tstat, forecast_.premium = forecaster_->premium;
@@ -123,11 +126,12 @@ class Session {
 
   std::string report(double buyBps, double sellBps, double futBps) {
     ofm::Costs c;
-    c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps;
+    c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps, c.dayBps = dayBps_;
     costs_ = c;
     ms_ = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
     bt_ = ofm::backtest(market_, forecast_, c, series_, &ms_);
-    return ofm::reportJson(market_, forecast_, bt_, c, &ms_);
+    const ofm::DayBook day = ofm::dayBook(market_, forecast_, bt_.start, 1e-4 * dayBps_, 1e-4 * dayBps_);
+    return ofm::reportJson(market_, forecast_, bt_, c, &ms_, &day);
   }
 
   ofm::Market market_;
@@ -139,6 +143,7 @@ class Session {
   ofm::Costs costs_;
   ofm::MarketStructure ms_;
   ofm::Backtest bt_;
+  double dayBps_ = 100 * ofm::kDayDealingPct;
 };
 
 std::string version() { return OFM_VERSION; }
@@ -158,6 +163,7 @@ EMSCRIPTEN_BINDINGS(ofm) {
       .function("absorb", &Session::absorb)
       .function("takeExpected", &Session::takeExpected)
       .function("setUniverseHedge", &Session::setUniverseHedge)
+      .function("setDayCost", &Session::setDayCost)
       .function("finishGpu", &Session::finishGpu)
       .function("runCpu", &Session::runCpu);
 }

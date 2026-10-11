@@ -7,14 +7,14 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=36">
+<link rel="stylesheet" href="style.css?v=37">
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
     <h1>UK Factor Model</h1>
-    <p class="lede">A daily scan of the 250 most traded UK shares: the model portfolio's orders for the next open, every stock's expected return, and the backtest against holding the market after real costs. Every setting comes from the data; the only inputs are the costs.</p>
+    <p class="lede">A daily scan of the 250 most traded UK shares: the model portfolio's orders for the next open, the daily book's day trades for accounts that deal cheaply, every stock's expected return, and the backtest against holding the market after real costs. Every setting comes from the data; the only inputs are the costs.</p>
   </header>
 
   <section id="top10" aria-labelledby="top10-title">
@@ -25,6 +25,14 @@
     <div class="verdict" id="top10-verdict"></div>
     <h3 style="margin-top:22px">Last 20 days</h3>
     <div class="table-scroll"><table id="top10-recent"></table></div>
+  </section>
+
+  <section id="daybook" aria-labelledby="daybook-title" hidden>
+    <h2 id="daybook-title">Daily book: day trades for the next open</h2>
+    <p class="muted" id="day-asof"></p>
+    <div class="table-scroll"><table id="day-plan"></table></div>
+    <p class="hint" id="day-note"></p>
+    <div class="verdict" id="day-verdict"></div>
   </section>
 
   <section id="results" hidden>
@@ -75,8 +83,9 @@
         <label>Per trade <input type="number" id="cost-pct" value="0.10" min="0" step="0.01"></label>
         <label>Stamp duty <input type="number" id="stamp-pct" value="0" min="0" step="0.05"></label>
         <label>Futures (bp) <input type="number" id="fut-bps" value="1" min="0" step="0.5"></label>
+        <label>Daily book, per side <input type="number" id="day-pct" value="0.05" min="0" step="0.01"></label>
       </div>
-      <p class="hint">Market standard: 0.10% per side (commission and spread); stamp duty 0 (CFDs, spread bets, AIM shares; 0.50% for UK shares bought directly).</p>
+      <p class="hint">Market standard: 0.10% per side (commission and spread); stamp duty 0 (CFDs, spread bets, AIM shares; 0.50% for UK shares bought directly). The daily book trades every day, so it needs cheap dealing (CFDs, spread bets): its cost per side, slippage included.</p>
       <label class="radio"><input type="checkbox" id="universe-hedge"> Hedge with the stocks' own index (stand-in for FTSE 250 futures)</label>
     </div>
     <div class="field">
@@ -97,6 +106,6 @@
 
   <footer>Research tool, not investment advice. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=36"></script>
+<script type="module" src="app.js?v=37"></script>
 </body>
 </html>

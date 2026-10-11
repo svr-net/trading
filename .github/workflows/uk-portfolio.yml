@@ -19,6 +19,8 @@ on:
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
+      day_cost_pct: { description: 'The daily book''s cost per side, percent (CFDs or spread bets, slippage included)', default: '0.05' }
+      daytest: { description: 'Also test the daily top 10 against the real bars (research; results in the run summary only)', type: boolean, default: false }
       stamp_pct: { description: 'Stamp duty on purchases, percent (0 for CFDs, spread bets, AIM; 0.50 for UK shares bought directly)', default: '0' }
 
 permissions:
@@ -111,7 +113,7 @@ jobs:
         if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0.05' }}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, hedged with the stocks' own index (stand-in for FTSE 250 futures)
         if: ${{ !inputs.probe }}
@@ -123,6 +125,11 @@ jobs:
         run: |
           ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct 0.50 --json report/ofm-no-stamp.json > report/ofm-no-stamp.txt
           { echo '```'; grep -A40 'Rolling portfolio' report/ofm-no-stamp.txt | grep -v '^ *[0-9.]* sd\|^        '; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Daily top 10 against the real bars (research, when asked)
+        if: ${{ !inputs.probe && inputs.daytest }}
+        run: |
+          ./build/ofm_daytest --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" | tee report/daytest.txt
+          { echo '```'; cat report/daytest.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Adaptive model, emulated GPU kernels (agreement check)
         if: ${{ !inputs.probe }}
         run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24

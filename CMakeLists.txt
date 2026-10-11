@@ -13,6 +13,7 @@ add_library(ofm
   src/kernels.cpp
   src/trade.cpp
   src/structure.cpp
+  src/daybook.cpp
   src/report.cpp)
 target_include_directories(ofm PUBLIC include)
 # The kernels' one source is WGSL (kernels/<group>/*.wgsl); the CPU backends compile its C++ translation.
@@ -52,6 +53,8 @@ if(EMSCRIPTEN)
 else()
   add_executable(ofm_report apps/ofm_report.cpp)
   target_link_libraries(ofm_report PRIVATE ofm)
+  add_executable(ofm_daytest apps/ofm_daytest.cpp)
+  target_link_libraries(ofm_daytest PRIVATE ofm)
   enable_testing()
   add_executable(ofm_tests tests/tests.cpp)
   target_link_libraries(ofm_tests PRIVATE ofm)

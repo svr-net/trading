@@ -111,6 +111,30 @@ TEST(nothing_uses_the_future) {
   for (std::size_t k = 0; k + b1.start + 1 < X; ++k) CHECK(b1.model[k] == b2.model[k] && b1.hedged[k] == b2.hedged[k]);
 }
 
+TEST(daily_book_uses_only_the_past) {
+  ofm::Market m = sample().market;
+  const auto f1 = ofm::runModel(m);
+  const auto b1 = ofm::backtest(m, f1, ofm::Costs{}, sample().series);
+  const auto d1 = ofm::dayBook(m, f1, b1.start, 5e-4, 5e-4);
+  CHECK(d1.ret.size() == b1.model.size() && d1.trades > 0 && d1.orders.size() <= 10);
+  for (const auto& o : d1.orders) CHECK(std::isfinite(o.expected) && o.sigma > 0 && o.record > 0);
+  // Change the bars from day X on: the book's returns before X are the same.
+  const std::size_t X = m.T() - 100;
+  for (std::size_t t = X; t < m.T(); ++t)
+    for (std::size_t i = 0; i < m.N(); ++i) {
+      const double k = 1.0 + 0.5 * std::sin(static_cast<double>(t * 7 + i));
+      m.open(t, i) *= k, m.high(t, i) *= k * 1.1, m.low(t, i) *= k, m.close(t, i) *= k, m.volume(t, i) *= 3;
+    }
+  const auto f2 = ofm::runModel(m);
+  const auto d2 = ofm::dayBook(m, f2, b1.start, 5e-4, 5e-4);
+  for (std::size_t k = 0; b1.start + k < X; ++k) CHECK(d1.ret[k] == d2.ret[k]);
+  // Dearer dealing: the same days, less return.
+  const auto d3 = ofm::dayBook(sample().market, f1, b1.start, 2e-3, 2e-3);
+  double w1 = 1, w3 = 1;
+  for (std::size_t k = 0; k < d1.ret.size(); ++k) w1 *= 1 + d1.ret[k], w3 *= 1 + d3.ret[k];
+  CHECK(w3 < w1);
+}
+
 TEST(finds_the_built_in_effects_and_beats_the_market_on_the_sample) {
   const auto s = ofm::syntheticMarket(11, 80, 2000);
   const auto f = ofm::runModel(s.market);

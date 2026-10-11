@@ -45,12 +45,15 @@ struct Facts {
   double meanWin = 0, meanLoss = 0;
 };
 
-Facts facts(const Market& m, const Backtest& bt) {
+constexpr const char* kDayName = "daily book (gated top 10)";
+
+Facts facts(const Market& m, const Backtest& bt, const DayBook* day) {
   Facts F;
   F.n = bt.model.size();
   F.last = m.T() - 1;
   F.parts = {{"whole period", 0, F.n}, {"first half", 0, F.n / 2}, {"second half", F.n / 2, F.n}};
   F.series = {{"model", bt.model}, {"model + futures hedge", bt.hedged}, {"market (bought and held)", bt.market}};
+  if (day && day->start == bt.start && day->ret.size() == F.n) F.series.push_back({kDayName, day->ret});
   F.pass = F.passHedged = F.n > 4;
   for (const auto& p : F.parts) {
     const double mk = metrics(slice(bt.market, p.lo, p.hi)).sharpe;
@@ -80,16 +83,37 @@ std::vector<std::size_t> byExpected(const Forecast& f, std::size_t t) {
   return o;
 }
 
+// The daily book's mean daily lead over the model portfolio, its t-statistic and the share of days ahead.
+struct Lead {
+  double mean = 0, t = 0, ahead = 0;
+};
+Lead lead(const std::vector<double>& a, const std::vector<double>& b) {
+  Lead L;
+  const double n = static_cast<double>(a.size());
+  if (n < 2) return L;
+  double s = 0, s2 = 0;
+  for (std::size_t k = 0; k < a.size(); ++k) {
+    const double d = a[k] - b[k];
+    s += d, s2 += d * d, L.ahead += a[k] > b[k];
+  }
+  L.mean = s / n, L.ahead /= n;
+  const double v = (s2 - n * L.mean * L.mean) / (n - 1);
+  L.t = v > 0 ? L.mean / std::sqrt(v / n) : 0;
+  return L;
+}
+
+bool hasDay(const Facts& F) { return F.series.size() > 3; }
+
 }  // namespace
 
-std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms) {
-  const Facts F = facts(m, bt);
+std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms, const DayBook* day) {
+  const Facts F = facts(m, bt, day);
   const Plan p = compilePlan(m);
   std::ostringstream o;
   o << "{\"engine\":" << str(f.engine) << ",\"kernelMs\":" << num(f.kernelMs) << ",\"stocks\":" << m.N() << ",\"days\":" << m.T()
     << ",\"from\":" << str(m.dates.front()) << ",\"to\":" << str(m.dates.back()) << ",\"records\":" << f.records
     << ",\"costs\":{\"buyBps\":" << num(costs.buyBps) << ",\"sellBps\":" << num(costs.sellBps) << ",\"futuresBps\":" << num(costs.futuresBps)
-    << "},\"horizons\":[";
+    << ",\"dayBps\":" << num(costs.dayBps) << "},\"horizons\":[";
   for (std::size_t j = 0; j < p.H; ++j) o << (j ? "," : "") << p.horizons[j];
   o << "],\"hedgeSeries\":" << str(bt.hedgeSeries);
   const double life = bt.life.empty() ? 1.0 : bt.life.back();
@@ -105,7 +129,8 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
   o << "],\"recent\":[";
   const std::size_t from = F.n > 20 ? F.n - 20 : 0;
   for (std::size_t k = from; k < F.n; ++k)
-    o << (k > from ? "," : "") << "{\"date\":" << str(m.dates[bt.start + k]) << ",\"ret\":" << num(bt.model[k]) << ",\"market\":" << num(bt.market[k]) << "}";
+    o << (k > from ? "," : "") << "{\"date\":" << str(m.dates[bt.start + k]) << ",\"ret\":" << num(bt.model[k]) << ",\"market\":" << num(bt.market[k])
+      << (hasDay(F) ? ",\"day\":" + num(F.series[3].second[k]) : std::string()) << "}";
   o << "],\"factors\":[";
   for (std::size_t k = 0; k < p.K && k < f.mean.size(); ++k)
     o << (k ? "," : "") << "{\"name\":" << str(p.signalName(k)) << ",\"mean\":" << num(f.mean[k]) << ",\"t\":" << num(f.tstat[k])
@@ -157,6 +182,22 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     << bt.trades.size() << ",\"wins\":" << F.wins << ",\"losses\":" << F.losses << ",\"meanWin\":" << num(F.meanWin) << ",\"meanLoss\":"
     << num(F.meanLoss) << ",\"turnoverPerYear\":" << num(F.modelTurnoverYear) << ",\"meanHoldings\":" << num(F.meanHoldings)
     << ",\"hedgeShare\":" << num(F.hedgeShare) << "}";
+  if (hasDay(F)) {
+    const Lead L = lead(day->ret, bt.model);
+    const double n = static_cast<double>(F.n);
+    o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
+      << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
+      << ",\"takes\":" << day->takes << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << "},\"orders\":[";
+    for (std::size_t q = 0; q < day->orders.size(); ++q) {
+      const DayOrder& d = day->orders[q];
+      const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
+      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"sigma\":" << num(d.sigma)
+        << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
+        << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
+    }
+    o << "]}";
+  }
   if (ms && !ms->halfLives.empty()) {
     const std::size_t H = ms->halfLives.size(), mid = H / 2;
     o << ",\"structure\":{\"halfLives\":[";
@@ -177,8 +218,8 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
   return o.str();
 }
 
-std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms) {
-  const Facts F = facts(m, bt);
+std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, const Costs& costs, const MarketStructure* ms, const DayBook* day) {
+  const Facts F = facts(m, bt, day);
   const Plan p = compilePlan(m);
   std::ostringstream o;
   char b[256];
@@ -231,19 +272,34 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       o << b;
     }
   }
-  o << "\nCalendar years (net return)\n  year   model    hedged   market\n";
+  if (hasDay(F)) {
+    const Lead L = lead(day->ret, bt.model);
+    std::snprintf(b, sizeof b, "\nDaily book (gated top 10; %.2f%% per side): %.2f trades a day, %zu at the stop, %zu at the take-profit; ahead of the model portfolio by %+.3f%% a day (t %+.2f)\n",
+                  100 * day->buy, static_cast<double>(day->trades) / static_cast<double>(F.n), day->stops, day->takes, 100 * L.mean, L.t);
+    o << b << "Daily book orders for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
+    for (const DayOrder& d : day->orders) {
+      std::snprintf(b, sizeof b, "  %-10s %+8.2f bp  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 1e4 * d.expected,
+                    std::isfinite(d.stop) ? (num(100 * (std::exp(-d.stop * d.sigma) - 1), 3) + "%").c_str() : "none",
+                    std::isfinite(d.take) ? (num(100 * (std::exp(d.take * d.sigma) - 1), 3) + "%").c_str() : "none", 100 * d.record, d.window);
+      o << b;
+    }
+    if (day->orders.empty()) o << "  none: no stock's record beats cash\n";
+  }
+  o << "\nCalendar years (net return)\n  year   model    hedged   market" << (hasDay(F) ? "   daily" : "") << "\n";
   std::string year;
-  std::vector<double> acc(3, 1.0);
+  std::vector<double> acc(F.series.size(), 1.0);
   for (std::size_t k = 0; k <= F.n; ++k) {
     const std::string y = k < F.n ? m.dates[bt.start + k].substr(0, 4) : "";
     if (k > 0 && y != year) {
-      std::snprintf(b, sizeof b, "  %s %7.1f%% %7.1f%% %7.1f%%\n", year.c_str(), 100 * (acc[0] - 1), 100 * (acc[1] - 1), 100 * (acc[2] - 1));
+      std::snprintf(b, sizeof b, "  %s %7.1f%% %7.1f%% %7.1f%%", year.c_str(), 100 * (acc[0] - 1), 100 * (acc[1] - 1), 100 * (acc[2] - 1));
       o << b;
+      if (acc.size() > 3) std::snprintf(b, sizeof b, " %7.1f%%", 100 * (acc[3] - 1)), o << b;
+      o << "\n";
       std::fill(acc.begin(), acc.end(), 1.0);
     }
     if (k == F.n) break;
     year = y;
-    for (std::size_t s = 0; s < 3; ++s) acc[s] *= 1 + F.series[s].second[k];
+    for (std::size_t s = 0; s < acc.size(); ++s) acc[s] *= 1 + F.series[s].second[k];
   }
   o << "\nPass mark (beats the market on Sharpe ratio over the whole period and in both halves): model " << (F.pass ? "PASS" : "FAIL")
     << ", model + hedge " << (F.passHedged ? "PASS" : "FAIL") << "\n";

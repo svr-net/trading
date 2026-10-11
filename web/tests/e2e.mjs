@@ -50,6 +50,9 @@ for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GP
     if (errors.length) throw new Error(errors.join(' | '));
     // The model portfolio's orders for the next open.
     if (!/Sample market/.test(await page.textContent('#top10-asof'))) throw new Error('orders not rendered');
+    const dayRows = await page.$$eval('#day-plan tbody tr', (r) => r.length);
+    if (dayRows < 1 || !(await page.isVisible('#daybook'))) throw new Error('the daily book is not shown');
+    if (!(await page.textContent('#parts')).includes('daily book')) throw new Error('the daily book is missing from the backtest');
     const orders = await page.$$eval('#top10-plan tbody tr', (r) => r.length);
     if (!orders) throw new Error('orders table empty');
     results[engine] = { sharpe, top: await page.$$eval('#expected tbody tr td:first-child', (t) => t.slice(0, 10).map((x) => x.textContent)) };
