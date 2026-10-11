@@ -5,10 +5,12 @@
 //   EODDATA_API_KEY=... node tools/eoddata/fetch.mjs [--exchange LSE] [--universe 120] [--years 6] [--out data/LSE.csv]
 //
 // The key is read from the environment only; it is never written to disk or printed.
-// With --cached, no request is made: the newest cached responses (data/eoddata/, kept between
-// workflow runs by actions/cache) are used, whatever day they were downloaded.
-// Responses are cached under data/eoddata/ (git-ignored: EODData's licence does not allow
-// redistributing its data), so a re-run only fetches what is missing. Behind an HTTP proxy,
+// Bars are kept in a persistent store (store.mjs: data/eoddata/store/, kept between workflow runs
+// by actions/cache, git-ignored: EODData's licence does not allow redistributing its data). A
+// stock's history is downloaded once; after that a run adds only the days it is missing: the
+// latest day from the exchange's quote list (already fetched for the ranking, so no request per
+// stock), or one small request for a longer gap. --cached makes no request at all (the store and
+// the newest cached quote list); --refresh downloads every history again. Behind an HTTP proxy,
 // run Node with NODE_USE_ENV_PROXY=1 (Node >= 22.21).
 //
 // Universe: the latest quote list of the exchange, ordinary shares only where the API says so,
@@ -16,6 +18,7 @@
 // ones with fewer than --min-days of history are dropped.
 import fs from 'node:fs';
 import path from 'node:path';
+import * as S from './store.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : fallback; };
@@ -26,6 +29,7 @@ const minDays = Number(opt('min-days', 750));
 const out = opt('out', `data/${exchange}.csv`);
 const cacheDir = path.join('data', 'eoddata', exchange);
 const cached = argv.includes('--cached');
+const refresh = argv.includes('--refresh');
 const key = process.env.EODDATA_API_KEY;
 if (!key && !cached) {
   console.error('Set EODDATA_API_KEY in the environment (never pass it on the command line).');
@@ -33,7 +37,7 @@ if (!key && !cached) {
 }
 fs.mkdirSync(cacheDir, { recursive: true });
 
-const BASE = 'https://api.eoddata.com';
+const BASE = process.env.EODDATA_BASE || 'https://api.eoddata.com';  // tests point this at a mock
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Cached mode: the newest cached file with the same name up to its date stamps.
 function newestCached(cacheName) {
@@ -68,13 +72,8 @@ async function get(route, params = {}, cacheName) {
   }
 }
 
-// Field names are matched case-insensitively and by alias, so small API changes don't break the parse.
-const field = (o, ...names) => {
-  for (const n of names) for (const k of Object.keys(o)) if (k.toLowerCase() === n.toLowerCase()) return o[k];
-  return undefined;
-};
+const { field, day } = S;
 const asList = (body) => (Array.isArray(body) ? body : field(body, 'data', 'items', 'quotes', 'symbols') || []);
-const day = (v) => String(v).slice(0, 10);
 
 const today = new Date();
 const from = new Date(today.getTime() - years * 365.25 * 864e5).toISOString().slice(0, 10);
@@ -125,17 +124,54 @@ try {
   }
 } catch (e) { console.warn(`  splits unavailable: ${e.message}`); }
 
+// Each stock's bars: from the store, completed with the days it is missing.
+const quoteBar = new Map(quotes.map((q) => [field(q, 'symbolCode', 'code', 'symbol'), S.bar(q)]));
+const latest = [...quoteBar.values()].filter(Boolean).map((b) => b[0]).sort().at(-1) ?? stamp;
+const counts = { full: 0, gap: 0, quote: 0, current: 0, migrated: 0 };
+// Old-style cache files (history-<code>-<from>-<to>.json): their newest copy seeds the store once.
+const oldHistory = (code) => {
+  const stem = `history-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-`;
+  const hits = fs.readdirSync(cacheDir).filter((f) => f.startsWith(stem)).sort();
+  return hits.length ? path.join(cacheDir, hits.at(-1)) : null;
+};
+async function barsOf(code) {
+  const bars = S.load(exchange, code);
+  if (!bars.size) {
+    const old = oldHistory(code);
+    if (old) S.merge(bars, asList(JSON.parse(fs.readFileSync(old, 'utf8')))), ++counts.migrated;
+  }
+  if (cached) {
+    if (bars.size) S.save(exchange, code, bars);
+    return bars;
+  }
+  const L = S.lastDate(bars), qb = quoteBar.get(code);
+  if (refresh || !L || L < from) {
+    S.merge(bars, asList(await get(`/Quote/List/${exchange}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: from, ToDateStamp: stamp })));
+    ++counts.full;
+  } else if (qb && qb[0] >= L && S.previousWeekday(qb[0]) <= L) {
+    bars.set(qb[0], qb[1]);  // the latest day, from the quote list (overwrites a same-day bar)
+    ++counts.quote;
+  } else if (L < S.previousWeekday(latest) || (qb && qb[0] > L)) {
+    S.merge(bars, asList(await get(`/Quote/List/${exchange}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: S.addDays(L, 1), ToDateStamp: stamp })));
+    ++counts.gap;
+  } else {
+    ++counts.current;
+  }
+  S.save(exchange, code, bars);
+  return bars;
+}
+
 const rows = ['date,ticker,open,high,low,close,volume'];
 const kept = [];
 for (const [i, { code }] of ranked.entries()) {
   if (kept.length >= universe) break;
-  const body = await get(`/Quote/List/${exchange}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: from, ToDateStamp: stamp },
-    `history-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-${from}-${stamp}.json`).catch((e) => { console.warn(`  skip ${code}: ${e.message}`); return []; });
-  const bars = asList(body)
-    .map((b) => ({ d: day(field(b, 'dateStamp', 'date')), o: +field(b, 'open'), h: +field(b, 'high'), l: +field(b, 'low'), c: +field(b, 'close'), v: +field(b, 'volume') }))
-    .filter((b) => b.d && b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0)
+  const stored = await barsOf(code).catch((e) => { console.warn(`  skip ${code}: ${e.message}`); return new Map(); });
+  const bars = [...stored.entries()]
+    .filter(([d]) => d >= from)
+    .map(([d, b]) => ({ d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }))
+    .filter((b) => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0)
     .sort((a, b) => (a.d < b.d ? -1 : 1));
-  if (i === 0) console.log(`  history fields [${Object.keys(asList(body)[0] || {})}], ${bars.length} bars`);
+  if (i === 0) console.log(`  ${code}: ${bars.length} bars`);
   if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
   for (const { date, ratio } of splits.get(code) || [])
     for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
@@ -144,6 +180,12 @@ for (const [i, { code }] of ranked.entries()) {
   for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
   kept.push({ code, name: nameOf.get(code) || '', days: bars.length });
   if (kept.length % 20 === 0) console.log(`  kept ${kept.length}`);
+}
+console.log(`  store: ${counts.full} full histories downloaded, ${counts.gap} gaps filled, ${counts.quote} days from the quote list, ${counts.current} up to date, ${counts.migrated} seeded from old cache files`);
+// The old-style history files are now in the store; dated lists keep only their newest copy.
+if (!cached) {
+  for (const f of fs.readdirSync(cacheDir).filter((x) => x.startsWith('history-'))) fs.rmSync(path.join(cacheDir, f));
+  for (const p of ['symbols-', 'quotes-', 'splits-']) S.prune(cacheDir, p, 1);
 }
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, rows.join('\n') + '\n');
