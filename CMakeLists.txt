@@ -13,6 +13,7 @@ add_library(ofm
   src/kernels.cpp
   src/trade.cpp
   src/structure.cpp
+  src/daybook.cpp
   src/report.cpp)
 target_include_directories(ofm PUBLIC include)
 # The kernels' one source is WGSL (kernels/<group>/*.wgsl); the CPU backends compile its C++ translation.

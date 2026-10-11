@@ -13,6 +13,8 @@
 // the choices. Daily bars cannot tell whether the stop or the take-profit was touched first when
 // both were; the main result assumes the stop (worst case), the optimistic one the take-profit.
 //
+// Gated book: the library's daily book (daybook.hpp), the second book on the page.
+//
 // Neural levels: a small network (shared by all stocks, fed each stock's own features at the
 // close) predicts the net log return (the compounding objective) of each of the 36 stop / take
 // pairs for that stock the next day; each stock trades with the pair it rates best. It learns
@@ -31,6 +33,7 @@
 #include <vector>
 
 #include "ofm/data.hpp"
+#include "ofm/daybook.hpp"
 #include "ofm/model.hpp"
 #include "ofm/report.hpp"
 #include "ofm/structure.hpp"
@@ -46,23 +49,13 @@ std::string readFile(const std::string& path) {
   return ss.str();
 }
 
-constexpr double kInf = std::numeric_limits<double>::infinity();
-const std::vector<double> kGrid = {0.5, 1.0, 1.5, 2.0, 3.0, kInf};  // multiples of the volatility
-
-struct Bar { double o, h, l, c, v; };
-
-// One trade's net return: bought at the open, sold at the stop, the take-profit or the close.
-// worstCase: when both levels were touched, the stop is taken to come first.
-double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit) {
-  const double stop = std::isfinite(ks) ? b.o * std::exp(-ks * sig) : 0.0;
-  const double take = std::isfinite(kt) ? b.o * std::exp(kt * sig) : kInf;
-  const bool hitStop = b.l <= stop, hitTake = b.h >= take;
-  double px = b.c;
-  *exit = 0;
-  if (hitStop && (worstCase || !hitTake)) px = stop, *exit = 1;
-  else if (hitTake) px = take, *exit = 2;
-  return (px / b.o) * (1 - sell) / (1 + buy) - 1;
-}
+constexpr double kInf = ofm::day::kNone;
+const std::vector<double>& kGrid = ofm::day::grid();
+using ofm::day::Bar;
+using ofm::day::tradeReturn;
+using ofm::day::Mlp;
+using ofm::day::Scaler;
+using ofm::day::Adwin;
 
 struct Stats {
   double s = 0, s2 = 0, n = 0;
@@ -74,145 +67,6 @@ struct Stats {
   }
 };
 
-
-// A two-hidden-layer perceptron (tanh), trained online by Adam on squared error.
-struct Mlp {
-  std::size_t nIn, nH, nOut;
-  std::vector<double> w1, b1, w2, b2, w3, b3;
-  std::vector<std::vector<double>*> params;
-  std::vector<std::vector<double>> m, v;
-  double step = 0;
-  Mlp(std::size_t in, std::size_t h, std::size_t out) : nIn(in), nH(h), nOut(out) {
-    std::mt19937 rng(7);
-    auto init = [&](std::vector<double>& w, std::size_t fanIn, std::size_t n) {
-      std::normal_distribution<double> g(0.0, 1.0 / std::sqrt(double(fanIn)));
-      w.resize(n);
-      for (double& x : w) x = g(rng);
-    };
-    init(w1, in, in * h), b1.assign(h, 0.0), init(w2, h, h * h), b2.assign(h, 0.0), init(w3, h, h * out), b3.assign(out, 0.0);
-    params = {&w1, &b1, &w2, &b2, &w3, &b3};
-    for (auto* p : params) m.emplace_back(p->size(), 0.0), v.emplace_back(p->size(), 0.0);
-  }
-  void forward(const std::vector<double>& x, std::vector<double>& h1, std::vector<double>& h2, std::vector<double>& y) const {
-    h1.assign(nH, 0.0), h2.assign(nH, 0.0), y.assign(nOut, 0.0);
-    for (std::size_t j = 0; j < nH; ++j) {
-      double a = b1[j];
-      for (std::size_t i = 0; i < nIn; ++i) a += w1[j * nIn + i] * x[i];
-      h1[j] = std::tanh(a);
-    }
-    for (std::size_t j = 0; j < nH; ++j) {
-      double a = b2[j];
-      for (std::size_t i = 0; i < nH; ++i) a += w2[j * nH + i] * h1[i];
-      h2[j] = std::tanh(a);
-    }
-    for (std::size_t k = 0; k < nOut; ++k) {
-      double a = b3[k];
-      for (std::size_t i = 0; i < nH; ++i) a += w3[k * nH + i] * h2[i];
-      y[k] = a;
-    }
-  }
-  std::vector<double> predict(const std::vector<double>& x) const {
-    std::vector<double> h1, h2, y;
-    forward(x, h1, h2, y);
-    return y;
-  }
-  // One Adam step on a batch (mean squared error over all outputs).
-  void train(const std::vector<std::vector<double>>& X, const std::vector<std::vector<double>>& Y) {
-    if (X.empty()) return;
-    std::vector<std::vector<double>> g;
-    for (auto* p : params) g.emplace_back(p->size(), 0.0);
-    std::vector<double> h1, h2, y, d3(nOut), d2(nH), d1(nH);
-    for (std::size_t n = 0; n < X.size(); ++n) {
-      forward(X[n], h1, h2, y);
-      for (std::size_t k = 0; k < nOut; ++k) d3[k] = (y[k] - Y[n][k]) / double(nOut);
-      for (std::size_t k = 0; k < nOut; ++k) {
-        g[5][k] += d3[k];
-        for (std::size_t i = 0; i < nH; ++i) g[4][k * nH + i] += d3[k] * h2[i];
-      }
-      for (std::size_t i = 0; i < nH; ++i) {
-        double a = 0;
-        for (std::size_t k = 0; k < nOut; ++k) a += w3[k * nH + i] * d3[k];
-        d2[i] = a * (1 - h2[i] * h2[i]);
-      }
-      for (std::size_t j = 0; j < nH; ++j) {
-        g[3][j] += d2[j];
-        for (std::size_t i = 0; i < nH; ++i) g[2][j * nH + i] += d2[j] * h1[i];
-      }
-      for (std::size_t i = 0; i < nH; ++i) {
-        double a = 0;
-        for (std::size_t j = 0; j < nH; ++j) a += w2[j * nH + i] * d2[j];
-        d1[i] = a * (1 - h1[i] * h1[i]);
-      }
-      for (std::size_t j = 0; j < nH; ++j) {
-        g[1][j] += d1[j];
-        for (std::size_t i = 0; i < nIn; ++i) g[0][j * nIn + i] += d1[j] * X[n][i];
-      }
-    }
-    const double lr = 1e-3, b1m = 0.9, b2m = 0.999, eps = 1e-8;
-    step += 1;
-    for (std::size_t q = 0; q < params.size(); ++q)
-      for (std::size_t i = 0; i < params[q]->size(); ++i) {
-        const double gi = g[q][i] / double(X.size());
-        m[q][i] = b1m * m[q][i] + (1 - b1m) * gi, v[q][i] = b2m * v[q][i] + (1 - b2m) * gi * gi;
-        const double mh = m[q][i] / (1 - std::pow(b1m, step)), vh = v[q][i] / (1 - std::pow(b2m, step));
-        (*params[q])[i] -= lr * mh / (std::sqrt(vh) + eps);
-      }
-  }
-};
-
-// Running standardisation of the features (mean and variance of everything seen so far).
-struct Scaler {
-  std::vector<Stats> s;
-  explicit Scaler(std::size_t n) : s(n) {}
-  void add(const std::vector<double>& x) { for (std::size_t i = 0; i < x.size(); ++i) s[i].add(x[i]); }
-  std::vector<double> apply(std::vector<double> x) const {
-    for (std::size_t i = 0; i < x.size(); ++i) {
-      if (s[i].n < 2) { x[i] = 0; continue; }
-      const double mu = s[i].s / s[i].n, sd = std::sqrt(std::max(1e-18, s[i].s2 / s[i].n - mu * mu));
-      x[i] = std::clamp((x[i] - mu) / sd, -5.0, 5.0);
-    }
-    return x;
-  }
-};
-
-
-// The self-adaptive selector's memory and score (as the factor premia and the selector kernel):
-// an ADWIN window (Bifet and Gavalda 2007; scale-free bound, confidence 1/T, each side at least the
-// square root of the window) over a record of net log returns, which drops its older part when the
-// record changes; the score is the window's mean shrunk by its t-statistic, m * max(0, 1 - 1/t^2),
-// so a record no better than noise scores 0 (cash).
-struct Adwin {
-  std::vector<double> p1{0.0}, p2{0.0};
-  std::size_t from = 0;
-  double horizon = 1;  // T: one false cut expected over the whole history
-  void push(double x) {
-    p1.push_back(p1.back() + x), p2.push_back(p2.back() + x * x);
-    for (bool moved = true; moved;) {
-      moved = false;
-      const std::size_t end = p1.size() - 1, n = end - from;
-      const std::size_t side = std::max<std::size_t>(2, std::size_t(std::ceil(std::sqrt(double(n)))));
-      if (n < 2 * side) return;
-      const double lt = std::log(2.0 * std::log(double(n)) * horizon);
-      for (std::size_t k = from + side; k + side <= end; ++k) {
-        const double n0 = double(k - from), n1 = double(end - k);
-        const double m0 = (p1[k] - p1[from]) / n0, m1 = (p1[end] - p1[k]) / n1;
-        const double v0 = std::max(0.0, (p2[k] - p2[from]) / n0 - m0 * m0), v1 = std::max(0.0, (p2[end] - p2[k]) / n1 - m1 * m1);
-        if (std::fabs(m0 - m1) > std::sqrt(2.0 * lt * (v0 / n0 + v1 / n1))) {
-          from = k, moved = true;
-          break;
-        }
-      }
-    }
-  }
-  double score() const {
-    const std::size_t end = p1.size() - 1;
-    const double n = double(end - from);
-    if (n < 2) return 0.0;
-    const double m = (p1[end] - p1[from]) / n, v = std::max(0.0, ((p2[end] - p2[from]) - n * m * m) / (n - 1));
-    if (!(v > 0)) return 0.0;
-    return m * std::max(0.0, 1.0 - v / n / (m * m));
-  }
-};
 
 void row(const char* name, const std::vector<double>& r, std::size_t lo, std::size_t hi) {
   const ofm::Metrics m = ofm::metrics(std::vector<double>(r.begin() + lo, r.begin() + hi));
@@ -304,19 +158,7 @@ int main(int argc, char** argv) {
     std::vector<std::map<std::size_t, int>> perStock(N);  // pairs each stock was given
     std::size_t nnStops = 0, nnTakes = 0, nnTrades = 0;
     Stats nnGain;  // realised log-return gain of the chosen pair over none/none, per trade
-    // Self-adaptive selection: each stock's record of its own neural-level day trades (gate), and
-    // the books' records (book selector: 0 no stops, 1 neural levels, 2 gated, or cash).
-    std::vector<Adwin> stockRecord(N);
-    std::vector<Adwin> bookRecord(3);
-    for (auto& a : stockRecord) a.horizon = double(bt.model.size());
-    for (auto& a : bookRecord) a.horizon = double(bt.model.size());
-    std::size_t gatedTrades = 0;
     std::map<std::string, int> bookUse;
-    auto netPick = [&](const std::vector<double>& x) {
-      if (x.empty() || net.step == 0) return G * G - 1;
-      const auto y = net.predict(scaler.apply(x));
-      return std::size_t(std::max_element(y.begin(), y.end()) - y.begin());
-    };
     std::size_t days = 0, trades = 0, both = 0, lowIsOpen = 0, stops = 0, takes = 0, full = 0;
     std::map<std::string, int> pairUse;
     for (std::size_t k = 0; k < bt.model.size(); ++k) {
@@ -406,41 +248,30 @@ int main(int argc, char** argv) {
       for (std::size_t i = 0; i < N; ++i)
         if (barAt(d, i, &b)) logVolume[i].add(std::log(b.v));
       for (std::size_t p = 0; p < G * G; ++p) pairRecord[p].add(rPair[p] / n);
-      // Gated selection: down the ranking, the stocks whose own record beats cash, until 10.
-      std::vector<std::size_t> ranked = candidates;
-      std::stable_sort(ranked.begin(), ranked.end(), [&](std::size_t x, std::size_t y) { return f.E(t, x) > f.E(t, y); });
-      double rGated = 0;
-      std::size_t booked = 0;
-      for (std::size_t i : ranked) {
-        if (booked == K) break;
-        if (!(stockRecord[i].score() > 0)) continue;
-        barAt(d, i, &b);
-        const std::size_t pick = netPick(features(t, i, medSig, mkt));
-        int e;
-        rGated += tradeReturn(b, sigmaOf(i), kGrid[pick / G], kGrid[pick % G], buy, sell, true, &e);
-        ++booked, ++gatedTrades;
-      }
-      gated.push_back(rGated / n);
-      // Book selector: the book with the best record so far, or cash.
-      const double books[3] = {rPlain / n, rNeural / n, rGated / n};
-      int choice = -1;
-      double bestScore = 0;
-      for (int q = 0; q < 3; ++q)
-        if (bookRecord[q].score() > bestScore) bestScore = bookRecord[q].score(), choice = q;
-      selected.push_back(choice < 0 ? 0.0 : books[choice]);
-      ++bookUse[choice < 0 ? "cash" : choice == 0 ? "top 10, no stops" : choice == 1 ? "top 10, neural levels" : "gated top 10"];
-      for (int q = 0; q < 3; ++q) bookRecord[q].push(std::log1p(books[q]));
-      // Every eligible stock's record: its own neural-level day trade on day d (known at its close).
-      for (std::size_t i : candidates) {
-        barAt(d, i, &b);
-        const std::size_t pick = netPick(features(t, i, medSig, mkt));
-        int e;
-        stockRecord[i].push(std::log1p(tradeReturn(b, sigmaOf(i), kGrid[pick / G], kGrid[pick % G], buy, sell, true, &e)));
-      }
       model.push_back(bt.model[k]), market.push_back(bt.market[k]);
       ++days;
     }
 
+    // The gated book (the library's daily book, as on the page): picks made before the day's training.
+    const ofm::DayBook book = ofm::dayBook(m, f, bt.start, buy, sell);
+    if (book.ret.size() != days) throw std::runtime_error("daily book and test cover different days");
+    gated = book.ret;
+    const std::size_t gatedTrades = book.trades;
+    // Book selector: each day, the book with the best record so far (net log returns), or cash.
+    {
+      std::vector<Adwin> bookRecord(3);
+      for (auto& a : bookRecord) a.horizon = double(days);
+      for (std::size_t k = 0; k < days; ++k) {
+        const double books[3] = {plain[k], neural[k], gated[k]};
+        int choice = -1;
+        double bestScore = 0;
+        for (int q = 0; q < 3; ++q)
+          if (bookRecord[q].score() > bestScore) bestScore = bookRecord[q].score(), choice = q;
+        selected.push_back(choice < 0 ? 0.0 : books[choice]);
+        ++bookUse[choice < 0 ? "cash" : choice == 0 ? "top 10, no stops" : choice == 1 ? "top 10, neural levels" : "gated top 10"];
+        for (int q = 0; q < 3; ++q) bookRecord[q].push(std::log1p(books[q]));
+      }
+    }
     const std::size_t n = days, h = n / 2;
     std::printf("Daily top 10 against the real bars: %zu stocks, %s .. %s; costs %.2f%% on purchases, %.2f%% on sales\n", N,
                 m.dates[bt.start].c_str(), m.dates[bt.start + n - 1].c_str(), 100 * buy, 100 * sell);
