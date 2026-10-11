@@ -110,6 +110,12 @@ struct TopKResult {
   std::string wayNow;             ///< the way followed for the next day
   std::vector<std::pair<std::string, double>> wayRatios;  ///< each way's record: annualised return per unit of risk
   double learntRatio = 0;         ///< the learnt levels' mean net return over its deviation per trade, on the trades before
+  // The self-adaptive selector (daytrade select kernel): each close it follows the best of the learnt
+  // policy, the top 10 without stops and the market by their own records, or holds cash.
+  std::vector<double> selected;   ///< its net returns from `start`
+  std::vector<int> choices;       ///< per day: 0 cash, 1 learnt policy, 2 no stops, 3 market
+  int choiceNow = 0;              ///< for the next day
+  std::vector<double> scoresNow;  ///< each candidate's score at the last close (cash: 0)
 };
 
 /// Both rankings, from the same start as the backtest (bt.start).

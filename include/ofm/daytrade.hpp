@@ -1,7 +1,7 @@
 #pragma once
 
 // The same-day trades as fused kernels: every number from the bars and the expected returns to the
-// booked trades. Two kernels, written once in WGSL (kernels/daytrade): WebGPU runs them, the CPU runs
+// booked trades. Three kernels, written once in WGSL (kernels/daytrade): WebGPU runs them, the CPU runs
 // their C++ translation in double precision (the reference) and single precision (the emulated GPU).
 //  levels  (workgroup 64; grid N; called per chunk of days [t0, t1)): one workgroup per stock walks
 //          its days in order. Lane 0 keeps the running state: the open-to-close volatility
@@ -17,6 +17,9 @@
 //  book    (workgroup 64; grid ceil(days/64)): per day, down the ranking by expected return, the first
 //          K stocks whose levels beat cash are booked; the day's result, the plain comparison and the
 //          evaluation sums. On the last day, the plan for the next open.
+//  select  (one invocation): the self-adaptive selector. Each close it scores the learnt policy, the
+//          top 10 without stops and the market on their own net records (ADWIN windows, means shrunk
+//          by their t-statistics; cash scores 0) and follows the best the next day.
 
 #include <cstdint>
 #include <string>
@@ -27,7 +30,7 @@ namespace ofm::daytrade {
 constexpr std::size_t kState = 24;   // floats of per-stock state carried between chunks
 constexpr std::size_t kLevel = 10;   // per (day, stock): a, b, score, trade, pStop, pTake, sigma, maxDrop, maxRise, state
 constexpr std::size_t kTrade = 6;    // per (day, stock): valid, ret, exit (0 close, 1 stop, 2 take), ret0, volume ratio, intraday
-constexpr std::size_t kDay = 24;     // per day: see book()
+constexpr std::size_t kDay = 32;     // per day: see book() and select()
 constexpr float kNone = 3.0e38f;     // "no level" / infinity in the kernels
 
 /// Everything the kernels read, flat, in the layout of the GPU buffers.
@@ -47,6 +50,8 @@ struct Buffers {
   std::vector<R> trades;             // [T][N][kTrade]
   std::vector<R> days;               // [T][kDay]
   std::vector<std::uint32_t> booked; // [T + 1][K]: booked stocks per day; row T: the plan's ranks
+  std::vector<R> market;             // [T]: the market's net return on day d (bought and held), the selector's third candidate
+  std::vector<R> sel;                // [3][T + 1][2]: the selector's running sums of each candidate's record
 };
 
 /// Runs the kernels on the CPU (double: reference; float: the emulated GPU), in the GPU's order.
@@ -55,5 +60,6 @@ void run(Buffers<R>& b, std::uint32_t chunk);
 
 const std::string& levelsSource();
 const std::string& bookSource();
+const std::string& selectSource();
 
 }  // namespace ofm::daytrade

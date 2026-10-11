@@ -11,5 +11,5 @@ const NONE : f32 = 3.0e38;
 const KS : u32 = 24u;
 const KL : u32 = 10u;
 const KT : u32 = 6u;
-const KD : u32 = 24u;
+const KD : u32 = 32u;
 fn bar(f : u32, t : u32, i : u32) -> f32 { return bars[(f * P.T + t) * P.N + i]; }

@@ -155,7 +155,9 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
   const { device } = await openDevice(mode);
   // 64 lanes per stock in the levels kernel on every adapter: a software adapter (SwiftShader) runs
   // the lanes as SIMD and is faster with 64 than with one (150 s against 250 s on the sample).
-  const [levels, book] = await Promise.all([pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.book, 'book')]);
+  const [levels, book, select] = await Promise.all([
+    pipeline(device, plan.sources.levels, 'levels'), pipeline(device, plan.sources.book, 'book'), pipeline(device, plan.sources.select, 'select'),
+  ]);
   const { T, N, K, s } = plan;
   const S = GPUBufferUsage.STORAGE, DST = GPUBufferUsage.COPY_DST, SRC = GPUBufferUsage.COPY_SRC;
   const buffer = (bytes, usage) => device.createBuffer({ size: Math.max(16, Math.ceil(bytes / 4) * 4), usage });
@@ -166,12 +168,14 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
   const obs = buffer(N * 4 * T * 4, S), idx = buffer(N * 2 * T * 4, S);
   const lev = buffer(T * N * plan.level * 4, S | SRC), tra = buffer(T * N * plan.trade * 4, S | SRC);
   const days = buffer(T * plan.day * 4, S | SRC), booked = buffer((T + 1) * K * 4, S | SRC);
+  const market = upload(plan.market), sel = buffer(3 * (T + 1) * 2 * 4, S);
   const group = (p, entries) => device.createBindGroup({
     layout: p.getBindGroupLayout(0),
     entries: entries.map(([binding, buf]) => ({ binding, resource: { buffer: buf } })),
   });
   const gL = group(levels, [[0, uniform], [1, bars], [2, life], [3, state], [4, obs], [5, idx], [6, lev], [7, tra]]);
   const gB = group(book, [[0, uniform], [1, bars], [6, lev], [7, tra], [8, expected], [9, elig], [10, days], [11, booked]]);
+  const gS = group(select, [[0, uniform], [10, days], [12, market], [13, sel]]);
   const step = (p, g, x, y = 1) => {
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
@@ -191,6 +195,7 @@ export async function runDayTrades(session, onProgress = () => {}, mode = 'auto'
   }
   device.queue.writeBuffer(uniform, 0, session.dayTradeHeader(0, T));
   step(book, gB, Math.ceil((T - s) / 64));
+  step(select, gS, 1);
   const [L, R, D, B] = await Promise.all([
     readBack(device, lev, T * N * plan.level * 4), readBack(device, tra, T * N * plan.trade * 4),
     readBack(device, days, T * plan.day * 4), readBack(device, booked, (T + 1) * K * 4, Uint32Array),

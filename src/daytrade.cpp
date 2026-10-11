@@ -28,6 +28,10 @@ void bind(gen::Levels<R>& k, Buffers<R>& b) {
   k.tra = b.trades.data();
 }
 template <class R>
+void bind(gen::Select<R>& k, Buffers<R>& b) {
+  k.days = b.days.data(), k.mkt = b.market.data(), k.sel = b.sel.data();
+}
+template <class R>
 void bind(gen::Book<R>& k, Buffers<R>& b) {
   k.bars = b.bars.data(), k.lev = b.levels.data(), k.tra = b.trades.data(), k.ex = b.expected.data(), k.elig = b.elig.data();
   k.days = b.days.data(), k.booked = b.booked.data();
@@ -47,10 +51,17 @@ void run(Buffers<R>& b, std::uint32_t chunk) {
   gen::Book<R> bk;
   bk.P = header(b, 0, 0), bind(bk, b);
   detail::dispatch(bk, detail::groups(b.T - b.s, bk.kWorkgroup[0]));
+  gen::Select<R> se;
+  se.P = header(b, 0, 0), bind(se, b);
+  detail::dispatch(se, 1);
 }
 
 const std::string& levelsSource() {
   static const std::string s = gen::Levels<float>::wgsl();
+  return s;
+}
+const std::string& selectSource() {
+  static const std::string s = gen::Select<float>::wgsl();
   return s;
 }
 const std::string& bookSource() {
