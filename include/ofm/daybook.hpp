@@ -25,11 +25,9 @@
 
 #include "ofm/data.hpp"
 #include "ofm/model.hpp"
+#include "ofm/trade.hpp"
 
 namespace ofm {
-
-/// The daily book's cost per side, in percent (commission, spread and slippage; CFD-like dealing).
-constexpr double kDayDealingPct = 0.05;
 
 namespace day {
 

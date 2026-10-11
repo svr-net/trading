@@ -34,7 +34,10 @@ def update_track(scan, track):
     day = recent[-1]
     if any(d["date"] == day["date"] for d in track["days"]):
         return False
-    track["days"].append({"date": day["date"], "ret": day["ret"], "market": day.get("market")})
+    entry = {"date": day["date"], "ret": day["ret"], "market": day.get("market")}
+    if day.get("day") is not None:
+        entry["day"] = day["day"]
+    track["days"].append(entry)
     track["days"].sort(key=lambda d: d["date"])
     return True
 
@@ -77,6 +80,22 @@ def build(scan, track):
         lines.append(f"  {'BUY ' if e['order'] > 0 else 'SELL'} {e['ticker']:<6} expected {bp(e['daily'])} a day")
     if not orders:
         lines.append("  none: keep the holdings")
+    D = scan.get("day")
+    day_lines = []
+    if D:
+        drow = next((r for r in whole if r["name"] == D["name"]), None)
+        live_day = [d["day"] for d in live if d.get("day") is not None]
+        level = lambda x: "none" if x is None else f"{100 * x:+.2f}%"
+        day_lines.append(f"Daily book (day trades, {D['buyBps'] / 100:.2f}% per side): day {pct(day.get('day') if day else None)};"
+                         f" live {pct(compound(live_day))} over {len(live_day)} days;"
+                         + (f" backtest {pct(drow['annualReturn'], 1)} a year, Sharpe {drow['sharpe']:.2f}" if drow else ""))
+        day_lines.append(f"Day trades at the next open (sell at the stop, the take-profit or the close):")
+        for o in D["orders"]:
+            day_lines.append(f"  BUY  {o['ticker']:<6} stop {level(o['stop'])}  take {level(o['take'])}  expected {bp(o['expected'])}")
+        if not D["orders"]:
+            day_lines.append("  none: no record beats cash")
+        lines.append("")
+        lines.extend(day_lines)
     lines.append("")
     lines.append(f"Costs {costs['buyBps'] / 100:.2f}% on purchases, {costs['sellBps'] / 100:.2f}% on sales. Fills at the open."
                  " Research, not investment advice. https://svr-net.github.io/trading/")
@@ -93,7 +112,13 @@ def build(scan, track):
             f"<h3 style='font-family:sans-serif'>Orders at the next open ({held} stocks held after them)</h3>",
             table(["Order", "Stock", "Expected, a day"], [["BUY" if e["order"] > 0 else "SELL", e["ticker"], bp(e["daily"])] for e in orders]
                   or [["none", "keep the holdings", ""]]),
-            "<p style='font-family:sans-serif;color:#666'>" + html.escape(lines[-1]) + "</p>"]
+            ]
+    if D:
+        page += [f"<h3 style='font-family:sans-serif'>{html.escape(day_lines[0])}</h3>",
+                 table(["Order", "Stock", "Stop from the open", "Take-profit from the open", "Expected, a day"],
+                       [["BUY", o["ticker"], level(o["stop"]), level(o["take"]), bp(o["expected"])] for o in D["orders"]]
+                       or [["none", "no record beats cash", "", "", ""]])]
+    page.append("<p style='font-family:sans-serif;color:#666'>" + html.escape(lines[-1]) + "</p>")
     return subject, text, "".join(page)
 
 
