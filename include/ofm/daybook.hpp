@@ -8,8 +8,8 @@
 // trade to gain after costs, and its own record of day trades beats cash (self-adaptive gate);
 // at most 10. Empty slots stay in cash. Each booked stock is
 // bought at the next open with a tenth of the capital and sold the same day at its stop, its
-// take-profit or the close. The levels are multiples of the stock's own open-to-close volatility,
-// picked per stock by a small network that predicts the net log return of each of the 36 stop /
+// take-profit or the close. Every trade has both a stop-loss and a take-profit: multiples of the
+// stock's own open-to-close volatility, picked per stock by a small network that predicts the net log return of each of the 36 stop /
 // take pairs from the stock's features at the close. Everything is learnt walk-forward:
 //  - the network (shared by all stocks; two hidden layers of 16, tanh, Adam) learns after each
 //    day from every eligible stock's 36 actual outcomes on that day's bar;

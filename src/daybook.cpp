@@ -198,13 +198,16 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   Scaler scaler(F);
   std::vector<Adwin> record(N);
   for (auto& a : record) a.horizon = double(T - start);
-  // The pair the network rates best for a stock, and its expected net log return in the stock's
+  // The pair (stop and take-profit both set) the network rates best for a stock, and its expected net log return in the stock's
   // volatility (after costs); none / none and no expectation before the network has learnt.
   auto pickOf = [&](const std::vector<double>& x, double* expect) {
     *expect = -kNone;
     if (x.empty() || net.step == 0) return P - 1;
     const auto y = net.predict(scaler.apply(x));
-    const std::size_t p = std::size_t(std::max_element(y.begin(), y.end()) - y.begin());
+    // Every trade has both a stop-loss and a take-profit: the best pair with both levels set.
+    std::size_t p = P - 1;
+    for (std::size_t q = 0; q < P; ++q)
+      if (std::isfinite(G1[q / G]) && std::isfinite(G1[q % G]) && (p == P - 1 || y[q] > y[p])) p = q;
     *expect = y[p];
     return p;
   };
