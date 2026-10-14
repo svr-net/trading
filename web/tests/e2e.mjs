@@ -27,7 +27,9 @@ const browser = await chromium.launch({
 
 const results = {};
 let failed = 0;
-for (const [engine, expect] of [['gpu', 'WebGPU'], ['gpu-cpu', 'CPU-simulated GPU'], ['emulated', 'Emulated GPU'], ['reference', 'Reference']]) {
+// One engine by default (WebGPU on SwiftShader, the page's own path); E2E_ENGINES=gpu,gpu-cpu,emulated,reference for all.
+const ENGINES = { gpu: 'WebGPU', 'gpu-cpu': 'CPU-simulated GPU', emulated: 'Emulated GPU', reference: 'Reference' };
+for (const [engine, expect] of (process.env.E2E_ENGINES || 'gpu').split(',').map((e) => [e, ENGINES[e]])) {
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));

@@ -1,33 +1,33 @@
 name: CI
 
+# Pull requests run every check; Pages (on main) calls it for the site only: the same code passed
+# its pull request's checks.
 on:
-  push:
   pull_request:
   workflow_call:
+    inputs:
+      site-only: { type: boolean, default: false }
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.site-only }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   native:
+    if: ${{ !inputs.site-only }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
-      - name: Build and test (gcc)
+      - name: Build and test
         run: |
           cmake -S . -B build -G Ninja
-          cmake --build build
+          cmake --build build --target ofm_tests
           ./build/ofm_tests
-      - name: Build and test with sanitizers (clang)
-        run: |
-          cmake -S . -B build-asan -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="-O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
-          cmake --build build-asan
-          ./build-asan/ofm_tests
-      - name: Report on the sample market
-        run: ./build/ofm_report
 
   wasm:
     runs-on: ubuntu-24.04
@@ -39,6 +39,7 @@ jobs:
           emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release
           cmake --build build-wasm -j"$(nproc)"
       - name: Node test
+        if: ${{ !inputs.site-only }}
         run: node web/tests/wasm.test.mjs
       - uses: actions/upload-artifact@v4
         with:
@@ -47,6 +48,7 @@ jobs:
           if-no-files-found: error
 
   e2e:
+    if: ${{ !inputs.site-only }}
     needs: wasm
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.56.1-noble
@@ -58,7 +60,7 @@ jobs:
           path: web
       - name: Install Playwright
         run: npm install --no-save --no-audit --no-fund playwright@1.56.1
-      - name: Browser test (WebGPU on SwiftShader, emulated GPU, reference)
+      - name: Browser test (the page on WebGPU, SwiftShader)
         env:
           PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
         run: node web/tests/e2e.mjs

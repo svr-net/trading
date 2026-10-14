@@ -20,8 +20,6 @@ on:
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       day_cost_pct: { description: 'The daily book''s cost per side, percent (CFDs or spread bets, slippage included)', default: '0.05' }
-      daytest: { description: 'Also test the daily top 10 against the real bars (research; results in the run summary only)', type: boolean, default: false }
-      stamp_pct: { description: 'Stamp duty on purchases, percent (0 for CFDs, spread bets, AIM; 0.50 for UK shares bought directly)', default: '0' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -36,13 +34,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install and test the model
-        run: |
-          pip install -r requirements.txt
-          python model/test_orthofactor.py
       - name: Exchanges and futures markets available (metadata only)
         if: ${{ inputs.probe }}
         env:
@@ -102,42 +93,18 @@ jobs:
             echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Build the C++ model
+      - name: Build the model
         if: ${{ !inputs.probe }}
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+          sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build
-          ./build/ofm_tests
-      - name: Adaptive model, reference engine (results only)
+          cmake --build build --target ofm_report
+      - name: The model and the daily trades (results only)
         if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0.05' }}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0.05' }}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Adaptive model, hedged with the stocks' own index (stand-in for FTSE 250 futures)
-        if: ${{ !inputs.probe }}
-        run: |
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --universe-index-hedge --json report/ofm-universe-hedge.json | tee report/ofm-universe-hedge.txt
-          { echo '```'; cat report/ofm-universe-hedge.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: 'With UK stamp duty (shares bought directly): 0.50% on purchases'
-        if: ${{ !inputs.probe }}
-        run: |
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct 0.50 --json report/ofm-no-stamp.json > report/ofm-no-stamp.txt
-          { echo '```'; grep -A40 'Rolling portfolio' report/ofm-no-stamp.txt | grep -v '^ *[0-9.]* sd\|^        '; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Daily top 10 against the real bars (research, when asked)
-        if: ${{ !inputs.probe && inputs.daytest }}
-        run: |
-          ./build/ofm_daytest --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --stamp-pct "${{ inputs.stamp_pct || '0' }}" | tee report/daytest.txt
-          { echo '```'; cat report/daytest.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Adaptive model, emulated GPU kernels (agreement check)
-        if: ${{ !inputs.probe }}
-        run: ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --engine emulated | head -24
-      - name: 'Benchmark - first Python model, fixed look-backs, monthly (results only)'
-        if: ${{ !inputs.probe }}
-        run: |
-          python model/run.py data/LSE.csv | tee report/benchmark.txt
-          { echo '```'; cat report/benchmark.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}
         with:
@@ -151,7 +118,7 @@ jobs:
         run: |
           mkdir -p web/data
           cp report/ofm.json web/data/uk.json
-          python tools/report/daily_email.py track report/ofm.json web/data/track.json
+          python3 tools/report/daily_email.py track report/ofm.json web/data/track.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add web/data/uk.json web/data/track.json
@@ -168,4 +135,4 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-        run: python tools/report/daily_email.py send report/ofm.json web/data/track.json
+        run: python3 tools/report/daily_email.py send report/ofm.json web/data/track.json

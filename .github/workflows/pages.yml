@@ -1,6 +1,6 @@
 name: Pages
 
-# Publishes the page (web/ with the WebAssembly module built by CI) to GitHub Pages after CI passes.
+# Publishes the page (web/ with the WebAssembly module built by CI) to GitHub Pages; the checks ran on the pull request.
 on:
   push:
     branches: [main]
@@ -16,6 +16,8 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    with:
+      site-only: true
 
   deploy:
     needs: ci
