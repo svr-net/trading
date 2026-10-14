@@ -8,7 +8,7 @@ namespace ofm {
 namespace day {
 
 const std::vector<double>& grid() {
-  static const std::vector<double> g = {0.5, 1.0, 1.5, 2.0, 3.0, kNone};
+  static const std::vector<double> g = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, kNone};
   return g;
 }
 
@@ -260,7 +260,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     }
     book.ret.push_back(r / double(K)), book.booked.push_back(booked);
     // After the close d: each candidate's day trade goes to its record when the rule would have taken
-    // it (whether booked or not), and its 36 outcomes
+    // it (whether booked or not), and its 64 outcomes
     // (log returns in its volatility, worst-case fills, after costs) train the network.
     std::vector<std::vector<double>> X, Y;
     for (std::size_t i : cand) {

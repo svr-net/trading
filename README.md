@@ -35,7 +35,7 @@ shrunk by its t-statistic) beats cash. Unused slots stay in cash. Every trade ha
 and a take-profit,
 multiples of the stock's open-to-close volatility, are the pair the network rates best from the
 stock's features at the close; it learns every day, after the close, from every stock's outcomes
-for all 36 pairs. Backtest fills come from the real high, low and close (the stop when a day
+for all 64 pairs (0.5 to 8 times the volatility, or none; a trade always uses a pair with both set). Backtest fills come from the real high, low and close (the stop when a day
 touched both levels). It needs cheap dealing (CFDs, spread bets): the cost per side, slippage
 included, is its one input (`--day-cost-pct`, default 0.05; the page's "Cost per side").
 
