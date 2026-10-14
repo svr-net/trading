@@ -110,6 +110,10 @@ struct DayBook {
   std::vector<int> booked;           ///< stocks booked each day
   std::size_t trades = 0, stops = 0, takes = 0;
   std::vector<DayOrder> orders;      ///< for the next open, best expected first
+  /// The screen at the last close: stocks with a bar and a forecast, and how many pass each test.
+  struct Screen {
+    std::size_t stocks = 0, bars = 0, flatBars = 0, candidates = 0, forecastUp = 0, gainExpected = 0, recordUp = 0, all = 0;
+  } screen;
 };
 
 /// The daily book from day `start` to the last day, and its orders for the next open.

@@ -287,11 +287,17 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     if (std::isfinite(f.E(t, i)) && vol[i].n >= 2 && barAt(t, i, &b)) cand.push_back(i);
   double medSig, mkt;
   dayContext(t, cand, &medSig, &mkt);
+  auto& sc = book.screen;
+  sc.stocks = N, sc.candidates = cand.size();
+  for (std::size_t i = 0; i < N; ++i)
+    if (barAt(t, i, &b)) ++sc.bars, sc.flatBars += b.h == b.l;
   for (std::size_t i : ranked(cand, t)) {
-    if (book.orders.size() == K) break;
     double expect;
     const std::size_t p = pickOf(features(t, i, medSig, mkt), &expect);
+    sc.forecastUp += f.E(t, i) > 0, sc.gainExpected += expect > 0, sc.recordUp += record[i].score() > 0;
     if (!worthIt(t, i, expect)) continue;
+    ++sc.all;
+    if (book.orders.size() == K) continue;
     DayOrder o;
     o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = G1[p / G], o.take = G1[p % G];
     o.tradeReturn = std::expm1(expect * o.sigma);
