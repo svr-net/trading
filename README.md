@@ -31,7 +31,8 @@ The page and the daily email give one thing: up to 10 day trades for the next op
 stop-loss, its take-profit or the close. A trade is listed, and taken in the backtest, only when it
 is expected to make money: the stock is forecast to beat the market, a small network expects the
 trade to gain after costs, and the stock's own record of these trades (an ADWIN window, its mean
-shrunk by its t-statistic) beats cash. Unused slots stay in cash. The stop and take-profit,
+shrunk by its t-statistic) beats cash. Unused slots stay in cash. Every trade has both a stop-loss
+and a take-profit,
 multiples of the stock's open-to-close volatility, are the pair the network rates best from the
 stock's features at the close; it learns every day, after the close, from every stock's outcomes
 for all 36 pairs. Backtest fills come from the real high, low and close (the stop when a day
