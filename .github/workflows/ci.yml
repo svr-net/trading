@@ -8,10 +8,6 @@ on:
     inputs:
       site-only: { type: boolean, default: false }
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.site-only }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
