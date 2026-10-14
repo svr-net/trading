@@ -256,14 +256,16 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       ++booked, ++book.trades, book.stops += e == 1, book.takes += e == 2;
     }
     book.ret.push_back(r / double(K)), book.booked.push_back(booked);
-    // After the close d: every candidate's own day trade goes to its record, and its 36 outcomes
+    // After the close d: each candidate's day trade goes to its record when the rule would have taken
+    // it (whether booked or not), and its 36 outcomes
     // (log returns in its volatility, worst-case fills, after costs) train the network.
     std::vector<std::vector<double>> X, Y;
     for (std::size_t i : cand) {
       barAt(d, i, &b);
       const double sig = sigmaOf(i);
       int e;
-      record[i].push(std::log1p(tradeReturn(b, sig, G1[pick[i] / G], G1[pick[i] % G], buy, sell, true, &e)));
+      // The record holds the trades the rule would take: days its forecast was up and a gain was expected.
+      if (f.E(t, i) > 0 && expect[i] > 0) record[i].push(std::log1p(tradeReturn(b, sig, G1[pick[i] / G], G1[pick[i] % G], buy, sell, true, &e)));
       if (x[i].empty()) continue;
       std::vector<double> y(P);
       for (std::size_t p = 0; p < P; ++p) y[p] = std::log1p(tradeReturn(b, sig, G1[p / G], G1[p % G], buy, sell, true, &e)) / sig;

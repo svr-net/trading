@@ -13,8 +13,8 @@
 // take pairs from the stock's features at the close. Everything is learnt walk-forward:
 //  - the network (shared by all stocks; two hidden layers of 16, tanh, Adam) learns after each
 //    day from every eligible stock's 36 actual outcomes on that day's bar;
-//  - each stock's record is an ADWIN window over the net log returns of its own day trade (taken
-//    every day, booked or not), scored by its mean shrunk by its t-statistic, m * max(0, 1 - 1/t^2);
+//  - each stock's record is an ADWIN window over the net log returns of its own day trades on the
+//    days the rule would take them (forecast up, gain expected), booked or not, scored by its mean shrunk by its t-statistic, m * max(0, 1 - 1/t^2);
 //    a record no better than noise scores 0, and the slot stays in cash.
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels the stop is taken (worst case). Every trade pays the purchase and the
