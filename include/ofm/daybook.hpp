@@ -25,6 +25,7 @@
 // sale cost.
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -103,6 +104,15 @@ struct DayBook {
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many exceeded 10 volatilities (data check)
+  /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
+  struct Skill {
+    double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    void add(double x, double y) { n += 1, sx += x, sy += y, sxx += x * x, syy += y * y, sxy += x * y; }
+    double corr() const {
+      const double vx = sxx - sx * sx / n, vy = syy - sy * sy / n;
+      return n > 2 && vx > 0 && vy > 0 ? (sxy - sx * sy / n) / std::sqrt(vx * vy) : 0.0;
+    }
+  } skill;
   std::size_t trades = 0, stops = 0, takes = 0;
   std::vector<DayOrder> orders;      ///< for the next open, best expected first
   /// The screen at the last close: stocks with a bar and a forecast, and how many pass each test.

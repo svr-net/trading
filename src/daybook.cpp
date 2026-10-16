@@ -305,6 +305,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       const double z = std::log(b.c / b.o) / sig;
       book.maxTarget = std::max(book.maxTarget, std::fabs(z));
       book.bigTargets += std::fabs(z) > 10;
+      // Out-of-sample skill of the intraday forecast: its correlation with what happened.
+      if (intraday.n > double(F + 1)) book.skill.add(p.mu, z);
       intraday.add(x1, z);
       if (intraday.n > double(F + 1)) {  // pair fits on genuine forecasts only
         const std::vector<double> mu1{1.0, p.mu};
