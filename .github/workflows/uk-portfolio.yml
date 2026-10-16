@@ -16,6 +16,7 @@ on:
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
+      intraday_probe: { description: 'Only check which intraday intervals the key can fetch (counts, no prices)', type: boolean, default: false }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
@@ -34,6 +35,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Intraday intervals available (counts only, no prices)
+        if: ${{ inputs.intraday_probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/intraday_probe.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Exchanges and futures markets available (metadata only)
         if: ${{ inputs.probe }}
         env:
