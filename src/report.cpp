@@ -194,7 +194,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     for (std::size_t q = 0; q < day->orders.size(); ++q) {
       const DayOrder& d = day->orders[q];
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
-      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight) 
+      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight) << ",\"level\":" << str(d.level) 
         << ",\"sigma\":" << num(d.sigma)
         << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
@@ -298,9 +298,9 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
     std::snprintf(b, sizeof b, "Data check: largest open-to-close move %.1f volatilities; %zu outliers (Chauvenet) cut to the bound. Intraday forecast skill: correlation %+.4f over %.0f forecasts (t %+.1f)\n", day->maxTarget, day->bigTargets, day->skill.corr(), day->skill.n, day->skill.corr() * std::sqrt(std::max(0.0, day->skill.n - 2)));
     o << b << "Trades for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
     for (const DayOrder& d : day->orders) {
-      std::snprintf(b, sizeof b, "  %-10s %4.1f%% of capital  trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.weight, 100 * d.tradeReturn,
+      std::snprintf(b, sizeof b, "  %-10s %4.1f%% of capital  trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)  %s\n", m.tickers[d.asset].c_str(), 100 * d.weight, 100 * d.tradeReturn,
                     std::isfinite(d.stop) ? (num(100 * (std::exp(-d.stop * d.sigma) - 1), 3) + "%").c_str() : "none",
-                    std::isfinite(d.take) ? (num(100 * (std::exp(d.take * d.sigma) - 1), 3) + "%").c_str() : "none", 100 * d.record, d.window);
+                    std::isfinite(d.take) ? (num(100 * (std::exp(d.take * d.sigma) - 1), 3) + "%").c_str() : "none", 100 * d.record, d.window, d.level.c_str());
       o << b;
     }
     if (day->orders.empty()) o << "  none: no trade is expected to make money\n";
