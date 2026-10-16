@@ -10,11 +10,12 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: every trade has both, multiples of the stock's volatility; the stop is
-//    never further from the open than the loss limit (maxStop). For each of
-//    the 49 pairs, the net outcome (after costs, worst-case fills) is fitted by least squares on
-//    the intraday forecast over every stock and day so far; each stock takes the pair with the
-//    best expected outcome, and that expected outcome is its expected return.
+//  - Stop and take-profit: the stop is the stock's Parabolic SAR (Wilder) for the next bar, and a
+//    trade is taken only when its SAR is in an uptrend; the take-profit is a multiple of the risk
+//    (open minus stop) above the open. The SAR's acceleration step and maximum and the multiple are
+//    learnt: for each combination the net outcome (after costs, worst-case fills) is fitted by least
+//    squares on the intraday forecast over every stock and day so far, and each stock takes the
+//    combination with the best expected outcome. The stop is never further than maxStop.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
 //    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; at most 10.
@@ -90,6 +91,7 @@ struct DayOrder {
   double intraday = 0;      ///< forecast open-to-close return (log)
   double tradeReturn = 0;   ///< expected net return of the trade (after costs)
   double weight = 0;        ///< share of the capital
+  double psarStep = 0, psarMax = 0, reward = 0;  ///< the Parabolic SAR used for the stop; take-profit in multiples of the risk
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)

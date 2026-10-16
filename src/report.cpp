@@ -194,7 +194,8 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     for (std::size_t q = 0; q < day->orders.size(); ++q) {
       const DayOrder& d = day->orders[q];
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
-      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight)
+      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight) << ",\"psarStep\":" << num(d.psarStep) << ",\"psarMax\":" << num(d.psarMax)
+        << ",\"reward\":" << num(d.reward)
         << ",\"sigma\":" << num(d.sigma)
         << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";

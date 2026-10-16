@@ -145,6 +145,53 @@ struct AdaptiveVol {
   double sigma(std::size_t i) const { return n[i] >= 2 ? std::sqrt(v[i][best()]) : 0.0; }
 };
 
+// Wilder's Parabolic SAR, updated bar by bar; next() is the stop for the next bar.
+struct Psar {
+  double step = 0.02, amax = 0.2;
+  bool up = true;
+  double sar = 0, ep = 0, af = 0, h1 = 0, h2 = 0, l1 = 0, l2 = 0, c0 = 0;
+  int n = 0;
+  double next() const {
+    const double s = sar + af * (ep - sar);
+    return up ? std::min({s, l1, l2}) : std::max({s, h1, h2});
+  }
+  void update(double h, double l, double c) {
+    if (n == 0) {
+      h1 = h2 = h, l1 = l2 = l, c0 = c, n = 1;
+      return;
+    }
+    if (n == 1) {
+      up = c >= c0, sar = up ? std::min(l1, l) : std::max(h1, h), ep = up ? std::max(h1, h) : std::min(l1, l), af = step;
+    } else {
+      double s0 = next();
+      if (up) {
+        if (l < s0) up = false, s0 = ep, ep = l, af = step;
+        else if (h > ep) ep = h, af = std::min(af + step, amax);
+      } else {
+        if (h > s0) up = true, s0 = ep, ep = h, af = step;
+        else if (l < ep) ep = l, af = std::min(af + step, amax);
+      }
+      sar = s0;
+    }
+    h2 = h1, h1 = h, l2 = l1, l1 = l, ++n;
+  }
+  bool ready() const { return n >= 3; }
+};
+
+// A day trade with its stop at a price and its take-profit at `reward` times the risk (open minus
+// stop) above the open; a stop at or above the open is hit at the open. Worst case when both are hit.
+double psarTrade(const day::Bar& b, double stop, double reward, double buy, double sell, int* exit) {
+  double px = b.c;
+  *exit = 0;
+  if (b.o <= stop) px = b.o, *exit = 1;
+  else {
+    const double take = b.o + reward * (b.o - stop);
+    if (b.l <= stop) px = stop, *exit = 1;
+    else if (b.h >= take) px = take, *exit = 2;
+  }
+  return (px / b.o) * (1 - sell) / (1 + buy) - 1;
+}
+
 }  // namespace
 
 DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, double maxStop) {
@@ -152,16 +199,18 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   DayBook book;
   book.buy = buy, book.sell = sell, book.start = start;
   const std::size_t T = m.T(), N = m.N(), K = 10, F = 10;
-  const std::vector<double>& G1 = grid();
-  const std::size_t G = G1.size();
   if (start == 0 || start >= T || f.E.T != T) return book;
   std::vector<std::uint32_t> halfLives = f.horizons;
   if (halfLives.empty()) halfLives = {2, 4, 8, 16, 32, 64, 128, 256};
-  // The pairs: every stop and take-profit both set.
-  std::vector<std::size_t> pairs;
-  for (std::size_t p = 0; p < G * G; ++p)
-    if (std::isfinite(G1[p / G]) && std::isfinite(G1[p % G])) pairs.push_back(p);
-  const std::size_t P = pairs.size();
+  // The pairs: a Parabolic SAR (acceleration step and maximum) for the stop, and a take-profit at a
+  // multiple of the risk. Which ones work is learnt from the data.
+  const std::vector<std::pair<double, double>> sarCfg = {{0.01, 0.1}, {0.01, 0.2}, {0.01, 0.4}, {0.02, 0.1}, {0.02, 0.2},
+                                                         {0.02, 0.4}, {0.04, 0.1}, {0.04, 0.2}, {0.04, 0.4}};
+  const std::vector<double> reward = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
+  const std::size_t C = sarCfg.size(), M = reward.size(), P = C * M;
+  std::vector<std::vector<Psar>> sar(N, std::vector<Psar>(C));
+  for (auto& v : sar)
+    for (std::size_t c = 0; c < C; ++c) v[c].step = sarCfg[c].first, v[c].amax = sarCfg[c].second;
 
   auto barAt = [&](std::size_t d, std::size_t i, Bar* b) {
     *b = {m.open(d, i), m.high(d, i), m.low(d, i), m.close(d, i), m.volume(d, i)};
@@ -179,6 +228,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (barAt(t, i, &b)) {
         const double r = std::log(b.c / b.o);
         vol.add(i, r), s += r, n += 1;
+        for (auto& ps : sar[i]) ps.update(b.h, b.l, b.c);
       }
     if (n > 0) vol.add(N, s / n);
   };
@@ -223,6 +273,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     std::vector<double> xs;
     double mu = 0, expect = -kNone;
     std::size_t pair = 0;
+    double stop = 0;  // the Parabolic SAR of the chosen pair, for the next bar
   };
   auto plan = [&](std::size_t t, const std::vector<std::size_t>& cand, double medSig, double mkt) {
     const auto beta = intraday.solve();
@@ -237,13 +288,15 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (beta.empty()) continue;
       pl.mu = beta[0];
       for (std::size_t j = 0; j < F; ++j) pl.mu += beta[j + 1] * pl.xs[j];
-      const double sig = sigmaOf(i);
+      Bar bt;
+      barAt(t, i, &bt);
       for (std::size_t q = 0; q < P; ++q) {
         if (ab[q].empty()) continue;
-        // The stop-loss may not be further from the open than the limit.
-        if (1 - std::exp(-G1[pairs[q] / G] * sig) > maxStop) continue;
+        // A long trade only in a Parabolic SAR uptrend, with the stop no further than the limit.
+        const Psar& ps = sar[i][q / M];
+        if (!ps.ready() || !ps.up || !(ps.next() < bt.c) || 1 - ps.next() / bt.c > maxStop) continue;
         const double e = ab[q][0] + ab[q][1] * pl.mu;
-        if (e > pl.expect) pl.expect = e, pl.pair = q;
+        if (e > pl.expect) pl.expect = e, pl.pair = q, pl.stop = ps.next();
       }
     }
     return out;
@@ -286,9 +339,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     double r = 0;
     for (std::size_t i : pick) {
       barAt(d, i, &b);
-      const std::size_t p = pairs[pl[i].pair];
       int e;
-      r += w * tradeReturn(b, sigmaOf(i), G1[p / G], G1[p % G], buy, sell, true, &e);
+      r += w * psarTrade(b, pl[i].stop, reward[pl[i].pair % M], buy, sell, &e);
       ++book.trades, book.stops += e == 1, book.takes += e == 2;
     }
     book.ret.push_back(r), book.booked.push_back(int(pick.size())), book.exposure.push_back(w * double(pick.size()));
@@ -299,10 +351,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       barAt(d, i, &b);
       const double sig = sigmaOf(i);
       int e;
-      if (p.expect > 0) {
-        const std::size_t q = pairs[p.pair];
-        record[i].push(std::log1p(tradeReturn(b, sig, G1[q / G], G1[q % G], buy, sell, true, &e)));
-      }
+      if (p.expect > 0) record[i].push(std::log1p(psarTrade(b, p.stop, reward[p.pair % M], buy, sell, &e)));
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
       const double z = std::log(b.c / b.o) / sig;
@@ -313,9 +362,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       intraday.add(x1, z);
       if (intraday.n > double(F + 1)) {  // pair fits on genuine forecasts only
         const std::vector<double> mu1{1.0, p.mu};
+        // Every pair whose Parabolic SAR was in an uptrend at the close t: its outcome on day d.
         for (std::size_t q = 0; q < P; ++q) {
-          const std::size_t pp = pairs[q];
-          pairFit[q].add(mu1, std::log1p(tradeReturn(b, sig, G1[pp / G], G1[pp % G], buy, sell, true, &e)) / sig);
+          const Psar& ps = sar[i][q / M];
+          if (!ps.ready() || !ps.up || !(ps.next() < m.close(t, i))) continue;
+          pairFit[q].add(mu1, std::log1p(psarTrade(b, ps.next(), reward[q % M], buy, sell, &e)) / sig);
         }
       }
     }
@@ -349,9 +400,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   double w;
   choose(cand, pl, &pick, &w);
   for (std::size_t i : pick) {
-    const std::size_t p = pairs[pl[i].pair];
     DayOrder o;
-    o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = G1[p / G], o.take = G1[p % G];
+    o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i);
+    // Stop and take-profit as multiples of the volatility from the last close (prices are not published).
+    const double c = m.close(t, i), stopPct = pl[i].stop / c - 1, takePct = reward[pl[i].pair % M] * (1 - pl[i].stop / c);
+    o.stop = -std::log1p(stopPct) / o.sigma, o.take = std::log1p(takePct) / o.sigma;
+    o.psarStep = sarCfg[pl[i].pair / M].first, o.psarMax = sarCfg[pl[i].pair / M].second, o.reward = reward[pl[i].pair % M];
     o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(pl[i].expect * o.sigma), o.weight = w;
     o.record = record[i].score(), o.window = record[i].window();
     book.orders.push_back(o);
