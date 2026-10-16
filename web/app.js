@@ -95,7 +95,8 @@ function render(r, source = 'UK') {
   const D = r.day;
   if (!D) { $('asof').textContent = 'This scan has no daily trades yet; they appear after the next scheduled run.'; return; }
   const n = D.orders.length;
-  $('asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
+  const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source];
+  $('asof').textContent = `${where ? `${where}, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
   table($('plan'), [['Buy at the open'], ['Capital', 'num'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
     n ? D.orders.map((o) => [[o.ticker], [o.weight == null ? '–' : `${(100 * o.weight).toFixed(1)}%`, 'num'], signed(o.tradeReturn, 2), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
@@ -161,11 +162,25 @@ $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
 window.addEventListener('resize', () => { if (shown && shown[0].day) drawChart(shown[0]); });
 
-// The latest UK scan, published by the scheduled UK workflow (results only, no prices).
-fetch('data/uk.json', { cache: 'no-cache' })
-  .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-  .then((r) => render(r))
-  .catch(() => { $('asof').textContent = 'No UK scan has been published yet; it appears after the next scheduled run.'; });
+// The latest scans, published by the scheduled workflow (results only, no prices): one per market.
+const MARKETS = { uk: 'UK', us: 'US' };
+let market = 'uk';
+try { market = new URLSearchParams(location.search).get('market') || localStorage.getItem('market') || 'uk'; } catch { /* no storage */ }
+if (!MARKETS[market]) market = 'uk';
+function showMarket(m) {
+  market = m;
+  try { localStorage.setItem('market', m); } catch { /* no storage */ }
+  for (const b of document.querySelectorAll('.market-switch button')) b.setAttribute('aria-selected', String(b.dataset.market === m));
+  const name = MARKETS[m];
+  $('asof').textContent = `Loading the latest ${name} scan…`;
+  $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '';
+  fetch(`data/${m}.json`, { cache: 'no-cache' })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+    .then((r) => { if (market === m) render(r, name); })
+    .catch(() => { if (market === m) $('asof').textContent = `No ${name} scan has been published yet; it appears after the next scheduled run.`; });
+}
+for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => showMarket(b.dataset.market));
+showMarket(market);
 
 createOfm().then((m) => {
   ofm = m;

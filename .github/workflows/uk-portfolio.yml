@@ -3,23 +3,27 @@
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in the cache and are never published.
-name: UK portfolio
+name: Daily trades (UK and US)
 
 on:
-  # Weekday evenings at 19:00 UTC (20:00 UK summer time, 19:00 winter): download the day, scan,
-  # publish the proposals and email the daily report.
+  # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
+  # York close): download the day, scan, publish the proposals and email the daily report.
   schedule:
     - cron: '0 19 * * 1-5'
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
     inputs:
-      universe: { description: 'Most traded shares to download', default: '250' }
+      market: { description: 'Market', type: choice, options: [both, UK, US], default: both }
+      universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
+      intraday_probe: { description: 'Only check which intraday intervals the key can fetch (counts, no prices)', type: boolean, default: false }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
+      intraday_days: { description: 'Recent trading days whose strongest candidates get intraday paths (US exchanges; 0: none)', default: '250' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -28,12 +32,24 @@ permissions:
 jobs:
   data:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || '["UK","US"]')) }}
+    env:
+      MARKET: ${{ matrix.market }}
+      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Intraday intervals available (counts only, no prices)
+        if: ${{ inputs.intraday_probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/intraday_depth.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Exchanges and futures markets available (metadata only)
         if: ${{ inputs.probe }}
         env:
@@ -52,8 +68,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
+            eoddata-${{ matrix.market }}-main-
             eoddata-main-
             eoddata-store-
       - name: Restore main's EODData store (other branches)
@@ -61,23 +78,30 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
+            eoddata-${{ matrix.market }}-main-
             eoddata-main-
-      - name: Update LSE bars (only the days missing from the store)
+      - name: Update the share bars (only the days missing from the store)
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
-          ARGS=(--exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv)
-          if [ "${{ inputs.refresh }}" = "true" ]; then
-            node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
-          elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
-            echo "Branch run: used main's store, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
+          mkdir -p data
+          echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+            ARGS=(--exchange "$EX" --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            if [ "${{ inputs.refresh }}" = "true" ]; then
+              node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
+            elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
+              echo "Branch run: used main's store for $EX, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            tail -n +2 "data/$EX.csv" >> data/stocks.csv
+          done
       - name: Update futures, index and currency series (only the days missing)
         if: ${{ !inputs.probe }}
         env:
@@ -97,10 +121,10 @@ jobs:
         run: |
           {
             echo '```'
-            echo "rows:    $(($(wc -l < data/LSE.csv) - 1))"
-            echo "symbols: $(tail -n +2 data/LSE.csv | cut -d, -f2 | sort -u | wc -l)"
-            echo "first:   $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | head -1)"
-            echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
+            echo "rows:    $(($(wc -l < data/stocks.csv) - 1))"
+            echo "symbols: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l)"
+            echo "first:   $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | head -1)"
+            echo "last:    $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Build the model
@@ -111,14 +135,34 @@ jobs:
           cmake --build build --target ofm_report
       - name: The model and the daily trades (results only)
         if: ${{ !inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
+          set -o pipefail
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
+          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
+          EXCH="$EXCHANGES"
+          DAYS="${{ inputs.intraday_days || '250' }}"
+          # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
+          # 5-minute bars (only the months not yet stored), then the run with exact fills.
+          if [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
+            ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days "$DAYS" > /dev/null
+            node tools/eoddata/intraday.mjs --candidates data/candidates.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
+            ARGS+=(--intraday data/intraday.csv --candidates-out data/candidates.csv --candidates-days "$DAYS")
+          fi
+          ./build/ofm_report "${ARGS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
+      - name: Keep the store for this branch's next runs
+        if: ${{ always() && !inputs.probe && github.ref != 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}
         with:
-          name: uk-report
+          name: ${{ matrix.market }}-report
           path: report/
           retention-days: 14
       - name: Publish the scan to the page (results only, main branch)
@@ -127,14 +171,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p web/data
-          cp report/ofm.json web/data/uk.json
-          python3 tools/report/daily_email.py track report/ofm.json web/data/track.json
+          M=$(echo "$MARKET" | tr 'A-Z' 'a-z')
+          TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add web/data/uk.json web/data/track.json
-          if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
-          git commit -m "UK scan $(date -u +%Y-%m-%d) (results only)"
-          git push origin HEAD:main
+          # The other market's job may push first: rebase and retry.
+          for k in 1 2 3 4 5; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            cp report/ofm.json "web/data/$M.json"
+            python3 tools/report/daily_email.py track report/ofm.json "$TRACK"
+            git add "web/data/$M.json" "$TRACK"
+            if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
+            git commit -q -m "$MARKET scan $(date -u +%Y-%m-%d) (results only)"
+            git push -q origin HEAD:main && break
+            sleep $((k * 5))
+          done
           gh workflow run pages.yml --ref main
       - name: Email the daily report (scheduled runs, or when asked)
         if: ${{ !inputs.probe && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.email) }}
@@ -145,4 +196,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-        run: python3 tools/report/daily_email.py send report/ofm.json web/data/track.json
+        run: |
+          M=$(echo "$MARKET" | tr 'A-Z' 'a-z')
+          TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
+          python3 tools/report/daily_email.py send report/ofm.json "$TRACK"
