@@ -187,7 +187,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"learner\":\"" << day->learner << "\"" << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"learner\":\"" << day->learner << "\"" << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
@@ -292,6 +292,7 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       o << b;
       std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
       o << b;
+      if (day->backtestLoses) o << "No trades for the next open: the daily trades lost money over the backtest\n";
       if (day->pathDays > 0) {
         std::snprintf(b, sizeof b, "Intraday paths: %zu stock-days; %zu trades with exact fills, %zu where both levels were touched and the path decided\n",
                       day->pathDays, day->pathTrades, day->pathResolved);
