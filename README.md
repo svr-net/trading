@@ -26,8 +26,9 @@ translation.
 
 ## What is traded
 
-The page and the daily email give one thing: up to 10 day trades for the next open
-(`include/ofm/daybook.hpp`), each bought at the open and sold at its stop-loss, its take-profit or
+The page and the daily email give one thing, for two markets (a UK | US switch on the page: the
+250 most traded LSE shares, and the 250 most traded NYSE and the 250 most traded NASDAQ shares):
+up to 10 day trades for the next open (`include/ofm/daybook.hpp`), each bought at the open and sold at its stop-loss, its take-profit or
 the close, all learnt walk-forward:
 
 - **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
@@ -37,6 +38,10 @@ the close, all learnt walk-forward:
 - **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
   own book; the trades use the limit whose record is best so far, and stay in cash while none
   beats cash.
+- **Intraday paths (US)**: the strongest candidates of the last 250 days get their 5-minute
+  session bars (`tools/eoddata/intraday.mjs`, stored a month per symbol); on those stock-days the
+  path decides whether the stop or the take-profit came first. EODData serves no intraday bars for
+  the LSE.
 - **Selection**: a trade only when it is expected to gain after costs and the stock's own record
   of these trades beats cash; at most 10, best expected first.
 - **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
