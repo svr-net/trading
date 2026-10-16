@@ -24,7 +24,7 @@ for (const r of [ref, emu]) {
   // The daily book: its curve, a row in every part, its costs and at most 10 orders with levels.
   assert.ok(r.day && r.curves[r.day.name].length === r.dates.length, 'daily book curve');
   assert.ok(r.parts.every((p) => p.rows.some((x) => x.name === r.day.name)));
-  assert.equal(r.day.buyBps, 5);
+  assert.equal(r.day.buyBps, 0);
   assert.ok(r.day.orders.length <= 10 && r.day.orders.every((o) => o.ticker && o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && (o.take == null || o.take > 0) && (o.stop == null || o.stop < 0)));
   assert.ok(r.recent.every((d) => typeof d.day === 'number'));
 }

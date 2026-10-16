@@ -38,7 +38,7 @@ namespace ofm {
 
 /// Market-standard transaction costs, in percent of the value traded.
 constexpr double kDealingPct = 0.10;  ///< per side: commission and half the spread
-constexpr double kDayDealingPct = 0.05;  ///< per side for the daily book (daybook.hpp): CFD-like dealing, slippage included
+constexpr double kDayDealingPct = 0.0;  ///< per side for the daily trades (daybook.hpp); set with --day-cost-pct
 constexpr double kStampPct = 0.0;     ///< stamp duty on purchases: none (CFDs, spread bets, AIM shares; UK shares directly: 0.50)
 
 struct Costs {
