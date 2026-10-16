@@ -104,7 +104,8 @@ struct DayOrder {
 struct DayBook {
   double buy = 0, sell = 0;          ///< costs per side (fractions)
   std::size_t start = 0;             ///< first day with a return (as the backtest's)
-  std::vector<double> ret;           ///< daily net returns from start
+  std::vector<double> ret;           ///< daily net returns from start (the stop first when a bar touched both levels)
+  std::vector<double> optimistic;    ///< the same trades with the take-profit first (fill test)
   std::vector<int> booked;           ///< stocks booked each day
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close

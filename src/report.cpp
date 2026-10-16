@@ -187,7 +187,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
@@ -284,6 +284,15 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
     std::snprintf(b, sizeof b, "Screen at the last close: %zu stocks, %zu with a bar (%zu flat: high = low), %zu candidates; forecast up %zu, gain expected %zu, record beats cash %zu; all three %zu\n",
                   sc.stocks, sc.bars, sc.flatBars, sc.candidates, sc.forecastUp, sc.gainExpected, sc.recordUp, sc.all);
     o << b;
+    {
+      const Metrics wc = metrics(day->ret), op = metrics(day->optimistic);
+      std::snprintf(b, sizeof b, "Fill test: %+.1f%% a year with the stop first, %+.1f%% with the take-profit first when a bar touched both (%s)\n",
+                    100 * wc.annualReturn, 100 * op.annualReturn,
+                    std::fabs(op.annualReturn - wc.annualReturn) <= 0.25 * std::fabs(wc.annualReturn) ? "robust" : "FILL-DEPENDENT: do not trust");
+      o << b;
+      std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
+      o << b;
+    }
     std::snprintf(b, sizeof b, "Learnt stop limit: %.2f%% from the open (its book's record %+.4f%% a day)\n", 100 * day->stopLimit, 100 * day->limitScore);
     o << b;
     std::snprintf(b, sizeof b, "Data check: largest open-to-close move %.1f volatilities; %zu outliers (Chauvenet) cut to the bound. Intraday forecast skill: correlation %+.4f over %.0f forecasts (t %+.1f)\n", day->maxTarget, day->bigTargets, day->skill.corr(), day->skill.n, day->skill.corr() * std::sqrt(std::max(0.0, day->skill.n - 2)));

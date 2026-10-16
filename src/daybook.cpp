@@ -311,13 +311,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (limitRecord[j].score() > limitRecord[k].score()) k = j;
     return k;
   };
-  auto dayReturn = [&](const Book& bk, std::size_t d, bool count) {
+  auto dayReturn = [&](const Book& bk, std::size_t d, bool count, bool worstCase = true) {
     double r = 0;
     Bar b;
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       barAt(d, bk.pick[j], &b);
       int e;
-      r += bk.w * tradeReturn(b, sigmaOf(bk.pick[j]), mult[bk.pair[j] / G], mult[bk.pair[j] % G], buy, sell, true, &e);
+      r += bk.w * tradeReturn(b, sigmaOf(bk.pick[j]), mult[bk.pair[j] / G], mult[bk.pair[j] % G], buy, sell, worstCase, &e);
       if (count) ++book.trades, book.stops += e == 1, book.takes += e == 2;
     }
     return r;
@@ -341,6 +341,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     std::vector<Book> books(G);
     for (std::size_t k = 0; k < G; ++k) books[k] = choose(cand, pl, mult[k] * medSig);
     const double r = trade ? dayReturn(books[use], d, true) : 0.0;
+    // Fill test: the same trades with the opposite guess when a bar touched both levels.
+    book.optimistic.push_back(trade ? dayReturn(books[use], d, false, false) : 0.0);
     book.ret.push_back(r), book.booked.push_back(trade ? int(books[use].pick.size()) : 0);
     book.exposure.push_back(trade ? books[use].w * double(books[use].pick.size()) : 0.0);
     for (std::size_t k = 0; k < G; ++k) limitRecord[k].push(std::log1p(dayReturn(books[k], d, false)));
