@@ -147,7 +147,7 @@ struct AdaptiveVol {
 
 }  // namespace
 
-DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell) {
+DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, double maxStop) {
   using namespace day;
   DayBook book;
   book.buy = buy, book.sell = sell, book.start = start;
@@ -237,8 +237,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (beta.empty()) continue;
       pl.mu = beta[0];
       for (std::size_t j = 0; j < F; ++j) pl.mu += beta[j + 1] * pl.xs[j];
+      const double sig = sigmaOf(i);
       for (std::size_t q = 0; q < P; ++q) {
         if (ab[q].empty()) continue;
+        // The stop-loss may not be further from the open than the limit.
+        if (1 - std::exp(-G1[pairs[q] / G] * sig) > maxStop) continue;
         const double e = ab[q][0] + ab[q][1] * pl.mu;
         if (e > pl.expect) pl.expect = e, pl.pair = q;
       }

@@ -7,6 +7,7 @@
 // --cost-pct: transaction cost per side in percent of the value traded (commission and half the
 // spread; market standard 0.10). --stamp-pct: stamp duty on purchases in percent (0: CFDs, spread
 // bets and AIM shares; 0.50 for UK shares bought directly). --buy-bps / --sell-bps set the two sides directly instead.
+// --day-max-stop-pct: the daily trades' largest stop-loss, percent from the open (default 5).
 // --day-cost-pct: the daily book's cost per side (daybook.hpp; CFD-like dealing, slippage included).
 //
 // --universe-index-hedge adds the stocks' own equal-weight index as a hedge series, a stand-in for
@@ -36,7 +37,7 @@ int main(int argc, char** argv) {
   try {
     std::string csv, series, engine = "reference", json;
     bool universeHedge = false;
-    double costPct = ofm::kDealingPct, stampPct = ofm::kStampPct, buyBps = -1, sellBps = -1, futBps = 1, dayPct = ofm::kDayDealingPct;
+    double costPct = ofm::kDealingPct, stampPct = ofm::kStampPct, buyBps = -1, sellBps = -1, futBps = 1, dayPct = ofm::kDayDealingPct, maxStopPct = 5;
     for (int k = 1; k < argc; ++k) {
       const std::string a = argv[k];
       auto next = [&]() -> std::string {
@@ -53,13 +54,14 @@ int main(int argc, char** argv) {
       else if (a == "--sell-bps") sellBps = std::stod(next());
       else if (a == "--futures-bps") futBps = std::stod(next());
       else if (a == "--day-cost-pct") dayPct = std::stod(next());
+      else if (a == "--day-max-stop-pct") maxStopPct = std::stod(next());
       else if (a == "--universe-index-hedge") universeHedge = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);
     if (buyBps >= 0) costs.buyBps = buyBps;
     if (sellBps >= 0) costs.sellBps = sellBps;
-    costs.dayBps = 100 * dayPct;
+    costs.dayBps = 100 * dayPct, costs.dayMaxStopPct = maxStopPct;
     ofm::Market m;
     std::map<std::string, std::vector<double>> s;
     if (csv.empty()) {
@@ -73,7 +75,7 @@ int main(int argc, char** argv) {
     const ofm::Forecast f = ofm::runModel(m, engine);
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
     const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);
-    const ofm::DayBook day = ofm::dayBook(m, f, bt.start, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps);
+    const ofm::DayBook day = ofm::dayBook(m, f, bt.start, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, costs.dayMaxStopPct / 100);
     std::cout << ofm::reportText(m, f, bt, costs, &ms, &day);
     if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms, &day);
     return 0;

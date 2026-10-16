@@ -45,6 +45,7 @@ struct Costs {
   double buyBps = 100 * (kDealingPct + kStampPct);  ///< dealing plus stamp duty on purchases
   double sellBps = 100 * kDealingPct;
   double futuresBps = 1;  ///< per unit of futures notional traded
+  double dayMaxStopPct = 5;  ///< the daily trades' largest stop-loss, percent from the open
   double dayBps = 100 * kDayDealingPct;  ///< the daily book's cost per side (both sides; no stamp duty on CFDs)
   /// From percentages: dealing per side, stamp duty on purchases.
   static Costs fromPercent(double dealingPct, double stampPct, double futuresBps = 1) {

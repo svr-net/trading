@@ -117,7 +117,7 @@ TEST(daily_book_uses_only_the_past) {
   const auto b1 = ofm::backtest(m, f1, ofm::Costs{}, sample().series);
   const auto d1 = ofm::dayBook(m, f1, b1.start, 5e-4, 5e-4);
   CHECK(d1.ret.size() == b1.model.size() && d1.trades > 0 && d1.orders.size() <= 10);
-  for (const auto& o : d1.orders) CHECK(o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && o.sigma > 0 && o.record > 0 && std::isfinite(o.stop) && std::isfinite(o.take));
+  for (const auto& o : d1.orders) CHECK(o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && o.sigma > 0 && o.record > 0 && std::isfinite(o.stop) && std::isfinite(o.take) && 1 - std::exp(-o.stop * o.sigma) <= 0.05 + 1e-12);
   // Change the bars from day X on: the book's returns before X are the same.
   const std::size_t X = m.T() - 100;
   for (std::size_t t = X; t < m.T(); ++t)

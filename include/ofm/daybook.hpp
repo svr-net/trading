@@ -10,7 +10,8 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: every trade has both, multiples of the stock's volatility. For each of
+//  - Stop and take-profit: every trade has both, multiples of the stock's volatility; the stop is
+//    never further from the open than the loss limit (maxStop). For each of
 //    the 49 pairs, the net outcome (after costs, worst-case fills) is fitted by least squares on
 //    the intraday forecast over every stock and day so far; each stock takes the pair with the
 //    best expected outcome, and that expected outcome is its expected return.
@@ -121,7 +122,9 @@ struct DayBook {
   } screen;
 };
 
-/// The daily trades from day `start` to the last day, and the orders for the next open.
-DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell);
+/// The daily trades from day `start` to the last day, and the orders for the next open. maxStop:
+/// the largest loss a stop-loss may allow, as a fraction of the opening price (a stock whose every
+/// stop is further away is not traded).
+DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, double maxStop = 0.05);
 
 }  // namespace ofm

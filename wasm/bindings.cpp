@@ -91,6 +91,8 @@ class Session {
 
   /// The daily book's cost per side, in basis points.
   void setDayCost(double bps) { dayBps_ = bps; }
+  /// The daily trades' largest stop-loss, percent from the open.
+  void setDayMaxStop(double pct) { maxStopPct_ = pct; }
 
   std::string finishGpu(double buyBps, double sellBps, double futBps, double gpuMs, const std::string& adapter) {
     costs_.buyBps = buyBps, costs_.sellBps = sellBps, costs_.futuresBps = futBps;
@@ -126,11 +128,11 @@ class Session {
 
   std::string report(double buyBps, double sellBps, double futBps) {
     ofm::Costs c;
-    c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps, c.dayBps = dayBps_;
+    c.buyBps = buyBps, c.sellBps = sellBps, c.futuresBps = futBps, c.dayBps = dayBps_, c.dayMaxStopPct = maxStopPct_;
     costs_ = c;
     ms_ = ofm::marketStructure(market_, forecast_.horizons, forecast_.familyReturns);
     bt_ = ofm::backtest(market_, forecast_, c, series_, &ms_);
-    const ofm::DayBook day = ofm::dayBook(market_, forecast_, bt_.start, 1e-4 * dayBps_, 1e-4 * dayBps_);
+    const ofm::DayBook day = ofm::dayBook(market_, forecast_, bt_.start, 1e-4 * dayBps_, 1e-4 * dayBps_, maxStopPct_ / 100);
     return ofm::reportJson(market_, forecast_, bt_, c, &ms_, &day);
   }
 
@@ -144,6 +146,7 @@ class Session {
   ofm::MarketStructure ms_;
   ofm::Backtest bt_;
   double dayBps_ = 100 * ofm::kDayDealingPct;
+  double maxStopPct_ = 5;
 };
 
 std::string version() { return OFM_VERSION; }
@@ -164,6 +167,7 @@ EMSCRIPTEN_BINDINGS(ofm) {
       .function("takeExpected", &Session::takeExpected)
       .function("setUniverseHedge", &Session::setUniverseHedge)
       .function("setDayCost", &Session::setDayCost)
+      .function("setDayMaxStop", &Session::setDayMaxStop)
       .function("finishGpu", &Session::finishGpu)
       .function("runCpu", &Session::runCpu);
 }

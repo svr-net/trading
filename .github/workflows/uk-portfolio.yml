@@ -19,6 +19,7 @@ on:
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
+      day_max_stop_pct: { description: 'Largest stop-loss of the daily trades, percent from the open', default: '5' }
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
 
 permissions:
@@ -113,7 +114,7 @@ jobs:
         if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --day-max-stop-pct "${{ inputs.day_max_stop_pct || '5' }}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}

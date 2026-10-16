@@ -113,7 +113,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
   o << "{\"engine\":" << str(f.engine) << ",\"kernelMs\":" << num(f.kernelMs) << ",\"stocks\":" << m.N() << ",\"days\":" << m.T()
     << ",\"from\":" << str(m.dates.front()) << ",\"to\":" << str(m.dates.back()) << ",\"records\":" << f.records
     << ",\"costs\":{\"buyBps\":" << num(costs.buyBps) << ",\"sellBps\":" << num(costs.sellBps) << ",\"futuresBps\":" << num(costs.futuresBps)
-    << ",\"dayBps\":" << num(costs.dayBps) << "},\"horizons\":[";
+    << ",\"dayBps\":" << num(costs.dayBps) << ",\"dayMaxStopPct\":" << num(costs.dayMaxStopPct) << "},\"horizons\":[";
   for (std::size_t j = 0; j < p.H; ++j) o << (j ? "," : "") << p.horizons[j];
   o << "],\"hedgeSeries\":" << str(bt.hedgeSeries);
   const double life = bt.life.empty() ? 1.0 : bt.life.back();
