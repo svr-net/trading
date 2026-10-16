@@ -13,7 +13,7 @@
 //  - Stop and take-profit: every trade has both, from its predicted low and high. A neural network
 //    (two hidden layers of 32 rectified linear units, Adam) learns from the actual lows and highs
 //    each trade's fall and rise from the open at several quantiles (pinball loss), from its
-//    features and technical indicators, pre-trained on every day before the first trade; the
+//    features and technical indicators, trained from the first trade's day on; the
 //    other source is the stock's own history of moves (its quantiles). Each source keeps its own
 //    books and outcome fits, and the trades follow the (source, stop limit) book whose record is
 //    best so far. For each
@@ -128,7 +128,6 @@ struct DayBook {
   double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
   double limitScore = 0;             ///< its book's record score
   std::string levelsFrom;            ///< what sets the stop and take-profit levels
-  std::size_t pretrainPasses = 0;    ///< the network's passes over the days before the first trade
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
