@@ -3,16 +3,17 @@
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in the cache and are never published.
-name: UK portfolio
+name: Daily trades (UK and US)
 
 on:
-  # Weekday evenings at 19:00 UTC (20:00 UK summer time, 19:00 winter): download the day, scan,
-  # publish the proposals and email the daily report.
+  # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
+  # York close): download the day, scan, publish the proposals and email the daily report.
   schedule:
     - cron: '0 19 * * 1-5'
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
     inputs:
-      exchanges: { description: 'Exchanges (comma separated): LSE, or NYSE,NASDAQ for the US', default: 'LSE' }
+      market: { description: 'Market', type: choice, options: [both, UK, US], default: both }
       universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
@@ -31,7 +32,14 @@ permissions:
 jobs:
   data:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || '["UK","US"]')) }}
+    env:
+      MARKET: ${{ matrix.market }}
+      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,8 +68,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
+            eoddata-${{ matrix.market }}-main-
             eoddata-main-
             eoddata-store-
       - name: Restore main's EODData store (other branches)
@@ -69,8 +78,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
+            eoddata-${{ matrix.market }}-main-
             eoddata-main-
       - name: Update the share bars (only the days missing from the store)
         if: ${{ !inputs.probe }}
@@ -80,7 +90,7 @@ jobs:
           set -o pipefail
           mkdir -p data
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
-          for EX in $(echo "${{ inputs.exchanges || 'LSE' }}" | tr ',' ' '); do
+          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
             ARGS=(--exchange "$EX" --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
@@ -131,7 +141,7 @@ jobs:
           set -o pipefail
           mkdir -p report
           ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
-          EXCH="${{ inputs.exchanges || 'LSE' }}"
+          EXCH="$EXCHANGES"
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
           # 5-minute bars (only the months not yet stored), then the run with exact fills.
@@ -148,11 +158,11 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}
         with:
-          name: uk-report
+          name: ${{ matrix.market }}-report
           path: report/
           retention-days: 14
       - name: Publish the scan to the page (results only, main branch)
@@ -161,14 +171,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p web/data
-          cp report/ofm.json web/data/uk.json
-          python3 tools/report/daily_email.py track report/ofm.json web/data/track.json
+          M=$(echo "$MARKET" | tr 'A-Z' 'a-z')
+          TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add web/data/uk.json web/data/track.json
-          if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
-          git commit -m "UK scan $(date -u +%Y-%m-%d) (results only)"
-          git push origin HEAD:main
+          # The other market's job may push first: rebase and retry.
+          for k in 1 2 3 4 5; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            cp report/ofm.json "web/data/$M.json"
+            python3 tools/report/daily_email.py track report/ofm.json "$TRACK"
+            git add "web/data/$M.json" "$TRACK"
+            if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
+            git commit -q -m "$MARKET scan $(date -u +%Y-%m-%d) (results only)"
+            git push -q origin HEAD:main && break
+            sleep $((k * 5))
+          done
           gh workflow run pages.yml --ref main
       - name: Email the daily report (scheduled runs, or when asked)
         if: ${{ !inputs.probe && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.email) }}
@@ -179,4 +196,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-        run: python3 tools/report/daily_email.py send report/ofm.json web/data/track.json
+        run: |
+          M=$(echo "$MARKET" | tr 'A-Z' 'a-z')
+          TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
+          python3 tools/report/daily_email.py send report/ofm.json "$TRACK"

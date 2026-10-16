@@ -63,7 +63,7 @@ def build(scan, track):
     last20 = compound(x["day"] for x in recent[-20:] if x.get("day") is not None)
     level = lambda x: "none" if x is None else f"{100 * x:+.2f}%"
 
-    subject = (f"UK daily trades · {date}: {pct(day.get('day') if day else None)} (market {pct(day.get('market') if day else None)})"
+    subject = (f"{os.environ.get('MARKET', 'UK')} daily trades · {date}: {pct(day.get('day') if day else None)} (market {pct(day.get('market') if day else None)})"
                f" · next open: {len(orders)} trade{'' if len(orders) == 1 else 's'}")
     lines = [subject, ""]
     lines.append(f"Day {date}: daily trades {pct(day.get('day') if day else None)}, market {pct(day.get('market') if day else None)} (after costs)")

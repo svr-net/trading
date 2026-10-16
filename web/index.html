@@ -3,23 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>UK Daily Trades</title>
+<title>Daily Trades</title>
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=44">
+<link rel="stylesheet" href="style.css?v=45">
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
-    <h1>UK Daily Trades</h1>
-    <p class="lede">Up to 10 day trades for the next open among the 250 most traded UK shares: buy at the open, sell at the stop-loss, the take-profit or the close. A trade is listed only when it is expected to make money after costs.</p>
+    <h1>Daily Trades</h1>
+    <div class="market-switch" role="tablist" aria-label="Market">
+      <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
+      <button type="button" role="tab" id="mk-us" data-market="us" aria-selected="false">US</button>
+    </div>
+    <p class="lede" id="lede">Up to 10 day trades for the next open among the most traded shares: buy at the open, sell at the stop-loss, the take-profit or the close. A trade is listed only when it is expected to make money after costs.</p>
   </header>
 
   <section aria-labelledby="trades-title">
     <h2 id="trades-title">Trades for the next open</h2>
-    <p class="muted" id="asof">Loading the latest UK scan…</p>
+    <p class="muted" id="asof">Loading the latest scan…</p>
     <div class="table-scroll"><table id="plan"></table></div>
     <p class="hint">Stop-loss and take-profit from the opening price, each stock's own pair, learnt; how far a stop may go is learnt too. Capital is shared among the trades, scaled so the book is no riskier than the market; the rest stays in cash. Needs cheap dealing (CFDs or spread bets). Prices are not published under the data licence.</p>
 
@@ -68,6 +72,6 @@
 
   <footer>Research tool, not investment advice. Backtest fills: the stop when a day touched both levels. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=44"></script>
+<script type="module" src="app.js?v=45"></script>
 </body>
 </html>
