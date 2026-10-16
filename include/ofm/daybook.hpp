@@ -10,10 +10,13 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: every trade has both, multiples of the stock's volatility taken from the
-//    model's horizons (h / h_m). For each pair the net outcome (after costs, worst-case fills) is
-//    fitted by least squares on the intraday forecast over every stock and day so far; each stock
-//    takes the pair with the best expected outcome, and that is its expected return.
+//  - Stop and take-profit: every trade has both, from its predicted low and high. A neural network
+//    (two hidden layers of 32 rectified linear units, Adam) learns from the actual lows and highs
+//    each trade's fall and rise from the open at several quantiles (pinball loss), from its
+//    features and technical indicators; the stock's own history of moves is the fallback, and
+//    whichever has predicted the actual lows and highs better so far sets the levels. For each
+//    (stop, take-profit) pair the net outcome (after costs, worst-case fills) is fitted on the
+//    intraday forecast; each stock takes the pair with the best expected outcome.
 //  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
 //    to the day's low (exponentially weighted, the volatility's half-life); closer stops cannot be
 //    tested honestly on daily bars, which do not show the order of the day's moves.
@@ -81,6 +84,7 @@ struct Moments {
 /// Running standardisation of features (mean and variance of everything seen so far).
 struct Scaler {
   std::vector<Moments> s;
+  mutable double boundN = -1, bound = 0;  ///< Chauvenet's bound, cached for the count it was computed at
   explicit Scaler(std::size_t n) : s(n) {}
   void add(const std::vector<double>& x);
   std::vector<double> apply(std::vector<double> x) const;
@@ -125,7 +129,7 @@ struct DayBook {
   double limitScore = 0;             ///< its book's record score
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
-  std::string learner;               ///< the stop/take-profit learner in use: "linear" or "neural network"
+  std::string levelsFrom;            ///< what sets the stop and take-profit levels
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).

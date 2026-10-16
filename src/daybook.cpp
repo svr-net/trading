@@ -1,5 +1,7 @@
 #include "ofm/daybook.hpp"
 
+#include "daykernels.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <tuple>
@@ -66,7 +68,8 @@ std::vector<double> Scaler::apply(std::vector<double> x) const {
       continue;
     }
     const double mu = s[i].s / s[i].n, sd = std::sqrt(std::max(1e-18, s[i].s2 / s[i].n - mu * mu));
-    const double z = chauvenet(s[i].n);
+    if (s[i].n != boundN) boundN = s[i].n, bound = chauvenet(s[i].n);
+    const double z = bound;
     x[i] = std::clamp((x[i] - mu) / sd, -z, z);
   }
   return x;
@@ -150,87 +153,6 @@ struct LeastSquares {
   }
 };
 
-// A small neural network (two hidden layers of rectified linear units, linear outputs), trained
-// online by Adam on the squared error, with a mask per output (an output without an honest target
-// is not trained). Deterministic initialisation (He), so runs are reproducible.
-struct Mlp {
-  std::vector<std::size_t> size;
-  std::vector<std::vector<double>> W, b, mW, vW, mb, vb;  // per layer: weights (out x in), biases, Adam moments
-  double lr = 1e-3, b1 = 0.9, b2 = 0.999, steps = 0;
-  explicit Mlp(std::vector<std::size_t> sz) : size(std::move(sz)) {
-    std::uint64_t r = 0x9E3779B97F4A7C15ull;
-    auto unif = [&]() { r ^= r << 13, r ^= r >> 7, r ^= r << 17; return double(r >> 11) / double(1ull << 53); };
-    for (std::size_t l = 0; l + 1 < size.size(); ++l) {
-      const std::size_t in = size[l], out = size[l + 1];
-      W.emplace_back(in * out), b.emplace_back(out, 0.0);
-      const double sd = std::sqrt(2.0 / double(in));
-      for (auto& w : W.back()) {
-        const double u1 = std::max(1e-12, unif()), u2 = unif();
-        w = sd * std::sqrt(-2 * std::log(u1)) * std::cos(6.283185307179586 * u2);
-      }
-      mW.emplace_back(in * out, 0.0), vW.emplace_back(in * out, 0.0), mb.emplace_back(out, 0.0), vb.emplace_back(out, 0.0);
-    }
-  }
-  // Activations of every layer (a[0] the input).
-  void forward(const std::vector<double>& x, std::vector<std::vector<double>>* a) const {
-    a->assign(size.size(), {});
-    (*a)[0] = x;
-    for (std::size_t l = 0; l + 1 < size.size(); ++l) {
-      const std::size_t in = size[l], out = size[l + 1];
-      auto& y = (*a)[l + 1];
-      y.assign(out, 0.0);
-      for (std::size_t o = 0; o < out; ++o) {
-        double z = b[l][o];
-        const double* w = &W[l][o * in];
-        for (std::size_t k = 0; k < in; ++k) z += w[k] * (*a)[l][k];
-        y[o] = l + 2 < size.size() ? std::max(0.0, z) : z;
-      }
-    }
-  }
-  std::vector<double> predict(const std::vector<double>& x) const {
-    std::vector<std::vector<double>> a;
-    forward(x, &a);
-    return a.back();
-  }
-  // One Adam step on a mini-batch of (input, target, mask).
-  void step(const std::vector<const std::vector<double>*>& xs, const std::vector<const std::vector<double>*>& ys,
-            const std::vector<const std::vector<char>*>& ms) {
-    const std::size_t L = size.size() - 1;
-    std::vector<std::vector<double>> gW(L), gb(L);
-    for (std::size_t l = 0; l < L; ++l) gW[l].assign(W[l].size(), 0.0), gb[l].assign(b[l].size(), 0.0);
-    std::vector<std::vector<double>> a;
-    for (std::size_t s = 0; s < xs.size(); ++s) {
-      forward(*xs[s], &a);
-      std::vector<double> d(size[L]);
-      for (std::size_t o = 0; o < size[L]; ++o) d[o] = (*ms[s])[o] ? a[L][o] - (*ys[s])[o] : 0.0;
-      for (std::size_t l = L; l-- > 0;) {
-        const std::size_t in = size[l], out = size[l + 1];
-        std::vector<double> dIn(in, 0.0);
-        for (std::size_t o = 0; o < out; ++o) {
-          if (d[o] == 0) continue;
-          gb[l][o] += d[o];
-          double* g = &gW[l][o * in];
-          const double* w = &W[l][o * in];
-          for (std::size_t k = 0; k < in; ++k) g[k] += d[o] * a[l][k], dIn[k] += d[o] * w[k];
-        }
-        if (l > 0)
-          for (std::size_t k = 0; k < in; ++k) dIn[k] = a[l][k] > 0 ? dIn[k] : 0.0;
-        d.swap(dIn);
-      }
-    }
-    steps += 1;
-    const double n = double(xs.size()), c1 = 1 - std::pow(b1, steps), c2 = 1 - std::pow(b2, steps);
-    auto adam = [&](std::vector<double>& w, std::vector<double>& m, std::vector<double>& v, const std::vector<double>& g) {
-      for (std::size_t k = 0; k < w.size(); ++k) {
-        const double gk = g[k] / n;
-        m[k] = b1 * m[k] + (1 - b1) * gk, v[k] = b2 * v[k] + (1 - b2) * gk * gk;
-        w[k] -= lr * (m[k] / c1) / (std::sqrt(v[k] / c2) + 1e-8);
-      }
-    };
-    for (std::size_t l = 0; l < L; ++l) adam(W[l], mW[l], vW[l], gW[l]), adam(b[l], mb[l], vb[l], gb[l]);
-  }
-};
-
 // Exponentially weighted variances at several half-lives; the half-life used is the one whose
 // one-step forecasts have the lowest QLIKE loss so far, pooled over every series.
 struct AdaptiveVol {
@@ -289,25 +211,31 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   std::vector<Moments> logVolume(N);
   // Each stock's own daily moves from the open: its falls to the low, log(open / low), and its rises
   // to the high, log(high / open), over its last W days (W the model's longest horizon). The stop
-  // and take-profit candidates are their quantiles at (k + 1) / G, k < G, up to the largest: every
-  // level lies inside the moves the stock really makes in a day.
+  // candidates are levels of the fall at the quantiles 1 - 2^-(k+1) (from the median out to the
+  // tail), the take-profit candidates levels of the rise at (k + 1) / (G + 1), k < G. Two
+  // predictors of those levels: the stock's own history (its quantiles) and a neural network on
+  // the trade's features, trained on the actual highs and lows by the quantile (pinball) loss; the
+  // one whose predictions have scored better against the actual lows and highs so far sets them.
   const std::size_t W = halfLives.back();
-  std::vector<std::vector<double>> falls(N), rises(N), stopAt(N), takeAt(N);
+  std::vector<double> tauFall(G), tauRise(G);
+  for (std::size_t k = 0; k < G; ++k) tauFall[k] = 1 - std::ldexp(1.0, -int(k + 1)), tauRise[k] = double(k + 1) / double(G + 1);
+  std::vector<std::vector<double>> falls(N), rises(N), histStop(N), histTake(N), stopAt(N), takeAt(N);
   auto levels = [&](std::size_t i) {
-    stopAt[i].clear(), takeAt[i].clear();
+    histStop[i].clear(), histTake[i].clear();
     if (falls[i].size() < G + 1) return;
     for (int side = 0; side < 2; ++side) {
       std::vector<double> v = side == 0 ? falls[i] : rises[i];
       std::sort(v.begin(), v.end());
-      auto& out = side == 0 ? stopAt[i] : takeAt[i];
+      auto& out = side == 0 ? histStop[i] : histTake[i];
       for (std::size_t k = 0; k < G; ++k) {
-        const double pos = double(k + 1) / double(G) * double(v.size() - 1);
+        const double pos = (side == 0 ? tauFall[k] : tauRise[k]) * double(v.size() - 1);
         const std::size_t lo = std::size_t(pos);
         const double fr = pos - double(lo);
         out.push_back(lo + 1 < v.size() ? v[lo] * (1 - fr) + v[lo + 1] * fr : v[lo]);
       }
     }
   };
+  double lossHist = 0, lossNet = 0;  // pinball losses so far (in volatilities) of the two predictors
   auto addDay = [&](std::size_t t) {
     Bar b;
     double s = 0, n = 0;
@@ -357,42 +285,36 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   for (auto h : halfLives)
     if (h <= 64) indH.push_back(h);
   const std::size_t FI = 5 * indH.size();
+  // Computed by the indicators kernel a block of days at a time (each block once).
+  std::vector<double> barTab(5 * T * N, 0.0);
+  {
+    Bar b;
+    for (std::size_t d = 0; d < T; ++d)
+      for (std::size_t i = 0; i < N; ++i)
+        if (barAt(d, i, &b)) {
+          const double v5[5] = {b.o, b.h, b.l, b.c, b.v};
+          for (std::size_t c = 0; c < 5; ++c) barTab[(c * T + d) * N + i] = v5[c];
+        }
+  }
+  const std::size_t blockDays = halfLives.back();
+  std::size_t block0 = T;
+  std::vector<double> indBlock;
   auto indicators = [&](std::size_t t, std::size_t i) {
-    std::vector<double> x(FI, 0.0);
-    Bar bt;
-    if (!barAt(t, i, &bt)) return x;
-    const double sig = std::max(1e-9, sigmaOf(i));
-    for (std::size_t k = 0; k < indH.size(); ++k) {
-      const std::size_t h = indH[k];
-      if (t < h) continue;
-      double hi = 0, lo = kNone, up = 0, dn = 0, lv = 0, lr = 0, n = 0, prev = 0, first = 0;
-      Bar b;
-      for (std::size_t u = t - h; u <= t; ++u) {
-        if (!barAt(u, i, &b)) continue;
-        if (n > 0) (b.c > prev ? up : dn) += std::fabs(std::log(b.c / prev));
-        else first = b.c;
-        prev = b.c, hi = std::max(hi, b.h), lo = std::min(lo, b.l), lv += std::log(b.v), lr += std::log(b.h / b.l), n += 1;
-      }
-      if (n < 2 || !(hi > lo)) continue;
-      x[5 * k + 0] = std::log(bt.c / first) / (sig * std::sqrt(double(h)));
-      x[5 * k + 1] = (bt.c - lo) / (hi - lo) - 0.5;
-      x[5 * k + 2] = up + dn > 0 ? (up - dn) / (up + dn) : 0.0;
-      x[5 * k + 3] = std::log(bt.v) - lv / n;
-      x[5 * k + 4] = lr > 0 ? std::log(std::log(bt.h / bt.l) / (lr / n)) : 0.0;
+    if (t < block0 || t >= block0 + blockDays) {
+      block0 = t, kernels::indicators(barTab, T, N, indH, block0, std::min(blockDays, T - block0), indBlock);
     }
-    return x;
+    const auto* r = &indBlock[((t - block0) * N + i) * FI];
+    return std::vector<double>(r, r + FI);
   };
   Scaler scaler(F), indScaler(FI);
   LeastSquares intraday(F + 1);                            // open-to-close return / sigma on [1, features]
   std::vector<LeastSquares> pairFit(P, LeastSquares(2));    // pair outcome / sigma on [1, intraday forecast]
-  // Each stock's record; each book's record: a stop limit (G) and a book size, the n strongest
-  // trades (1 to 10), so the trades can keep to the strongest signals when that has paid.
-  // Two learners of each trade's stop/take-profit outcomes: 0 linear (least squares on the intraday
-  // forecast), 1 a neural network on the trade's features (every pair's outcome and the intraday
-  // move at once). Each (learner, stop limit) keeps its own book; the best record trades.
-  const std::size_t M = 2;
-  Mlp net({F + 1 + FI, 32, 32, 1 + P});
-  std::vector<Adwin> record(N), limitRecord(G * M);
+  // Each stock's record; each stop limit's book's record (the best trades).
+  // The network that predicts each trade's low and high (see the levels above).
+  std::vector<double> taus = tauFall;
+  taus.insert(taus.end(), tauRise.begin(), tauRise.end());
+  kernels::Net qnet(F + 1 + FI, 32, taus);
+  std::vector<Adwin> record(N), limitRecord(G);
   for (auto& a : record) a.horizon = double(T - start);
   for (auto& a : limitRecord) a.horizon = double(T - start);
   // The day's median volatility over the candidates and the market's close-to-close move at t.
@@ -442,16 +364,38 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     x.insert(x.end(), p.ind.begin(), p.ind.end());
     return x;
   };
-  auto netPlan = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& lin) {
-    std::vector<TradePlan> out(N);
-    if (net.steps == 0) return out;
+  // The day's stop and take-profit levels of each candidate, from the better predictor so far.
+  // The network's predicted levels of every candidate, one dispatch for the day (log distances).
+  std::vector<std::vector<double>> netStop(N), netTake(N);
+  auto netLevels = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl) {
+    std::vector<std::size_t> who;
+    std::vector<double> x;
     for (std::size_t i : cand) {
-      if (lin[i].xs.empty() || lin[i].e.empty()) continue;
-      const auto y = net.predict(netInput(lin[i]));
-      out[i].xs = lin[i].xs, out[i].mu = y[0];
-      out[i].e.assign(y.begin() + 1, y.end());
+      netStop[i].clear(), netTake[i].clear();
+      if (qnet.steps > 0 && !pl[i].xs.empty() && !histStop[i].empty()) {
+        const auto xi = netInput(pl[i]);
+        x.insert(x.end(), xi.begin(), xi.end()), who.push_back(i);
+      }
     }
-    return out;
+    const auto y = qnet.predict(x, who.size());
+    for (std::size_t k = 0; k < who.size(); ++k) {
+      const std::size_t i = who[k];
+      const double sig = sigmaOf(i);
+      netStop[i].assign(y.begin() + k * 2 * G, y.begin() + k * 2 * G + G), netTake[i].assign(y.begin() + k * 2 * G + G, y.begin() + (k + 1) * 2 * G);
+      for (auto* v : {&netStop[i], &netTake[i]}) {
+        for (auto& z : *v) z = std::max(0.0, z) * sig;
+        std::sort(v->begin(), v->end());
+      }
+    }
+  };
+  auto setLevels = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl) {
+    netLevels(cand, pl);
+    const bool useNet = qnet.steps > 0 && lossNet < lossHist;
+    for (std::size_t i : cand) {
+      stopAt[i] = histStop[i], takeAt[i] = histTake[i];
+      if (useNet && !netStop[i].empty()) stopAt[i] = netStop[i], takeAt[i] = netTake[i];
+    }
+    return useNet;
   };
   // The opening-noise floor of stock i: no floor where its intraday path gives the exact fills.
   auto floorOf = [&](std::size_t i, bool exact) { return exact ? 0.0 : noiseN[i] >= 2 ? noise[i][vol.best()] : kNone; };
@@ -504,7 +448,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // The stop limit in use: the one whose book's record is best so far; cash while none beats cash.
   auto bestLimit = [&]() {
     std::size_t k = 0;
-    for (std::size_t j = 1; j < G * M; ++j)
+    for (std::size_t j = 1; j < G; ++j)
       if (limitRecord[j].score() > limitRecord[k].score()) k = j;
     return k;
   };
@@ -534,34 +478,31 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     double medSig, mkt;
     dayContext(t, cand, &medSig, &mkt);
     const auto pl = plan(t, cand, medSig, mkt);
-    const std::vector<TradePlan> pls[M] = {pl, netPlan(cand, pl)};
-    // Every (learner, stop limit) book; the one in use trades.
+    setLevels(cand, pl);
+    // Every stop limit's book; the one in use trades.
     const std::size_t use = bestLimit();
     const bool trade = limitRecord[use].score() > 0;
-    std::vector<Book> books(G * M);
+    std::vector<Book> books(G);
     auto exactOn = [&](std::size_t i) { return pathOf(d, i) != nullptr; };
-    for (std::size_t mo = 0; mo < M; ++mo)
-      for (std::size_t k = 0; k < G; ++k) books[mo * G + k] = makeBook(ranked(cand, pls[mo], mult[k] * medSig, exactOn), K);
+    for (std::size_t k = 0; k < G; ++k) books[k] = makeBook(ranked(cand, pl, mult[k] * medSig, exactOn), K);
     // The strongest candidates: every stock a book could trade, with and without exact fills.
     if (d >= candidatesFrom) {
       std::vector<char> seen(N, 0);
-      for (std::size_t mo = 0; mo < M; ++mo)
-        for (int ex = 0; ex < 2; ++ex)
-          for (std::size_t k = 0; k < G; ++k)
-            for (const auto& c : ranked(cand, pls[mo], mult[k] * medSig, [&](std::size_t) { return ex == 1; }))
-              if (!seen[std::get<1>(c)]) seen[std::get<1>(c)] = 1, book.candidates.emplace_back(d, std::get<1>(c));
+      for (int ex = 0; ex < 2; ++ex)
+        for (std::size_t k = 0; k < G; ++k)
+          for (const auto& c : ranked(cand, pl, mult[k] * medSig, [&](std::size_t) { return ex == 1; }))
+            if (!seen[std::get<1>(c)]) seen[std::get<1>(c)] = 1, book.candidates.emplace_back(d, std::get<1>(c));
     }
     const double r = trade ? dayReturn(books[use], d, true) : 0.0;
     // Fill test: the same trades with the opposite guess when a bar touched both levels.
     book.optimistic.push_back(trade ? dayReturn(books[use], d, false, false) : 0.0);
     book.ret.push_back(r), book.booked.push_back(trade ? int(books[use].pick.size()) : 0);
     book.exposure.push_back(trade ? books[use].w * double(books[use].pick.size()) : 0.0);
-    for (std::size_t k = 0; k < G * M; ++k) limitRecord[k].push(std::log1p(dayReturn(books[k], d, false)));
+    for (std::size_t k = 0; k < G; ++k) limitRecord[k].push(std::log1p(dayReturn(books[k], d, false)));
     // After the close d: the day's outcomes, for the stocks' records and the fits.
     for (std::size_t q = 0; q < P; ++q) zp[q] = chauvenet(pairFit[q].n + 1);
     const double zb = chauvenet(intraday.n + 1);
-    std::vector<std::vector<double>> sx, sy;
-    std::vector<std::vector<char>> sm;
+    std::vector<std::vector<double>> qx, qy;
     for (std::size_t i : cand) {
       const TradePlan& p = pl[i];
       if (p.xs.empty()) continue;
@@ -573,6 +514,21 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       std::size_t q0 = 0;
       if (bestPair(i, p, kNone, &q0, path != nullptr) > 0)  // the stock's own best trade, whenever a gain is expected: its record
         record[i].push(std::log1p(tradeReturn(b, 1.0, stopOf(i, q0), takeOf(i, q0), buy, sell, true, &e, path)));
+      // The day's actual fall and rise from the open: the level predictors' targets and scores.
+      if (!histStop[i].empty()) {
+        std::vector<double> y(2 * G);
+        const double fall = std::min(zb, std::log(b.o / b.l) / sig), rise = std::min(zb, std::log(b.h / b.o) / sig);
+        for (std::size_t k = 0; k < G; ++k) y[k] = fall, y[G + k] = rise;
+        auto pin = [](double u, double tq) { return u * (tq - (u < 0 ? 1.0 : 0.0)); };
+        const auto& ns = netStop[i];
+        const auto& nt = netTake[i];
+        if (!ns.empty())  // both scored on the same stock-days, out of sample
+          for (std::size_t k = 0; k < G; ++k) {
+            lossHist += pin(fall - histStop[i][k] / sig, tauFall[k]) + pin(rise - histTake[i][k] / sig, tauRise[k]);
+            lossNet += pin(fall - ns[k] / sig, tauFall[k]) + pin(rise - nt[k] / sig, tauRise[k]);
+          }
+        qx.push_back(netInput(p)), qy.push_back(std::move(y));
+      }
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
       const double raw = std::log(b.c / b.o) / sig, z = std::clamp(raw, -zb, zb);
@@ -586,33 +542,25 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         // the opening noise, or exact fills from the path.
         const std::vector<double> mu1{1.0, p.mu};
         const double floor = paths && !paths->empty() ? floorOf(i, path != nullptr) : 0.0;
-        std::vector<double> y(1 + P, 0.0);
-        std::vector<char> mask(1 + P, 0);
-        y[0] = z, mask[0] = 1;
         for (std::size_t q = 0; q < P; ++q)
-          if (!stopAt[i].empty() && stopOf(i, q) >= floor) {
-            y[1 + q] = std::clamp(std::log1p(tradeReturn(b, 1.0, stopOf(i, q), takeOf(i, q), buy, sell, true, &e, path)) / sig, -zp[q], zp[q]);
-            mask[1 + q] = 1;
-            pairFit[q].add(mu1, y[1 + q]);
-          }
-        sx.push_back(netInput(p)), sy.push_back(std::move(y)), sm.push_back(std::move(mask));
+          if (!stopAt[i].empty() && stopOf(i, q) >= floor)
+            pairFit[q].add(mu1, std::clamp(std::log1p(tradeReturn(b, 1.0, stopOf(i, q), takeOf(i, q), buy, sell, true, &e, path)) / sig, -zp[q], zp[q]));
       }
     }
-    // The network learns from the day's trades (one pass, mini-batches in a fixed shuffled order).
-    if (!sx.empty()) {
-      std::vector<std::size_t> perm(sx.size());
+    // The network learns from the day's actual lows and highs (one pass, shuffled mini-batches).
+    if (!qx.empty()) {
+      std::vector<std::size_t> perm(qx.size());
       for (std::size_t k = 0; k < perm.size(); ++k) perm[k] = k;
       std::uint64_t rng = 0x2545F4914F6CDD1Dull ^ d;
       for (std::size_t k = perm.size(); k-- > 1;) {
         rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
         std::swap(perm[k], perm[rng % (k + 1)]);
       }
-      const std::size_t B = 32;
-      for (std::size_t s0 = 0; s0 < perm.size(); s0 += B) {
-        std::vector<const std::vector<double>*> bx, by;
-        std::vector<const std::vector<char>*> bm;
-        for (std::size_t k = s0; k < std::min(perm.size(), s0 + B); ++k) bx.push_back(&sx[perm[k]]), by.push_back(&sy[perm[k]]), bm.push_back(&sm[perm[k]]);
-        net.step(bx, by, bm);
+      for (std::size_t s0 = 0; s0 < perm.size(); s0 += 32) {
+        std::vector<double> bx, by;
+        const std::size_t nb = std::min(perm.size(), s0 + 32) - s0;
+        for (std::size_t k = s0; k < s0 + nb; ++k) bx.insert(bx.end(), qx[perm[k]].begin(), qx[perm[k]].end()), by.insert(by.end(), qy[perm[k]].begin(), qy[perm[k]].end());
+        qnet.step(bx, by, nb);
       }
     }
     for (std::size_t i : cand) {
@@ -633,10 +581,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   double medSig, mkt;
   dayContext(t, cand, &medSig, &mkt);
   const auto pl0 = plan(t, cand, medSig, mkt);
+  book.levelsFrom = setLevels(cand, pl0) ? "neural network (predicted lows and highs)" : "each stock's own daily moves";
   const std::size_t use = bestLimit();
-  const auto pl = use / G == 1 ? netPlan(cand, pl0) : pl0;
-  const double limit = mult[use % G] * medSig;
-  book.bookSize = K, book.learner = use / G == 1 ? "neural network" : "linear";
+  const auto& pl = pl0;
+  const double limit = mult[use] * medSig;
+  book.bookSize = K;
   book.stopLimit = 1 - std::exp(-limit), book.limitScore = limitRecord[use].score();
   auto& sc = book.screen;
   sc.stocks = N, sc.candidates = cand.size();

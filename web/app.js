@@ -114,48 +114,41 @@ function render(r, source = 'UK') {
   drawChart(r);
 }
 
+// The chart as laid out by the library (r.chart: heights and positions as shares of the chart);
+// the page only places them on the canvas.
 function drawChart(r) {
   const css = getComputedStyle(document.documentElement);
-  drawCurves($('chart'), $('legend'), r.dates, SERIES.filter(([name]) => r.curves[name]).map(([name, color]) => ({ name, color: css.getPropertyValue(color).trim(), v: r.curves[name], bold: name === 'daily trades' })));
-}
-
-function drawCurves(canvas, legend, dates, curves) {
-  const css = getComputedStyle(document.documentElement);
+  const color = Object.fromEntries(SERIES.map(([name, c]) => [name, css.getPropertyValue(c).trim()]));
+  const canvas = $('chart'), legend = $('legend'), C = r.chart;
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   canvas.width = w * dpr, canvas.height = h * dpr;
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-  const all = curves.flatMap((c) => c.v);
-  const lo = Math.log(Math.min(...all)), hi = Math.log(Math.max(...all));
+  if (!C) { legend.innerHTML = ''; return; }
   const pad = { l: 46, r: 10, t: 10, b: 24 };
-  const X = (i) => pad.l + (i / (dates.length - 1)) * (w - pad.l - pad.r);
-  const Y = (v) => pad.t + (1 - (Math.log(v) - lo) / Math.max(hi - lo, 1e-9)) * (h - pad.t - pad.b);
+  const X = (x) => pad.l + x * (w - pad.l - pad.r);
+  const Y = (y) => pad.t + (1 - y) * (h - pad.t - pad.b);
   ctx.font = '11px "IBM Plex Mono", monospace';
   ctx.fillStyle = css.getPropertyValue('--muted').trim();
   ctx.strokeStyle = css.getPropertyValue('--rule').trim();
   ctx.lineWidth = 1;
-  const ticks = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64].filter((v) => Math.log(v) >= lo - 1e-9 && Math.log(v) <= hi + 1e-9);
-  ticks.forEach((v) => {
-    const y = Y(v);
-    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-    ctx.fillText(`${v}×`, 4, y + 4);
+  C.ticks.forEach((t) => {
+    ctx.beginPath(); ctx.moveTo(pad.l, Y(t.y)); ctx.lineTo(w - pad.r, Y(t.y)); ctx.stroke();
+    ctx.fillText(t.label, 4, Y(t.y) + 4);
   });
-  const years = [];
-  dates.forEach((d, i) => { if (i === 0 || d.slice(0, 4) !== dates[i - 1].slice(0, 4)) years.push([i, d.slice(0, 4)]); });
-  const every = Math.ceil(years.length / Math.max(1, Math.floor((w - pad.l) / 60)));
-  years.forEach(([i, y], k) => { if (k % every === 0) ctx.fillText(y, X(i) - 12, h - 6); });
-  curves.forEach((c) => {
-    ctx.strokeStyle = c.color;
-    ctx.lineWidth = c.bold ? 2 : 1.5;
+  let lastX = -Infinity;
+  C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
+  C.series.forEach((s) => {
+    ctx.strokeStyle = color[s.name] || ctx.strokeStyle;
+    ctx.lineWidth = s.name === 'daily trades' ? 2 : 1.5;
     ctx.beginPath();
-    c.v.forEach((v, i) => (i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))));
+    s.y.forEach((y, i) => (i ? ctx.lineTo(X(i / (s.y.length - 1)), Y(y)) : ctx.moveTo(X(0), Y(y))));
     ctx.stroke();
   });
-  legend.innerHTML = curves.map((c) => `<span><i style="background:${c.color}"></i>${c.name} ${c.v[c.v.length - 1].toFixed(2)}×</span>`).join('');
+  legend.innerHTML = C.series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
 }
-
 
 $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
