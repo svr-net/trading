@@ -13,8 +13,7 @@
 //  - Stop and take-profit: every trade has both, from its predicted low and high. A neural network
 //    (two hidden layers of 32 rectified linear units, Adam) learns from the actual lows and highs
 //    each trade's fall and rise from the open at several quantiles (pinball loss), from its
-//    features and technical indicators; the stock's own history of moves is the fallback, and
-//    whichever has predicted the actual lows and highs better so far sets the levels. For each
+//    features and technical indicators, and its predictions are the levels. For each
 //    (stop, take-profit) pair the net outcome (after costs, worst-case fills) is fitted on the
 //    intraday forecast; each stock takes the pair with the best expected outcome.
 //  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
@@ -52,8 +51,6 @@ namespace ofm {
 namespace day {
 
 constexpr double kNone = std::numeric_limits<double>::infinity();
-/// Stop and take-profit multiples of the volatility; kNone: no level.
-const std::vector<double>& grid();
 
 struct Bar {
   double o, h, l, c, v;
@@ -129,7 +126,6 @@ struct DayBook {
   double limitScore = 0;             ///< its book's record score
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
-  std::string levelsFrom;            ///< what sets the stop and take-profit levels
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).

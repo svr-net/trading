@@ -17,8 +17,6 @@ on:
       universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
-      probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
-      intraday_probe: { description: 'Only check which intraday intervals the key can fetch (counts, no prices)', type: boolean, default: false }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
@@ -45,45 +43,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Intraday intervals available (counts only, no prices)
-        if: ${{ inputs.intraday_probe }}
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/intraday_depth.mjs | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Exchanges and futures markets available (metadata only)
-        if: ${{ inputs.probe }}
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/exchanges.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       # The EODData store (tools/eoddata/store.mjs): every symbol's bars, kept between runs by
       # actions/cache (never committed or published: EODData's licence). Runs on main add only the
       # days each symbol is missing (the latest day from the exchange's quote list, a short request
       # for a longer gap, a full history only for a stock new to the universe) and save the store
       # under a new key; other branches read main's store and make no requests. The weekday
       # schedule keeps the cache in use, so it is never evicted.
-      # Main saves the store under eoddata-main-*; other branches only restore (never save), so a
-      # branch run always tests on the same data main publishes.
+      # Main saves each market's store under eoddata-<market>-main-*; other branches start from it.
       - name: Restore and keep the EODData store (main)
-        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/main' }}
         uses: actions/cache@v4
         with:
           path: data/eoddata
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
             eoddata-${{ matrix.market }}-main-
-            eoddata-main-
-            eoddata-store-
       - name: Restore main's EODData store (other branches)
-        if: ${{ !inputs.probe && github.ref != 'refs/heads/main' }}
+        if: ${{ github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@v4
         with:
           path: data/eoddata
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
             eoddata-${{ matrix.market }}-main-
-            eoddata-main-
       - name: Update the share bars (only the days missing from the store)
-        if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
@@ -103,7 +86,6 @@ jobs:
             tail -n +2 "data/$EX.csv" >> data/stocks.csv
           done
       - name: Update futures, index and currency series (only the days missing)
-        if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
@@ -117,7 +99,6 @@ jobs:
             node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
       - name: Summary (no prices)
-        if: ${{ !inputs.probe }}
         run: |
           {
             echo '```'
@@ -128,13 +109,11 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Build the model
-        if: ${{ !inputs.probe }}
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
           cmake --build build --target ofm_report
       - name: The model and the daily trades (results only)
-        if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
@@ -154,19 +133,18 @@ jobs:
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
       - name: Keep the store for this branch's next runs
-        if: ${{ always() && !inputs.probe && github.ref != 'refs/heads/main' }}
+        if: ${{ always() && github.ref != 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: data/eoddata
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
-        if: ${{ !inputs.probe }}
         with:
           name: ${{ matrix.market }}-report
           path: report/
           retention-days: 14
       - name: Publish the scan to the page (results only, main branch)
-        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -188,7 +166,7 @@ jobs:
           done
           gh workflow run pages.yml --ref main
       - name: Email the daily report (scheduled runs, or when asked)
-        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.email) }}
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.email) }}
         env:
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}

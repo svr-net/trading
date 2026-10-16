@@ -2,15 +2,11 @@
 //
 //   ofm_report [--csv stocks.csv] [--series futures.csv] [--engine reference|emulated]
 //              [--cost-pct 0.10] [--stamp-pct 0] [--futures-bps 1] [--day-cost-pct 0.05] [--json out.json]
-//              [--universe-index-hedge]
 //
 // --cost-pct: transaction cost per side in percent of the value traded (commission and half the
 // spread; market standard 0.10). --stamp-pct: stamp duty on purchases in percent (0: CFDs, spread
 // bets and AIM shares; 0.50 for UK shares bought directly). --buy-bps / --sell-bps set the two sides directly instead.
 // --day-cost-pct: the daily book's cost per side (daybook.hpp; CFD-like dealing, slippage included).
-//
-// --universe-index-hedge adds the stocks' own equal-weight index as a hedge series, a stand-in for
-// an index future on these stocks (FTSE 250 futures for a UK universe).
 //
 // --intraday paths.csv (date,ticker,time,high,low,close: 5-minute bars of the regular session)
 // gives the daily trades exact fills on those stock-days. --candidates-out file --candidates-days n
@@ -127,7 +123,6 @@ int main(int argc, char** argv) {
   try {
     std::string csv, series, engine = "reference", json, intraday, candOut, fcache;
     std::size_t candDays = 0;
-    bool universeHedge = false;
     double costPct = ofm::kDealingPct, stampPct = ofm::kStampPct, buyBps = -1, sellBps = -1, futBps = 1, dayPct = ofm::kDayDealingPct;
     for (int k = 1; k < argc; ++k) {
       const std::string a = argv[k];
@@ -145,7 +140,6 @@ int main(int argc, char** argv) {
       else if (a == "--sell-bps") sellBps = std::stod(next());
       else if (a == "--futures-bps") futBps = std::stod(next());
       else if (a == "--day-cost-pct") dayPct = std::stod(next());
-      else if (a == "--universe-index-hedge") universeHedge = true;
       else if (a == "--intraday") intraday = next();
       else if (a == "--candidates-out") candOut = next();
       else if (a == "--candidates-days") candDays = std::stoul(next());
@@ -165,7 +159,6 @@ int main(int argc, char** argv) {
       m = ofm::parseMarketCsv(readFile(csv));
       if (!series.empty()) s = ofm::parseSeriesCsv(readFile(series), m.dates);
     }
-    if (universeHedge) s[ofm::kUniverseIndex] = ofm::equalWeightIndex(m);
     ofm::Forecast f;
     if (fcache.empty() || !loadForecast(fcache, m, engine, &f)) {
       f = ofm::runModel(m, engine);

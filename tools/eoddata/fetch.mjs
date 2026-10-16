@@ -127,19 +127,9 @@ try {
 // Each stock's bars: from the store, completed with the days it is missing.
 const quoteBar = new Map(quotes.map((q) => [field(q, 'symbolCode', 'code', 'symbol'), S.bar(q)]));
 const latest = [...quoteBar.values()].filter(Boolean).map((b) => b[0]).sort().at(-1) ?? stamp;
-const counts = { full: 0, gap: 0, quote: 0, current: 0, migrated: 0 };
-// Old-style cache files (history-<code>-<from>-<to>.json): their newest copy seeds the store once.
-const oldHistory = (code) => {
-  const stem = `history-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-`;
-  const hits = fs.readdirSync(cacheDir).filter((f) => f.startsWith(stem)).sort();
-  return hits.length ? path.join(cacheDir, hits.at(-1)) : null;
-};
+const counts = { full: 0, gap: 0, quote: 0, current: 0 };
 async function barsOf(code) {
   const bars = S.load(exchange, code);
-  if (!bars.size) {
-    const old = oldHistory(code);
-    if (old) S.merge(bars, asList(JSON.parse(fs.readFileSync(old, 'utf8')))), ++counts.migrated;
-  }
   if (cached) {
     if (bars.size) S.save(exchange, code, bars);
     return bars;
@@ -181,10 +171,9 @@ for (const [i, { code }] of ranked.entries()) {
   kept.push({ code, name: nameOf.get(code) || '', days: bars.length });
   if (kept.length % 20 === 0) console.log(`  kept ${kept.length}`);
 }
-console.log(`  store: ${counts.full} full histories downloaded, ${counts.gap} gaps filled, ${counts.quote} days from the quote list, ${counts.current} up to date, ${counts.migrated} seeded from old cache files`);
-// The old-style history files are now in the store; dated lists keep only their newest copy.
+console.log(`  store: ${counts.full} full histories downloaded, ${counts.gap} gaps filled, ${counts.quote} days from the quote list, ${counts.current} up to date`);
+// Dated lists keep only their newest copy.
 if (!cached) {
-  for (const f of fs.readdirSync(cacheDir).filter((x) => x.startsWith('history-'))) fs.rmSync(path.join(cacheDir, f));
   for (const p of ['symbols-', 'quotes-', 'splits-']) S.prune(cacheDir, p, 1);
 }
 fs.mkdirSync(path.dirname(out), { recursive: true });

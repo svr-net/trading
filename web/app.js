@@ -51,36 +51,17 @@ async function load(session) {
 async function run() {
   $('run').disabled = true;
   try {
-    let session = new ofm.Session();
+    const session = new ofm.Session();
     status('Reading the data…');
     await yieldToPaint();
     await load(session);
-    const engine = $('engine').value;
-    let json, note = '';
     const t0 = performance.now();
-    if (engine === 'emulated' || engine === 'reference') {
-      status(`Running on the ${engine === 'emulated' ? 'emulated GPU' : 'reference engine'}…`);
-      await yieldToPaint();
-      json = session.runCpu(engine, ...MODEL_COSTS);
-    } else {
-      try {
-        status('Running the kernels on WebGPU…');
-        const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`), engine === 'gpu-cpu' ? 'software' : 'auto');
-        json = session.finishGpu(...MODEL_COSTS, g.ms, g.adapter);
-      } catch (e) {
-        if (engine === 'gpu' || engine === 'gpu-cpu') throw e;
-        session.delete();
-        session = new ofm.Session();
-        await load(session);
-        status('WebGPU unavailable; running the emulated GPU…');
-        await yieldToPaint();
-        json = session.runCpu('emulated', ...MODEL_COSTS);
-        note = ` · WebGPU unavailable (${e.message}); the same kernels ran on the CPU`;
-      }
-    }
+    status('Running the kernels on WebGPU…');
+    const g = await runKernels(session, (p) => status(`Running the kernels on WebGPU… ${Math.round(100 * p)}%`));
+    const json = session.finishGpu(...MODEL_COSTS, g.ms, g.adapter);
     session.delete();
     const r = JSON.parse(json);
-    status(`Done in ${Math.round(performance.now() - t0).toLocaleString('en-GB')} ms · ${r.engine}${note}`);
+    status(`Done in ${Math.round(performance.now() - t0).toLocaleString('en-GB')} ms · ${r.engine}`);
     render(r, $('src-files').checked ? 'Your data' : 'Sample market (synthetic)');
   } catch (e) {
     status(`Could not run: ${e.message}`);
