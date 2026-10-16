@@ -74,11 +74,11 @@ def build(scan, track):
     lines.append("")
     lines.append(f"Trades for the next open (after the close of {scan['asOf']}): buy at the open, sell at the stop, the take-profit or the close")
     for o in orders:
-        lines.append(f"  BUY {o['ticker']:<6} expected {pct(o['tradeReturn'])} after costs  stop {level(o['stop'])}  take {level(o['take'])}")
+        lines.append(f"  BUY {o['ticker']:<6} {100 * o.get('weight', 0.1):.1f}% of capital  expected {pct(o['tradeReturn'])} after costs  stop {level(o['stop'])}  take {level(o['take'])}")
     if not orders:
         lines.append("  none: no trade is expected to make money after costs; stay in cash")
     lines.append("")
-    lines.append(f"Costs {D['buyBps'] / 100:.2f}% per side. A tenth of the capital per trade. Research, not investment advice."
+    lines.append(f"Costs {D['buyBps'] / 100:.2f}% per side. Capital shared among the trades, no riskier than the market. Research, not investment advice."
                  " https://svr-net.github.io/trading/")
     text = "\n".join(lines)
 
@@ -91,9 +91,9 @@ def build(scan, track):
     page = [f"<h2 style='font-family:sans-serif'>{html.escape(subject)}</h2>",
             "<p style='font-family:sans-serif'>" + "<br>".join(html.escape(x) for x in lines[2:5]) + "</p>",
             "<h3 style='font-family:sans-serif'>Trades for the next open</h3>",
-            table(["Buy at the open", "Expected, after costs", "Stop-loss", "Take-profit"],
-                  [[o["ticker"], pct(o["tradeReturn"]), level(o["stop"]), level(o["take"])] for o in orders]
-                  or [["none", "stay in cash", "", ""]]),
+            table(["Buy at the open", "Capital", "Expected, after costs", "Stop-loss", "Take-profit"],
+                  [[o["ticker"], f"{100 * o.get('weight', 0.1):.1f}%", pct(o["tradeReturn"]), level(o["stop"]), level(o["take"])] for o in orders]
+                  or [["none", "", "stay in cash", "", ""]]),
             "<p style='font-family:sans-serif;color:#666'>" + html.escape(lines[-1]) + "</p>"]
     return subject, text, "".join(page)
 
