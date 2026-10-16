@@ -26,7 +26,6 @@ if (!key && !cached) {
   console.error('Set EODDATA_API_KEY in the environment (never pass it on the command line).');
   process.exit(2);
 }
-const oldDir = path.join('data', 'eoddata', 'series');  // old-style cache files, migrated into the store
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function get(route, params) {
@@ -48,11 +47,6 @@ for (const s of symbols) {
   const [exchange, code] = s.split(':');
   const route = `/Quote/List/${encodeURIComponent(exchange)}/${encodeURIComponent(code)}`;
   const bars = refresh ? new Map() : S.load('series', s);
-  if (!bars.size && fs.existsSync(oldDir)) {
-    const stem = `${exchange}-${code.replace(/[^A-Za-z0-9.-]/g, '_')}-`;
-    for (const f of fs.readdirSync(oldDir).filter((x) => x.startsWith(stem)).sort())
-      S.merge(bars, asList(JSON.parse(fs.readFileSync(path.join(oldDir, f), 'utf8'))));
-  }
   const L = S.lastDate(bars);
   try {
     if (!cached && !L) {
@@ -78,7 +72,6 @@ for (const s of symbols) {
     rows.push(`${d},${s},${b.o},${b.h},${b.l},${b.c},${b.v}`);
   }
 }
-if (!cached && fs.existsSync(oldDir)) fs.rmSync(oldDir, { recursive: true });  // now in the store
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, rows.join('\n') + '\n');
 console.log(`wrote ${out}: ${rows.length - 1} bars; ${requests} requests`);

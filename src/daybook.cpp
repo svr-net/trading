@@ -21,11 +21,6 @@ double chauvenet(double n) {
   return hi;
 }
 
-const std::vector<double>& grid() {
-  static const std::vector<double> g = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, kNone};
-  return g;
-}
-
 double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit,
                    const std::vector<Tick>* path, bool* resolved) {
   const double stop = std::isfinite(ks) ? b.o * std::exp(-ks * sig) : 0.0;
@@ -183,9 +178,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   DayBook book;
   book.buy = buy, book.sell = sell, book.start = start;
   const std::size_t T = m.T(), N = m.N(), K = 10, F = 10;
-  if (start == 0 || start >= T || f.E.T != T) return book;
-  std::vector<std::uint32_t> halfLives = f.horizons;
-  if (halfLives.empty()) halfLives = {2, 4, 8, 16, 32, 64, 128, 256};
+  if (start == 0 || start >= T || f.E.T != T || f.horizons.empty()) return book;
+  const std::vector<std::uint32_t>& halfLives = f.horizons;
   // Multiples of the volatility, from the model's horizons (dyadic, set by the length of the
   // history): h / h_m for each horizon h, h_m the middle one. They give the stops and take-profits
   // (every pair, both set) and the candidate stop limits.

@@ -3,41 +3,19 @@
 // dispatches zscore -> gram, hands the Gram read-back to the library (absorb), uploads the vector
 // it returns, dispatches expect, and hands that read-back back (takeExpected).
 
-// Adapters in order of preference: the graphics hardware, then the browser's software adapter (a
-// GPU simulated on the CPU, e.g. SwiftShader, running the same WGSL) where there is no graphics
-// support. Without WebGPU at all, the page falls back to the kernels' C++ translation (WebAssembly).
-const HARDWARE = [{ powerPreference: 'high-performance' }, {}, { featureLevel: 'compatibility' }];
-const SOFTWARE = [{ forceFallbackAdapter: true }, { forceFallbackAdapter: true, featureLevel: 'compatibility' }];
 const NEED = { maxComputeInvocationsPerWorkgroup: 64, maxComputeWorkgroupSizeX: 64, maxStorageBuffersPerShaderStage: 8 };
 
-const isSoftware = (adapter) => Boolean(adapter.isFallbackAdapter || (adapter.info && adapter.info.isFallbackAdapter));
-
-/** Opens a device. mode: 'auto' (hardware, else the software adapter), 'hardware' or 'software'. */
-export async function openDevice(mode = 'auto') {
+/** Opens the browser's WebGPU device. */
+export async function openDevice() {
   if (!('gpu' in navigator)) throw new Error('this browser has no WebGPU');
-  const tries = mode === 'software' ? SOFTWARE : mode === 'hardware' ? HARDWARE : [...HARDWARE, ...SOFTWARE];
-  let soft = null;
-  for (const options of tries) {
-    const adapter = await navigator.gpu.requestAdapter(options).catch(() => null);
-    if (!adapter || Object.entries(NEED).some(([k, v]) => !(adapter.limits[k] >= v))) continue;
-    const software = isSoftware(adapter) || Boolean(options.forceFallbackAdapter);
-    if (mode === 'hardware' && software) continue;
-    // A software adapter offered for a hardware request: keep it in reserve, prefer real hardware.
-    if (mode === 'auto' && software && !options.forceFallbackAdapter) { soft = soft || adapter; continue; }
-    return open(adapter, software);
-  }
-  if (soft) return open(soft, true);
-  throw new Error(mode === 'software' ? 'no software WebGPU adapter' : 'no WebGPU adapter');
-}
-
-async function open(adapter, software) {
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter || Object.entries(NEED).some(([k, v]) => !(adapter.limits[k] >= v))) throw new Error('no WebGPU adapter with the limits the kernels need');
   const lim = adapter.limits;
   const device = await adapter.requestDevice({
     requiredLimits: { ...NEED, maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize, maxBufferSize: lim.maxBufferSize },
   });
   const info = adapter.info || {};
-  const name = [info.vendor, info.architecture].filter(Boolean).join(' ') || 'GPU';
-  return { device, name: software ? `CPU-simulated GPU: ${name}` : name, software };
+  return { device, name: [info.vendor, info.architecture].filter(Boolean).join(' ') || 'GPU' };
 }
 
 async function pipeline(device, code, label, constants = undefined) {
@@ -61,9 +39,9 @@ async function readBack(device, src, bytes, Type = Float32Array) {
 }
 
 /** Runs the model's kernels for every chunk of days. Resolves to { ms, adapter }. */
-export async function runKernels(session, onProgress = () => {}, mode = 'auto') {
+export async function runKernels(session, onProgress = () => {}) {
   const plan = session.plan();
-  const { device, name } = await openDevice(mode);
+  const { device, name } = await openDevice();
   const [zscore, gram, expect] = await Promise.all([
     pipeline(device, plan.sources.zscore, 'zscore'), pipeline(device, plan.sources.gram, 'gram'), pipeline(device, plan.sources.expect, 'expect'),
   ]);

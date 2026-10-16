@@ -1,15 +1,16 @@
-# UK Factor Model
+# Daily Trades (UK and US)
 
-A C++ factor model for UK shares whose every setting is derived from the data, with fused WebGPU
-kernels (and their exact CPU emulation as fallback), a WebAssembly build and a small page that shows
-each stock's expected return and a daily backtest against holding the market, after real costs.
+A C++ factor model and daily-trades engine whose every setting is learnt from the data, with fused
+kernels (WGSL: WebGPU in the page, their C++ translation natively), a WebAssembly build and a page
+with the trades for the next open and their backtest.
 
 ## One kernel source for every backend
 
-The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect). WebGPU
+The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect;
+`kernels/day`: indicators and the network's forward pass, gradient and Adam step). WebGPU
 runs the WGSL as written. At build time
-`tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `float` is the
-emulated GPU (the WebAssembly fallback), `double` the reference. Kernels that cooperate through
+`tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `double` runs
+natively, `float` checks the GPU's single-precision arithmetic in the tests. Kernels that cooperate through
 workgroup memory and barriers are lowered the way GPU compilers lower to CPUs: each stretch between
 two barriers becomes a loop over the workgroup's lanes, with per-lane copies of the variables that
 cross a barrier. Native builds run the workgroups on all CPU threads.
@@ -33,8 +34,11 @@ the close, all learnt walk-forward:
 
 - **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
   at the close (the model's forecast among them), fitted on every stock and day so far.
-- **Stop-loss and take-profit**: multiples of the stock's volatility taken from the model's horizons;
-  each stock takes the pair with the best fitted expected outcome.
+- **Stop-loss and take-profit**: each trade's predicted low and high. A neural network (fused
+  kernels) learns from the actual lows and highs each trade's fall and rise from the open at
+  several quantiles, from its features and technical indicators (until its predictions beat the
+  stock's own history of moves, scored out of sample, the history sets them); each stock takes the
+  (stop, take-profit) pair with the best fitted expected outcome.
 - **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
   own book; the trades use the limit whose record is best so far, and stay in cash while none
   beats cash.
@@ -43,7 +47,8 @@ the close, all learnt walk-forward:
   path decides whether the stop or the take-profit came first. EODData serves no intraday bars for
   the LSE.
 - **Selection**: a trade only when it is expected to gain after costs and the stock's own record
-  of these trades beats cash; at most 10, best expected first.
+  of these trades beats cash; at most 10, best expected first; none in a market whose daily trades
+  lost over the backtest.
 - **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
   rest stays in cash.
 
@@ -75,19 +80,17 @@ benchmark the daily trades are tested against.
 cmake -S . -B build -G Ninja && cmake --build build
 ./build/ofm_tests
 ./build/ofm_report                                   # sample market
-./build/ofm_report --csv stocks.csv --series futures.csv --engine emulated --json report.json
+./build/ofm_report --csv stocks.csv --series futures.csv --json report.json
 ```
 
 WebAssembly (emsdk 4.0.10): `emcmake cmake -S . -B build-wasm && cmake --build build-wasm`, then serve
-`web/` and open `index.html`. Engines: WebGPU, the emulated GPU (the kernels on the CPU in single
-precision) and the double-precision reference. Tests: `node web/tests/wasm.test.mjs`,
+`web/` and open `index.html` (WebGPU). Tests: `node web/tests/wasm.test.mjs`,
 `node web/tests/e2e.mjs` (Playwright; WebGPU on SwiftShader).
 
 ## UK data
 
 The *UK portfolio* workflow downloads LSE bars and futures from EODData (key in the
 `EODDATA_API_KEY` secret), runs the model and publishes results only: EODData's licence does not
-allow redistributing prices. `model/` keeps the first Python version (fixed look-backs, monthly) as a
-benchmark.
+allow redistributing prices.
 
 Research, not investment advice.

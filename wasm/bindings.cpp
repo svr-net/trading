@@ -83,12 +83,6 @@ class Session {
   }
 
   /// After the last chunk on WebGPU: the backtest and the report.
-  /// Hedge with the stocks' own equal-weight index (stand-in for an index future on them).
-  void setUniverseHedge(bool on) {
-    if (on) series_[ofm::kUniverseIndex] = ofm::equalWeightIndex(market_);
-    else series_.erase(ofm::kUniverseIndex);
-  }
-
   /// The daily book's cost per side, in basis points.
   void setDayCost(double bps) { dayBps_ = bps; }
 
@@ -162,7 +156,6 @@ EMSCRIPTEN_BINDINGS(ofm) {
       .function("chunkLength", &Session::chunkLength)
       .function("absorb", &Session::absorb)
       .function("takeExpected", &Session::takeExpected)
-      .function("setUniverseHedge", &Session::setUniverseHedge)
       .function("setDayCost", &Session::setDayCost)
       .function("finishGpu", &Session::finishGpu)
       .function("runCpu", &Session::runCpu);
