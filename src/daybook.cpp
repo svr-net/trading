@@ -377,7 +377,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   };
   // Pre-training, on every day before the first trade (the volatility, the volume and the scales
   // learn along): each close's features (the forecast feature 0, the model's forecast does not
-  // exist yet) against the next day's actual fall and rise.
+  // exist yet) against the next day's actual fall and rise. As many passes over those days as keep
+  // improving the predictions of the most recent of them (the model's middle horizon in days),
+  // held out; then one pass over the held-out days too.
+  std::vector<std::vector<std::vector<double>>> preX, preY;
   for (std::size_t t = 0; t + 1 < start; ++t) {
     addDay(t);
     Bar b;
@@ -401,7 +404,36 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       for (std::size_t j = 1; j < F; ++j) scaler.s[j].add(x[j]);
       indScaler.add(p.indRaw);
     }
-    trainNet(qx, qy, t);
+    preX.push_back(std::move(qx)), preY.push_back(std::move(qy));
+  }
+  {
+    auto pinLoss = [&](std::size_t from, std::size_t to) {
+      double l = 0;
+      for (std::size_t k = from; k < to; ++k) {
+        std::vector<double> x;
+        for (const auto& v : preX[k]) x.insert(x.end(), v.begin(), v.end());
+        const auto y = qnet.predict(x, preX[k].size());
+        for (std::size_t s0 = 0; s0 < preX[k].size(); ++s0)
+          for (std::size_t o = 0; o < 2 * G; ++o) {
+            const double u = preY[k][s0][o] - y[s0 * 2 * G + o];
+            l += u * (taus[o] - (u < 0 ? 1.0 : 0.0));
+          }
+      }
+      return l;
+    };
+    const std::size_t hold = std::min<std::size_t>(preX.size() / 2, halfLives[halfLives.size() / 2]), fit = preX.size() - hold;
+    double best = pinLoss(fit, preX.size());
+    for (std::size_t pass = 0; fit > 0; ++pass) {
+      const auto saved = qnet;
+      for (std::size_t k = 0; k < fit; ++k) trainNet(preX[k], preY[k], k + pass * preX.size());
+      const double l = pinLoss(fit, preX.size());
+      if (!(l < best)) {
+        qnet = saved;
+        break;
+      }
+      best = l, ++book.pretrainPasses;
+    }
+    for (std::size_t k = fit; k < preX.size(); ++k) trainNet(preX[k], preY[k], k);
   }
   // The opening-noise floor of stock i: no floor where its intraday path gives the exact fills.
   auto floorOf = [&](std::size_t i, bool exact) { return exact ? 0.0 : noiseN[i] >= 2 ? noise[i][vol.best()] : kNone; };

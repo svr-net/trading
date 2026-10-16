@@ -125,6 +125,7 @@ struct DayBook {
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
   double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
   double limitScore = 0;             ///< its book's record score
+  std::size_t pretrainPasses = 0;    ///< the network's passes over the days before the first trade
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
