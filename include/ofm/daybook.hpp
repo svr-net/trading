@@ -9,10 +9,7 @@
 //    one whose variance forecasts have scored best so far (QLIKE loss, pooled over the stocks).
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
-//    the range, the 5-day move, volume, the market's move, and the technical indicators RSI,
-//    stochastic %K and Bollinger z at each of the model's horizons), fitted on every stock and day.
-//  - Levels: besides multiples of the volatility, each horizon's Bollinger bands (at Chauvenet's
-//    bound for the window) are candidate stops (lower band) and take-profits (upper band).
+//    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
 //  - Stop and take-profit: every trade has both, multiples of the stock's volatility taken from the
 //    model's horizons (h / h_m). For each pair the net outcome (after costs, worst-case fills) is
 //    fitted by least squares on the intraday forecast over every stock and day so far; each stock
@@ -98,7 +95,6 @@ struct DayOrder {
   double intraday = 0;      ///< forecast open-to-close return (log)
   double tradeReturn = 0;   ///< expected net return of the trade (after costs)
   double weight = 0;        ///< share of the capital
-  std::string level;        ///< where the stop and take-profit come from (volatility, or a horizon's Bollinger bands)
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)

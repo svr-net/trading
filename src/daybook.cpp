@@ -165,19 +165,16 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   using namespace day;
   DayBook book;
   book.buy = buy, book.sell = sell, book.start = start;
-  const std::size_t T = m.T(), N = m.N(), K = 10;
+  const std::size_t T = m.T(), N = m.N(), K = 10, F = 10;
   if (start == 0 || start >= T || f.E.T != T) return book;
   std::vector<std::uint32_t> halfLives = f.horizons;
   if (halfLives.empty()) halfLives = {2, 4, 8, 16, 32, 64, 128, 256};
-  const std::size_t H = halfLives.size(), F = 10 + 3 * H;  // base features + RSI, stochastic %K, Bollinger z per horizon
   // Multiples of the volatility, from the model's horizons (dyadic, set by the length of the
   // history): h / h_m for each horizon h, h_m the middle one. They give the stops and take-profits
   // (every pair, both set) and the candidate stop limits.
   std::vector<double> mult;
   for (auto h : halfLives) mult.push_back(double(h) / double(halfLives[halfLives.size() / 2]));
-  // Pairs: every volatility stop and take-profit (G * G), and each horizon's Bollinger bands (stop
-  // at the lower band, take-profit at the upper; H), the bands at Chauvenet's bound for the window.
-  const std::size_t G = mult.size(), PV = G * G, P = PV + H;
+  const std::size_t G = mult.size(), P = G * G;
 
   auto barAt = [&](std::size_t d, std::size_t i, Bar* b) {
     *b = {m.open(d, i), m.high(d, i), m.low(d, i), m.close(d, i), m.volume(d, i)};
@@ -215,51 +212,16 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (barAt(t, i, &b)) logVolume[i].add(std::log(b.v));
   }
   auto sigmaOf = [&](std::size_t i) { return vol.sigma(i); };
-  // Technical indicators of stock i at the close t, at each horizon h (its last h days with bars):
-  // RSI, stochastic %K and Bollinger z (centred, so 0 is neutral), and the Bollinger bands.
-  struct Indicators {
-    std::vector<double> rsi, stoch, z, lower, upper;
-  };
-  auto indicators = [&](std::size_t t, std::size_t i) {
-    Indicators ind;
-    std::vector<double> c, hi, lo;
-    const std::size_t maxH = halfLives.back();
-    for (std::size_t k = 0; k <= t && c.size() <= maxH; ++k) {
-      Bar b;
-      if (barAt(t - k, i, &b)) c.push_back(b.c), hi.push_back(b.h), lo.push_back(b.l);
-    }
-    for (auto h0 : halfLives) {
-      const std::size_t h = std::min<std::size_t>(h0, c.size() > 0 ? c.size() - 1 : 0);
-      if (h < 2) {
-        ind.rsi.push_back(0), ind.stoch.push_back(0), ind.z.push_back(0), ind.lower.push_back(kNaN), ind.upper.push_back(kNaN);
-        continue;
-      }
-      double up = 0, dn = 0, s1 = 0, s2 = 0, mx = hi[0], mn = lo[0];
-      for (std::size_t k = 0; k < h; ++k) {
-        const double ch = c[k] - c[k + 1];
-        (ch > 0 ? up : dn) += std::fabs(ch);
-        s1 += c[k], s2 += c[k] * c[k], mx = std::max(mx, hi[k]), mn = std::min(mn, lo[k]);
-      }
-      const double mean = s1 / double(h), sd = std::sqrt(std::max(0.0, s2 / double(h) - mean * mean)), zc = chauvenet(double(h));
-      ind.rsi.push_back(up + dn > 0 ? (up - dn) / (up + dn) : 0.0);
-      ind.stoch.push_back(mx > mn ? 2 * (c[0] - mn) / (mx - mn) - 1 : 0.0);
-      ind.z.push_back(sd > 0 ? (c[0] - mean) / sd : 0.0);
-      ind.lower.push_back(sd > 0 ? mean - zc * sd : kNaN), ind.upper.push_back(sd > 0 ? mean + zc * sd : kNaN);
-    }
-    return ind;
-  };
   // Features of stock i at the close t (empty if its recent bars are missing).
-  auto features = [&](std::size_t t, std::size_t i, double medSig, double mkt, const Indicators& ind) {
+  auto features = [&](std::size_t t, std::size_t i, double medSig, double mkt) {
     Bar b0, b1, b5;
     const double sig = sigmaOf(i);
     if (t < 5 || !(sig > 0) || !std::isfinite(f.E(t, i)) || !barAt(t, i, &b0) || !barAt(t - 1, i, &b1) || !barAt(t - 5, i, &b5) || logVolume[i].n < 2)
       return std::vector<double>{};
     const double lvMu = logVolume[i].mean(), lvSd = std::sqrt(std::max(1e-12, logVolume[i].s2 / logVolume[i].n - lvMu * lvMu));
-    std::vector<double> x{f.E(t, i) / sig, std::log(sig / medSig), std::log(b0.c / b0.o) / sig, std::log(b0.c / b1.c) / sig,
-                          std::log(b0.o / b1.c) / sig, b0.h > b0.l ? (b0.c - b0.l) / (b0.h - b0.l) : 0.5, std::log(b0.h / b0.l) / sig,
-                          std::log(b0.c / b5.c) / sig, (std::log(b0.v) - lvMu) / lvSd, mkt / medSig};
-    for (std::size_t k = 0; k < H; ++k) x.push_back(ind.rsi[k]), x.push_back(ind.stoch[k]), x.push_back(ind.z[k]);
-    return x;
+    return std::vector<double>{f.E(t, i) / sig, std::log(sig / medSig), std::log(b0.c / b0.o) / sig, std::log(b0.c / b1.c) / sig,
+                               std::log(b0.o / b1.c) / sig, b0.h > b0.l ? (b0.c - b0.l) / (b0.h - b0.l) : 0.5, std::log(b0.h / b0.l) / sig,
+                               std::log(b0.c / b5.c) / sig, (std::log(b0.v) - lvMu) / lvSd, mkt / medSig};
   };
   Scaler scaler(F);
   LeastSquares intraday(F + 1);                            // open-to-close return / sigma on [1, features]
@@ -282,7 +244,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // Each candidate at the close t: its scaled features, its intraday forecast mu (in its
   // volatility) and every pair's expected net log return (in its volatility); empty if unknown.
   struct TradePlan {
-    std::vector<double> x, xs, e, sd, td;  // raw and scaled features; expected returns; stop and take distances (log, from the open)
+    std::vector<double> xs, e;
     double mu = 0;
   };
   auto plan = [&](std::size_t t, const std::vector<std::size_t>& cand, double medSig, double mkt) {
@@ -291,16 +253,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t q = 0; q < P; ++q) ab[q] = pairFit[q].solve();
     std::vector<TradePlan> out(N);
     for (std::size_t i : cand) {
-      const Indicators ind = indicators(t, i);
-      const auto x = features(t, i, medSig, mkt, ind);
+      const auto x = features(t, i, medSig, mkt);
       if (x.empty()) continue;
       TradePlan& pl = out[i];
-      pl.x = x, pl.xs = scaler.apply(x);
-      const double sig = sigmaOf(i), c = m.close(t, i);
-      pl.sd.assign(P, kNaN), pl.td.assign(P, kNaN);
-      for (std::size_t q = 0; q < PV; ++q) pl.sd[q] = mult[q / G] * sig, pl.td[q] = mult[q % G] * sig;
-      for (std::size_t k = 0; k < H; ++k)
-        if (ind.lower[k] > 0 && ind.lower[k] < c && ind.upper[k] > c) pl.sd[PV + k] = std::log(c / ind.lower[k]), pl.td[PV + k] = std::log(ind.upper[k] / c);
+      pl.xs = scaler.apply(x);
       if (beta.empty()) continue;
       pl.mu = beta[0];
       for (std::size_t j = 0; j < F; ++j) pl.mu += beta[j + 1] * pl.xs[j];
@@ -316,8 +272,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     if (pl.e.empty()) return best;
     const double floor = noiseN[i] >= 2 ? noise[i][vol.best()] : kNone;
     for (std::size_t q = 0; q < P; ++q) {
-      const double dist = pl.sd[q];
-      if (std::isfinite(dist) && dist >= floor && dist <= limit && pl.e[q] > best) best = pl.e[q], *pair = q;
+      const double dist = mult[q / G] * sigmaOf(i);
+      if (dist >= floor && dist <= limit && pl.e[q] > best) best = pl.e[q], *pair = q;
     }
     return best;
   };
@@ -326,7 +282,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // at most the market's.
   struct Book {
     std::vector<std::size_t> pick, pair;
-    std::vector<double> expect, sd, td;
+    std::vector<double> expect;
     double w = 0;
   };
   auto choose = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl, double limit) {
@@ -339,7 +295,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     std::stable_sort(v.begin(), v.end(), [](const auto& a, const auto& c) { return std::get<0>(a) > std::get<0>(c); });
     if (v.size() > K) v.resize(K);
     Book bk;
-    for (const auto& [r, i, q, e] : v) bk.pick.push_back(i), bk.pair.push_back(q), bk.expect.push_back(e), bk.sd.push_back(pl[i].sd[q]), bk.td.push_back(pl[i].td[q]);
+    for (const auto& [r, i, q, e] : v) bk.pick.push_back(i), bk.pair.push_back(q), bk.expect.push_back(e);
     if (bk.pick.empty()) return bk;
     const double n = double(bk.pick.size());
     double var = 0;
@@ -361,7 +317,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       barAt(d, bk.pick[j], &b);
       int e;
-      r += bk.w * tradeReturn(b, 1.0, bk.sd[j], bk.td[j], buy, sell, worstCase, &e);
+      r += bk.w * tradeReturn(b, sigmaOf(bk.pick[j]), mult[bk.pair[j] / G], mult[bk.pair[j] % G], buy, sell, worstCase, &e);
       if (count) ++book.trades, book.stops += e == 1, book.takes += e == 2;
     }
     return r;
@@ -401,7 +357,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       int e;
       std::size_t q0 = 0;
       if (bestPair(i, p, kNone, &q0) > 0)  // the stock's own best trade, whenever a gain is expected: its record
-        record[i].push(std::log1p(tradeReturn(b, 1.0, p.sd[q0], p.td[q0], buy, sell, true, &e)));
+        record[i].push(std::log1p(tradeReturn(b, sig, mult[q0 / G], mult[q0 % G], buy, sell, true, &e)));
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
       const double raw = std::log(b.c / b.o) / sig, z = std::clamp(raw, -zb, zb);
@@ -413,12 +369,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (!p.e.empty()) {  // pair fits on genuine forecasts only
         const std::vector<double> mu1{1.0, p.mu};
         for (std::size_t q = 0; q < P; ++q)
-          if (std::isfinite(p.sd[q]))
-            pairFit[q].add(mu1, std::clamp(std::log1p(tradeReturn(b, 1.0, p.sd[q], p.td[q], buy, sell, true, &e)) / sig, -zp[q], zp[q]));
+          pairFit[q].add(mu1, std::clamp(std::log1p(tradeReturn(b, sig, mult[q / G], mult[q % G], buy, sell, true, &e)) / sig, -zp[q], zp[q]));
       }
     }
-    for (std::size_t i : cand)
-      if (!pl[i].x.empty()) scaler.add(pl[i].x);
+    for (std::size_t i : cand) {
+      const auto x = features(t, i, medSig, mkt);
+      if (!x.empty()) scaler.add(x);
+    }
     for (std::size_t i = 0; i < N; ++i)
       if (barAt(d, i, &b)) logVolume[i].add(std::log(b.v));
   }
@@ -451,8 +408,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       const std::size_t i = bk.pick[j], q = bk.pair[j];
       DayOrder o;
-      o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = bk.sd[j] / o.sigma, o.take = bk.td[j] / o.sigma;
-      o.level = q < PV ? "volatility" : "Bollinger " + std::to_string(halfLives[q - PV]) + "d";
+      o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = mult[q / G], o.take = mult[q % G];
       o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(bk.expect[j] * o.sigma), o.weight = bk.w;
       o.record = record[i].score(), o.window = record[i].window();
       book.orders.push_back(o);
