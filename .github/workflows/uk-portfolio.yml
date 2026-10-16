@@ -12,7 +12,8 @@ on:
     - cron: '0 19 * * 1-5'
   workflow_dispatch:
     inputs:
-      universe: { description: 'Most traded shares to download', default: '250' }
+      exchanges: { description: 'Exchanges (comma separated): LSE, or NYSE,NASDAQ for the US', default: 'LSE' }
+      universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       probe: { description: 'Only list the exchanges and futures markets the key can see', type: boolean, default: false }
@@ -70,20 +71,26 @@ jobs:
           key: eoddata-main-${{ github.run_id }}
           restore-keys: |
             eoddata-main-
-      - name: Update LSE bars (only the days missing from the store)
+      - name: Update the share bars (only the days missing from the store)
         if: ${{ !inputs.probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
-          ARGS=(--exchange LSE --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency GBP --out data/LSE.csv)
-          if [ "${{ inputs.refresh }}" = "true" ]; then
-            node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
-          elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
-            echo "Branch run: used main's store, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
+          mkdir -p data
+          echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          for EX in $(echo "${{ inputs.exchanges || 'LSE' }}" | tr ',' ' '); do
+            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+            ARGS=(--exchange "$EX" --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            if [ "${{ inputs.refresh }}" = "true" ]; then
+              node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
+            elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
+              echo "Branch run: used main's store for $EX, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            tail -n +2 "data/$EX.csv" >> data/stocks.csv
+          done
       - name: Update futures, index and currency series (only the days missing)
         if: ${{ !inputs.probe }}
         env:
@@ -103,10 +110,10 @@ jobs:
         run: |
           {
             echo '```'
-            echo "rows:    $(($(wc -l < data/LSE.csv) - 1))"
-            echo "symbols: $(tail -n +2 data/LSE.csv | cut -d, -f2 | sort -u | wc -l)"
-            echo "first:   $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | head -1)"
-            echo "last:    $(tail -n +2 data/LSE.csv | cut -d, -f1 | sort | tail -1)"
+            echo "rows:    $(($(wc -l < data/stocks.csv) - 1))"
+            echo "symbols: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l)"
+            echo "first:   $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | head -1)"
+            echo "last:    $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Build the model
@@ -119,7 +126,7 @@ jobs:
         if: ${{ !inputs.probe }}
         run: |
           mkdir -p report
-          ./build/ofm_report --csv data/LSE.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_report --csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}
