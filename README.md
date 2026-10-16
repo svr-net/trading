@@ -36,8 +36,8 @@ the close, all learnt walk-forward:
   at the close (the model's forecast among them), fitted on every stock and day so far.
 - **Stop-loss and take-profit**: each trade's predicted low and high. A neural network (fused
   kernels) learns from the actual lows and highs each trade's fall and rise from the open at
-  several quantiles, from its features and technical indicators (pre-trained on every day
-  before the first trade); each stock takes the
+  several quantiles, from its features and technical indicators (until its predictions beat
+  the stock's own history of moves, scored out of sample, the history sets them); each stock takes the
   (stop, take-profit) pair with the best fitted expected outcome.
 - **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
   own book; the trades use the limit whose record is best so far, and stay in cash while none
