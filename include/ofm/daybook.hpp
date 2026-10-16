@@ -84,6 +84,7 @@ struct Moments {
 /// Running standardisation of features (mean and variance of everything seen so far).
 struct Scaler {
   std::vector<Moments> s;
+  mutable double boundN = -1, bound = 0;  ///< Chauvenet's bound, cached for the count it was computed at
   explicit Scaler(std::size_t n) : s(n) {}
   void add(const std::vector<double>& x);
   std::vector<double> apply(std::vector<double> x) const;

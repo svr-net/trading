@@ -149,7 +149,57 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     }
     o << "]";
   }
-  o << "},\"parts\":[";
+  o << "}";
+  // The page's chart, laid out here (no numerics in the page): the daily trades and the market on a
+  // log scale, each point's height as a share of the chart (0 bottom, 1 top), the growth ticks in
+  // range and the first point of each year (x as a share of the width).
+  {
+    std::vector<std::pair<std::string, std::vector<double>>> shown;
+    for (const auto& sr : F.series)
+      if (sr.first == kDayName || sr.first == "market (bought and held)") {
+        std::vector<double> lv;
+        double w = 0;
+        for (std::size_t k = 0; k < F.n; ++k) {
+          w += std::log1p(sr.second[k]);
+          if (k % step == 0) lv.push_back(w);
+        }
+        shown.emplace_back(sr.first, lv);
+      }
+    double lo = 0, hi = 0;
+    for (const auto& [nm, lv] : shown)
+      for (double v : lv) lo = std::min(lo, v), hi = std::max(hi, v);
+    const double span = std::max(hi - lo, 1e-9);
+    std::size_t npts = 0;
+    o << ",\"chart\":{\"series\":[";
+    for (std::size_t q = 0; q < shown.size(); ++q) {
+      const auto& [nm, lv] = shown[q];
+      npts = lv.size();
+      char fin[32];
+      std::snprintf(fin, sizeof fin, "%.2f×", lv.empty() ? 1.0 : std::exp(lv.back()));
+      o << (q ? "," : "") << "{\"name\":" << str(nm) << ",\"final\":" << str(fin) << ",\"y\":[";
+      for (std::size_t k = 0; k < lv.size(); ++k) o << (k ? "," : "") << num((lv[k] - lo) / span, 4);
+      o << "]}";
+    }
+    o << "],\"ticks\":[";
+    bool lead = true;
+    for (double v : {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 48.0, 64.0}) {
+      const double y = (std::log(v) - lo) / span;
+      if (y < -1e-9 || y > 1 + 1e-9) continue;
+      char lab[16];
+      std::snprintf(lab, sizeof lab, "%g×", v);
+      o << (lead ? "" : ",") << "{\"label\":" << str(lab) << ",\"y\":" << num(y, 4) << "}", lead = false;
+    }
+    o << "],\"years\":[";
+    lead = true;
+    std::size_t j = 0;
+    for (std::size_t k = 0; k < F.n; k += step, ++j) {
+      const std::string& dt = m.dates[bt.start + k];
+      if (j == 0 || dt.substr(0, 4) != m.dates[bt.start + k - step].substr(0, 4))
+        o << (lead ? "" : ",") << "{\"label\":" << str(dt.substr(0, 4)) << ",\"x\":" << num(npts > 1 ? double(j) / double(npts - 1) : 0.0, 4) << "}", lead = false;
+    }
+    o << "]}";
+  }
+  o << ",\"parts\":[";
   for (std::size_t q = 0; q < F.parts.size(); ++q) {
     const auto& pt = F.parts[q];
     o << (q ? "," : "") << "{\"name\":" << str(pt.name) << ",\"from\":" << str(m.dates[bt.start + pt.lo]) << ",\"to\":"
