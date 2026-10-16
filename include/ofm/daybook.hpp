@@ -101,6 +101,8 @@ struct DayBook {
   std::vector<int> booked;           ///< stocks booked each day
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
+  double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
+  std::size_t bigTargets = 0;        ///< how many exceeded 10 volatilities (data check)
   std::size_t trades = 0, stops = 0, takes = 0;
   std::vector<DayOrder> orders;      ///< for the next open, best expected first
   /// The screen at the last close: stocks with a bar and a forecast, and how many pass each test.
