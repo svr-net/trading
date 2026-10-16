@@ -106,7 +106,7 @@ struct DayBook {
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
-  std::size_t bigTargets = 0;        ///< how many exceeded 10 volatilities (data check)
+  std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
   struct Skill {
     double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;

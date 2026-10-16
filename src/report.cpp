@@ -285,7 +285,7 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
     std::snprintf(b, sizeof b, "Screen at the last close: %zu stocks, %zu with a bar (%zu flat: high = low), %zu candidates; forecast up %zu, gain expected %zu, record beats cash %zu; all three %zu\n",
                   sc.stocks, sc.bars, sc.flatBars, sc.candidates, sc.forecastUp, sc.gainExpected, sc.recordUp, sc.all);
     o << b;
-    std::snprintf(b, sizeof b, "Data check: largest open-to-close move learnt from %.1f volatilities; %zu beyond 10. Intraday forecast skill: correlation %+.4f over %.0f forecasts (t %+.1f)\n", day->maxTarget, day->bigTargets, day->skill.corr(), day->skill.n, day->skill.corr() * std::sqrt(std::max(0.0, day->skill.n - 2)));
+    std::snprintf(b, sizeof b, "Data check: largest open-to-close move %.1f volatilities; %zu outliers (Chauvenet) cut to the bound. Intraday forecast skill: correlation %+.4f over %.0f forecasts (t %+.1f)\n", day->maxTarget, day->bigTargets, day->skill.corr(), day->skill.n, day->skill.corr() * std::sqrt(std::max(0.0, day->skill.n - 2)));
     o << b << "Trades for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
     for (const DayOrder& d : day->orders) {
       std::snprintf(b, sizeof b, "  %-10s %4.1f%% of capital  trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.weight, 100 * d.tradeReturn,

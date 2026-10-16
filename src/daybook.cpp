@@ -6,6 +6,18 @@
 namespace ofm {
 namespace day {
 
+// Chauvenet's bound: the |z| beyond which fewer than half an observation of n is expected under a
+// normal law, n * P(|Z| > z) = 1/2. Values further out are outliers and are cut to it.
+double chauvenet(double n) {
+  if (!(n > 1)) return kNone;
+  double lo = 0, hi = 40;
+  for (int k = 0; k < 100; ++k) {
+    const double z = 0.5 * (lo + hi);
+    (std::erfc(z / std::sqrt(2.0)) * n > 0.5 ? lo : hi) = z;
+  }
+  return hi;
+}
+
 const std::vector<double>& grid() {
   static const std::vector<double> g = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, kNone};
   return g;
@@ -39,7 +51,8 @@ std::vector<double> Scaler::apply(std::vector<double> x) const {
       continue;
     }
     const double mu = s[i].s / s[i].n, sd = std::sqrt(std::max(1e-18, s[i].s2 / s[i].n - mu * mu));
-    x[i] = std::clamp((x[i] - mu) / sd, -5.0, 5.0);
+    const double z = chauvenet(s[i].n);
+    x[i] = std::clamp((x[i] - mu) / sd, -z, z);
   }
   return x;
 }
@@ -204,9 +217,14 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   if (halfLives.empty()) halfLives = {2, 4, 8, 16, 32, 64, 128, 256};
   // The pairs: a Parabolic SAR (acceleration step and maximum) for the stop, and a take-profit at a
   // multiple of the risk. Which ones work is learnt from the data.
-  const std::vector<std::pair<double, double>> sarCfg = {{0.01, 0.1}, {0.01, 0.2}, {0.01, 0.4}, {0.02, 0.1}, {0.02, 0.2},
-                                                         {0.02, 0.4}, {0.04, 0.1}, {0.04, 0.2}, {0.04, 0.4}};
-  const std::vector<double> reward = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
+  // From the model's horizons (dyadic, set by the length of the history): a SAR's acceleration
+  // step 1/h and maximum 1/h' for each horizon h and each shorter one h'; take-profit multiples h/h_m,
+  // h_m the middle horizon.
+  std::vector<std::pair<double, double>> sarCfg;
+  for (std::size_t a = 0; a < halfLives.size(); ++a)
+    for (std::size_t c = 0; c < a; ++c) sarCfg.push_back({1.0 / halfLives[a], 1.0 / halfLives[c]});
+  std::vector<double> reward;
+  for (auto h : halfLives) reward.push_back(double(h) / double(halfLives[halfLives.size() / 2]));
   const std::size_t C = sarCfg.size(), M = reward.size(), P = C * M;
   std::vector<std::vector<Psar>> sar(N, std::vector<Psar>(C));
   for (auto& v : sar)
@@ -354,9 +372,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (p.expect > 0) record[i].push(std::log1p(psarTrade(b, p.stop, reward[p.pair % M], buy, sell, &e)));
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
-      const double z = std::log(b.c / b.o) / sig;
-      book.maxTarget = std::max(book.maxTarget, std::fabs(z));
-      book.bigTargets += std::fabs(z) > 10;
+      const double zb = chauvenet(intraday.n + 1);
+      const double z = std::clamp(std::log(b.c / b.o) / sig, -zb, zb);
+      book.maxTarget = std::max(book.maxTarget, std::fabs(std::log(b.c / b.o) / sig));
+      book.bigTargets += std::fabs(std::log(b.c / b.o) / sig) > zb;
       // Out-of-sample skill of the intraday forecast: its correlation with what happened.
       if (intraday.n > double(F + 1)) book.skill.add(p.mu, z);
       intraday.add(x1, z);
@@ -366,7 +385,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         for (std::size_t q = 0; q < P; ++q) {
           const Psar& ps = sar[i][q / M];
           if (!ps.ready() || !ps.up || !(ps.next() < m.close(t, i))) continue;
-          pairFit[q].add(mu1, std::log1p(psarTrade(b, ps.next(), reward[q % M], buy, sell, &e)) / sig);
+          const double zp = chauvenet(pairFit[q].n + 1);
+          pairFit[q].add(mu1, std::clamp(std::log1p(psarTrade(b, ps.next(), reward[q % M], buy, sell, &e)) / sig, -zp, zp));
         }
       }
     }
