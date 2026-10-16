@@ -24,6 +24,7 @@ const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : fallback; };
 const exchange = opt('exchange', 'LSE');
 const universe = Number(opt('universe', 120));
+const skip = Number(opt('skip', 0));  // leave out this many of the most traded (a less liquid universe)
 const years = Number(opt('years', 6));
 const minDays = Number(opt('min-days', 750));
 const out = opt('out', `data/${exchange}.csv`);
@@ -153,7 +154,7 @@ async function barsOf(code) {
 
 const rows = ['date,ticker,open,high,low,close,volume'];
 const kept = [];
-for (const [i, { code }] of ranked.entries()) {
+for (const [i, { code }] of ranked.slice(skip).entries()) {
   if (kept.length >= universe) break;
   const stored = await barsOf(code).catch((e) => { console.warn(`  skip ${code}: ${e.message}`); return new Map(); });
   const bars = [...stored.entries()]
