@@ -292,6 +292,11 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       o << b;
       std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
       o << b;
+      if (day->pathDays > 0) {
+        std::snprintf(b, sizeof b, "Intraday paths: %zu stock-days; %zu trades with exact fills, %zu where both levels were touched and the path decided\n",
+                      day->pathDays, day->pathTrades, day->pathResolved);
+        o << b;
+      }
     }
     std::snprintf(b, sizeof b, "Learnt stop limit: %.2f%% from the open; book of the %zu strongest (its record %+.4f%% a day)\n", 100 * day->stopLimit, day->bookSize, 100 * day->limitScore);
     o << b;

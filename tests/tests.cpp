@@ -111,6 +111,25 @@ TEST(nothing_uses_the_future) {
   for (std::size_t k = 0; k + b1.start + 1 < X; ++k) CHECK(b1.model[k] == b2.model[k] && b1.hedged[k] == b2.hedged[k]);
 }
 
+TEST(intraday_path_decides_which_level_came_first) {
+  using namespace ofm::day;
+  const Bar b{100, 110, 90, 100, 1};
+  const double sig = 0.05;  // stop at 100 e^-0.1 = 90.5, take-profit at 100 e^0.05 = 105.1
+  int e;
+  bool res;
+  tradeReturn(b, sig, 2, 1, 0, 0, true, &e);
+  CHECK(e == 1);  // daily bar only: the stop first
+  const std::vector<Tick> up{{101, 99}, {106, 100}, {104, 90}};
+  tradeReturn(b, sig, 2, 1, 0, 0, true, &e, &up, &res);
+  CHECK(e == 2 && res);  // the take-profit was reached two ticks before the stop
+  const std::vector<Tick> down{{101, 90}, {110, 100}};
+  tradeReturn(b, sig, 2, 1, 0, 0, false, &e, &down, &res);
+  CHECK(e == 1 && res);
+  const std::vector<Tick> same{{110, 90}};
+  tradeReturn(b, sig, 2, 1, 0, 0, true, &e, &same, &res);
+  CHECK(e == 1 && !res);  // the same tick: worst case
+}
+
 TEST(daily_book_uses_only_the_past) {
   ofm::Market m = sample().market;
   const auto f1 = ofm::runModel(m);

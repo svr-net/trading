@@ -22,6 +22,7 @@ on:
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
+      intraday_days: { description: 'Recent trading days whose strongest candidates get intraday paths (US exchanges; 0: none)', default: '250' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -105,13 +106,6 @@ jobs:
           if [ "$(wc -l < data/futures.csv)" -le 1 ]; then
             node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-      # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
-      - name: Keep the store for this branch's next runs
-        if: ${{ !inputs.probe && github.ref != 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: data/eoddata
-          key: eoddata-main-${{ github.run_id }}
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |
@@ -131,10 +125,30 @@ jobs:
           cmake --build build --target ofm_report
       - name: The model and the daily trades (results only)
         if: ${{ !inputs.probe }}
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
+          set -o pipefail
           mkdir -p report
-          ./build/ofm_report --csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --json report/ofm.json | tee report/ofm.txt
+          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
+          EXCH="${{ inputs.exchanges || 'LSE' }}"
+          DAYS="${{ inputs.intraday_days || '250' }}"
+          # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
+          # 5-minute bars (only the months not yet stored), then the run with exact fills.
+          if [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
+            ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days "$DAYS" > /dev/null
+            node tools/eoddata/intraday.mjs --candidates data/candidates.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
+            ARGS+=(--intraday data/intraday.csv --candidates-out data/candidates.csv --candidates-days "$DAYS")
+          fi
+          ./build/ofm_report "${ARGS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
+      - name: Keep the store for this branch's next runs
+        if: ${{ always() && !inputs.probe && github.ref != 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/eoddata
+          key: eoddata-main-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.probe }}
         with:

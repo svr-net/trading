@@ -28,14 +28,17 @@
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
-// bar touched both levels the stop is taken (worst case). Every trade pays the purchase and the
-// sale cost.
+// bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
+// candidates of recent days) says which came first; otherwise the stop is taken (worst case).
+// Every trade pays the purchase and the sale cost.
 
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "ofm/data.hpp"
@@ -54,10 +57,19 @@ struct Bar {
   double o, h, l, c, v;
 };
 
+/// One bar of a stock's regular session (5 minutes), in time order: its high and low.
+struct Tick {
+  double h, l;
+};
+/// Intraday paths of some stocks on some days, keyed day * N + stock.
+using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;
+
 /// One trade's net return: bought at the open, sold at the stop, the take-profit or the close.
-/// worstCase: when both levels were touched, the stop is taken to come first. exit: 0 close,
-/// 1 stop, 2 take-profit.
-double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit);
+/// When the day's bar touched both levels, the intraday path (if any) says which came first;
+/// without one, or when both fell in the same tick, worstCase takes the stop first. exit: 0 close,
+/// 1 stop, 2 take-profit. resolved: set when the path decided the order.
+double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit,
+                   const std::vector<Tick>* path = nullptr, bool* resolved = nullptr);
 
 /// Running sums of a series.
 struct Moments {
@@ -125,6 +137,10 @@ struct DayBook {
     }
   } skill;
   std::size_t trades = 0, stops = 0, takes = 0;
+  std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided
+  std::size_t pathDays = 0;                      ///< stock-days with an intraday path
+  /// Each day's strongest candidates (day, stock): every stock any of the books could trade.
+  std::vector<std::pair<std::size_t, std::size_t>> candidates;
   std::vector<DayOrder> orders;      ///< for the next open, best expected first
   /// The screen at the last close: stocks with a bar and a forecast, and how many pass each test.
   struct Screen {
@@ -133,6 +149,10 @@ struct DayBook {
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.
-DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell);
+/// paths: intraday paths (exact fills; on those stock-days a stop inside the opening noise can be
+/// tested, so the floor does not apply). candidatesFrom: list each day's strongest candidates from
+/// this day on (in book.candidates), for fetching their intraday paths.
+DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, const day::Paths* paths = nullptr,
+                std::size_t candidatesFrom = std::numeric_limits<std::size_t>::max());
 
 }  // namespace ofm
