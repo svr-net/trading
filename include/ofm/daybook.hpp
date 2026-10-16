@@ -10,12 +10,13 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: the stop is the stock's Parabolic SAR (Wilder) for the next bar, and a
-//    trade is taken only when its SAR is in an uptrend; the take-profit is a multiple of the risk
-//    (open minus stop) above the open. The SAR's acceleration step and maximum and the multiple are
-//    learnt: for each combination the net outcome (after costs, worst-case fills) is fitted by least
-//    squares on the intraday forecast over every stock and day so far, and each stock takes the
-//    combination with the best expected outcome. The stop is never further than maxStop.
+//  - Stop and take-profit: every trade has both, multiples of the stock's volatility taken from the
+//    model's horizons (h / h_m). For each pair the net outcome (after costs, worst-case fills) is
+//    fitted by least squares on the intraday forecast over every stock and day so far; each stock
+//    takes the pair with the best expected outcome, and that is its expected return.
+//  - Stop limit: how far a stop may be from the open is learnt too. Each candidate limit (the same
+//    multiples of the day's median volatility) keeps its own book; the book used is the one whose
+//    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
 //    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; at most 10.
@@ -91,7 +92,6 @@ struct DayOrder {
   double intraday = 0;      ///< forecast open-to-close return (log)
   double tradeReturn = 0;   ///< expected net return of the trade (after costs)
   double weight = 0;        ///< share of the capital
-  double psarStep = 0, psarMax = 0, reward = 0;  ///< the Parabolic SAR used for the stop; take-profit in multiples of the risk
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)
@@ -105,6 +105,8 @@ struct DayBook {
   std::vector<int> booked;           ///< stocks booked each day
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
+  double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
+  double limitScore = 0;             ///< its book's record score
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
@@ -124,9 +126,7 @@ struct DayBook {
   } screen;
 };
 
-/// The daily trades from day `start` to the last day, and the orders for the next open. maxStop:
-/// the largest loss a stop-loss may allow, as a fraction of the opening price (a stock whose every
-/// stop is further away is not traded).
-DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, double maxStop = 0.05);
+/// The daily trades from day `start` to the last day, and the orders for the next open.
+DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell);
 
 }  // namespace ofm

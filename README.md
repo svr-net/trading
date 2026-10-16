@@ -32,11 +32,11 @@ the close, all learnt walk-forward:
 
 - **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
   at the close (the model's forecast among them), fitted on every stock and day so far.
-- **Stop-loss**: the stock's Parabolic SAR for the next bar; a trade only in a SAR uptrend, and
-  never more than 5% from the price (`--day-max-stop-pct`, the page's "Largest stop-loss").
-- **Take-profit**: a multiple of the risk (open minus stop). The SAR's acceleration step and
-  maximum and the multiple are learnt: each combination's net outcome is fitted on the intraday
-  forecast, and each stock takes its best.
+- **Stop-loss and take-profit**: multiples of the stock's volatility taken from the model's horizons;
+  each stock takes the pair with the best fitted expected outcome.
+- **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
+  own book; the trades use the limit whose record is best so far, and stay in cash while none
+  beats cash.
 - **Selection**: a trade only when it is expected to gain after costs and the stock's own record
   of these trades beats cash; at most 10, best expected first.
 - **Capital**: shared among the trades, scaled so the book is no riskier than the market; the

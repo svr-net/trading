@@ -46,7 +46,6 @@ async function load(session) {
     session.loadSample();
   }
   session.setDayCost(100 * (+$('cost-pct').value || 0));
-  session.setDayMaxStop(+$('max-stop-pct').value || 5);
 }
 
 async function run() {

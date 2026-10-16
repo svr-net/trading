@@ -25,7 +25,7 @@ for (const r of [ref, emu]) {
   assert.ok(r.day && r.curves[r.day.name].length === r.dates.length, 'daily book curve');
   assert.ok(r.parts.every((p) => p.rows.some((x) => x.name === r.day.name)));
   assert.equal(r.day.buyBps, 0);
-  assert.ok(r.day.orders.length <= 10 && r.day.orders.every((o) => o.ticker && o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && (o.take == null || o.take > 0) && o.stop != null && o.stop < 0 && o.stop >= -0.05 - 1e-12));
+  assert.ok(r.day.orders.length <= 10 && r.day.orders.every((o) => o.ticker && o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && (o.take == null || o.take > 0) && o.stop != null && o.stop < 0 && o.stop >= -r.day.stopLimit - 1e-12));
   assert.ok(r.recent.every((d) => typeof d.day === 'number'));
 }
 // The daily book's cost is its own setting.
