@@ -22,7 +22,8 @@
 //    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
-//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; at most 10.
+//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash. How many of the strongest to
+//    take (1 to 10) is learnt with the stop limit: each pair (limit, size) keeps its own book.
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
@@ -111,6 +112,7 @@ struct DayBook {
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
   double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
   double limitScore = 0;             ///< its book's record score
+  std::size_t bookSize = 0;          ///< the learnt book size: the n strongest trades
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
