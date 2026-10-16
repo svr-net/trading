@@ -651,7 +651,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     sc.forecastUp += !pl[i].e.empty() && pl[i].mu > 0, sc.gainExpected += e > 0, sc.recordUp += record[i].score() > 0;
     sc.all += e > 0 && record[i].score() > 0;
   }
-  if (limitRecord[use].score() > 0) {
+  // No trades for the next open unless the daily trades have made money over the whole backtest
+  // (worst-case fills): a market where they lose is not traded.
+  double grown = 0;
+  for (double r : book.ret) grown += std::log1p(r);
+  book.backtestLoses = !(grown > 0);
+  if (limitRecord[use].score() > 0 && !book.backtestLoses) {
     const Book bk = makeBook(ranked(cand, pl, limit, exactNextOf), book.bookSize);
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       const std::size_t i = bk.pick[j], q = bk.pair[j];
