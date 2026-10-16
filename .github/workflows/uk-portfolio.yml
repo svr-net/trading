@@ -3,17 +3,17 @@
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in the cache and are never published.
-name: Daily trades (UK and US)
+name: Daily trades (LSE, NYSE, NASDAQ)
 
 on:
-  # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
+  # Weekday evenings: LSE at 19:00 UTC (after the London close), NYSE and NASDAQ at 22:30 UTC (after the New
   # York close): download the day, scan, publish the proposals and email the daily report.
   schedule:
     - cron: '0 19 * * 1-5'
     - cron: '30 22 * * 1-5'
   workflow_dispatch:
     inputs:
-      market: { description: 'Market', type: choice, options: [both, UK, US], default: both }
+      market: { description: 'Market (each learns on its own)', type: choice, options: [all, UK, NYSE, NASDAQ], default: all }
       universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
@@ -34,10 +34,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || '["UK","US"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["NYSE","NASDAQ"]') || (inputs.market == 'all' && '["UK","NYSE","NASDAQ"]' || format('["{0}"]', inputs.market))) }}
     env:
       MARKET: ${{ matrix.market }}
-      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
+      EXCHANGES: ${{ matrix.market == 'UK' && 'LSE' || matrix.market }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,6 +58,7 @@ jobs:
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
             eoddata-${{ matrix.market }}-main-
+            ${{ matrix.market != 'UK' && 'eoddata-US-main-' || 'eoddata-UK-main-' }}
       - name: Restore main's EODData store (other branches)
         if: ${{ github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@v4
@@ -66,6 +67,7 @@ jobs:
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
             eoddata-${{ matrix.market }}-main-
+            ${{ matrix.market != 'UK' && 'eoddata-US-main-' || 'eoddata-UK-main-' }}
       - name: Update the share bars (only the days missing from the store)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
@@ -153,8 +155,8 @@ jobs:
           TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # The other market's job may push first: rebase and retry.
-          for k in 1 2 3 4 5; do
+          # The other markets' jobs may push first: rebase and retry.
+          for k in 1 2 3 4 5 6 7 8; do
             git fetch -q origin main && git reset -q --hard origin/main
             cp report/ofm.json "web/data/$M.json"
             python3 tools/report/daily_email.py track report/ofm.json "$TRACK"

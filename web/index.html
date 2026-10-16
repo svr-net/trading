@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=48">
+<link rel="stylesheet" href="style.css?v=49">
 </head>
 <body>
 <div class="wrap">
@@ -15,8 +15,9 @@
     <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
-      <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
-      <button type="button" role="tab" id="mk-us" data-market="us" aria-selected="false">US</button>
+      <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">LSE</button>
+      <button type="button" role="tab" id="mk-nyse" data-market="nyse" aria-selected="false">NYSE</button>
+      <button type="button" role="tab" id="mk-nasdaq" data-market="nasdaq" aria-selected="false">NASDAQ</button>
     </div>
     <p class="lede" id="lede">Up to 10 day trades for the next open among the most traded shares: buy at the open, sell at the stop-loss, the take-profit or the close. A trade is listed only when it is expected to make money after costs.</p>
   </header>
@@ -62,6 +63,6 @@
 
   <footer>Research tool, not investment advice. Backtest fills: the stop when a day touched both levels. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=48"></script>
+<script type="module" src="app.js?v=49"></script>
 </body>
 </html>

@@ -76,7 +76,7 @@ function render(r, source = 'UK') {
   const D = r.day;
   if (!D) { $('asof').textContent = 'This scan has no daily trades yet; they appear after the next scheduled run.'; return; }
   const n = D.orders.length;
-  const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source];
+  const where = { UK: 'London Stock Exchange', NYSE: 'New York Stock Exchange', NASDAQ: 'NASDAQ' }[source];
   $('asof').textContent = `${where ? `${where}, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
   table($('plan'), [['Buy at the open'], ['Capital', 'num'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
@@ -137,7 +137,7 @@ $('run').addEventListener('click', run);
 window.addEventListener('resize', () => { if (shown && shown[0].day) drawChart(shown[0]); });
 
 // The latest scans, published by the scheduled workflow (results only, no prices): one per market.
-const MARKETS = { uk: 'UK', us: 'US' };
+const MARKETS = { uk: 'UK', nyse: 'NYSE', nasdaq: 'NASDAQ' };
 let market = 'uk';
 try { market = new URLSearchParams(location.search).get('market') || localStorage.getItem('market') || 'uk'; } catch { /* no storage */ }
 if (!MARKETS[market]) market = 'uk';

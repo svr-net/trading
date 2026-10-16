@@ -1,4 +1,4 @@
-# Daily Trades (UK and US)
+# Daily Trades (LSE, NYSE, NASDAQ)
 
 A C++ factor model and daily-trades engine whose every setting is learnt from the data, with fused
 kernels (WGSL: WebGPU in the page, their C++ translation natively), a WebAssembly build and a page
@@ -27,8 +27,8 @@ translation.
 
 ## What is traded
 
-The page and the daily email give one thing, for two markets (a UK | US switch on the page: the
-250 most traded LSE shares, and the 250 most traded NYSE and the 250 most traded NASDAQ shares):
+The page and the daily email give one thing, for three markets, each learning on its own (an
+LSE | NYSE | NASDAQ switch on the page; the 250 most traded shares of each):
 up to 10 day trades for the next open (`include/ofm/daybook.hpp`), each bought at the open and sold at its stop-loss, its take-profit or
 the close, all learnt walk-forward:
 
@@ -36,8 +36,8 @@ the close, all learnt walk-forward:
   at the close (the model's forecast among them), fitted on every stock and day so far.
 - **Stop-loss and take-profit**: each trade's predicted low and high. A neural network (fused
   kernels) learns from the actual lows and highs each trade's fall and rise from the open at
-  several quantiles, from its features and technical indicators (until its predictions beat the
-  stock's own history of moves, scored out of sample, the history sets them); each stock takes the
+  several quantiles, from its features and technical indicators (pre-trained on every day
+  before the first trade); each stock takes the
   (stop, take-profit) pair with the best fitted expected outcome.
 - **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
   own book; the trades use the limit whose record is best so far, and stay in cash while none
