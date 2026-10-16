@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=41">
+<link rel="stylesheet" href="style.css?v=44">
 </head>
 <body>
 <div class="wrap">
@@ -21,7 +21,7 @@
     <h2 id="trades-title">Trades for the next open</h2>
     <p class="muted" id="asof">Loading the latest UK scan…</p>
     <div class="table-scroll"><table id="plan"></table></div>
-    <p class="hint">Stop-loss and take-profit are from the opening price. Capital is shared among the trades, scaled so the book is no riskier than the market; the rest stays in cash. Needs cheap dealing (CFDs or spread bets). Prices are not published under the data licence.</p>
+    <p class="hint">Stop-loss and take-profit from the opening price, each stock's own pair, learnt; how far a stop may go is learnt too. Capital is shared among the trades, scaled so the book is no riskier than the market; the rest stays in cash. Needs cheap dealing (CFDs or spread bets). Prices are not published under the data licence.</p>
 
     <h2>Backtest</h2>
     <div class="verdict" id="verdict"></div>
@@ -68,6 +68,6 @@
 
   <footer>Research tool, not investment advice. Backtest fills: the stop when a day touched both levels. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
 </div>
-<script type="module" src="app.js?v=41"></script>
+<script type="module" src="app.js?v=44"></script>
 </body>
 </html>

@@ -10,10 +10,16 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: every trade has both, multiples of the stock's volatility. For each of
-//    the 49 pairs, the net outcome (after costs, worst-case fills) is fitted by least squares on
-//    the intraday forecast over every stock and day so far; each stock takes the pair with the
-//    best expected outcome, and that expected outcome is its expected return.
+//  - Stop and take-profit: every trade has both, multiples of the stock's volatility taken from the
+//    model's horizons (h / h_m). For each pair the net outcome (after costs, worst-case fills) is
+//    fitted by least squares on the intraday forecast over every stock and day so far; each stock
+//    takes the pair with the best expected outcome, and that is its expected return.
+//  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
+//    to the day's low (exponentially weighted, the volatility's half-life); closer stops cannot be
+//    tested honestly on daily bars, which do not show the order of the day's moves.
+//  - Stop limit: how far a stop may be from the open is learnt too. Each candidate limit (the same
+//    multiples of the day's median volatility) keeps its own book; the book used is the one whose
+//    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
 //    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; at most 10.
@@ -98,12 +104,15 @@ struct DayOrder {
 struct DayBook {
   double buy = 0, sell = 0;          ///< costs per side (fractions)
   std::size_t start = 0;             ///< first day with a return (as the backtest's)
-  std::vector<double> ret;           ///< daily net returns from start
+  std::vector<double> ret;           ///< daily net returns from start (the stop first when a bar touched both levels)
+  std::vector<double> optimistic;    ///< the same trades with the take-profit first (fill test)
   std::vector<int> booked;           ///< stocks booked each day
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
+  double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
+  double limitScore = 0;             ///< its book's record score
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
-  std::size_t bigTargets = 0;        ///< how many exceeded 10 volatilities (data check)
+  std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
   struct Skill {
     double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;

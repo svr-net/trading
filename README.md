@@ -27,17 +27,23 @@ translation.
 ## What is traded
 
 The page and the daily email give one thing: up to 10 day trades for the next open
-(`include/ofm/daybook.hpp`). Each is bought at the open with a tenth of the capital and sold at its
-stop-loss, its take-profit or the close. A trade is listed, and taken in the backtest, only when it
-is expected to make money: the stock is forecast to beat the market, a small network expects the
-trade to gain after costs, and the stock's own record of these trades (an ADWIN window, its mean
-shrunk by its t-statistic) beats cash. Unused slots stay in cash. Every trade has both a stop-loss
-and a take-profit,
-multiples of the stock's open-to-close volatility, are the pair the network rates best from the
-stock's features at the close; it learns every day, after the close, from every stock's outcomes
-for all 64 pairs (0.5 to 8 times the volatility, or none; a trade always uses a pair with both set). Backtest fills come from the real high, low and close (the stop when a day
-touched both levels). It needs cheap dealing (CFDs, spread bets): the cost per side, slippage
-included, is its one input (`--day-cost-pct`, default 0; the page's "Cost per side").
+(`include/ofm/daybook.hpp`), each bought at the open and sold at its stop-loss, its take-profit or
+the close, all learnt walk-forward:
+
+- **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
+  at the close (the model's forecast among them), fitted on every stock and day so far.
+- **Stop-loss and take-profit**: multiples of the stock's volatility taken from the model's horizons;
+  each stock takes the pair with the best fitted expected outcome.
+- **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
+  own book; the trades use the limit whose record is best so far, and stay in cash while none
+  beats cash.
+- **Selection**: a trade only when it is expected to gain after costs and the stock's own record
+  of these trades beats cash; at most 10, best expected first.
+- **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
+  rest stays in cash.
+
+Backtest fills come from the real high, low and close (the stop when a day touched both levels).
+The cost per side is a setting (`--day-cost-pct`, default 0; the page's "Cost per side").
 
 The multi-day model portfolio (below) is still computed and reported by `ofm_report` as the
 benchmark the daily trades are tested against.
