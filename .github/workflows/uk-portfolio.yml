@@ -40,7 +40,7 @@ jobs:
         if: ${{ inputs.intraday_probe }}
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/intraday_probe.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+        run: node tools/eoddata/intraday_depth.mjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Exchanges and futures markets available (metadata only)
         if: ${{ inputs.probe }}
         env:
