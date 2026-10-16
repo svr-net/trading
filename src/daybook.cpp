@@ -157,6 +157,7 @@ struct Mlp {
   std::vector<std::size_t> size;
   std::vector<std::vector<double>> W, b, mW, vW, mb, vb;  // per layer: weights (out x in), biases, Adam moments
   double lr = 1e-3, b1 = 0.9, b2 = 0.999, steps = 0;
+  std::vector<double> tau;  // per output: a quantile level (pinball loss); empty: squared error
   explicit Mlp(std::vector<std::size_t> sz) : size(std::move(sz)) {
     std::uint64_t r = 0x9E3779B97F4A7C15ull;
     auto unif = [&]() { r ^= r << 13, r ^= r >> 7, r ^= r << 17; return double(r >> 11) / double(1ull << 53); };
@@ -202,7 +203,8 @@ struct Mlp {
     for (std::size_t s = 0; s < xs.size(); ++s) {
       forward(*xs[s], &a);
       std::vector<double> d(size[L]);
-      for (std::size_t o = 0; o < size[L]; ++o) d[o] = (*ms[s])[o] ? a[L][o] - (*ys[s])[o] : 0.0;
+      for (std::size_t o = 0; o < size[L]; ++o)
+        d[o] = !(*ms[s])[o] ? 0.0 : tau.empty() ? a[L][o] - (*ys[s])[o] : a[L][o] > (*ys[s])[o] ? 1 - tau[o] : -tau[o];
       for (std::size_t l = L; l-- > 0;) {
         const std::size_t in = size[l], out = size[l + 1];
         std::vector<double> dIn(in, 0.0);
@@ -289,25 +291,31 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   std::vector<Moments> logVolume(N);
   // Each stock's own daily moves from the open: its falls to the low, log(open / low), and its rises
   // to the high, log(high / open), over its last W days (W the model's longest horizon). The stop
-  // and take-profit candidates are their quantiles at (k + 1) / G, k < G, up to the largest: every
-  // level lies inside the moves the stock really makes in a day.
+  // candidates are levels of the fall at the quantiles 1 - 2^-(k+1) (from the median out to the
+  // tail), the take-profit candidates levels of the rise at (k + 1) / (G + 1), k < G. Two
+  // predictors of those levels: the stock's own history (its quantiles) and a neural network on
+  // the trade's features, trained on the actual highs and lows by the quantile (pinball) loss; the
+  // one whose predictions have scored better against the actual lows and highs so far sets them.
   const std::size_t W = halfLives.back();
-  std::vector<std::vector<double>> falls(N), rises(N), stopAt(N), takeAt(N);
+  std::vector<double> tauFall(G), tauRise(G);
+  for (std::size_t k = 0; k < G; ++k) tauFall[k] = 1 - std::ldexp(1.0, -int(k + 1)), tauRise[k] = double(k + 1) / double(G + 1);
+  std::vector<std::vector<double>> falls(N), rises(N), histStop(N), histTake(N), stopAt(N), takeAt(N);
   auto levels = [&](std::size_t i) {
-    stopAt[i].clear(), takeAt[i].clear();
+    histStop[i].clear(), histTake[i].clear();
     if (falls[i].size() < G + 1) return;
     for (int side = 0; side < 2; ++side) {
       std::vector<double> v = side == 0 ? falls[i] : rises[i];
       std::sort(v.begin(), v.end());
-      auto& out = side == 0 ? stopAt[i] : takeAt[i];
+      auto& out = side == 0 ? histStop[i] : histTake[i];
       for (std::size_t k = 0; k < G; ++k) {
-        const double pos = double(k + 1) / double(G) * double(v.size() - 1);
+        const double pos = (side == 0 ? tauFall[k] : tauRise[k]) * double(v.size() - 1);
         const std::size_t lo = std::size_t(pos);
         const double fr = pos - double(lo);
         out.push_back(lo + 1 < v.size() ? v[lo] * (1 - fr) + v[lo + 1] * fr : v[lo]);
       }
     }
   };
+  double lossHist = 0, lossNet = 0;  // pinball losses so far (in volatilities) of the two predictors
   auto addDay = [&](std::size_t t) {
     Bar b;
     double s = 0, n = 0;
@@ -392,6 +400,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // move at once). Each (learner, stop limit) keeps its own book; the best record trades.
   const std::size_t M = 2;
   Mlp net({F + 1 + FI, 32, 32, 1 + P});
+  Mlp qnet({F + 1 + FI, 32, 32, 2 * G});
+  qnet.tau = tauFall, qnet.tau.insert(qnet.tau.end(), tauRise.begin(), tauRise.end());
   std::vector<Adwin> record(N), limitRecord(G * M);
   for (auto& a : record) a.horizon = double(T - start);
   for (auto& a : limitRecord) a.horizon = double(T - start);
@@ -452,6 +462,23 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       out[i].e.assign(y.begin() + 1, y.end());
     }
     return out;
+  };
+  // The day's stop and take-profit levels of each candidate, from the better predictor so far.
+  auto netLevels = [&](const TradePlan& p, double sig, std::vector<double>* st, std::vector<double>* tk) {
+    const auto y = qnet.predict(netInput(p));
+    st->assign(y.begin(), y.begin() + G), tk->assign(y.begin() + G, y.end());
+    for (auto* v : {st, tk}) {
+      for (auto& x : *v) x = std::max(0.0, x) * sig;
+      std::sort(v->begin(), v->end());
+    }
+  };
+  auto setLevels = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl) {
+    const bool useNet = qnet.steps > 0 && lossNet < lossHist;
+    for (std::size_t i : cand) {
+      stopAt[i] = histStop[i], takeAt[i] = histTake[i];
+      if (useNet && !pl[i].xs.empty() && !histStop[i].empty()) netLevels(pl[i], sigmaOf(i), &stopAt[i], &takeAt[i]);
+    }
+    return useNet;
   };
   // The opening-noise floor of stock i: no floor where its intraday path gives the exact fills.
   auto floorOf = [&](std::size_t i, bool exact) { return exact ? 0.0 : noiseN[i] >= 2 ? noise[i][vol.best()] : kNone; };
@@ -534,6 +561,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     double medSig, mkt;
     dayContext(t, cand, &medSig, &mkt);
     const auto pl = plan(t, cand, medSig, mkt);
+    setLevels(cand, pl);
     const std::vector<TradePlan> pls[M] = {pl, netPlan(cand, pl)};
     // Every (learner, stop limit) book; the one in use trades.
     const std::size_t use = bestLimit();
@@ -560,8 +588,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     // After the close d: the day's outcomes, for the stocks' records and the fits.
     for (std::size_t q = 0; q < P; ++q) zp[q] = chauvenet(pairFit[q].n + 1);
     const double zb = chauvenet(intraday.n + 1);
-    std::vector<std::vector<double>> sx, sy;
-    std::vector<std::vector<char>> sm;
+    std::vector<std::vector<double>> sx, sy, qx, qy;
+    std::vector<std::vector<char>> sm, qm;
     for (std::size_t i : cand) {
       const TradePlan& p = pl[i];
       if (p.xs.empty()) continue;
@@ -573,6 +601,21 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       std::size_t q0 = 0;
       if (bestPair(i, p, kNone, &q0, path != nullptr) > 0)  // the stock's own best trade, whenever a gain is expected: its record
         record[i].push(std::log1p(tradeReturn(b, 1.0, stopOf(i, q0), takeOf(i, q0), buy, sell, true, &e, path)));
+      // The day's actual fall and rise from the open: the level predictors' targets and scores.
+      if (!histStop[i].empty()) {
+        std::vector<double> y(2 * G);
+        const double fall = std::min(zb, std::log(b.o / b.l) / sig), rise = std::min(zb, std::log(b.h / b.o) / sig);
+        for (std::size_t k = 0; k < G; ++k) y[k] = fall, y[G + k] = rise;
+        auto pin = [](double u, double tq) { return u * (tq - (u < 0 ? 1.0 : 0.0)); };
+        std::vector<double> ns, nt;
+        if (qnet.steps > 0) netLevels(p, sig, &ns, &nt);
+        if (qnet.steps > 0)  // both scored on the same stock-days, out of sample
+          for (std::size_t k = 0; k < G; ++k) {
+            lossHist += pin(fall - histStop[i][k] / sig, tauFall[k]) + pin(rise - histTake[i][k] / sig, tauRise[k]);
+            lossNet += pin(fall - ns[k] / sig, tauFall[k]) + pin(rise - nt[k] / sig, tauRise[k]);
+          }
+        qx.push_back(netInput(p)), qy.push_back(std::move(y)), qm.emplace_back(2 * G, 1);
+      }
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
       const double raw = std::log(b.c / b.o) / sig, z = std::clamp(raw, -zb, zb);
@@ -615,6 +658,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         net.step(bx, by, bm);
       }
     }
+    for (std::size_t s0 = 0; s0 < qx.size(); s0 += 32) {
+      std::vector<const std::vector<double>*> bx, by;
+      std::vector<const std::vector<char>*> bm;
+      for (std::size_t k = s0; k < std::min(qx.size(), s0 + 32); ++k) bx.push_back(&qx[k]), by.push_back(&qy[k]), bm.push_back(&qm[k]);
+      qnet.step(bx, by, bm);
+    }
     for (std::size_t i : cand) {
       const auto x = features(t, i, medSig, mkt);
       if (!x.empty()) scaler.add(x), indScaler.add(pl[i].indRaw);
@@ -633,6 +682,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   double medSig, mkt;
   dayContext(t, cand, &medSig, &mkt);
   const auto pl0 = plan(t, cand, medSig, mkt);
+  book.levelsFrom = setLevels(cand, pl0) ? "neural network (predicted lows and highs)" : "each stock's own daily moves";
   const std::size_t use = bestLimit();
   const auto pl = use / G == 1 ? netPlan(cand, pl0) : pl0;
   const double limit = mult[use % G] * medSig;

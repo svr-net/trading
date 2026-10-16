@@ -125,7 +125,8 @@ struct DayBook {
   double limitScore = 0;             ///< its book's record score
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
-  std::string learner;               ///< the stop/take-profit learner in use: "linear" or "neural network"
+  std::string learner;
+  std::string levelsFrom;            ///< what sets the stop and take-profit levels               ///< the stop/take-profit learner in use: "linear" or "neural network"
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
