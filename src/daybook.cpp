@@ -287,6 +287,27 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   std::vector<double> lam;
   for (auto h : halfLives) lam.push_back(std::exp(-std::log(2.0) / double(h)));
   std::vector<Moments> logVolume(N);
+  // Each stock's own daily moves from the open: its falls to the low, log(open / low), and its rises
+  // to the high, log(high / open), over its last W days (W the model's longest horizon). The stop
+  // and take-profit candidates are their quantiles at (k + 1) / (G + 1), k < G: every level lies
+  // inside the moves the stock really makes in a day.
+  const std::size_t W = halfLives.back();
+  std::vector<std::vector<double>> falls(N), rises(N), stopAt(N), takeAt(N);
+  auto levels = [&](std::size_t i) {
+    stopAt[i].clear(), takeAt[i].clear();
+    if (falls[i].size() < G + 1) return;
+    for (int side = 0; side < 2; ++side) {
+      std::vector<double> v = side == 0 ? falls[i] : rises[i];
+      std::sort(v.begin(), v.end());
+      auto& out = side == 0 ? stopAt[i] : takeAt[i];
+      for (std::size_t k = 0; k < G; ++k) {
+        const double pos = double(k + 1) / double(G + 1) * double(v.size() - 1);
+        const std::size_t lo = std::size_t(pos);
+        const double fr = pos - double(lo);
+        out.push_back(lo + 1 < v.size() ? v[lo] * (1 - fr) + v[lo + 1] * fr : v[lo]);
+      }
+    }
+  };
   auto addDay = [&](std::size_t t) {
     Bar b;
     double s = 0, n = 0;
@@ -297,6 +318,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         const double x = std::log(b.o / b.l);
         for (std::size_t h = 0; h < lam.size(); ++h) noise[i][h] = noiseN[i] == 0 ? x : lam[h] * noise[i][h] + (1 - lam[h]) * x;
         ++noiseN[i];
+        falls[i].push_back(x), rises[i].push_back(std::log(b.h / b.o));
+        if (falls[i].size() > W) falls[i].erase(falls[i].begin()), rises[i].erase(rises[i].begin());
+        levels(i);
       }
     if (n > 0) vol.add(N, s / n);
   };
@@ -307,6 +331,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (barAt(t, i, &b)) logVolume[i].add(std::log(b.v));
   }
   auto sigmaOf = [&](std::size_t i) { return vol.sigma(i); };
+  // Pair q of stock i: its stop and take-profit distances from the open (log), from its own moves.
+  auto stopOf = [&](std::size_t i, std::size_t q) { return stopAt[i].empty() ? kNone : stopAt[i][q / G]; };
+  auto takeOf = [&](std::size_t i, std::size_t q) { return takeAt[i].empty() ? kNone : takeAt[i][q % G]; };
   auto pathOf = [&](std::size_t d, std::size_t i) -> const std::vector<Tick>* {
     if (!paths) return nullptr;
     const auto it = paths->find(d * N + i);
@@ -396,10 +423,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // Stock i's best pair whose stop is within the limit (log distance), and its expected return.
   auto bestPair = [&](std::size_t i, const TradePlan& pl, double limit, std::size_t* pair, bool exact) {
     double best = -kNone;
-    if (pl.e.empty()) return best;
+    if (pl.e.empty() || stopAt[i].empty()) return best;
     const double floor = floorOf(i, exact);
     for (std::size_t q = 0; q < P; ++q) {
-      const double dist = mult[q / G] * sigmaOf(i);
+      const double dist = stopOf(i, q);
       if (dist >= floor && dist <= limit && pl.e[q] > best) best = pl.e[q], *pair = q;
     }
     return best;
@@ -454,7 +481,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       int e;
       bool res;
       const auto* path = pathOf(d, bk.pick[j]);
-      r += bk.w * tradeReturn(b, sigmaOf(bk.pick[j]), mult[bk.pair[j] / G], mult[bk.pair[j] % G], buy, sell, worstCase, &e, path, &res);
+      r += bk.w * tradeReturn(b, 1.0, stopOf(bk.pick[j], bk.pair[j]), takeOf(bk.pick[j], bk.pair[j]), buy, sell, worstCase, &e, path, &res);
       if (count) ++book.trades, book.stops += e == 1, book.takes += e == 2, book.pathTrades += path != nullptr, book.pathResolved += res;
     }
     return r;
@@ -510,7 +537,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       int e;
       std::size_t q0 = 0;
       if (bestPair(i, p, kNone, &q0, path != nullptr) > 0)  // the stock's own best trade, whenever a gain is expected: its record
-        record[i].push(std::log1p(tradeReturn(b, sig, mult[q0 / G], mult[q0 % G], buy, sell, true, &e, path)));
+        record[i].push(std::log1p(tradeReturn(b, 1.0, stopOf(i, q0), takeOf(i, q0), buy, sell, true, &e, path)));
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
       const double raw = std::log(b.c / b.o) / sig, z = std::clamp(raw, -zb, zb);
@@ -528,8 +555,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         std::vector<char> mask(1 + P, 0);
         y[0] = z, mask[0] = 1;
         for (std::size_t q = 0; q < P; ++q)
-          if (mult[q / G] * sig >= floor) {
-            y[1 + q] = std::clamp(std::log1p(tradeReturn(b, sig, mult[q / G], mult[q % G], buy, sell, true, &e, path)) / sig, -zp[q], zp[q]);
+          if (!stopAt[i].empty() && stopOf(i, q) >= floor) {
+            y[1 + q] = std::clamp(std::log1p(tradeReturn(b, 1.0, stopOf(i, q), takeOf(i, q), buy, sell, true, &e, path)) / sig, -zp[q], zp[q]);
             mask[1 + q] = 1;
             pairFit[q].add(mu1, y[1 + q]);
           }
@@ -594,7 +621,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       const std::size_t i = bk.pick[j], q = bk.pair[j];
       DayOrder o;
-      o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = mult[q / G], o.take = mult[q % G];
+      o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = stopOf(i, q) / o.sigma, o.take = takeOf(i, q) / o.sigma;
       o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(bk.expect[j] * o.sigma), o.weight = bk.w;
       o.record = record[i].score(), o.window = record[i].window();
       book.orders.push_back(o);
