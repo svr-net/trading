@@ -22,8 +22,7 @@
 //    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
-//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash. How many of the strongest to
-//    take (1 to 10) is learnt with the stop limit: each pair (limit, size) keeps its own book.
+//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the 10 strongest are taken.
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
