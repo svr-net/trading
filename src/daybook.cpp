@@ -417,9 +417,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (!p.e.empty()) book.skill.add(p.mu, z);
       intraday.add(x1, z);
       if (!p.e.empty()) {  // pair fits on genuine forecasts only
-        // Only honest outcomes: a stop outside the opening noise, or exact fills from the path.
+        // With intraday paths (where tight stops get traded), only honest outcomes: a stop outside
+        // the opening noise, or exact fills from the path.
         const std::vector<double> mu1{1.0, p.mu};
-        const double floor = floorOf(i, path != nullptr);
+        const double floor = paths && !paths->empty() ? floorOf(i, path != nullptr) : 0.0;
         for (std::size_t q = 0; q < P; ++q)
           if (mult[q / G] * sig >= floor)
             pairFit[q].add(mu1, std::clamp(std::log1p(tradeReturn(b, sig, mult[q / G], mult[q % G], buy, sell, true, &e, path)) / sig, -zp[q], zp[q]));
