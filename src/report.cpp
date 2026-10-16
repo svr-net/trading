@@ -342,6 +342,13 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       o << b;
       std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
       o << b;
+      std::snprintf(b, sizeof b, "Costs: each stock's bid-ask spread (Abdi-Ranaldo, from its own past bars), %.2f%% a round trip on average, paid on every trade\n",
+                    100 * day->spreadSum / double(std::max<std::size_t>(1, day->trades)));
+      o << b;
+      if (day->universe) {
+        std::snprintf(b, sizeof b, "Universe: each day the %zu most traded at that time, of %zu stocks\n", day->universe, m.N());
+        o << b;
+      }
       o << "Stop and take-profit levels from: " << day->levelsFrom << "\n";
       if (day->backtestLoses) o << "No trades for the next open: the daily trades lost money over the backtest\n";
       if (day->pathDays > 0) {

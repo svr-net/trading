@@ -12,6 +12,7 @@
 // gives the daily trades exact fills on those stock-days. --candidates-out file --candidates-days n
 // writes each of the last n days' strongest candidates (date,ticker), for fetching their paths.
 // --forecast-cache file keeps the model's forecast between runs on the same data (binary).
+// --universe n: the daily trades take each day only the n stocks then most traded (point in time).
 //
 // Without --csv it runs on the synthetic sample market.
 #include <cstdio>
@@ -122,7 +123,7 @@ bool loadForecast(const std::string& path, const ofm::Market& m, const std::stri
 int main(int argc, char** argv) {
   try {
     std::string csv, series, engine = "reference", json, intraday, candOut, fcache;
-    std::size_t candDays = 0;
+    std::size_t candDays = 0, universe = 0;
     double costPct = ofm::kDealingPct, stampPct = ofm::kStampPct, buyBps = -1, sellBps = -1, futBps = 1, dayPct = ofm::kDayDealingPct;
     for (int k = 1; k < argc; ++k) {
       const std::string a = argv[k];
@@ -144,6 +145,7 @@ int main(int argc, char** argv) {
       else if (a == "--candidates-out") candOut = next();
       else if (a == "--candidates-days") candDays = std::stoul(next());
       else if (a == "--forecast-cache") fcache = next();
+      else if (a == "--universe") universe = std::stoul(next());
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);
@@ -171,7 +173,7 @@ int main(int argc, char** argv) {
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
     const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);
     const std::size_t candFrom = candOut.empty() ? std::size_t(-1) : m.T() > candDays ? m.T() - candDays : 0;
-    const ofm::DayBook day = ofm::dayBook(m, f, bt.start, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraday.empty() ? nullptr : &paths, candFrom);
+    const ofm::DayBook day = ofm::dayBook(m, f, bt.start, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraday.empty() ? nullptr : &paths, candFrom, universe);
     if (!candOut.empty()) {
       std::ofstream o(candOut);
       o << "date,ticker\n";

@@ -32,7 +32,11 @@
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
 // candidates of recent days) says which came first; otherwise the stop is taken (worst case).
-// Every trade pays the purchase and the sale cost.
+// Every trade pays half the stock's bid-ask spread (estimated from its own past bars, Abdi and
+// Ranaldo 2017) on the purchase and on the sale, plus the dealing cost; a take-profit fills only
+// when the high trades through it by half the spread. The outcome of every stop/take-profit pair
+// is learnt from the actual low and high against those levels, on all the trade's features.
+// Universe: each day only the stocks then among the most traded (by traded value so far).
 
 #include <cstddef>
 #include <cmath>
@@ -68,8 +72,10 @@ using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;
 /// When the day's bar touched both levels, the intraday path (if any) says which came first;
 /// without one, or when both fell in the same tick, worstCase takes the stop first. exit: 0 close,
 /// 1 stop, 2 take-profit. resolved: set when the path decided the order.
+/// half: half the stock's bid-ask spread (log), paid on the purchase and on the sale; a
+/// take-profit fills only when the high trades through it by half the spread.
 double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit,
-                   const std::vector<Tick>* path = nullptr, bool* resolved = nullptr);
+                   const std::vector<Tick>* path = nullptr, bool* resolved = nullptr, double half = 0);
 
 /// Running sums of a series.
 struct Moments {
@@ -140,6 +146,8 @@ struct DayBook {
     }
   } skill;
   std::size_t trades = 0, stops = 0, takes = 0;
+  double spreadSum = 0;              ///< the trades' estimated bid-ask spreads, summed (round trip, log)
+  std::size_t universe = 0;          ///< stocks traded each day: the most traded then (0: all)
   std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided
   std::size_t pathDays = 0;                      ///< stock-days with an intraday path
   /// Each day's strongest candidates (day, stock): every stock any of the books could trade.
@@ -154,8 +162,9 @@ struct DayBook {
 /// The daily trades from day `start` to the last day, and the orders for the next open.
 /// paths: intraday paths (exact fills; on those stock-days a stop inside the opening noise can be
 /// tested, so the floor does not apply). candidatesFrom: list each day's strongest candidates from
-/// this day on (in book.candidates), for fetching their intraday paths.
+/// this day on (in book.candidates), for fetching their intraday paths. universe: each day only
+/// the stocks then among the `universe` most traded are traded (0: all).
 DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, const day::Paths* paths = nullptr,
-                std::size_t candidatesFrom = std::numeric_limits<std::size_t>::max());
+                std::size_t candidatesFrom = std::numeric_limits<std::size_t>::max(), std::size_t universe = 0);
 
 }  // namespace ofm

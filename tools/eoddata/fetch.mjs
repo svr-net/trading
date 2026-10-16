@@ -24,7 +24,6 @@ const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : fallback; };
 const exchange = opt('exchange', 'LSE');
 const universe = Number(opt('universe', 120));
-const skip = Number(opt('skip', 0));  // leave out this many of the most traded (a less liquid universe)
 const years = Number(opt('years', 6));
 const minDays = Number(opt('min-days', 750));
 const out = opt('out', `data/${exchange}.csv`);
@@ -132,7 +131,7 @@ const counts = { full: 0, gap: 0, quote: 0, current: 0 };
 async function barsOf(code) {
   const bars = S.load(exchange, code);
   if (cached) {
-    if (bars.size) S.save(exchange, code, bars);
+    if (!S.has(exchange, code)) throw new Error(`${code}: not in the store`);  // the caller downloads
     return bars;
   }
   const L = S.lastDate(bars), qb = quoteBar.get(code);
@@ -154,9 +153,13 @@ async function barsOf(code) {
 
 const rows = ['date,ticker,open,high,low,close,volume'];
 const kept = [];
-for (const [i, { code }] of ranked.slice(skip).entries()) {
+for (const [i, { code }] of ranked.entries()) {
   if (kept.length >= universe) break;
-  const stored = await barsOf(code).catch((e) => { console.warn(`  skip ${code}: ${e.message}`); return new Map(); });
+  const stored = await barsOf(code).catch((e) => {
+    if (cached) { console.error(`cached: ${e.message}`); process.exit(3); }
+    console.warn(`  skip ${code}: ${e.message}`);
+    return new Map();
+  });
   const bars = [...stored.entries()]
     .filter(([d]) => d >= from)
     .map(([d, b]) => ({ d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }))

@@ -14,8 +14,8 @@ on:
   workflow_dispatch:
     inputs:
       market: { description: 'Market (each learns on its own)', type: choice, options: [all, UK, NYSE, NASDAQ], default: all }
-      universe: { description: 'Most traded shares to download (per exchange)', default: '250' }
-      skip: { description: 'Leave out this many of the most traded (per exchange)', default: '0' }
+      universe: { description: 'Shares traded each day: the most traded at that time (per exchange)', default: '250' }
+      pool: { description: 'Most traded shares (today) to download, the universe chosen among them each day', default: '500' }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
@@ -78,7 +78,7 @@ jobs:
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
-            ARGS=(--exchange "$EX" --universe "${{ inputs.universe || '250' }}" --skip "${{ inputs.skip || '0' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || '500' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
@@ -122,7 +122,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p report
-          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
+          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin --universe "${{ inputs.universe || '250' }}")
           EXCH="$EXCHANGES"
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
