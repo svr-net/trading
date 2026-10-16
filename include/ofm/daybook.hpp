@@ -1,26 +1,31 @@
 #pragma once
 
-// The daily book: day trades on the model's forecasts, a second book beside the model portfolio
-// for accounts that deal cheaply (CFDs, spread bets, futures; about 0.05% per side or less).
+// The daily trades: up to 10 day trades at the next open, each bought at the open and sold the
+// same day at its stop-loss, its take-profit or the close. Everything is learnt walk-forward from
+// what is known at each close; nothing is fixed by hand.
 //
-// Each close t, the stocks are taken down the ranking of expected return; a stock is booked only
-// if the trade is expected to make money: its forecast beats the market, the network expects the
-// trade to gain after costs, and its own record of day trades beats cash (self-adaptive gate);
-// at most 10. Empty slots stay in cash. Each booked stock is
-// bought at the next open with a tenth of the capital and sold the same day at its stop, its
-// take-profit or the close. Every trade has both a stop-loss and a take-profit: multiples of the
-// stock's own open-to-close volatility, picked per stock by a small network that predicts the net log return of each of the 64 stop /
-// take pairs from the stock's features at the close. Everything is learnt walk-forward:
-//  - the network (shared by all stocks; two hidden layers of 16, tanh, Adam) learns after each
-//    day from every eligible stock's 64 actual outcomes on that day's bar;
-//  - each stock's record is an ADWIN window over the net log returns of its own day trades on the
-//    days the rule would take them (forecast up, gain expected), booked or not, scored by its mean shrunk by its t-statistic, m * max(0, 1 - 1/t^2);
-//    a record no better than noise scores 0, and the slot stays in cash.
+//  - Volatility: each stock's open-to-close volatility is an exponentially weighted average of its
+//    squared open-to-close log returns. The half-life (among the model's dyadic horizons) is the
+//    one whose variance forecasts have scored best so far (QLIKE loss, pooled over the stocks).
+//  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
+//    least squares on its features at the close (the model's forecast, the day's move, the gap,
+//    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
+//  - Stop and take-profit: every trade has both, multiples of the stock's volatility. For each of
+//    the 49 pairs, the net outcome (after costs, worst-case fills) is fitted by least squares on
+//    the intraday forecast over every stock and day so far; each stock takes the pair with the
+//    best expected outcome, and that expected outcome is its expected return.
+//  - Selection: down the ranking of expected return, a stock is booked only if its trade is
+//    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
+//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; at most 10.
+//  - Capital: shared equally among the trades booked, scaled down when needed so the book's
+//    expected daily volatility is no more than the market's (the equal-weight index's
+//    open-to-close volatility); the rest stays in cash.
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels the stop is taken (worst case). Every trade pays the purchase and the
 // sale cost.
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -54,22 +59,6 @@ struct Moments {
   double sd() const;  ///< population
 };
 
-/// A two-hidden-layer perceptron (tanh), trained online by Adam on squared error.
-struct Mlp {
-  std::size_t nIn, nH, nOut;
-  std::vector<double> w1, b1, w2, b2, w3, b3;
-  std::vector<std::vector<double>> m, v;
-  double step = 0;
-  Mlp(std::size_t in, std::size_t h, std::size_t out);
-  std::vector<double> predict(const std::vector<double>& x) const;
-  /// One Adam step on a batch (mean squared error over all outputs).
-  void train(const std::vector<std::vector<double>>& X, const std::vector<std::vector<double>>& Y);
-
- private:
-  void forward(const std::vector<double>& x, std::vector<double>& h1, std::vector<double>& h2, std::vector<double>& y) const;
-  std::vector<double>* param(std::size_t q);
-};
-
 /// Running standardisation of features (mean and variance of everything seen so far).
 struct Scaler {
   std::vector<Moments> s;
@@ -96,7 +85,9 @@ struct Adwin {
 struct DayOrder {
   std::size_t asset = 0;
   double expected = 0;      ///< the model's expected excess return over the market for the next day
-  double tradeReturn = 0;   ///< the network's expected net return of the trade (after costs)
+  double intraday = 0;      ///< forecast open-to-close return (log)
+  double tradeReturn = 0;   ///< expected net return of the trade (after costs)
+  double weight = 0;        ///< share of the capital
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)
@@ -108,6 +99,8 @@ struct DayBook {
   std::size_t start = 0;             ///< first day with a return (as the backtest's)
   std::vector<double> ret;           ///< daily net returns from start
   std::vector<int> booked;           ///< stocks booked each day
+  std::vector<double> exposure;      ///< share of the capital invested each day
+  std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
   std::size_t trades = 0, stops = 0, takes = 0;
   std::vector<DayOrder> orders;      ///< for the next open, best expected first
   /// The screen at the last close: stocks with a bar and a forecast, and how many pass each test.
@@ -116,7 +109,7 @@ struct DayBook {
   } screen;
 };
 
-/// The daily book from day `start` to the last day, and its orders for the next open.
+/// The daily trades from day `start` to the last day, and the orders for the next open.
 DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell);
 
 }  // namespace ofm

@@ -97,8 +97,8 @@ function render(r, source = 'UK') {
   const n = D.orders.length;
   $('asof').textContent = `${source === 'UK' ? `UK, ${r.stocks} most traded shares` : `${source}, ${r.stocks} stocks`} · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · costs ${(D.buyBps / 100).toFixed(2)}% per side`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
-  table($('plan'), [['Buy at the open'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
-    n ? D.orders.map((o) => [[o.ticker], signed(o.tradeReturn, 2), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
+  table($('plan'), [['Buy at the open'], ['Capital', 'num'], ['Expected return, after costs', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+    n ? D.orders.map((o) => [[o.ticker], [o.weight == null ? '–' : `${(100 * o.weight).toFixed(1)}%`, 'num'], signed(o.tradeReturn, 2), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
       : [{ gap: 'no trades: none is expected to make money after costs; stay in cash' }]);
 
   const whole = r.parts[0].rows, b = whole.find((x) => x.name === D.name), k = whole.find((x) => x.name.startsWith('market'));

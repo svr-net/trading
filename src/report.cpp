@@ -187,14 +187,15 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
     for (std::size_t q = 0; q < day->orders.size(); ++q) {
       const DayOrder& d = day->orders[q];
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
-      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"sigma\":" << num(d.sigma)
+      o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight)
+        << ",\"sigma\":" << num(d.sigma)
         << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
     }
@@ -276,15 +277,15 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
   }
   if (hasDay(F)) {
     const Lead L = lead(day->ret, bt.model);
-    std::snprintf(b, sizeof b, "\nDaily trades (%.2f%% per side): %.2f trades a day, %zu at the stop, %zu at the take-profit; ahead of the model portfolio by %+.3f%% a day (t %+.2f)\n",
-                  100 * day->buy, static_cast<double>(day->trades) / static_cast<double>(F.n), day->stops, day->takes, 100 * L.mean, L.t);
+    std::snprintf(b, sizeof b, "\nDaily trades (%.2f%% per side; volatility half-life %u days): %.2f trades a day, %zu at the stop, %zu at the take-profit; ahead of the model portfolio by %+.3f%% a day (t %+.2f)\n",
+                  100 * day->buy, day->halfLife, static_cast<double>(day->trades) / static_cast<double>(F.n), day->stops, day->takes, 100 * L.mean, L.t);
     o << b;
     const auto& sc = day->screen;
     std::snprintf(b, sizeof b, "Screen at the last close: %zu stocks, %zu with a bar (%zu flat: high = low), %zu candidates; forecast up %zu, gain expected %zu, record beats cash %zu; all three %zu\n",
                   sc.stocks, sc.bars, sc.flatBars, sc.candidates, sc.forecastUp, sc.gainExpected, sc.recordUp, sc.all);
     o << b << "Trades for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";
     for (const DayOrder& d : day->orders) {
-      std::snprintf(b, sizeof b, "  %-10s trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.tradeReturn,
+      std::snprintf(b, sizeof b, "  %-10s %4.1f%% of capital  trade %+.3f%%  stop %s  take %s  record %+.3f%% (%zu days)\n", m.tickers[d.asset].c_str(), 100 * d.weight, 100 * d.tradeReturn,
                     std::isfinite(d.stop) ? (num(100 * (std::exp(-d.stop * d.sigma) - 1), 3) + "%").c_str() : "none",
                     std::isfinite(d.take) ? (num(100 * (std::exp(d.take * d.sigma) - 1), 3) + "%").c_str() : "none", 100 * d.record, d.window);
       o << b;

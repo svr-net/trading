@@ -50,7 +50,7 @@ for (const [engine, expect] of (process.env.E2E_ENGINES || 'gpu').split(',').map
     if (errors.length) throw new Error(errors.join(' | '));
     // The trades for the next open: at most 10, each expected to make money after costs.
     if (!/Sample market/.test(await page.textContent('#asof'))) throw new Error('trades not rendered');
-    const trades = await page.$$eval('#plan tbody tr:not(.gap)', (rows) => rows.map((r) => [r.cells[0].textContent, parseFloat(r.cells[1].textContent)]));
+    const trades = await page.$$eval('#plan tbody tr:not(.gap)', (rows) => rows.map((r) => [r.cells[0].textContent, parseFloat(r.cells[2].textContent)]));
     if (trades.length > 10 || trades.some(([, e]) => !(e > 0))) throw new Error(`bad trades: ${JSON.stringify(trades)}`);
     const recent = await page.$$eval('#recent tbody tr', (r) => r.length);
     if (recent < 1) throw new Error('last 20 days not rendered');
