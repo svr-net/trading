@@ -13,9 +13,10 @@
 //  - Stop and take-profit: every trade has both, from its predicted low and high. A neural network
 //    (two hidden layers of 32 rectified linear units, Adam) learns from the actual lows and highs
 //    each trade's fall and rise from the open at several quantiles (pinball loss), from its
-//    features and technical indicators, pre-trained on every day before the first trade. It sets
-//    the levels once its predictions beat the stock's own history of moves (its quantiles, scored
-//    the same way out of sample); until then the history does. For each
+//    features and technical indicators, pre-trained on every day before the first trade; the
+//    other source is the stock's own history of moves (its quantiles). Each source keeps its own
+//    books and outcome fits, and the trades follow the (source, stop limit) book whose record is
+//    best so far. For each
 //    (stop, take-profit) pair the net outcome (after costs, worst-case fills) is fitted on the
 //    intraday forecast; each stock takes the pair with the best expected outcome.
 //  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
