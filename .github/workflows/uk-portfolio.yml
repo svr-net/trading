@@ -45,15 +45,25 @@ jobs:
       # for a longer gap, a full history only for a stock new to the universe) and save the store
       # under a new key; other branches read main's store and make no requests. The weekday
       # schedule keeps the cache in use, so it is never evicted.
-      - name: Restore the EODData store
-        if: ${{ !inputs.probe }}
+      # Main saves the store under eoddata-main-*; other branches only restore (never save), so a
+      # branch run always tests on the same data main publishes.
+      - name: Restore and keep the EODData store (main)
+        if: ${{ !inputs.probe && github.ref == 'refs/heads/main' }}
         uses: actions/cache@v4
         with:
           path: data/eoddata
-          key: eoddata-store-${{ github.run_id }}
+          key: eoddata-main-${{ github.run_id }}
           restore-keys: |
+            eoddata-main-
             eoddata-store-
-            eoddata-
+      - name: Restore main's EODData store (other branches)
+        if: ${{ !inputs.probe && github.ref != 'refs/heads/main' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/eoddata
+          key: eoddata-main-${{ github.run_id }}
+          restore-keys: |
+            eoddata-main-
       - name: Update LSE bars (only the days missing from the store)
         if: ${{ !inputs.probe }}
         env:

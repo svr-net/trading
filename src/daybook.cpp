@@ -165,7 +165,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
 
   auto barAt = [&](std::size_t d, std::size_t i, Bar* b) {
     *b = {m.open(d, i), m.high(d, i), m.low(d, i), m.close(d, i), m.volume(d, i)};
-    return b->o > 0 && b->h > 0 && b->l > 0 && b->c > 0 && b->l <= std::min(b->o, b->c) && b->h >= std::max(b->o, b->c) && std::isfinite(b->v) &&
+    // A flat bar (high = low) is a stale quote, not a trading day.
+    return b->o > 0 && b->h > b->l && b->l > 0 && b->c > 0 && b->l <= std::min(b->o, b->c) && b->h >= std::max(b->o, b->c) && std::isfinite(b->v) &&
            b->v > 0;
   };
   // Volatility of each stock's open-to-close return, and of the equal-weight market's (series N).
@@ -301,7 +302,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       }
       std::vector<double> x1{1.0};
       x1.insert(x1.end(), p.xs.begin(), p.xs.end());
-      intraday.add(x1, std::log(b.c / b.o) / sig);
+      const double z = std::log(b.c / b.o) / sig;
+      book.maxTarget = std::max(book.maxTarget, std::fabs(z));
+      book.bigTargets += std::fabs(z) > 10;
+      intraday.add(x1, z);
       if (intraday.n > double(F + 1)) {  // pair fits on genuine forecasts only
         const std::vector<double> mu1{1.0, p.mu};
         for (std::size_t q = 0; q < P; ++q) {
