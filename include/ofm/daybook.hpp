@@ -14,6 +14,9 @@
 //    model's horizons (h / h_m). For each pair the net outcome (after costs, worst-case fills) is
 //    fitted by least squares on the intraday forecast over every stock and day so far; each stock
 //    takes the pair with the best expected outcome, and that is its expected return.
+//  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
+//    to the day's low (exponentially weighted, the volatility's half-life); closer stops cannot be
+//    tested honestly on daily bars, which do not show the order of the day's moves.
 //  - Stop limit: how far a stop may be from the open is learnt too. Each candidate limit (the same
 //    multiples of the day's median volatility) keeps its own book; the book used is the one whose
 //    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.

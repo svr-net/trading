@@ -184,6 +184,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   };
   // Volatility of each stock's open-to-close return, and of the equal-weight market's (series N).
   AdaptiveVol vol(N + 1, halfLives);
+  // Each stock's opening noise: the exponentially weighted mean of its drop from the open to the
+  // day's low, log(open / low), at each half-life (the volatility's chosen one is used). A stop
+  // inside it cannot be tested honestly on daily bars (the order of the day's moves is unknown).
+  std::vector<std::vector<double>> noise(N, std::vector<double>(halfLives.size(), 0.0));
+  std::vector<std::size_t> noiseN(N, 0);
+  std::vector<double> lam;
+  for (auto h : halfLives) lam.push_back(std::exp(-std::log(2.0) / double(h)));
   std::vector<Moments> logVolume(N);
   auto addDay = [&](std::size_t t) {
     Bar b;
@@ -192,6 +199,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (barAt(t, i, &b)) {
         const double r = std::log(b.c / b.o);
         vol.add(i, r), s += r, n += 1;
+        const double x = std::log(b.o / b.l);
+        for (std::size_t h = 0; h < lam.size(); ++h) noise[i][h] = noiseN[i] == 0 ? x : lam[h] * noise[i][h] + (1 - lam[h]) * x;
+        ++noiseN[i];
       }
     if (n > 0) vol.add(N, s / n);
   };
@@ -260,8 +270,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   auto bestPair = [&](std::size_t i, const TradePlan& pl, double limit, std::size_t* pair) {
     double best = -kNone;
     if (pl.e.empty()) return best;
-    for (std::size_t q = 0; q < P; ++q)
-      if (mult[q / G] * sigmaOf(i) <= limit && pl.e[q] > best) best = pl.e[q], *pair = q;
+    const double floor = noiseN[i] >= 2 ? noise[i][vol.best()] : kNone;
+    for (std::size_t q = 0; q < P; ++q) {
+      const double dist = mult[q / G] * sigmaOf(i);
+      if (dist >= floor && dist <= limit && pl.e[q] > best) best = pl.e[q], *pair = q;
+    }
     return best;
   };
   // A book under a stop limit: down the ranking of expected net return, up to 10 trades expected to
