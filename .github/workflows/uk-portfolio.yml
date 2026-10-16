@@ -105,6 +105,13 @@ jobs:
           if [ "$(wc -l < data/futures.csv)" -le 1 ]; then
             node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+      # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
+      - name: Keep the store for this branch's next runs
+        if: ${{ !inputs.probe && github.ref != 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/eoddata
+          key: eoddata-main-${{ github.run_id }}
       - name: Summary (no prices)
         if: ${{ !inputs.probe }}
         run: |
