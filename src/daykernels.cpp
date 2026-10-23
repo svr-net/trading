@@ -31,6 +31,15 @@ void indicators(const std::vector<double>& bars, std::size_t T, std::size_t N, c
   detail::dispatch(k, detail::groups(std::uint32_t(N), 64), std::uint32_t(cd));
 }
 
+void wilder(const std::vector<double>& bars, std::size_t T, std::size_t N, std::vector<double>& out) {
+  H P;
+  P.T = std::uint32_t(T), P.N = std::uint32_t(N);
+  out.assign(T * N * kWilder, 0.0);
+  gen::Wilder<double> k;
+  k.P = P, k.bars = const_cast<double*>(bars.data()), k.ind = out.data();
+  detail::dispatch(k, detail::groups(std::uint32_t(N), 64));
+}
+
 Net::Net(std::size_t in, std::size_t hidden, std::vector<double> quantiles) : In(in), Hd(hidden), Out(quantiles.size()), tau(std::move(quantiles)) {
   const std::size_t sizes[3][2] = {{Hd, In}, {Hd, Hd}, {Out, Hd}};
   std::uint64_t r = 0x9E3779B97F4A7C15ull;

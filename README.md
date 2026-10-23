@@ -7,7 +7,7 @@ with the trades for the next open and their backtest.
 ## One kernel source for every backend
 
 The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect;
-`kernels/day`: indicators and the network's forward pass, gradient and Adam step). WebGPU
+`kernels/day`: indicators, Wilder's indicators and the network's forward pass, gradient and Adam step). WebGPU
 runs the WGSL as written. At build time
 `tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `double` runs
 natively, `float` checks the GPU's single-precision arithmetic in the tests. Kernels that cooperate through
@@ -34,14 +34,21 @@ the close, all learnt walk-forward:
 
 - **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
   at the close (the model's forecast among them), fitted on every stock and day so far.
-- **Stop-loss and take-profit**: each trade's predicted low and high. A neural network (fused
-  kernels) learns from the actual lows and highs each trade's fall and rise from the open at
-  several quantiles, from its features and technical indicators (until its predictions beat the
-  stock's own history of moves, scored out of sample, the history sets them); each stock takes the
-  (stop, take-profit) pair with the best fitted expected outcome.
-- **Stop limit**: learnt. Each candidate limit (multiples of the median volatility) keeps its
-  own book; the trades use the limit whose record is best so far, and stay in cash while none
-  beats cash.
+- **Stop-loss and take-profit**: each trade's predicted low and high, at several quantiles, from
+  four sources: the stock's own history of moves; the same moves measured in its average true
+  range (J. Welles Wilder, *New Concepts in Technical Trading Systems*, 1978: his volatility unit,
+  so the levels follow the true range as it changes, like his Volatility System's stop a multiple
+  of the true range away); a neural network (fused kernels) that learns them from the actual lows
+  and highs, on the trade's features and technical indicators; and the same network also given
+  Wilder's indicators (`kernels/day/wilder.wgsl`: ATR, RSI, directional movement, ADX, ADXR and
+  the Parabolic SAR, with his parameters). Each stock takes the (stop, take-profit) pair with the
+  best fitted expected outcome; the outcome is fitted on the intraday forecast, and also on
+  Wilder's ADXR (his rating of whether a market trends), whichever has forecast the outcomes better
+  out of sample.
+- **Level source and stop limit**: learnt together. Each source and each candidate limit
+  (multiples of the median volatility) keeps its own book; the trades use the book whose record is
+  best so far (net of costs, not the closest forecast of the low and high, which need not trade
+  better), and stay in cash while none beats cash. The report shows each source's forecast loss.
 - **Intraday paths (US)**: the strongest candidates of the last 250 days get their 5-minute
   session bars (`tools/eoddata/intraday.mjs`, stored a month per symbol); on those stock-days the
   path decides whether the stop or the take-profit came first. EODData serves no intraday bars for

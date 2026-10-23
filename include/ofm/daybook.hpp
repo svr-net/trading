@@ -10,19 +10,26 @@
 //  - Intraday forecast: the next day's open-to-close return of each stock, in its volatility, by
 //    least squares on its features at the close (the model's forecast, the day's move, the gap,
 //    the range, the 5-day move, volume, the market's move), fitted on every stock and day so far.
-//  - Stop and take-profit: every trade has both, from its predicted low and high. A neural network
-//    (two hidden layers of 32 rectified linear units, Adam) learns from the actual lows and highs
-//    each trade's fall and rise from the open at several quantiles (pinball loss), from its
-//    features and technical indicators. Until its predictions beat the stock's own history of
-//    moves (its quantiles, scored the same way out of sample), the history sets the levels. For each
-//    (stop, take-profit) pair the net outcome (after costs, worst-case fills) is fitted on the
-//    intraday forecast; each stock takes the pair with the best expected outcome.
+//  - Stop and take-profit: every trade has both, from its predicted low and high at several
+//    quantiles. Four sources predict them: the stock's own history of moves (their quantiles); the
+//    same moves in the stock's average true range, times its true range at the close (Wilder's
+//    volatility unit, New Concepts in Technical Trading Systems, 1978); a neural network (two hidden
+//    layers of 32 rectified linear units, Adam) that learns from the actual lows and highs each
+//    trade's fall and rise from the open (pinball loss), from its features and technical
+//    indicators; and the same network also given Wilder's indicators (ATR, RSI, directional
+//    movement, ADX, ADXR, Parabolic SAR). For each (stop, take-profit) pair of each source the net
+//    outcome (after costs, worst-case fills) is fitted on the intraday forecast, or on it and the
+//    stock's ADXR (Wilder's trend rating), whichever has forecast better out of sample; each stock
+//    takes the pair with the best expected outcome.
 //  - Opening noise: a stop must be further from the open than the stock's usual drop from the open
 //    to the day's low (exponentially weighted, the volatility's half-life); closer stops cannot be
 //    tested honestly on daily bars, which do not show the order of the day's moves.
-//  - Stop limit: how far a stop may be from the open is learnt too. Each candidate limit (the same
-//    multiples of the day's median volatility) keeps its own book; the book used is the one whose
-//    record is best so far (ADWIN, shrunk by its t-statistic), and cash while none beats cash.
+//  - Level source and stop limit: which source sets the levels, and how far a stop may be from the
+//    open, are learnt together. Each source and candidate limit (the same multiples of the day's
+//    median volatility) keeps its own book; the book used is the one whose record is best so far
+//    (ADWIN, shrunk by its t-statistic), and cash while none beats cash. The sources' forecast
+//    losses are reported but do not choose: a closer forecast of the low and high need not trade
+//    better.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
 //    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
 //    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the 10 strongest are taken.
@@ -128,6 +135,12 @@ struct DayBook {
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
   bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
   std::string levelsFrom;            ///< what sets the stop and take-profit levels
+  /// Mean pinball loss a stock-day of the level predictors (0: not scored): history, Wilder's true
+  /// range, the network, the network with Wilder's indicators.
+  double levelLoss[4] = {0, 0, 0, 0};
+  std::size_t sourceDays[4] = {0, 0, 0, 0};  ///< days each level predictor set the levels (as levelLoss)
+  bool trendFits = false;            ///< the pairs' outcomes are fitted with ADXR (Wilder's trend rating)
+  double pairErr[2] = {0, 0};        ///< out-of-sample mean squared error of the pair fits (in volatilities): plain, with ADXR
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
   std::size_t bigTargets = 0;        ///< how many were outliers by Chauvenet's criterion, cut to its bound
   /// Out-of-sample correlation of the intraday forecast with the outcome (in volatilities).
