@@ -237,7 +237,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"levelLoss\":{\"history\":" << num(day->levelLoss[0]) << ",\"wilderAtr\":" << num(day->levelLoss[1]) << ",\"network\":" << num(day->levelLoss[2]) << ",\"networkWilder\":" << num(day->levelLoss[3]) << "}" << ",\"trendFits\":" << (day->trendFits ? "true" : "false") << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"levelLoss\":{\"history\":" << num(day->levelLoss[0]) << ",\"wilderAtr\":" << num(day->levelLoss[1]) << ",\"bollinger\":" << num(day->levelLoss[2]) << ",\"network\":" << num(day->levelLoss[3]) << ",\"networkWilder\":" << num(day->levelLoss[4]) << "}" << ",\"backtestSharpe\":" << num(day->backtestSharpe) << ",\"backtestT\":" << num(day->backtestT) << ",\"stopLimitUnits\":" << num(day->stopLimitUnits) << ",\"dayBudget\":" << num(day->dayBudget) << ",\"trendFits\":" << (day->trendFits ? "true" : "false") << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
@@ -246,7 +246,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
       o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight) 
         << ",\"sigma\":" << num(d.sigma)
-        << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
+        << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take) << ",\"limit\":" << num(d.limit)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
     }
     o << "]}";
@@ -343,23 +343,33 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
       o << b;
       o << "Stop and take-profit levels from: " << day->levelsFrom << "\n";
-      std::snprintf(b, sizeof b, "Level predictors' pinball loss a stock-day (lower is better): history %.4f, Wilder's true range %.4f, network %.4f, network with Wilder's indicators %.4f\n",
-                    day->levelLoss[0], day->levelLoss[1], day->levelLoss[2], day->levelLoss[3]);
+      std::snprintf(b, sizeof b, "Level predictors' pinball loss a stock-day (lower is better): history %.4f, Wilder's true range %.4f, Bollinger %.4f, network %.4f, network with Wilder's and Bollinger's %.4f\n",
+                    day->levelLoss[0], day->levelLoss[1], day->levelLoss[2], day->levelLoss[3], day->levelLoss[4]);
       o << b;
-      std::snprintf(b, sizeof b, "Days each source's book traded: history %zu, Wilder's true range %zu, network %zu, network with Wilder's indicators %zu\n",
-                    day->sourceDays[0], day->sourceDays[1], day->sourceDays[2], day->sourceDays[3]);
+      std::snprintf(b, sizeof b, "Days each source's book traded: history %zu, Wilder's true range %zu, Bollinger %zu, network %zu, network with Wilder's and Bollinger's %zu\n",
+                    day->sourceDays[0], day->sourceDays[1], day->sourceDays[2], day->sourceDays[3], day->sourceDays[4]);
       o << b;
       std::snprintf(b, sizeof b, "Pair outcomes fitted %s (out-of-sample mean squared error: plain %.5f, with ADXR %.5f)\n",
                     day->trendFits ? "with Wilder's ADXR" : "without ADXR", day->pairErr[0], day->pairErr[1]);
       o << b;
-      if (day->backtestLoses) o << "No trades for the next open: the daily trades lost money over the backtest\n";
+      if (day->backtestLoses) {
+        std::snprintf(b, sizeof b, "No trades for the next open: the daily trades' backtest gain is not significant (t %.2f, Sharpe ratio %.2f)\n", day->backtestT,
+                      day->backtestSharpe);
+        o << b;
+      }
       if (day->pathDays > 0) {
         std::snprintf(b, sizeof b, "Intraday paths: %zu stock-days; %zu trades with exact fills, %zu where both levels were touched and the path decided\n",
                       day->pathDays, day->pathTrades, day->pathResolved);
         o << b;
       }
     }
-    std::snprintf(b, sizeof b, "Learnt stop limit: %.2f%% from the open; book of the %zu strongest (its record %+.4f%% a day)\n", 100 * day->stopLimit, day->bookSize, 100 * day->limitScore);
+    if (day->stopLimitUnits > 0)
+      std::snprintf(b, sizeof b, "Learnt stop limit: %.3g Bollinger band units of each stock (median %.2f%% from the open); book of the %zu strongest (its record %+.4f%% a day)\n",
+                    day->stopLimitUnits, 100 * day->stopLimit, day->bookSize, 100 * day->limitScore);
+    else
+      std::snprintf(b, sizeof b, "Learnt stop limit: %.2f%% from the open; book of the %zu strongest (its record %+.4f%% a day)\n", 100 * day->stopLimit, day->bookSize, 100 * day->limitScore);
+    o << b;
+    std::snprintf(b, sizeof b, "Worst-day budget (every stop hit): %.2f%% of the capital; backtest t-statistic %.2f\n", 100 * day->dayBudget, day->backtestT);
     o << b;
     std::snprintf(b, sizeof b, "Data check: largest open-to-close move %.1f volatilities; %zu outliers (Chauvenet) cut to the bound. Intraday forecast skill: correlation %+.4f over %.0f forecasts (t %+.1f)\n", day->maxTarget, day->bigTargets, day->skill.corr(), day->skill.n, day->skill.corr() * std::sqrt(std::max(0.0, day->skill.n - 2)));
     o << b << "Trades for the next open (buy at the open, sell at the stop, the take-profit or the close)\n";

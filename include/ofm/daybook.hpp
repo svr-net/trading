@@ -36,8 +36,13 @@
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
-//  - Risk limits (DayRisk): a stop at most 5% below the open (a wider pair is not traded), and the
-//    weights scaled down so that a day when every stop is hit loses at most 2% of the capital.
+//  - Risk limits (DayRisk), adaptive: the stop limits are multiples of each stock's Bollinger band
+//    unit (its last h closes' standard deviation over the close, h the horizon nearest the
+//    volatility's chosen half-life), and the weights are scaled down so that a day when every stop
+//    is hit loses no more than the equal-weight market's typical distance from its close to its lower
+//    band (two of its band units; the median over the closes so far); the books compared are not
+//    scaled, so wide stops compete freely.
+//  - Gate: no orders unless the backtest's gain is significant (t-statistic of at least 2).
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
 // candidates of recent days) says which came first; otherwise the stop is taken (worst case).
@@ -121,6 +126,7 @@ struct DayOrder {
   double sigma = 0;         ///< the stock's open-to-close volatility (log)
   double stop = day::kNone, take = day::kNone;  ///< multiples of sigma (kNone: no level)
   double record = 0;        ///< the stock's record score (net log return a day, shrunk)
+  double limit = 0;         ///< the stock's learnt stop limit (fraction below the open)
   std::size_t window = 0;   ///< days in its record's window
 };
 
@@ -132,15 +138,19 @@ struct DayBook {
   std::vector<int> booked;           ///< stocks booked each day
   std::vector<double> exposure;      ///< share of the capital invested each day
   std::uint32_t halfLife = 0;        ///< the volatility's half-life chosen at the last close
-  double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
+  double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open; the candidates' median with band limits)
   double limitScore = 0;             ///< its book's record score
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
-  bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
+  bool backtestLoses = false;        ///< the daily trades lost over the backtest, or their Sharpe ratio is below DayRisk::minSharpe: no orders
+  double backtestSharpe = 0;         ///< the daily trades' Sharpe ratio over the backtest
+  double backtestT = 0;              ///< the t-statistic of their mean daily return
+  double stopLimitUnits = 0;         ///< the learnt stop limit in multiples of each stock's band unit (with DayRisk::bandLimits)
+  double dayBudget = 0;              ///< the worst-day budget at the last close (fraction of the capital)
   std::string levelsFrom;            ///< what sets the stop and take-profit levels
   /// Mean pinball loss a stock-day of the level predictors (0: not scored): history, Wilder's true
-  /// range, the network, the network with Wilder's indicators.
-  double levelLoss[4] = {0, 0, 0, 0};
-  std::size_t sourceDays[4] = {0, 0, 0, 0};  ///< days each level predictor set the levels (as levelLoss)
+  /// range, Bollinger bands, the network, the network with Wilder's and Bollinger's indicators.
+  double levelLoss[5] = {0, 0, 0, 0, 0};
+  std::size_t sourceDays[5] = {0, 0, 0, 0, 0};  ///< days each level predictor set the levels (as levelLoss)
   bool trendFits = false;            ///< the pairs' outcomes are fitted with ADXR (Wilder's trend rating)
   double pairErr[2] = {0, 0};        ///< out-of-sample mean squared error of the pair fits (in volatilities): plain, with ADXR
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
@@ -167,11 +177,16 @@ struct DayBook {
 };
 
 /// Risk limits of the daily trades, applied to every book (backtest and orders alike).
+/// By default every limit adapts to the Bollinger bands; the fixed settings are for comparison.
 struct DayRisk {
-  double maxStop = 0.05;        ///< a stop at most this far below the open (fraction)
+  bool bandLimits = true;       ///< stop limits in multiples of each stock's Bollinger band unit (false: of the day's median volatility)
+  double maxStop = 1;           ///< a fixed cap on the stop's distance below the open (fraction; 1: none)
   double maxRiskReward = 0;     ///< a stop at most this many times as far from the open as the take-profit (0: no limit; tight
                                 ///< ratios put stops in the day's noise: on the sample 1.5 cut the Sharpe ratio from 8 to 1.2)
-  double maxDayLoss = 0.02;     ///< the book's loss if every stop is hit, at most this share of the capital (weights scaled down)
+  double maxDayLoss = 0;        ///< a fixed worst-day budget (fraction; 0: adaptive, the market's median distance to its lower band)
+  bool dailyBudget = false;     ///< the adaptive budget follows each day's band distance instead of its median so far
+  bool capSizingOnly = true;    ///< the worst-day budget scales the book traded only, not the books compared (false: both)
+  double minT = 2;              ///< no orders unless the daily trades' backtest gain has at least this t-statistic
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.
