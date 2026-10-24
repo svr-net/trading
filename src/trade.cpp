@@ -4,6 +4,8 @@
 #include <cmath>
 #include <numeric>
 
+#include "ofm/liquidity.hpp"
+
 namespace ofm {
 
 Metrics metrics(const std::vector<double>& r) {
@@ -101,12 +103,21 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
       }
   if (s + 2 >= T) return bt;
   bt.start = s + 1;
+  // Honest options: each stock's half-spread on its trades, and the point-in-time universe
+  // (weighted at the model's middle horizon).
+  const bool honest = costs.spreadCosts || costs.universe > 0;
+  const Liquidity liq = honest ? Liquidity(m, f.horizons.empty() ? 16.0 : double(f.horizons[f.horizons.size() / 2])) : Liquidity(Market{}, 1);
+  auto half = [&](std::size_t t, std::size_t i) { return costs.spreadCosts && t < liq.T ? liq.halfSpread(t, i) : 0.0; };
+  auto inU = [&](std::size_t t) { return costs.universe > 0 ? liq.universeAt(t, costs.universe) : std::vector<char>(N, 1); };
 
   // Market: every stock with a forecast at the first decision, equal weight, bought once.
   std::vector<double> mw(N, 0.0);
   double cnt = 0;
-  for (std::size_t i = 0; i < N; ++i) cnt += hasE(s, i) ? 1 : 0;
-  for (std::size_t i = 0; i < N; ++i) mw[i] = hasE(s, i) ? 1.0 / cnt : 0.0;
+  const auto inS = inU(s);
+  for (std::size_t i = 0; i < N; ++i) cnt += hasE(s, i) && inS[i] ? 1 : 0;
+  for (std::size_t i = 0; i < N; ++i) mw[i] = hasE(s, i) && inS[i] ? 1.0 / cnt : 0.0;
+  double marketEntryCost = buy;
+  for (std::size_t i = 0; i < N; ++i) marketEntryCost += mw[i] * half(s, i);
 
   std::vector<double> h(N, 0.0), entryValue(N, 0.0);
   std::vector<std::size_t> entryDay(N, 0);
@@ -132,11 +143,13 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
     if (std::isfinite(r)) rhoSum += r, rhoN += 1;
     prevE = cur;
     const double life = lifeAt();
+    const auto inT = inU(t);
     for (std::size_t i = 0; i < N; ++i) {
       buyOrder[i] = sellOrder[i] = 0;
       if (!std::isfinite(cur[i])) continue;
-      if (h[i] > 0 && -cur[i] * life > hurdle) sellOrder[i] = 1;
-      if (h[i] <= 0 && cur[i] * life > hurdle) buyOrder[i] = 1;
+      const double hurdleI = hurdle + 2 * half(t, i);
+      if (h[i] > 0 && -cur[i] * life > hurdleI) sellOrder[i] = 1;
+      if (h[i] <= 0 && inT[i] && cur[i] * life > hurdleI) buyOrder[i] = 1;
     }
     return life;
   };
@@ -281,8 +294,9 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
     if (initial) {
       for (std::size_t i = 0; i < N; ++i)
         if (mw[i] > 0) {
-          const double v = eqOpen * mw[i] / (1 + buy);
-          h[i] = v, cost += v * buy, traded += v, entryValue[i] = v * (1 + buy), entryDay[i] = d;
+          const double bi = buy + half(t, i);
+          const double v = eqOpen * mw[i] / (1 + bi);
+          h[i] = v, cost += v * bi, traded += v, entryValue[i] = v * (1 + bi), entryDay[i] = d;
         }
       cash = eqOpen - std::accumulate(h.begin(), h.end(), 0.0) - cost;
       initial = false;
@@ -290,9 +304,9 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
       // Sales.
       for (std::size_t i = 0; i < N; ++i)
         if (sellOrder[i] && h[i] > 0 && tradable(i)) {
-          const double v = h[i];
-          cash += v * (1 - sell), cost += v * sell, traded += v;
-          bt.trades.push_back({i, entryDay[i], d, v * (1 - sell) / entryValue[i] - 1});
+          const double v = h[i], si = sell + half(t, i);
+          cash += v * (1 - si), cost += v * si, traded += v;
+          bt.trades.push_back({i, entryDay[i], d, v * (1 - si) / entryValue[i] - 1});
           h[i] = 0;
         }
       // Purchases: each new stock an equal share of the portfolio.
@@ -311,24 +325,24 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
           const double held = eq - cash;
           for (std::size_t i = 0; i < N; ++i)
             if (h[i] > 0 && held > 0) {
-              const double v = h[i] * fromHoldings / held;
-              h[i] -= v, cash += v * (1 - sell), cost += v * sell, traded += v;
+              const double v = h[i] * fromHoldings / held, si = sell + half(t, i);
+              h[i] -= v, cash += v * (1 - si), cost += v * si, traded += v;
             }
         }
         need = std::min(need, cash);
         for (std::size_t i : buys) {
-          const double v = need / static_cast<double>(buys.size()) / (1 + buy);
-          h[i] = v, cash -= v * (1 + buy), cost += v * buy, traded += v, entryValue[i] = v * (1 + buy), entryDay[i] = d;
+          const double bi = buy + half(t, i);
+          const double v = need / static_cast<double>(buys.size()) / (1 + bi);
+          h[i] = v, cash -= v * (1 + bi), cost += v * bi, traded += v, entryValue[i] = v * (1 + bi), entryDay[i] = d;
         }
       }
       if (cash > 1e-12) {
         const double held = std::accumulate(h.begin(), h.end(), 0.0);
         if (held > 0) {
-          const double spend = cash / (1 + buy);
           for (std::size_t i = 0; i < N; ++i)
             if (h[i] > 0) {
-              const double v = spend * h[i] / held;
-              h[i] += v, cost += v * buy, traded += v, entryValue[i] += v * (1 + buy);
+              const double bi = buy + half(t, i), v = cash * h[i] / held / (1 + bi);
+              h[i] += v, cost += v * bi, traded += v, entryValue[i] += v * (1 + bi);
             }
           cash = 0;
         }
@@ -358,7 +372,7 @@ Backtest backtest(const Market& m, const Forecast& f, const Costs& costs, const 
         mw[i] *= (c1 > 0 && c0 > 0) ? c1 / c0 : 1.0;
         ma += mw[i];
       }
-    bt.market.push_back(ma / mb - 1 - (d == s + 1 ? buy : 0.0));
+    bt.market.push_back(ma / mb - 1 - (d == s + 1 ? marketEntryCost : 0.0));
 
     // Hedge over day d: decided at close t, sized by the book's beta to the future so far.
     double rf = kNaN, rm = 0;

@@ -165,6 +165,7 @@ int main(int argc, char** argv) {
     if (buyBps >= 0) costs.buyBps = buyBps;
     if (sellBps >= 0) costs.sellBps = sellBps;
     costs.dayBps = 100 * dayPct;
+    costs.spreadCosts = risk.spreadCosts, costs.universe = risk.universe;  // the same honest options for the model portfolio
     ofm::Market m;
     std::map<std::string, std::vector<double>> s;
     if (csv.empty()) {
