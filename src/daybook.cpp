@@ -528,6 +528,37 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   const double maxStop = -std::log1p(-std::clamp(risk.maxStop, 1e-9, 1.0 - 1e-9));
   // Stock i's best pair whose stop is within the limit (log distance) and the risk limits, and its
   // expected return.
+  // The stop limit of stock i under candidate k at the close t (log distance): k's multiple of its
+  // Bollinger band unit, or of the day's median volatility (without band limits or a band).
+  auto limitOf = [&](std::size_t k, std::size_t i, std::size_t t, double medSig) {
+    const double unit = risk.bandLimits && !bolH.empty() ? bollinger(t, i, bolUnitH(), 2) : 0.0;
+    return mult[k] * (unit > 0 ? unit : medSig);
+  };
+  // The worst-day budget at the close t: the equal-weight market's distance from its close to its
+  // lower Bollinger band (two band units at the adaptive horizon), unless fixed.
+  std::vector<double> mktIndex(T, 0.0);
+  {
+    Bar b0, b1;
+    for (std::size_t u = 1; u < T; ++u) {
+      double s = 0, n = 0;
+      for (std::size_t i = 0; i < N; ++i)
+        if (barAt(u, i, &b0) && barAt(u - 1, i, &b1)) s += std::log(b0.c / b1.c), n += 1;
+      mktIndex[u] = mktIndex[u - 1] + (n > 0 ? s / n : 0.0);
+    }
+  }
+  auto budgetAt = [&](std::size_t t) {
+    if (risk.maxDayLoss > 0 || bolH.empty()) return risk.maxDayLoss > 0 ? risk.maxDayLoss : 1.0;
+    const std::size_t h = bolH[bolUnitH()];
+    if (t + 1 < h) return 1.0;
+    double s1 = 0, s2 = 0;
+    for (std::size_t u = t + 1 - h; u <= t; ++u) {
+      const double c = std::exp(mktIndex[u] - mktIndex[t]);
+      s1 += c, s2 += c * c;
+    }
+    const double mu = s1 / double(h), v = std::max(0.0, s2 / double(h) - mu * mu);
+    return std::min(1.0, 2 * std::sqrt(v));  // the close is 1 on this scale
+  };
+  double budget = 1.0;  // the day's worst-day budget (set at each close)
   auto bestPair = [&](int s0, std::size_t i, const TradePlan& pl, double limit, std::size_t* pair, bool exact) {
     double best = -kNone;
     if (!pl.forecast || levStop[s0][i].empty()) return best;
@@ -548,11 +579,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     int src = kHist;
   };
   // exact(i): whether stock i's fills are exact (an intraday path) on the day traded.
-  auto ranked = [&](int s0, const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl, double limit, const auto& exact) {
+  // limit(i): stock i's stop limit (log distance).
+  auto ranked = [&](int s0, const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl, const auto& limit, const auto& exact) {
     std::vector<std::tuple<double, std::size_t, std::size_t, double>> v;  // (expected return, stock, pair, expect)
     for (std::size_t i : cand) {
       std::size_t q = 0;
-      const double e = bestPair(s0, i, pl[i], limit, &q, exact(i));
+      const double e = bestPair(s0, i, pl[i], limit(i), &q, exact(i));
       if (e > 0 && record[i].score() > 0) v.emplace_back(e * sigmaOf(i), i, q, e);
     }
     std::stable_sort(v.begin(), v.end(), [](const auto& a, const auto& c) { return std::get<0>(a) > std::get<0>(c); });
@@ -573,11 +605,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t i : bk.pick) var += sigmaOf(i) * sigmaOf(i) / (m0 * m0);
     const double mk = vol.sigma(N);
     bk.w = (1 / m0) * ((var > 0 && mk > 0) ? std::min(1.0, mk / std::sqrt(var)) : 1.0);
-    // The book's loss if every stop is hit: at most risk.maxDayLoss of the capital.
+    // The book's loss if every stop is hit: at most the day's budget.
     double worst = 0;
     for (std::size_t j = 0; j < bk.pick.size(); ++j) worst += bk.w * (1 - std::exp(-stopOf(s0, bk.pick[j], bk.pair[j])));
     bk.wRaw = bk.w;
-    if (worst > risk.maxDayLoss) bk.w *= risk.maxDayLoss / worst;
+    if (worst > budget) bk.w *= budget / worst;
     return bk;
   };
   // The level source and stop limit in use: the book whose record is best so far; cash while none
@@ -617,18 +649,20 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     setLevels(t, cand, pl);
     // Every source's and stop limit's book; the one in use trades.
     const std::size_t use = bestLimit(), nBooks = limitRecord.size();
+    budget = budgetAt(t);
+    auto limitK = [&](std::size_t k) { return [&, k](std::size_t i) { return limitOf(k % G, i, t, medSig); }; };
     const int us = int(use / G);
     const bool trade = limitRecord[use].score() > 0;
     if (trade) ++book.sourceDays[us];
     std::vector<Book> books(nBooks);
     auto exactOn = [&](std::size_t i) { return pathOf(d, i) != nullptr; };
-    for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(int(k / G), ranked(int(k / G), cand, pl, mult[k % G] * medSig, exactOn), K);
+    for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(int(k / G), ranked(int(k / G), cand, pl, limitK(k), exactOn), K);
     // The strongest candidates: every stock a book could trade, with and without exact fills.
     if (d >= candidatesFrom) {
       std::vector<char> seen(N, 0);
       for (int ex = 0; ex < 2; ++ex)
         for (std::size_t k = 0; k < nBooks; ++k)
-          for (const auto& c : ranked(int(k / G), cand, pl, mult[k % G] * medSig, [&](std::size_t) { return ex == 1; }))
+          for (const auto& c : ranked(int(k / G), cand, pl, limitK(k), [&](std::size_t) { return ex == 1; }))
             if (!seen[std::get<1>(c)]) seen[std::get<1>(c)] = 1, book.candidates.emplace_back(d, std::get<1>(c));
     }
     const double r = trade ? dayReturn(books[use], d, true) : 0.0;
@@ -751,9 +785,18 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   book.trendFits = useTrend();
   book.pairErr[0] = nErr > 0 ? errPlain / nErr : 0.0, book.pairErr[1] = nErr > 0 ? errTrend / nErr : 0.0;
   const auto& pl = pl0;
-  const double limit = mult[use % G] * medSig;
+  auto limit = [&](std::size_t i) { return limitOf(use % G, i, t, medSig); };
+  budget = budgetAt(t);
+  book.dayBudget = budget;
   book.bookSize = K;
-  book.stopLimit = 1 - std::exp(-std::min(limit, maxStop)), book.limitScore = limitRecord[use].score();
+  {
+    std::vector<double> lim;
+    for (std::size_t i : cand) lim.push_back(1 - std::exp(-std::min(limit(i), maxStop)));
+    std::sort(lim.begin(), lim.end());
+    book.stopLimit = lim.empty() ? 0.0 : lim[lim.size() / 2];
+  }
+  book.stopLimitUnits = risk.bandLimits ? mult[use % G] : 0.0;
+  book.limitScore = limitRecord[use].score();
   auto& sc = book.screen;
   sc.stocks = N, sc.candidates = cand.size();
   for (std::size_t i = 0; i < N; ++i)
@@ -763,17 +806,19 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   auto exactNextOf = [&](std::size_t) { return exactNext; };
   for (std::size_t i : cand) {
     std::size_t q = 0;
-    const double e = bestPair(src, i, pl[i], limit, &q, exactNext);
+    const double e = bestPair(src, i, pl[i], limit(i), &q, exactNext);
     sc.forecastUp += pl[i].forecast && pl[i].mu > 0, sc.gainExpected += e > 0, sc.recordUp += record[i].score() > 0;
     sc.all += e > 0 && record[i].score() > 0;
   }
   // No trades for the next open unless the daily trades have made money over the whole backtest
-  // (worst-case fills) with a Sharpe ratio of at least risk.minSharpe: a market where they lose, or
-  // barely gain for their risk, is not traded.
+  // (worst-case fills) significantly (the t-statistic of the mean daily return at least risk.minT):
+  // a market where they lose, or gain no more than chance would, is not traded.
   double grown = 0;
-  for (double r : book.ret) grown += std::log1p(r);
+  Moments mr;
+  for (double r : book.ret) grown += std::log1p(r), mr.add(r);
   book.backtestSharpe = metrics(book.ret).sharpe;
-  book.backtestLoses = !(grown > 0) || !(book.backtestSharpe >= risk.minSharpe);
+  book.backtestT = mr.n > 1 && mr.sd() > 0 ? mr.mean() / mr.sd() * std::sqrt(mr.n - 1) : 0.0;
+  book.backtestLoses = !(grown > 0) || !(book.backtestT >= risk.minT);
   if (limitRecord[use].score() > 0 && !book.backtestLoses) {
     const Book bk = makeBook(src, ranked(src, cand, pl, limit, exactNextOf), book.bookSize);
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
@@ -781,7 +826,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       DayOrder o;
       o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = stopOf(src, i, q) / o.sigma, o.take = takeOf(src, i, q) / o.sigma;
       o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(bk.expect[j] * o.sigma), o.weight = bk.w;
-      o.record = record[i].score(), o.window = record[i].window();
+      o.record = record[i].score(), o.window = record[i].window(), o.limit = 1 - std::exp(-std::min(limit(i), maxStop));
       book.orders.push_back(o);
     }
   }
