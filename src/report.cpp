@@ -237,7 +237,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"levelLoss\":{\"history\":" << num(day->levelLoss[0]) << ",\"wilderAtr\":" << num(day->levelLoss[1]) << ",\"network\":" << num(day->levelLoss[2]) << ",\"networkWilder\":" << num(day->levelLoss[3]) << "}" << ",\"trendFits\":" << (day->trendFits ? "true" : "false") << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
@@ -343,6 +343,15 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
       std::snprintf(b, sizeof b, "Stopped out: %.1f%% of trades\n", 100.0 * double(day->stops) / double(std::max<std::size_t>(1, day->trades)));
       o << b;
       o << "Stop and take-profit levels from: " << day->levelsFrom << "\n";
+      std::snprintf(b, sizeof b, "Level predictors' pinball loss a stock-day (lower is better): history %.4f, Wilder's true range %.4f, network %.4f, network with Wilder's indicators %.4f\n",
+                    day->levelLoss[0], day->levelLoss[1], day->levelLoss[2], day->levelLoss[3]);
+      o << b;
+      std::snprintf(b, sizeof b, "Days each source's book traded: history %zu, Wilder's true range %zu, network %zu, network with Wilder's indicators %zu\n",
+                    day->sourceDays[0], day->sourceDays[1], day->sourceDays[2], day->sourceDays[3]);
+      o << b;
+      std::snprintf(b, sizeof b, "Pair outcomes fitted %s (out-of-sample mean squared error: plain %.5f, with ADXR %.5f)\n",
+                    day->trendFits ? "with Wilder's ADXR" : "without ADXR", day->pairErr[0], day->pairErr[1]);
+      o << b;
       if (day->backtestLoses) o << "No trades for the next open: the daily trades lost money over the backtest\n";
       if (day->pathDays > 0) {
         std::snprintf(b, sizeof b, "Intraday paths: %zu stock-days; %zu trades with exact fills, %zu where both levels were touched and the path decided\n",

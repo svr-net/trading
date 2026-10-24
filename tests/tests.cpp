@@ -9,6 +9,7 @@
 #include "ofm/kernels.hpp"
 #include "ofm/report.hpp"
 #include "ofm/structure.hpp"
+#include "../src/daykernels.hpp"
 
 namespace {
 
@@ -128,6 +129,77 @@ TEST(intraday_path_decides_which_level_came_first) {
   const std::vector<Tick> same{{110, 90}};
   tradeReturn(b, sig, 2, 1, 0, 0, true, &e, &same, &res);
   CHECK(e == 1 && !res);  // the same tick: worst case
+}
+
+TEST(wilder_indicators_match_a_plain_reference) {
+  // One stock, a random walk with a trend that turns: ATR and RSI against Wilder's recursions
+  // written out plainly, and the Parabolic's rules (the next day's stop never inside this day's or
+  // the previous day's range; it flips when the price crosses it).
+  const std::size_t T = 300, N = 1;
+  std::vector<double> bars(5 * T * N, 0.0), o(T), h(T), l(T), c(T);
+  std::uint64_t x = 99;
+  auto unif = [&]() { x = x * 6364136223846793005ull + 1442695040888963407ull; return double(x >> 11) / double(1ull << 53); };
+  double p = 100;
+  for (std::size_t t = 0; t < T; ++t) {
+    o[t] = p * std::exp(0.004 * (unif() - 0.5));
+    p = o[t] * std::exp((t < 150 ? 0.003 : -0.003) + 0.02 * (unif() - 0.5));
+    c[t] = p, h[t] = std::max(o[t], c[t]) * (1 + 0.01 * unif()), l[t] = std::min(o[t], c[t]) * (1 - 0.01 * unif());
+    const double v[5] = {o[t], h[t], l[t], c[t], 1};
+    for (std::size_t f = 0; f < 5; ++f) bars[f * T + t] = v[f];
+  }
+  bars[2 * T + 40] = 0;  // a missing bar is skipped
+  std::vector<double> w;
+  ofm::day::kernels::wilder(bars, T, N, w);
+  const std::size_t WI = ofm::day::kernels::kWilder;
+  CHECK(w[40 * WI] == 0 && w[13 * WI] == 0 && w[14 * WI] > 0);
+  double atr = 0, au = 0, ad = 0;
+  std::size_t k = 0, prev = 0, flips = 0;
+  for (std::size_t t = 0; t < T; ++t) {
+    if (t == 40) continue;
+    if (k > 0) {
+      const double tr = std::max(h[t], c[prev]) - std::min(l[t], c[prev]), r = c[t] - c[prev];
+      const double u = std::max(r, 0.0), d = std::max(-r, 0.0);
+      if (k <= 14) atr += tr / 14, au += u / 14, ad += d / 14;
+      else atr = (13 * atr + tr) / 14, au = (13 * au + u) / 14, ad = (13 * ad + d) / 14;
+      if (k >= 14) {
+        CHECK(std::fabs(w[t * WI] - atr / c[t]) < 1e-12 && std::fabs(w[t * WI + 1] - (au - ad) / (au + ad)) < 1e-12);
+        const double sar = c[t] - w[t * WI + 6] * atr, side = w[t * WI + 5];
+        CHECK(side == 1 || side == -1);
+        if (side > 0) CHECK(sar <= std::min(l[t], l[prev]) + 1e-9);
+        if (side < 0) CHECK(sar >= std::max(h[t], h[prev]) - 1e-9);
+        const std::size_t t1 = t + 1 == 40 ? 41 : t + 1;
+        if (t1 < T && w[t1 * WI + 5] != side) {
+          ++flips;
+          CHECK(side > 0 ? l[t1] <= sar : h[t1] >= sar);  // crossed
+        }
+      }
+    }
+    prev = t, ++k;
+  }
+  CHECK(flips > 0);
+  // ADX in [0, 1], ADXR the mean of ADX now and 13 days before.
+  for (std::size_t t = 60; t < T; ++t) {
+    CHECK(w[t * WI + 3] >= 0 && w[t * WI + 3] <= 1);
+    if (w[(t - 13) * WI + 3] > 0) CHECK(std::fabs(w[t * WI + 4] - 0.5 * (w[t * WI + 3] + w[(t - 13) * WI + 3])) < 1e-12);
+  }
+}
+
+TEST(wilder_levels_win_when_volatility_changes) {
+  // The sample's intraday moves stretched and shrunk by turns (x2 and x0.5, every 60 days): the
+  // stops and take-profits measured in true ranges follow; the fixed quantiles of the last moves lag.
+  ofm::Market m = sample().market;
+  for (std::size_t t = 0; t < m.T(); ++t)
+    for (std::size_t i = 0; i < m.N(); ++i) {
+      const double k = (t / 60) % 2 ? 2.0 : 0.5, o = m.open(t, i);
+      if (!(o > 0)) continue;
+      m.high(t, i) = o * std::pow(m.high(t, i) / o, k), m.low(t, i) = o * std::pow(m.low(t, i) / o, k), m.close(t, i) = o * std::pow(m.close(t, i) / o, k);
+    }
+  const auto f = ofm::runModel(m);
+  const auto bt = ofm::backtest(m, f, ofm::Costs{}, {});
+  const auto d = ofm::dayBook(m, f, bt.start, 5e-4, 5e-4);
+  std::printf("  level losses: history %.4f, Wilder's true range %.4f, network %.4f, with Wilder's %.4f; pair fits %s\n", d.levelLoss[0], d.levelLoss[1], d.levelLoss[2],
+              d.levelLoss[3], d.trendFits ? "with ADXR" : "plain");
+  CHECK(d.levelLoss[1] > 0 && d.levelLoss[1] < d.levelLoss[0]);
 }
 
 TEST(daily_book_uses_only_the_past) {

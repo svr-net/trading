@@ -3,6 +3,7 @@
 // The daily trades' fused kernels (kernels/day/*.wgsl, translated to C++ by tools/wgsl2cpp.py and
 // run on the CPU in double precision, workgroups spread over the hardware threads):
 //  indicators  technical indicators of every stock over a block of days.
+//  wilder      Wilder's indicators (ATR, RSI, DMI, ADX, ADXR, Parabolic SAR) of every stock and day.
 //  forward     the network's outputs for a batch of samples.
 //  gradient    each sample's gradient of the quantile (pinball) loss.
 //  adam        one Adam step from a mini-batch's gradients.
@@ -17,6 +18,10 @@ namespace ofm::day::kernels {
 /// [o, h, l, c, v][T][N], 0 where there is no bar.
 void indicators(const std::vector<double>& bars, std::size_t T, std::size_t N, const std::vector<std::uint32_t>& horizons, std::size_t t0,
                 std::size_t cd, std::vector<double>& out);
+
+/// Wilder's indicators at every close: out [T][N][kWilder] (kernels/day/wilder.wgsl). bars: as above.
+constexpr std::size_t kWilder = 7;
+void wilder(const std::vector<double>& bars, std::size_t T, std::size_t N, std::vector<double>& out);
 
 /// A network of two hidden layers of rectified linear units (at most 64) and linear outputs,
 /// trained by Adam on the quantile loss (output o is the quantile tau[o] of its target).
