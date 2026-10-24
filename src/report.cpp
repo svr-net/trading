@@ -362,6 +362,24 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
                       g.days, g.cand / std::max(1.0, g.days), 100 * g.gain / std::max(1.0, g.cand), 100 * g.record / std::max(1.0, g.cand),
                       100 * g.both / std::max(1.0, g.cand), 100 * g.bookAhead / std::max(1.0, g.days), 100 * g.tradeDays / std::max(1.0, g.days));
         o << b;
+        // Each input's correlation with the outcome, in each half: the strongest 15 by the smaller |t|.
+        {
+          const auto& a = day->featureSkill[0];
+          const auto& c = day->featureSkill[1];
+          std::vector<std::tuple<double, std::size_t>> v;
+          for (std::size_t j = 0; j < std::min({a.size(), c.size(), day->featureNames.size()}); ++j) {
+            const double ta = a[j].corr() * std::sqrt(a[j].n), tc = c[j].corr() * std::sqrt(c[j].n);
+            v.emplace_back(ta * tc > 0 ? std::min(std::fabs(ta), std::fabs(tc)) : 0.0, j);
+          }
+          std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) { return std::get<0>(x) > std::get<0>(y); });
+          o << "Inputs vs the next open-to-close move (correlation, t), first half | second half; strongest consistent first:\n";
+          for (std::size_t k = 0; k < v.size(); ++k) {
+            const std::size_t j = std::get<1>(v[k]);
+            std::snprintf(b, sizeof b, "  %-32s %+.4f (t %+6.1f) | %+.4f (t %+6.1f)\n", day->featureNames[j].c_str(), a[j].corr(), a[j].corr() * std::sqrt(a[j].n),
+                          c[j].corr(), c[j].corr() * std::sqrt(c[j].n));
+            o << b;
+          }
+        }
         std::snprintf(b, sizeof b, "Estimated round-trip spreads of the candidates: median %.2f%%, quartiles %.2f%% and %.2f%%, 10th and 90th percentiles %.2f%% and %.2f%%\n",
                       pc(0.5), pc(0.25), pc(0.75), pc(0.1), pc(0.9));
         o << b;

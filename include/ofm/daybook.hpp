@@ -165,8 +165,11 @@ struct DayBook {
       return n > 2 && vx > 0 && vy > 0 ? (sxy - sx * sy / n) / std::sqrt(vx * vy) : 0.0;
     }
   } skill;
+  std::vector<Skill> featureSkill[2];
   std::size_t trades = 0, stops = 0, takes = 0;
   double spreadSum = 0;              ///< the trades' estimated round-trip spreads, summed (log)
+  /// Each input's correlation with the next open-to-close move (in volatilities), in each half.
+  std::vector<std::string> featureNames;
   /// Diagnostics over the backtest: candidate stock-days and how many pass each gate.
   struct Gates {
     double days = 0, tradeDays = 0, bookAhead = 0, cand = 0, gain = 0, record = 0, both = 0;

@@ -798,6 +798,27 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       book.bigTargets += std::fabs(raw) > zb;
       // Out-of-sample skill of the intraday forecast: its correlation with what happened.
       if (p.forecast) book.skill.add(p.mu, z);
+      // Each input's own relation to the outcome (correlation), in each half of the backtest.
+      {
+        std::vector<double> all = p.xs;
+        all.insert(all.end(), p.ind.begin(), p.ind.end());
+        all.insert(all.end(), p.wil.begin(), p.wil.end());
+        all.insert(all.end(), p.bol.begin(), p.bol.end());
+        if (p.forecast) all.push_back(p.mu);
+        auto& fs = book.featureSkill[d < start + (T - start) / 2 ? 0 : 1];
+        if (fs.size() < all.size()) fs.resize(all.size());
+        for (std::size_t j = 0; j < all.size(); ++j) fs[j].add(all[j], z);
+        if (book.featureNames.empty()) {
+          book.featureNames = {"model forecast", "volatility vs median", "day's open-to-close", "day's close-to-close", "day's gap", "close in day's range",
+                               "day's range", "5-day move", "volume", "market's move"};
+          for (auto h : indH)
+            for (const char* nm : {"momentum", "place in range", "RSI", "volume vs mean", "range vs mean"})
+              book.featureNames.push_back(std::string(nm) + " " + std::to_string(h) + "d");
+          for (std::size_t j = 0; j < p.wil.size(); ++j) book.featureNames.push_back("Wilder " + std::to_string(j));
+          for (std::size_t j = 0; j < p.bol.size(); ++j) book.featureNames.push_back("Bollinger " + std::to_string(j));
+          book.featureNames.push_back("intraday forecast (combined)");
+        }
+      }
       intraday.add(x1, z);
       if (p.forecast) {  // pair fits on genuine forecasts only
         // With intraday paths (where tight stops get traded), only honest outcomes: a stop outside
