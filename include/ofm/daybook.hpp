@@ -36,6 +36,8 @@
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
+//  - Risk limits (DayRisk): a stop at most 5% below the open (a wider pair is not traded), and the
+//    weights scaled down so that a day when every stop is hit loses at most 2% of the capital.
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
 // candidates of recent days) says which came first; otherwise the stop is taken (worst case).
@@ -164,11 +166,19 @@ struct DayBook {
   } screen;
 };
 
+/// Risk limits of the daily trades, applied to every book (backtest and orders alike).
+struct DayRisk {
+  double maxStop = 0.05;        ///< a stop at most this far below the open (fraction)
+  double maxRiskReward = 0;     ///< a stop at most this many times as far from the open as the take-profit (0: no limit; tight
+                                ///< ratios put stops in the day's noise: on the sample 1.5 cut the Sharpe ratio from 8 to 1.2)
+  double maxDayLoss = 0.02;     ///< the book's loss if every stop is hit, at most this share of the capital (weights scaled down)
+};
+
 /// The daily trades from day `start` to the last day, and the orders for the next open.
 /// paths: intraday paths (exact fills; on those stock-days a stop inside the opening noise can be
 /// tested, so the floor does not apply). candidatesFrom: list each day's strongest candidates from
 /// this day on (in book.candidates), for fetching their intraday paths.
 DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, const day::Paths* paths = nullptr,
-                std::size_t candidatesFrom = std::numeric_limits<std::size_t>::max());
+                std::size_t candidatesFrom = std::numeric_limits<std::size_t>::max(), const DayRisk& risk = DayRisk{});
 
 }  // namespace ofm
