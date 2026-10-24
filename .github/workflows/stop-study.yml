@@ -1,6 +1,5 @@
 # Stop-loss study on the cached EODData prices (results only, nothing published or emailed): the
-# daily trades' backtest under several risk limits, and the code from before the Wilder and risk
-# changes (40451e7) for reference. Runs on pushes to its branch; uses main's store, no requests.
+# daily trades' backtest of this branch under several risk limits, against main as it runs now. Runs on pushes to its branch; uses main's store, no requests.
 name: Stop study
 
 on:
@@ -48,12 +47,12 @@ jobs:
           node tools/eoddata/fetch_series.mjs --cached --years 20 --out data/futures.csv \
             --symbols 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' > /dev/null
           echo "rows $(($(wc -l < data/stocks.csv) - 1)), series rows $(($(wc -l < data/futures.csv) - 1))"
-      - name: Build (current and before the changes)
+      - name: Build (this branch and main as it runs now)
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja >/dev/null && cmake --build build --target ofm_report >/dev/null
-          git worktree add -q old 40451e7
-          cmake -S old -B old/build -G Ninja >/dev/null && cmake --build old/build --target ofm_report >/dev/null
+          git worktree add -q live 218ec30
+          cmake -S live -B live/build -G Ninja >/dev/null && cmake --build live/build --target ofm_report >/dev/null
       - name: Backtests (results only)
         run: |
           set -o pipefail
@@ -67,17 +66,14 @@ jobs:
             local label="$1"; shift
             echo "=== $MARKET | $label"
             "$@" "${ARGS[@]}" > out.txt
-            grep -E "^  daily trades|^(whole period|first half|second half)|Fill test|Stopped out|stop limit|levels from|Daily trades \(" out.txt || true
+            grep -E "^  daily trades|^(whole period|first half|second half)|Fill test|Stopped out|stop limit|levels from|Daily trades \(|Days each|No trades" out.txt || true
             awk '/^Trades for the next open/{f=1;next} f&&/^  [A-Z]/{print} f&&/^$/{exit}' out.txt | head -12
           }
           {
-            run "before Wilder and the risk limits (40451e7)" ./old/build/ofm_report
-            run "Wilder, no risk limits" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 100
-            run "Wilder, worst day 2% only" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 2
-            run "Wilder, stop 5% only" ./build/ofm_report --max-stop-pct 5 --max-day-loss-pct 100
-            run "Wilder, stop 3% only" ./build/ofm_report --max-stop-pct 3 --max-day-loss-pct 100
-            run "Wilder, stop 3% + worst day 2%" ./build/ofm_report --max-stop-pct 3 --max-day-loss-pct 2
-            run "Wilder, stop 5% + worst day 2% (live)" ./build/ofm_report
-            run "Wilder, stop 5% + worst day 3%" ./build/ofm_report --max-stop-pct 5 --max-day-loss-pct 3
+            run "main now (218ec30): stop 5% + worst day 2%" ./live/build/ofm_report
+            run "Bollinger: stop 5% + worst day 2%" ./build/ofm_report
+            run "Bollinger: stop 3% + worst day 2%" ./build/ofm_report --max-stop-pct 3
+            run "Bollinger: stop 5% only" ./build/ofm_report --max-day-loss-pct 100
+            run "Bollinger: no risk limits" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 100
           } | tee study.txt
           { echo '```'; cat study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
