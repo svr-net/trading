@@ -173,7 +173,8 @@ struct AdaptiveVol {
 
 }  // namespace
 
-DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, const day::Paths* paths, std::size_t candidatesFrom) {
+DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double buy, double sell, const day::Paths* paths, std::size_t candidatesFrom,
+                const DayRisk& risk) {
   using namespace day;
   DayBook book;
   book.buy = buy, book.sell = sell, book.start = start;
@@ -478,14 +479,17 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   };
   // The opening-noise floor of stock i: no floor where its intraday path gives the exact fills.
   auto floorOf = [&](std::size_t i, bool exact) { return exact ? 0.0 : noiseN[i] >= 2 ? noise[i][vol.best()] : kNone; };
-  // Stock i's best pair whose stop is within the limit (log distance), and its expected return.
+  // The risk limits: the widest stop allowed (log distance from the open).
+  const double maxStop = -std::log1p(-std::clamp(risk.maxStop, 1e-9, 1.0 - 1e-9));
+  // Stock i's best pair whose stop is within the limit (log distance) and the risk limits, and its
+  // expected return.
   auto bestPair = [&](int s0, std::size_t i, const TradePlan& pl, double limit, std::size_t* pair, bool exact) {
     double best = -kNone;
     if (!pl.forecast || levStop[s0][i].empty()) return best;
     const double floor = floorOf(i, exact);
     for (std::size_t q = 0; q < P; ++q) {
       const double dist = stopOf(s0, i, q);
-      if (dist >= floor && dist <= limit && pl.e[s0][q] > best) best = pl.e[s0][q], *pair = q;
+      if (dist >= floor && dist <= std::min(limit, maxStop) && (!(risk.maxRiskReward > 0) || dist <= risk.maxRiskReward * takeOf(s0, i, q)) && pl.e[s0][q] > best) best = pl.e[s0][q], *pair = q;
     }
     return best;
   };
@@ -524,6 +528,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     for (std::size_t i : bk.pick) var += sigmaOf(i) * sigmaOf(i) / (m0 * m0);
     const double mk = vol.sigma(N);
     bk.w = (1 / m0) * ((var > 0 && mk > 0) ? std::min(1.0, mk / std::sqrt(var)) : 1.0);
+    // The book's loss if every stop is hit: at most risk.maxDayLoss of the capital.
+    double worst = 0;
+    for (std::size_t j = 0; j < bk.pick.size(); ++j) worst += bk.w * (1 - std::exp(-stopOf(s0, bk.pick[j], bk.pair[j])));
+    if (worst > risk.maxDayLoss) bk.w *= risk.maxDayLoss / worst;
     return bk;
   };
   // The level source and stop limit in use: the book whose record is best so far; cash while none
@@ -692,7 +700,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   const auto& pl = pl0;
   const double limit = mult[use % G] * medSig;
   book.bookSize = K;
-  book.stopLimit = 1 - std::exp(-limit), book.limitScore = limitRecord[use].score();
+  book.stopLimit = 1 - std::exp(-std::min(limit, maxStop)), book.limitScore = limitRecord[use].score();
   auto& sc = book.screen;
   sc.stocks = N, sc.candidates = cand.size();
   for (std::size_t i = 0; i < N; ++i)

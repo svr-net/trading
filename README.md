@@ -58,6 +58,10 @@ the close, all learnt walk-forward:
   lost over the backtest.
 - **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
   rest stays in cash.
+- **Risk limits**: no stop more than 5% below the open (wider pairs are not traded), and the
+  weights scaled down so that a day when every stop is hit loses at most 2% of the capital
+  (`--max-stop-pct`, `--max-day-loss-pct`; `--max-risk-reward` can also cap the stop at a multiple
+  of the take-profit's distance, off by default: tight ratios put the stops in the day's noise).
 
 Backtest fills come from the real high, low and close (the stop when a day touched both levels).
 The cost per side is a setting (`--day-cost-pct`, default 0; the page's "Cost per side").
