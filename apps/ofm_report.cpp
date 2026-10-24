@@ -153,6 +153,7 @@ int main(int argc, char** argv) {
       else if (a == "--max-risk-reward") risk.maxRiskReward = std::stod(next());
       else if (a == "--max-day-loss-pct") risk.maxDayLoss = std::stod(next()) / 100;
       else if (a == "--min-sharpe") risk.minSharpe = std::stod(next());
+      else if (a == "--cap-sizing-only") risk.capSizingOnly = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);

@@ -544,7 +544,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   struct Book {
     std::vector<std::size_t> pick, pair;
     std::vector<double> expect;
-    double w = 0;
+    double w = 0, wRaw = 0;  // the weight traded, and before the worst-day cap
     int src = kHist;
   };
   // exact(i): whether stock i's fills are exact (an intraday path) on the day traded.
@@ -576,6 +576,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     // The book's loss if every stop is hit: at most risk.maxDayLoss of the capital.
     double worst = 0;
     for (std::size_t j = 0; j < bk.pick.size(); ++j) worst += bk.w * (1 - std::exp(-stopOf(s0, bk.pick[j], bk.pair[j])));
+    bk.wRaw = bk.w;
     if (worst > risk.maxDayLoss) bk.w *= risk.maxDayLoss / worst;
     return bk;
   };
@@ -635,7 +636,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     book.optimistic.push_back(trade ? dayReturn(books[use], d, false, false) : 0.0);
     book.ret.push_back(r), book.booked.push_back(trade ? int(books[use].pick.size()) : 0);
     book.exposure.push_back(trade ? books[use].w * double(books[use].pick.size()) : 0.0);
-    for (std::size_t k = 0; k < nBooks; ++k) limitRecord[k].push(std::log1p(dayReturn(books[k], d, false)));
+    for (std::size_t k = 0; k < nBooks; ++k) {
+      // With the worst-day cap as sizing only, the books compete on their uncapped weights.
+      Book bk = books[k];
+      if (risk.capSizingOnly) bk.w = bk.wRaw;
+      limitRecord[k].push(std::log1p(dayReturn(bk, d, false)));
+    }
     // After the close d: the day's outcomes, for the stocks' records and the fits.
     for (int s0 = 0; s0 < kSources; ++s0)  // the two fits of a source see the same outcomes
       for (std::size_t q = 0; q < P; ++q) zp[s0 * P + q] = chauvenet(pairFit[s0][q].n + 1);

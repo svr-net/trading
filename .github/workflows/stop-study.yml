@@ -51,8 +51,6 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja >/dev/null && cmake --build build --target ofm_report >/dev/null
-          git worktree add -q live 218ec30
-          cmake -S live -B live/build -G Ninja >/dev/null && cmake --build live/build --target ofm_report >/dev/null
       - name: Backtests (results only)
         run: |
           set -o pipefail
@@ -70,10 +68,9 @@ jobs:
             awk '/^Trades for the next open/{f=1;next} f&&/^  [A-Z]/{print} f&&/^$/{exit}' out.txt | head -12
           }
           {
-            run "main now (218ec30): stop 5% + worst day 2%" ./live/build/ofm_report
-            run "Bollinger: stop 5% + worst day 2%" ./build/ofm_report
-            run "Bollinger: stop 3% + worst day 2%" ./build/ofm_report --max-stop-pct 3
-            run "Bollinger: stop 5% only" ./build/ofm_report --max-day-loss-pct 100
+            run "Bollinger: worst day 2% as sizing only, no stop cap" ./build/ofm_report --max-stop-pct 100 --cap-sizing-only
+            run "Bollinger: worst day 2% as sizing only, stop 7%" ./build/ofm_report --max-stop-pct 7 --cap-sizing-only
+            run "Bollinger: worst day 3% as sizing only, no stop cap" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 3 --cap-sizing-only
             run "Bollinger: no risk limits" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 100
           } | tee study.txt
           { echo '```'; cat study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

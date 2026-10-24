@@ -173,6 +173,7 @@ struct DayRisk {
   double maxRiskReward = 0;     ///< a stop at most this many times as far from the open as the take-profit (0: no limit; tight
                                 ///< ratios put stops in the day's noise: on the sample 1.5 cut the Sharpe ratio from 8 to 1.2)
   double maxDayLoss = 0.02;     ///< the book's loss if every stop is hit, at most this share of the capital (weights scaled down)
+  bool capSizingOnly = false;   ///< the worst-day cap scales the book traded only, not the books compared (which then choose wide stops as freely as uncapped)
   double minSharpe = 0.5;       ///< no orders unless the daily trades' backtest has at least this Sharpe ratio
 };
 
