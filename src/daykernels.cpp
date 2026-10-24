@@ -40,6 +40,17 @@ void wilder(const std::vector<double>& bars, std::size_t T, std::size_t N, std::
   detail::dispatch(k, detail::groups(std::uint32_t(N), 64));
 }
 
+void bollinger(const std::vector<double>& bars, std::size_t T, std::size_t N, const std::vector<std::uint32_t>& horizons, std::vector<double>& out) {
+  H P;
+  P.T = std::uint32_t(T), P.N = std::uint32_t(N), P.nH = std::uint32_t(horizons.size());
+  for (std::size_t k = 0; k < horizons.size() && k < 16; ++k) P.hz[k / 4][k % 4] = horizons[k];
+  out.assign(T * N * 3 * horizons.size(), 0.0);
+  if (horizons.empty()) return;
+  gen::Bollinger<double> k;
+  k.P = P, k.bars = const_cast<double*>(bars.data()), k.ind = out.data();
+  detail::dispatch(k, detail::groups(std::uint32_t(N), 64));
+}
+
 Net::Net(std::size_t in, std::size_t hidden, std::vector<double> quantiles) : In(in), Hd(hidden), Out(quantiles.size()), tau(std::move(quantiles)) {
   const std::size_t sizes[3][2] = {{Hd, In}, {Hd, Hd}, {Out, Hd}};
   std::uint64_t r = 0x9E3779B97F4A7C15ull;

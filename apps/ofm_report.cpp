@@ -12,9 +12,11 @@
 // gives the daily trades exact fills on those stock-days. --candidates-out file --candidates-days n
 // writes each of the last n days' strongest candidates (date,ticker), for fetching their paths.
 // --forecast-cache file keeps the model's forecast between runs on the same data (binary).
-// Risk limits of the daily trades (daybook.hpp, DayRisk): --max-stop-pct 5 (the widest stop below the
-// open), --max-risk-reward 0 (a stop at most this many times as far as the take-profit; 0 none),
-// --max-day-loss-pct 2 (the book's loss if every stop is hit).
+// Risk limits of the daily trades (daybook.hpp, DayRisk) adapt to the Bollinger bands; for comparison,
+// fixed settings: --max-stop-pct (the widest stop below the open), --max-risk-reward (a stop at most
+// this many times as far as the take-profit), --max-day-loss-pct (the book's loss if every stop is
+// hit), --cap-books (the budget scales the compared books too), --vol-limits (stop limits in the day's
+// median volatility); --min-t 2 (no orders unless the backtest's gain has this t-statistic).
 //
 // Without --csv it runs on the synthetic sample market.
 #include <cstdio>
@@ -151,6 +153,10 @@ int main(int argc, char** argv) {
       else if (a == "--max-stop-pct") risk.maxStop = std::stod(next()) / 100;
       else if (a == "--max-risk-reward") risk.maxRiskReward = std::stod(next());
       else if (a == "--max-day-loss-pct") risk.maxDayLoss = std::stod(next()) / 100;
+      else if (a == "--min-t") risk.minT = std::stod(next());
+      else if (a == "--cap-books") risk.capSizingOnly = false;
+      else if (a == "--vol-limits") risk.bandLimits = false;
+      else if (a == "--daily-budget") risk.dailyBudget = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);

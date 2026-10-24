@@ -197,9 +197,45 @@ TEST(wilder_levels_win_when_volatility_changes) {
   const auto f = ofm::runModel(m);
   const auto bt = ofm::backtest(m, f, ofm::Costs{}, {});
   const auto d = ofm::dayBook(m, f, bt.start, 5e-4, 5e-4);
-  std::printf("  level losses: history %.4f, Wilder's true range %.4f, network %.4f, with Wilder's %.4f; pair fits %s\n", d.levelLoss[0], d.levelLoss[1], d.levelLoss[2],
-              d.levelLoss[3], d.trendFits ? "with ADXR" : "plain");
+  std::printf("  level losses: history %.4f, Wilder's true range %.4f, Bollinger %.4f, network %.4f, with Wilder's and Bollinger's %.4f; pair fits %s\n", d.levelLoss[0],
+              d.levelLoss[1], d.levelLoss[2], d.levelLoss[3], d.levelLoss[4], d.trendFits ? "with ADXR" : "plain");
   CHECK(d.levelLoss[1] > 0 && d.levelLoss[1] < d.levelLoss[0]);
+}
+
+TEST(bollinger_bands_match_a_plain_reference) {
+  // One stock with a missing bar: each horizon's mean and standard deviation of the last h closes
+  // (bars, not days), the close's place in the bands, their width and the band unit.
+  const std::size_t T = 120, N = 1;
+  std::vector<double> bars(5 * T * N, 0.0), c(T);
+  std::uint64_t x = 5;
+  double p = 50;
+  for (std::size_t t = 0; t < T; ++t) {
+    x = x * 6364136223846793005ull + 1442695040888963407ull;
+    p *= std::exp(0.02 * (double(x >> 11) / double(1ull << 53) - 0.5));
+    c[t] = p;
+    const double v[5] = {p, p * 1.01, p * 0.99, p, 1};
+    for (std::size_t f = 0; f < 5; ++f) bars[f * T + t] = v[f];
+  }
+  bars[3 * T + 30] = 0;  // no close on day 30
+  const std::vector<std::uint32_t> hz{8, 16};
+  std::vector<double> b;
+  ofm::day::kernels::bollinger(bars, T, N, hz, b);
+  for (std::size_t k = 0; k < hz.size(); ++k)
+    for (std::size_t t = 0; t < T; ++t) {
+      const double* r = &b[t * 6 + 3 * k];
+      std::vector<double> w;
+      for (std::size_t u = 0; u <= t; ++u)
+        if (u != 30) w.push_back(c[u]);
+      if (t == 30 || w.size() <= hz[k]) {
+        CHECK(r[0] == 0 && r[1] == 0 && r[2] == 0);
+        continue;
+      }
+      double m = 0, v = 0;
+      for (std::size_t j = w.size() - hz[k]; j < w.size(); ++j) m += w[j] / hz[k];
+      for (std::size_t j = w.size() - hz[k]; j < w.size(); ++j) v += (w[j] - m) * (w[j] - m) / hz[k];
+      const double sd = std::sqrt(v);
+      CHECK(std::fabs(r[0] - (c[t] - m) / sd) < 1e-6 && std::fabs(r[1] - std::log(sd / c[t])) < 1e-6 && std::fabs(r[2] - sd / c[t]) < 1e-9);
+    }
 }
 
 TEST(daily_book_uses_only_the_past) {
@@ -208,16 +244,16 @@ TEST(daily_book_uses_only_the_past) {
   const auto b1 = ofm::backtest(m, f1, ofm::Costs{}, sample().series);
   const auto d1 = ofm::dayBook(m, f1, b1.start, 5e-4, 5e-4);
   CHECK(d1.ret.size() == b1.model.size() && d1.trades > 0 && d1.orders.size() <= 10);
-  for (const auto& o : d1.orders) CHECK(o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && o.sigma > 0 && o.record > 0 && std::isfinite(o.stop) && std::isfinite(o.take) && 1 - std::exp(-o.stop * o.sigma) <= d1.stopLimit + 1e-12);
-  // The risk limits: stops at most 5% from the open, and at most 2% of the capital lost if every
-  // stop is hit.
+  for (const auto& o : d1.orders) CHECK(o.tradeReturn > 0 && o.weight > 0 && o.weight <= 1 && o.sigma > 0 && o.record > 0 && std::isfinite(o.stop) && std::isfinite(o.take));
+  // The risk limits: each stop within its stock's learnt limit, and no more than the day's budget
+  // lost if every stop is hit.
   double worst = 0;
   for (const auto& o : d1.orders) {
     const double stop = 1 - std::exp(-o.stop * o.sigma);
-    CHECK(stop <= 0.05 + 1e-12);
+    CHECK(stop <= o.limit + 1e-12);
     worst += o.weight * stop;
   }
-  CHECK(worst <= 0.02 + 1e-12);
+  CHECK(d1.dayBudget > 0 && worst <= d1.dayBudget + 1e-12);
   // Change the bars from day X on: the book's returns before X are the same.
   const std::size_t X = m.T() - 100;
   for (std::size_t t = X; t < m.T(); ++t)

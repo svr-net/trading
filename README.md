@@ -7,7 +7,7 @@ with the trades for the next open and their backtest.
 ## One kernel source for every backend
 
 The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect;
-`kernels/day`: indicators, Wilder's indicators and the network's forward pass, gradient and Adam step). WebGPU
+`kernels/day`: indicators, Wilder's indicators, Bollinger bands and the network's forward pass, gradient and Adam step). WebGPU
 runs the WGSL as written. At build time
 `tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `double` runs
 natively, `float` checks the GPU's single-precision arithmetic in the tests. Kernels that cooperate through
@@ -58,10 +58,15 @@ the close, all learnt walk-forward:
   lost over the backtest.
 - **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
   rest stays in cash.
-- **Risk limits**: no stop more than 5% below the open (wider pairs are not traded), and the
-  weights scaled down so that a day when every stop is hit loses at most 2% of the capital
-  (`--max-stop-pct`, `--max-day-loss-pct`; `--max-risk-reward` can also cap the stop at a multiple
-  of the take-profit's distance, off by default: tight ratios put the stops in the day's noise).
+- **Risk limits, from adaptive Bollinger bands** (`kernels/day/bollinger.wgsl`; each stock's bands
+  at the horizon nearest the volatility's learnt half-life): each stock's stop limit is a multiple
+  of its band unit (the multiple learnt by the books), and the weights are scaled so that a day when
+  every stop is hit loses no more than the market's typical distance to its lower band (the median
+  over every close so far). The budget sizes the book traded only, so wide-stop books still compete.
+  Fixed settings remain for comparison (`--max-stop-pct`, `--max-day-loss-pct`, `--vol-limits`).
+- **Gate**: no trades in a market whose backtest gain is not significant (t-statistic below 2).
+- **Bollinger level source**: the stops and take-profits can also come from each stock's moves in
+  band units, and the second network sees the bands' position and width at every horizon.
 
 Backtest fills come from the real high, low and close (the stop when a day touched both levels).
 The cost per side is a setting (`--day-cost-pct`, default 0; the page's "Cost per side").

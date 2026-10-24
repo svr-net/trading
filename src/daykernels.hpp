@@ -4,6 +4,7 @@
 // run on the CPU in double precision, workgroups spread over the hardware threads):
 //  indicators  technical indicators of every stock over a block of days.
 //  wilder      Wilder's indicators (ATR, RSI, DMI, ADX, ADXR, Parabolic SAR) of every stock and day.
+//  bollinger   Bollinger bands of every stock and day at several horizons.
 //  forward     the network's outputs for a batch of samples.
 //  gradient    each sample's gradient of the quantile (pinball) loss.
 //  adam        one Adam step from a mini-batch's gradients.
@@ -22,6 +23,9 @@ void indicators(const std::vector<double>& bars, std::size_t T, std::size_t N, c
 /// Wilder's indicators at every close: out [T][N][kWilder] (kernels/day/wilder.wgsl). bars: as above.
 constexpr std::size_t kWilder = 7;
 void wilder(const std::vector<double>& bars, std::size_t T, std::size_t N, std::vector<double>& out);
+
+/// Bollinger bands at every close and horizon: out [T][N][3 horizons.size()] (kernels/day/bollinger.wgsl).
+void bollinger(const std::vector<double>& bars, std::size_t T, std::size_t N, const std::vector<std::uint32_t>& horizons, std::vector<double>& out);
 
 /// A network of two hidden layers of rectified linear units (at most 64) and linear outputs,
 /// trained by Adam on the quantile loss (output o is the quantile tau[o] of its target).
