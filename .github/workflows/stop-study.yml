@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: [UK, US]
+        market: [UK]
     env:
       MARKET: ${{ matrix.market }}
       EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
@@ -71,8 +71,7 @@ jobs:
           }
           {
             run "main now (218ec30): stop 5% + worst day 2%" ./live/build/ofm_report
-            run "adaptive: band stop limits + market lower-band budget (new defaults)" ./build/ofm_report
-            run "adaptive band stop limits, no worst-day budget" ./build/ofm_report --max-day-loss-pct 100
-            run "fixed: volatility stop limits + worst day 2% as sizing" ./build/ofm_report --vol-limits --max-day-loss-pct 2
+            run "adaptive: band stop limits + the market's median lower-band budget (new defaults)" ./build/ofm_report
+            run "adaptive: band stop limits + each day's market lower-band budget" ./build/ofm_report --daily-budget
           } | tee study.txt
           { echo '```'; cat study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

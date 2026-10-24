@@ -39,8 +39,9 @@
 //  - Risk limits (DayRisk), adaptive: the stop limits are multiples of each stock's Bollinger band
 //    unit (its last h closes' standard deviation over the close, h the horizon nearest the
 //    volatility's chosen half-life), and the weights are scaled down so that a day when every stop
-//    is hit loses no more than the equal-weight market's distance from its close to its lower band
-//    (two of its band units); the books compared are not scaled, so wide stops compete freely.
+//    is hit loses no more than the equal-weight market's typical distance from its close to its lower
+//    band (two of its band units; the median over the closes so far); the books compared are not
+//    scaled, so wide stops compete freely.
 //  - Gate: no orders unless the backtest's gain is significant (t-statistic of at least 2).
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
@@ -182,7 +183,8 @@ struct DayRisk {
   double maxStop = 1;           ///< a fixed cap on the stop's distance below the open (fraction; 1: none)
   double maxRiskReward = 0;     ///< a stop at most this many times as far from the open as the take-profit (0: no limit; tight
                                 ///< ratios put stops in the day's noise: on the sample 1.5 cut the Sharpe ratio from 8 to 1.2)
-  double maxDayLoss = 0;        ///< a fixed worst-day budget (fraction; 0: adaptive, the market's distance to its lower band)
+  double maxDayLoss = 0;        ///< a fixed worst-day budget (fraction; 0: adaptive, the market's median distance to its lower band)
+  bool dailyBudget = false;     ///< the adaptive budget follows each day's band distance instead of its median so far
   bool capSizingOnly = true;    ///< the worst-day budget scales the book traded only, not the books compared (false: both)
   double minT = 2;              ///< no orders unless the daily trades' backtest gain has at least this t-statistic
 };

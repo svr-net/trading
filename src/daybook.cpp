@@ -534,8 +534,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     const double unit = risk.bandLimits && !bolH.empty() ? bollinger(t, i, bolUnitH(), 2) : 0.0;
     return mult[k] * (unit > 0 ? unit : medSig);
   };
-  // The worst-day budget at the close t: the equal-weight market's distance from its close to its
-  // lower Bollinger band (two band units at the adaptive horizon), unless fixed.
+  // The worst-day budget at the close t: the equal-weight market's typical distance from its close
+  // to its lower Bollinger band (two band units at the adaptive horizon): the median of that
+  // distance over every close so far, so the budget is learnt from the market but does not swing
+  // with it (a budget that follows each day's bands leverages up when the market is wild). Unless
+  // fixed.
   std::vector<double> mktIndex(T, 0.0);
   {
     Bar b0, b1;
@@ -546,8 +549,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       mktIndex[u] = mktIndex[u - 1] + (n > 0 ? s / n : 0.0);
     }
   }
-  auto budgetAt = [&](std::size_t t) {
-    if (risk.maxDayLoss > 0 || bolH.empty()) return risk.maxDayLoss > 0 ? risk.maxDayLoss : 1.0;
+  auto bandDistance = [&](std::size_t t) {
     const std::size_t h = bolH[bolUnitH()];
     if (t + 1 < h) return 1.0;
     double s1 = 0, s2 = 0;
@@ -557,6 +559,18 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     }
     const double mu = s1 / double(h), v = std::max(0.0, s2 / double(h) - mu * mu);
     return std::min(1.0, 2 * std::sqrt(v));  // the close is 1 on this scale
+  };
+  std::vector<double> pastDistances;  // the market's band distance at every close so far
+  std::size_t distancesTo = 0;        // closes added
+  auto budgetAt = [&](std::size_t t) {
+    if (risk.maxDayLoss > 0 || bolH.empty()) return risk.maxDayLoss > 0 ? risk.maxDayLoss : 1.0;
+    if (risk.dailyBudget) return bandDistance(t);
+    for (; distancesTo <= t; ++distancesTo)
+      if (distancesTo + 1 >= bolH[bolUnitH()]) pastDistances.push_back(bandDistance(distancesTo));
+    if (pastDistances.empty()) return 1.0;
+    std::vector<double> v = pastDistances;
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(v.size() / 2), v.end());
+    return v[v.size() / 2];
   };
   double budget = 1.0;  // the day's worst-day budget (set at each close)
   auto bestPair = [&](int s0, std::size_t i, const TradePlan& pl, double limit, std::size_t* pair, bool exact) {

@@ -156,6 +156,7 @@ int main(int argc, char** argv) {
       else if (a == "--min-t") risk.minT = std::stod(next());
       else if (a == "--cap-books") risk.capSizingOnly = false;
       else if (a == "--vol-limits") risk.bandLimits = false;
+      else if (a == "--daily-budget") risk.dailyBudget = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);
