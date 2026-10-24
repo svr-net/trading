@@ -31,8 +31,9 @@
 //    losses are reported but do not choose: a closer forecast of the low and high need not trade
 //    better.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
-//    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
-//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the 10 strongest are taken.
+//    expected to gain after costs and its own record (an ADWIN window, its mean shrunk by its
+//    t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the record is its best pair's actual outcome
+//    after costs every day, not only on the days a gain was expected; the 10 strongest are taken.
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.

@@ -767,7 +767,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       book.pathDays += path != nullptr;
       int e;
       std::size_t q0 = 0;
-      if (bestPair(us, i, p, kNone, &q0, path != nullptr) > 0)  // the stock's own best trade, whenever a gain is expected: its record
+      // The stock's record: its best pair's actual outcome after costs, every day it has one (not only
+      // the days a gain was expected, which under costs would leave the record empty and block it).
+      if (bestPair(us, i, p, kNone, &q0, path != nullptr) > -kNone)
         record[i].push(std::log1p(tradeReturn(b, 1.0, stopOf(us, i, q0), takeOf(us, i, q0), buy, sell, true, &e, path, nullptr, halfSpread(i))));
       // The day's actual fall and rise from the open: the level predictors' targets and scores.
       if (!histStop[i].empty()) {
