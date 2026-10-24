@@ -351,6 +351,21 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
         std::snprintf(b, sizeof b, "Universe: each day the %zu most traded at that time, of %zu stocks\n", day->universe, m.N());
         o << b;
       }
+      {
+        const auto& g = day->gates;
+        std::vector<double> sp = g.spreads;
+        std::sort(sp.begin(), sp.end());
+        auto pc = [&](double q) { return sp.empty() ? 0.0 : 100 * sp[std::size_t(q * double(sp.size() - 1))]; };
+        std::snprintf(b, sizeof b,
+                      "Gates over %.0f days: %.1f candidates a day; expected to gain after costs %.2f%%, own record above cash %.2f%%, both %.2f%%; "
+                      "days a book's record beat cash %.1f%%, days traded %.1f%%\n",
+                      g.days, g.cand / std::max(1.0, g.days), 100 * g.gain / std::max(1.0, g.cand), 100 * g.record / std::max(1.0, g.cand),
+                      100 * g.both / std::max(1.0, g.cand), 100 * g.bookAhead / std::max(1.0, g.days), 100 * g.tradeDays / std::max(1.0, g.days));
+        o << b;
+        std::snprintf(b, sizeof b, "Estimated round-trip spreads of the candidates: median %.2f%%, quartiles %.2f%% and %.2f%%, 10th and 90th percentiles %.2f%% and %.2f%%\n",
+                      pc(0.5), pc(0.25), pc(0.75), pc(0.1), pc(0.9));
+        o << b;
+      }
       o << "Stop and take-profit levels from: " << day->levelsFrom << "\n";
       std::snprintf(b, sizeof b, "Level predictors' pinball loss a stock-day (lower is better): history %.4f, Wilder's true range %.4f, Bollinger %.4f, network %.4f, network with Wilder's and Bollinger's %.4f\n",
                     day->levelLoss[0], day->levelLoss[1], day->levelLoss[2], day->levelLoss[3], day->levelLoss[4]);

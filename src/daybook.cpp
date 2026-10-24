@@ -716,6 +716,21 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     const int us = int(use / G);
     const bool trade = limitRecord[use].score() > 0;
     if (trade) ++book.sourceDays[us];
+    // Diagnostics: how many candidates pass each gate (the source in use, no stop limit).
+    {
+      auto& g = book.gates;
+      g.days += 1, g.tradeDays += trade, g.cand += double(cand.size());
+      for (std::size_t i : cand) {
+        std::size_t q = 0;
+        const double e = bestPair(us, i, pl[i], kNone, &q, false);
+        const bool rec = record[i].score() > 0;
+        g.gain += e > 0, g.record += rec, g.both += e > 0 && rec;
+        g.spreads.push_back(2 * halfSpread(i));
+      }
+      double bestScore = -kNone;
+      for (std::size_t k = 0; k < limitRecord.size(); ++k) bestScore = std::max(bestScore, limitRecord[k].score());
+      g.bookAhead += bestScore > 0;
+    }
     std::vector<Book> books(nBooks);
     auto exactOn = [&](std::size_t i) { return pathOf(d, i) != nullptr; };
     for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(int(k / G), ranked(int(k / G), cand, pl, limitK(k), exactOn), K);

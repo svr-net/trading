@@ -166,6 +166,11 @@ struct DayBook {
   } skill;
   std::size_t trades = 0, stops = 0, takes = 0;
   double spreadSum = 0;              ///< the trades' estimated round-trip spreads, summed (log)
+  /// Diagnostics over the backtest: candidate stock-days and how many pass each gate.
+  struct Gates {
+    double days = 0, tradeDays = 0, bookAhead = 0, cand = 0, gain = 0, record = 0, both = 0;
+    std::vector<double> spreads;  ///< every candidate's estimated round-trip spread (log)
+  } gates;
   bool spreadCosts = false;
   std::size_t universe = 0;
   std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided
