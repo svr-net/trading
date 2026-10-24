@@ -1,0 +1,83 @@
+# Stop-loss study on the cached EODData prices (results only, nothing published or emailed): the
+# daily trades' backtest under several risk limits, and the code from before the Wilder and risk
+# changes (40451e7) for reference. Runs on pushes to its branch; uses main's store, no requests.
+name: Stop study
+
+on:
+  push:
+    branches: [claude/stop-study]
+
+permissions:
+  contents: read
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        market: [UK, US]
+    env:
+      MARKET: ${{ matrix.market }}
+      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Restore main's EODData store
+        uses: actions/cache/restore@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
+          restore-keys: |
+            eoddata-${{ matrix.market }}-main-
+      - name: Bars from the store (no requests)
+        run: |
+          set -o pipefail
+          mkdir -p data
+          echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+            node tools/eoddata/fetch.mjs --cached --exchange "$EX" --universe 250 --years 9 --currency "$CUR" --out "data/$EX.csv" > /dev/null
+            tail -n +2 "data/$EX.csv" >> data/stocks.csv
+          done
+          node tools/eoddata/fetch_series.mjs --cached --years 20 --out data/futures.csv \
+            --symbols 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' > /dev/null
+          echo "rows $(($(wc -l < data/stocks.csv) - 1)), series rows $(($(wc -l < data/futures.csv) - 1))"
+      - name: Build (current and before the changes)
+        run: |
+          sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
+          cmake -S . -B build -G Ninja >/dev/null && cmake --build build --target ofm_report >/dev/null
+          git worktree add -q old 40451e7
+          cmake -S old -B old/build -G Ninja >/dev/null && cmake --build old/build --target ofm_report >/dev/null
+      - name: Backtests (results only)
+        run: |
+          set -o pipefail
+          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct 0.10 --day-cost-pct 0 --forecast-cache data/forecast.bin)
+          if [ "$MARKET" = "US" ]; then
+            ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days 250 > /dev/null
+            node tools/eoddata/intraday.mjs --cached --candidates data/candidates.csv --exchanges "$EXCHANGES" --out data/intraday.csv
+            ARGS+=(--intraday data/intraday.csv)
+          fi
+          run() {
+            local label="$1"; shift
+            echo "=== $MARKET | $label"
+            "$@" "${ARGS[@]}" > out.txt
+            grep -E "^  daily trades|^(whole period|first half|second half)|Fill test|Stopped out|stop limit|levels from|Daily trades \(" out.txt || true
+            awk '/^Trades for the next open/{f=1;next} f&&/^  [A-Z]/{print} f&&/^$/{exit}' out.txt | head -12
+          }
+          {
+            run "before Wilder and the risk limits (40451e7)" ./old/build/ofm_report
+            run "Wilder, no risk limits" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 100
+            run "Wilder, worst day 2% only" ./build/ofm_report --max-stop-pct 100 --max-day-loss-pct 2
+            run "Wilder, stop 5% only" ./build/ofm_report --max-stop-pct 5 --max-day-loss-pct 100
+            run "Wilder, stop 3% only" ./build/ofm_report --max-stop-pct 3 --max-day-loss-pct 100
+            run "Wilder, stop 3% + worst day 2%" ./build/ofm_report --max-stop-pct 3 --max-day-loss-pct 2
+            run "Wilder, stop 5% + worst day 2% (live)" ./build/ofm_report
+            run "Wilder, stop 5% + worst day 3%" ./build/ofm_report --max-stop-pct 5 --max-day-loss-pct 3
+          } | tee study.txt
+          { echo '```'; cat study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
