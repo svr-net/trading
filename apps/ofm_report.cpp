@@ -157,12 +157,15 @@ int main(int argc, char** argv) {
       else if (a == "--cap-books") risk.capSizingOnly = false;
       else if (a == "--vol-limits") risk.bandLimits = false;
       else if (a == "--daily-budget") risk.dailyBudget = true;
+      else if (a == "--spread-costs") risk.spreadCosts = true;
+      else if (a == "--universe") risk.universe = std::stoul(next());
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);
     if (buyBps >= 0) costs.buyBps = buyBps;
     if (sellBps >= 0) costs.sellBps = sellBps;
     costs.dayBps = 100 * dayPct;
+    costs.spreadCosts = risk.spreadCosts, costs.universe = risk.universe;  // the same honest options for the model portfolio
     ofm::Market m;
     std::map<std::string, std::vector<double>> s;
     if (csv.empty()) {

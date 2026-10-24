@@ -83,7 +83,7 @@ using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;
 /// without one, or when both fell in the same tick, worstCase takes the stop first. exit: 0 close,
 /// 1 stop, 2 take-profit. resolved: set when the path decided the order.
 double tradeReturn(const Bar& b, double sig, double ks, double kt, double buy, double sell, bool worstCase, int* exit,
-                   const std::vector<Tick>* path = nullptr, bool* resolved = nullptr);
+                   const std::vector<Tick>* path = nullptr, bool* resolved = nullptr, double half = 0);
 
 /// Running sums of a series.
 struct Moments {
@@ -165,6 +165,9 @@ struct DayBook {
     }
   } skill;
   std::size_t trades = 0, stops = 0, takes = 0;
+  double spreadSum = 0;              ///< the trades' estimated round-trip spreads, summed (log)
+  bool spreadCosts = false;
+  std::size_t universe = 0;
   std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided
   std::size_t pathDays = 0;                      ///< stock-days with an intraday path
   /// Each day's strongest candidates (day, stock): every stock any of the books could trade.
@@ -187,6 +190,11 @@ struct DayRisk {
   bool dailyBudget = false;     ///< the adaptive budget follows each day's band distance instead of its median so far
   bool capSizingOnly = true;    ///< the worst-day budget scales the book traded only, not the books compared (false: both)
   double minT = 2;              ///< no orders unless the daily trades' backtest gain has at least this t-statistic
+  // Honest backtest: half (log) of each stock's bid-ask spread, estimated from its own past bars
+  // (Abdi and Ranaldo 2017), paid on every purchase and sale, a take-profit filling only when the
+  // high trades through it by half the spread; and each day only the stocks then most traded.
+  bool spreadCosts = false;     ///< charge each stock's estimated spread
+  std::size_t universe = 0;     ///< each day only the stocks then among the most traded (0: all)
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.

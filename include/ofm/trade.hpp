@@ -46,6 +46,12 @@ struct Costs {
   double sellBps = 100 * kDealingPct;
   double futuresBps = 1;  ///< per unit of futures notional traded
   double dayBps = 100 * kDayDealingPct;  ///< the daily book's cost per side (both sides; no stamp duty on CFDs)
+  /// Honest backtest of the model portfolio: each stock's estimated half-spread (liquidity.hpp) added
+  /// to every purchase and sale (and to the hurdle a trade must clear), and new purchases only of
+  /// the stocks then among the `universe` most traded (0: any); the market benchmark is that
+  /// universe at the start, paying the same costs.
+  bool spreadCosts = false;
+  std::size_t universe = 0;
   /// From percentages: dealing per side, stamp duty on purchases.
   static Costs fromPercent(double dealingPct, double stampPct, double futuresBps = 1) {
     Costs c;
