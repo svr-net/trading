@@ -21,6 +21,7 @@ on:
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       cost_pct: { description: 'Transaction cost per side, percent (market standard 0.10)', default: '0.10' }
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
+      honest: { description: 'Honest backtest: each stock''s estimated spread on every trade, and each day only the 250 then most traded of a pool of 500', type: boolean, default: false }
       intraday_days: { description: 'Recent trading days whose strongest candidates get intraday paths (US exchanges; 0: none)', default: '250' }
 
 permissions:
@@ -75,7 +76,7 @@ jobs:
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
-            ARGS=(--exchange "$EX" --universe "${{ inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            ARGS=(--exchange "$EX" --universe "${{ inputs.honest && '500' || inputs.universe || '250' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
@@ -120,6 +121,7 @@ jobs:
           set -o pipefail
           mkdir -p report
           ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0.10' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
+          if [ "${{ inputs.honest }}" = "true" ]; then ARGS+=(--spread-costs --universe "${{ inputs.universe || '250' }}"); fi
           EXCH="$EXCHANGES"
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their

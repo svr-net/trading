@@ -17,6 +17,9 @@ export function load(group, code) {
   return new Map(Object.entries(JSON.parse(fs.readFileSync(f, 'utf8'))));
 }
 
+/** Whether the store holds the symbol (fetched at least once, possibly with no bars). */
+export const has = (group, code) => fs.existsSync(fileOf(group, code));
+
 export function save(group, code, bars) {
   const f = fileOf(group, code);
   fs.mkdirSync(path.dirname(f), { recursive: true });
