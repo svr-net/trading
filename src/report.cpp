@@ -246,7 +246,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
       const double stop = std::isfinite(d.stop) ? std::exp(-d.stop * d.sigma) - 1 : kNaN, take = std::isfinite(d.take) ? std::exp(d.take * d.sigma) - 1 : kNaN;
       o << (q ? "," : "") << "{\"ticker\":" << str(m.tickers[d.asset]) << ",\"expected\":" << num(d.expected) << ",\"tradeReturn\":" << num(d.tradeReturn) << ",\"intraday\":" << num(d.intraday) << ",\"weight\":" << num(d.weight) 
         << ",\"sigma\":" << num(d.sigma)
-        << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take)
+        << ",\"stopMult\":" << num(d.stop) << ",\"takeMult\":" << num(d.take) << ",\"stop\":" << num(stop) << ",\"take\":" << num(take) << ",\"limit\":" << num(d.limit)
         << ",\"record\":" << num(d.record) << ",\"window\":" << d.window << "}";
     }
     o << "]}";
