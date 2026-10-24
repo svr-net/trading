@@ -135,12 +135,13 @@ struct DayBook {
   double stopLimit = 0;              ///< the learnt stop limit at the last close (fraction of the open)
   double limitScore = 0;             ///< its book's record score
   std::size_t bookSize = 0;          ///< the book size: the n strongest trades
-  bool backtestLoses = false;        ///< the daily trades lost over the backtest: no orders
+  bool backtestLoses = false;        ///< the daily trades lost over the backtest, or their Sharpe ratio is below DayRisk::minSharpe: no orders
+  double backtestSharpe = 0;         ///< the daily trades' Sharpe ratio over the backtest
   std::string levelsFrom;            ///< what sets the stop and take-profit levels
   /// Mean pinball loss a stock-day of the level predictors (0: not scored): history, Wilder's true
-  /// range, the network, the network with Wilder's indicators.
-  double levelLoss[4] = {0, 0, 0, 0};
-  std::size_t sourceDays[4] = {0, 0, 0, 0};  ///< days each level predictor set the levels (as levelLoss)
+  /// range, Bollinger bands, the network, the network with Wilder's and Bollinger's indicators.
+  double levelLoss[5] = {0, 0, 0, 0, 0};
+  std::size_t sourceDays[5] = {0, 0, 0, 0, 0};  ///< days each level predictor set the levels (as levelLoss)
   bool trendFits = false;            ///< the pairs' outcomes are fitted with ADXR (Wilder's trend rating)
   double pairErr[2] = {0, 0};        ///< out-of-sample mean squared error of the pair fits (in volatilities): plain, with ADXR
   double maxTarget = 0;              ///< largest |open-to-close return / volatility| learnt from (data check)
@@ -172,6 +173,7 @@ struct DayRisk {
   double maxRiskReward = 0;     ///< a stop at most this many times as far from the open as the take-profit (0: no limit; tight
                                 ///< ratios put stops in the day's noise: on the sample 1.5 cut the Sharpe ratio from 8 to 1.2)
   double maxDayLoss = 0.02;     ///< the book's loss if every stop is hit, at most this share of the capital (weights scaled down)
+  double minSharpe = 0.5;       ///< no orders unless the daily trades' backtest has at least this Sharpe ratio
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.

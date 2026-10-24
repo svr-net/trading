@@ -197,9 +197,45 @@ TEST(wilder_levels_win_when_volatility_changes) {
   const auto f = ofm::runModel(m);
   const auto bt = ofm::backtest(m, f, ofm::Costs{}, {});
   const auto d = ofm::dayBook(m, f, bt.start, 5e-4, 5e-4);
-  std::printf("  level losses: history %.4f, Wilder's true range %.4f, network %.4f, with Wilder's %.4f; pair fits %s\n", d.levelLoss[0], d.levelLoss[1], d.levelLoss[2],
-              d.levelLoss[3], d.trendFits ? "with ADXR" : "plain");
+  std::printf("  level losses: history %.4f, Wilder's true range %.4f, Bollinger %.4f, network %.4f, with Wilder's and Bollinger's %.4f; pair fits %s\n", d.levelLoss[0],
+              d.levelLoss[1], d.levelLoss[2], d.levelLoss[3], d.levelLoss[4], d.trendFits ? "with ADXR" : "plain");
   CHECK(d.levelLoss[1] > 0 && d.levelLoss[1] < d.levelLoss[0]);
+}
+
+TEST(bollinger_bands_match_a_plain_reference) {
+  // One stock with a missing bar: each horizon's mean and standard deviation of the last h closes
+  // (bars, not days), the close's place in the bands, their width and the band unit.
+  const std::size_t T = 120, N = 1;
+  std::vector<double> bars(5 * T * N, 0.0), c(T);
+  std::uint64_t x = 5;
+  double p = 50;
+  for (std::size_t t = 0; t < T; ++t) {
+    x = x * 6364136223846793005ull + 1442695040888963407ull;
+    p *= std::exp(0.02 * (double(x >> 11) / double(1ull << 53) - 0.5));
+    c[t] = p;
+    const double v[5] = {p, p * 1.01, p * 0.99, p, 1};
+    for (std::size_t f = 0; f < 5; ++f) bars[f * T + t] = v[f];
+  }
+  bars[3 * T + 30] = 0;  // no close on day 30
+  const std::vector<std::uint32_t> hz{8, 16};
+  std::vector<double> b;
+  ofm::day::kernels::bollinger(bars, T, N, hz, b);
+  for (std::size_t k = 0; k < hz.size(); ++k)
+    for (std::size_t t = 0; t < T; ++t) {
+      const double* r = &b[t * 6 + 3 * k];
+      std::vector<double> w;
+      for (std::size_t u = 0; u <= t; ++u)
+        if (u != 30) w.push_back(c[u]);
+      if (t == 30 || w.size() <= hz[k]) {
+        CHECK(r[0] == 0 && r[1] == 0 && r[2] == 0);
+        continue;
+      }
+      double m = 0, v = 0;
+      for (std::size_t j = w.size() - hz[k]; j < w.size(); ++j) m += w[j] / hz[k];
+      for (std::size_t j = w.size() - hz[k]; j < w.size(); ++j) v += (w[j] - m) * (w[j] - m) / hz[k];
+      const double sd = std::sqrt(v);
+      CHECK(std::fabs(r[0] - (c[t] - m) / sd) < 1e-6 && std::fabs(r[1] - std::log(sd / c[t])) < 1e-6 && std::fabs(r[2] - sd / c[t]) < 1e-9);
+    }
 }
 
 TEST(daily_book_uses_only_the_past) {

@@ -14,7 +14,8 @@
 // --forecast-cache file keeps the model's forecast between runs on the same data (binary).
 // Risk limits of the daily trades (daybook.hpp, DayRisk): --max-stop-pct 5 (the widest stop below the
 // open), --max-risk-reward 0 (a stop at most this many times as far as the take-profit; 0 none),
-// --max-day-loss-pct 2 (the book's loss if every stop is hit).
+// --max-day-loss-pct 2 (the book's loss if every stop is hit), --min-sharpe 0.5 (no orders unless the
+// daily trades' backtest has at least this Sharpe ratio).
 //
 // Without --csv it runs on the synthetic sample market.
 #include <cstdio>
@@ -151,6 +152,7 @@ int main(int argc, char** argv) {
       else if (a == "--max-stop-pct") risk.maxStop = std::stod(next()) / 100;
       else if (a == "--max-risk-reward") risk.maxRiskReward = std::stod(next());
       else if (a == "--max-day-loss-pct") risk.maxDayLoss = std::stod(next()) / 100;
+      else if (a == "--min-sharpe") risk.minSharpe = std::stod(next());
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);

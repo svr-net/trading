@@ -221,6 +221,10 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // the true range as it changes, which the history's quantiles (fixed distances) do not.
   std::vector<std::vector<double>> falls(N), rises(N), histStop(N), histTake(N);
   std::vector<std::vector<double>> fallsA(N), risesA(N), atrStopX(N), atrTakeX(N), atrStop(N), atrTake(N);
+  // A fourth: the moves in the stock's Bollinger band unit (the standard deviation of its last h
+  // closes over the close), h the horizon nearest the volatility's chosen half-life (it adapts as
+  // that choice moves), their quantiles times the unit at the close.
+  std::vector<std::vector<double>> fallsB(N), risesB(N), bolStopX(N), bolTakeX(N), bolStop(N), bolTake(N);
   auto quantiles = [&](const std::vector<double>& falls1, const std::vector<double>& rises1, std::vector<double>& outStop, std::vector<double>& outTake) {
     outStop.clear(), outTake.clear();
     if (falls1.size() < G + 1) return;
@@ -250,16 +254,32 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   kernels::wilder(barTab, T, N, wil);
   constexpr std::size_t WI = kernels::kWilder;
   auto wilder = [&](std::size_t t, std::size_t i, std::size_t c) { return wil[(t * N + i) * WI + c]; };
+  // Bollinger bands of every stock and day at the horizons up to 64 days (kernels/day/bollinger.wgsl).
+  std::vector<std::uint32_t> bolH;
+  for (auto h : halfLives)
+    if (h <= 64) bolH.push_back(h);
+  std::vector<double> bol;
+  kernels::bollinger(barTab, T, N, bolH, bol);
+  const std::size_t BW = 3 * bolH.size(), BI = 2 * bolH.size();
+  auto bollinger = [&](std::size_t t, std::size_t i, std::size_t k, std::size_t c) { return bol[(t * N + i) * BW + 3 * k + c]; };
+  // The band horizon in use: the one nearest the volatility's chosen half-life.
+  auto bolUnitH = [&]() {
+    const double hl = double(halfLives[vol.best()]);
+    std::size_t k = 0;
+    for (std::size_t j = 1; j < bolH.size(); ++j)
+      if (std::fabs(std::log(double(bolH[j]) / hl)) < std::fabs(std::log(double(bolH[k]) / hl))) k = j;
+    return k;
+  };
   // Pinball losses so far (in volatilities) of the level predictors (history, Wilder's true range,
   // the network, the network also given Wilder's indicators), each comparison on the same
   // stock-days, out of sample: history against true range wherever both predict, all four wherever
   // the networks do too.
-  enum { kHist, kAtr, kNet, kWnet, kSources };
+  enum { kHist, kAtr, kBol, kNet, kWnet, kSources };
   // The day's levels of every source (log distances; a source without levels for a stock takes the
   // history's).
   std::vector<std::vector<double>> levStop[kSources], levTake[kSources];
   for (int s0 = 0; s0 < kSources; ++s0) levStop[s0].resize(N), levTake[s0].resize(N);
-  double lossHA[2] = {0, 0}, lossAll[kSources] = {0, 0, 0, 0};
+  double lossHA[2] = {0, 0}, lossAll[kSources] = {0, 0, 0, 0, 0};
   std::size_t nHA = 0, nAll = 0;
   auto addDay = [&](std::size_t t) {
     Bar b;
@@ -279,6 +299,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
           fallsA[i].push_back(x / atr), risesA[i].push_back(std::log(b.h / b.o) / atr);
           if (fallsA[i].size() > W) fallsA[i].erase(fallsA[i].begin()), risesA[i].erase(risesA[i].begin());
           quantiles(fallsA[i], risesA[i], atrStopX[i], atrTakeX[i]);
+        }
+        const double unit = t > 0 && !bolH.empty() ? bollinger(t - 1, i, bolUnitH(), 2) : 0.0;
+        if (unit > 0) {
+          fallsB[i].push_back(x / unit), risesB[i].push_back(std::log(b.h / b.o) / unit);
+          if (fallsB[i].size() > W) fallsB[i].erase(fallsB[i].begin()), risesB[i].erase(risesB[i].begin());
+          quantiles(fallsB[i], risesB[i], bolStopX[i], bolTakeX[i]);
         }
       }
     if (n > 0) vol.add(N, s / n);
@@ -337,7 +363,14 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     x[0] = x[0] > 0 && sig > 0 ? std::log(x[0] / sig) : 0.0;
     return x;
   };
-  Scaler scaler(F), indScaler(FI), wilScaler(WI);
+  // Bollinger features of stock i at the close t: the close's place in the bands and their width
+  // (log) at each horizon, for the second network.
+  auto bollingerFeatures = [&](std::size_t t, std::size_t i) {
+    std::vector<double> x(BI);
+    for (std::size_t k = 0; k < bolH.size(); ++k) x[2 * k] = bollinger(t, i, k, 0), x[2 * k + 1] = bollinger(t, i, k, 1);
+    return x;
+  };
+  Scaler scaler(F), indScaler(FI), wilScaler(WI), bolScaler(BI);
   LeastSquares intraday(F + 1);  // open-to-close return / sigma on [1, features]
   // Pair outcome / sigma on [1, mu]: mu the intraday forecast. And on [1, mu, r, r mu], r the
   // stock's ADXR at the close: Wilder traded his trend systems only when ADXR rated the market
@@ -354,7 +387,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   std::vector<double> taus = tauFall;
   taus.insert(taus.end(), tauRise.begin(), tauRise.end());
   const std::size_t NI = F + 1 + FI;
-  kernels::Net qnet(NI, 32, taus), wnet(NI + WI, 32, taus);
+  kernels::Net qnet(NI, 32, taus), wnet(NI + WI + BI, 32, taus);
   // The books: one per level source and stop limit, book s G + k.
   std::vector<Adwin> record(N), limitRecord(kSources * G);
   for (auto& a : record) a.horizon = double(T - start);
@@ -374,7 +407,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // Each candidate at the close t: its scaled features, its intraday forecast mu (in its
   // volatility) and every pair's expected net log return (in its volatility); empty if unknown.
   struct TradePlan {
-    std::vector<double> xs, ind, indRaw, wil, wilRaw;  // scaled features, indicators and Wilder's (scaled, raw)
+    std::vector<double> xs, ind, indRaw, wil, wilRaw, bol, bolRaw;  // scaled features, indicators, Wilder's and Bollinger's (scaled, raw)
     std::vector<double> e[kSources], ePlain[kSources], eTrend[kSources];  // expected pair outcomes of each source (in use, of the two fits)
     bool forecast = false;                              // the intraday forecast is fitted
     double mu = 0, adxr = 0;
@@ -395,6 +428,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       pl.ind = indScaler.apply(pl.indRaw);
       pl.wilRaw = wilderFeatures(t, i);
       pl.wil = wilScaler.apply(pl.wilRaw);
+      pl.bolRaw = bollingerFeatures(t, i);
+      pl.bol = bolScaler.apply(pl.bolRaw);
       pl.adxr = wilder(t, i, 4);
       if (beta.empty()) continue;
       pl.mu = beta[0];
@@ -420,10 +455,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     x.push_back(p.mu);
     x.insert(x.end(), p.ind.begin(), p.ind.end());
     x.insert(x.end(), p.wil.begin(), p.wil.end());
+    x.insert(x.end(), p.bol.begin(), p.bol.end());
     return x;
   };
   // The networks' predicted levels of every candidate, one dispatch each for the day (log
-  // distances). Network 0 takes the first NI inputs, network 1 all of them.
+  // distances). Network 0 takes the first NI inputs, network 1 all of them (Wilder's and Bollinger's too).
   std::vector<std::vector<double>> netStop[2] = {std::vector<std::vector<double>>(N), std::vector<std::vector<double>>(N)};
   std::vector<std::vector<double>> netTake[2] = {std::vector<std::vector<double>>(N), std::vector<std::vector<double>>(N)};
   auto netLevels = [&](const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl) {
@@ -470,10 +506,19 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   auto setLevels = [&](std::size_t t, const std::vector<std::size_t>& cand, const std::vector<TradePlan>& pl) {
     netLevels(cand, pl);
     atrLevels(t, cand);
+    const std::size_t kb = bolH.empty() ? 0 : bolUnitH();
+    for (std::size_t i : cand) {
+      bolStop[i].clear(), bolTake[i].clear();
+      const double unit = bolH.empty() ? 0.0 : bollinger(t, i, kb, 2);
+      if (unit > 0 && !bolStopX[i].empty() && !histStop[i].empty()) {
+        for (double z : bolStopX[i]) bolStop[i].push_back(z * unit);
+        for (double z : bolTakeX[i]) bolTake[i].push_back(z * unit);
+      }
+    }
     for (std::size_t i : cand)
       for (int s0 = 0; s0 < kSources; ++s0) {
-        const auto& st = s0 == kAtr ? atrStop[i] : s0 >= kNet ? netStop[s0 - kNet][i] : histStop[i];
-        const auto& tk = s0 == kAtr ? atrTake[i] : s0 >= kNet ? netTake[s0 - kNet][i] : histTake[i];
+        const auto& st = s0 == kAtr ? atrStop[i] : s0 == kBol ? bolStop[i] : s0 >= kNet ? netStop[s0 - kNet][i] : histStop[i];
+        const auto& tk = s0 == kAtr ? atrTake[i] : s0 == kBol ? bolTake[i] : s0 >= kNet ? netTake[s0 - kNet][i] : histTake[i];
         levStop[s0][i] = st.empty() ? histStop[i] : st, levTake[s0][i] = st.empty() ? histTake[i] : tk;
       }
   };
@@ -621,8 +666,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         if (!atrStop[i].empty()) {
           const double lh = loss(histStop[i], histTake[i]), la = loss(atrStop[i], atrTake[i]);
           lossHA[kHist] += lh, lossHA[kAtr] += la, ++nHA;
-          if (!netStop[0][i].empty() && !netStop[1][i].empty())
-            lossAll[kHist] += lh, lossAll[kAtr] += la, lossAll[kNet] += loss(netStop[0][i], netTake[0][i]), lossAll[kWnet] += loss(netStop[1][i], netTake[1][i]), ++nAll;
+          if (!netStop[0][i].empty() && !netStop[1][i].empty() && !bolStop[i].empty())
+            lossAll[kHist] += lh, lossAll[kAtr] += la, lossAll[kBol] += loss(bolStop[i], bolTake[i]), lossAll[kNet] += loss(netStop[0][i], netTake[0][i]),
+                lossAll[kWnet] += loss(netStop[1][i], netTake[1][i]), ++nAll;
         }
         qx.push_back(netInput(p)), qy.push_back(std::move(y));
       }
@@ -665,13 +711,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         const std::size_t nb = std::min(perm.size(), s0 + 32) - s0;
         for (std::size_t k = s0; k < s0 + nb; ++k) bx.insert(bx.end(), qx[perm[k]].begin(), qx[perm[k]].end()), by.insert(by.end(), qy[perm[k]].begin(), qy[perm[k]].end());
         std::vector<double> bx0;  // the first network's inputs: each sample's first NI
-        for (std::size_t k = 0; k < nb; ++k) bx0.insert(bx0.end(), bx.begin() + std::ptrdiff_t(k * (NI + WI)), bx.begin() + std::ptrdiff_t(k * (NI + WI) + NI));
+        for (std::size_t k = 0; k < nb; ++k) bx0.insert(bx0.end(), bx.begin() + std::ptrdiff_t(k * (NI + WI + BI)), bx.begin() + std::ptrdiff_t(k * (NI + WI + BI) + NI));
         qnet.step(bx0, by, nb), wnet.step(bx, by, nb);
       }
     }
     for (std::size_t i : cand) {
       const auto x = features(t, i, medSig, mkt);
-      if (!x.empty()) scaler.add(x), indScaler.add(pl[i].indRaw), wilScaler.add(pl[i].wilRaw);
+      if (!x.empty()) scaler.add(x), indScaler.add(pl[i].indRaw), wilScaler.add(pl[i].wilRaw), bolScaler.add(pl[i].bolRaw);
     }
     for (std::size_t i = 0; i < N; ++i)
       if (barAt(d, i, &b)) logVolume[i].add(std::log(b.v));
@@ -690,8 +736,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   setLevels(t, cand, pl0);
   const std::size_t use = bestLimit();
   const int src = int(use / G);
-  book.levelsFrom = src == kWnet  ? "neural network with Wilder's indicators (predicted lows and highs)"
+  book.levelsFrom = src == kWnet  ? "neural network with Wilder's and Bollinger's indicators (predicted lows and highs)"
                     : src == kNet ? "neural network (predicted lows and highs)"
+                    : src == kBol ? "Bollinger bands (each stock's moves in band units, adaptive horizon)"
                     : src == kAtr ? "Wilder's average true range (each stock's moves in true ranges)"
                                   : "each stock's own daily moves";
   for (int k = 0; k < kSources; ++k) book.levelLoss[k] = nAll > 0 ? lossAll[k] / double(nAll) : k < 2 && nHA > 0 ? lossHA[k] / double(nHA) : 0.0;
@@ -715,10 +762,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     sc.all += e > 0 && record[i].score() > 0;
   }
   // No trades for the next open unless the daily trades have made money over the whole backtest
-  // (worst-case fills): a market where they lose is not traded.
+  // (worst-case fills) with a Sharpe ratio of at least risk.minSharpe: a market where they lose, or
+  // barely gain for their risk, is not traded.
   double grown = 0;
   for (double r : book.ret) grown += std::log1p(r);
-  book.backtestLoses = !(grown > 0);
+  book.backtestSharpe = metrics(book.ret).sharpe;
+  book.backtestLoses = !(grown > 0) || !(book.backtestSharpe >= risk.minSharpe);
   if (limitRecord[use].score() > 0 && !book.backtestLoses) {
     const Book bk = makeBook(src, ranked(src, cand, pl, limit, exactNextOf), book.bookSize);
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
