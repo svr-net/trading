@@ -73,7 +73,7 @@ void structure(const std::vector<double>& returns, std::size_t T, std::size_t N,
   gen::Header<double> P;
   P.T = std::uint32_t(T), P.N = std::uint32_t(N), P.H = std::uint32_t(halfLives.size());
   for (std::size_t k = 0; k < halfLives.size() && k < 16; ++k) P.hz[k / 4][k % 4] = halfLives[k];
-  std::vector<double> C(halfLives.size() * N * N, 0.0), work(halfLives.size() * 3 * N, 0.0);
+  std::vector<double> C(halfLives.size() * N * N, 0.0), work(halfLives.size() * 4 * N, 0.0);
   gen::Structure<double> k;
   k.P = P, k.tab = const_cast<double*>(returns.data()), k.C = C.data(), k.work = work.data(), k.out = out.data();
   detail::dispatch(k, P.H);
