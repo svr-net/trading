@@ -1,8 +1,8 @@
-# Keeps LSE daily bars from EODData (key in the EODDATA_API_KEY secret) in a persistent store in
-# the runner's cache, adding only the days missing (see the store step), reports what it holds
+# Keeps EODData's daily and 5-minute bars (key in the EODDATA_API_KEY secret) in the private
+# repository svr-net/eod, adding only what is missing (see the store steps), reports what it holds
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
-# stay in the cache and are never published.
+# stay in that private repository and are never published.
 name: Daily trades (UK and US)
 
 on:
@@ -49,23 +49,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The EODData store (tools/eoddata/store.mjs): every symbol's bars, kept between runs by
-      # actions/cache (never committed or published: EODData's licence). Runs on main add only the
-      # days each symbol is missing (the latest day from the exchange's quote list, a short request
-      # for a longer gap, a full history only for a stock new to the universe) and save the store
-      # under a new key; other branches read main's store and make no requests. The weekday
-      # schedule keeps the cache in use, so it is never evicted.
-      # Main saves each market's store under eoddata-<market>-main-*; other branches start from it.
-      - name: Restore and keep the EODData store (main)
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/cache@v4
+      # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
+      # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
+      # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
+      # missing and pushes it back (the last step), so each bar is downloaded once, for every run.
+      # EOD_TOKEN: a token with read and write access to svr-net/eod's contents.
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
         with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
           path: data/eoddata
-          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
-          restore-keys: |
-            eoddata-${{ matrix.market }}-main-
-      - name: Restore main's EODData store (other branches)
-        if: ${{ github.ref != 'refs/heads/main' }}
+          fetch-depth: 1
+      # Once, while svr-net/eod is still empty: start it from the store the runner's cache held.
+      - name: Seed the EOD store from the runner's cache (first run only)
+        if: ${{ hashFiles('data/eoddata/store/**') == '' }}
         uses: actions/cache/restore@v4
         with:
           path: data/eoddata
@@ -84,8 +82,6 @@ jobs:
             ARGS=(--exchange "$EX" --universe "${{ format('{0}', inputs.honest) == 'false' && (inputs.universe || '250') || '500' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
-            elif [ "${{ github.ref }}" != "refs/heads/main" ] && node tools/eoddata/fetch.mjs --cached "${ARGS[@]}"; then
-              echo "Branch run: used main's store for $EX, no requests" | tee -a "$GITHUB_STEP_SUMMARY"
             else
               node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
             fi
@@ -98,12 +94,8 @@ jobs:
           set -o pipefail
           SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
           MODE=""
-          if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; elif [ "${{ github.ref }}" != "refs/heads/main" ]; then MODE="--cached"; fi
-          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
-          # A branch with no store yet: download.
-          if [ "$(wc -l < data/futures.csv)" -le 1 ]; then
-            node tools/eoddata/fetch_series.mjs --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
+          if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; fi
+          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY
       - name: Summary (no prices)
         run: |
           {
@@ -151,13 +143,22 @@ jobs:
           fi
           ./build/ofm_report "${ARGS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      # A branch that downloaded new data (for example another exchange) keeps it for its next runs.
-      - name: Keep the store for this branch's next runs
-        if: ${{ always() && github.ref != 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: data/eoddata
-          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
+      # What this run downloaded goes back to svr-net/eod (the other market's job may push first:
+      # rebase and retry).
+      - name: Push the new data to the EOD store (svr-net/eod)
+        if: ${{ always() }}
+        run: |
+          cd data/eoddata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .
+          if git diff --cached --quiet; then echo "EOD store: nothing new"; exit 0; fi
+          git commit -q -m "$MARKET data $(date -u +%Y-%m-%d)"
+          for k in 1 2 3 4 5; do
+            git pull -q --rebase origin main && git push -q origin HEAD:main && { echo "EOD store: pushed"; exit 0; }
+            sleep $((k * 5))
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.market }}-report
