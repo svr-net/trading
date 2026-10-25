@@ -39,8 +39,8 @@
 //    open-to-close volatility); the rest stays in cash.
 //  - Risk limits (DayRisk), adaptive: the stop limits are multiples of each stock's Bollinger band
 //    unit (its last h closes' standard deviation over the close, h the horizon nearest the
-//    volatility's chosen half-life), never beyond the stock's largest fall from the open over its
-//    last W days, so every stop is a real one. The books compared and the book traded are sized the
+//    volatility's chosen half-life), never beyond the stock's largest daily fall from the open over
+//    its recent days (the volatility's learnt half-life), so every stop is a real one. The books compared and the book traded are sized the
 //    same way (by expected volatility); an optional worst-day cap (every stop hit) can scale it.
 //  - Gate: no orders unless the backtest's gain is significant (t-statistic of at least 2).
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a

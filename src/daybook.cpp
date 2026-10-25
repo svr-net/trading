@@ -576,12 +576,15 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // expected return.
   // The stop limit of stock i under candidate k at the close t (log distance): k's multiple of its
   // Bollinger band unit, or of the day's median volatility (without band limits or a band).
-  // Never beyond the stock's largest fall from the open to the low over its last W days: a stop
-  // further away than the stock has ever fallen in a day is no stop.
+  // Never beyond the stock's largest daily fall from the open to the low over its recent days: as
+  // many days as the volatility's half-life, the one learnt to forecast best (adaptive), so a stop
+  // is always within what the stock has recently fallen in a day.
   auto limitOf = [&](std::size_t k, std::size_t i, std::size_t t, double medSig) {
     const double unit = risk.bandLimits && !bolH.empty() ? bollinger(t, i, bolUnitH(), 2) : 0.0;
     const double lim = mult[k] * (unit > 0 ? unit : medSig);
-    return falls[i].empty() ? lim : std::min(lim, *std::max_element(falls[i].begin(), falls[i].end()));
+    if (falls[i].empty()) return lim;
+    const std::size_t n = std::min<std::size_t>(falls[i].size(), halfLives[vol.best()]);
+    return std::min(lim, *std::max_element(falls[i].end() - std::ptrdiff_t(n), falls[i].end()));
   };
   // The worst-day budget at the close t: the equal-weight market's typical distance from its close
   // to its lower Bollinger band (two band units at the adaptive horizon): the median of that
