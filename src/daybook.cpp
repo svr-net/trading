@@ -667,11 +667,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       bk.pick.push_back(i), bk.pair.push_back(q), bk.expect.push_back(e);
     }
     if (bk.pick.empty()) return bk;
+    // One unit in every trade: the day's result is the average of its trades (relative terms).
     const double m0 = double(bk.pick.size());
-    double var = 0;
-    for (std::size_t i : bk.pick) var += sigmaOf(i) * sigmaOf(i) / (m0 * m0);
-    const double mk = vol.sigma(N);
-    bk.w = (1 / m0) * ((var > 0 && mk > 0) ? std::min(1.0, mk / std::sqrt(var)) : 1.0);
+    bk.w = 1 / m0;
     // The book's loss if every stop is hit: at most the day's budget.
     double worst = 0;
     for (std::size_t j = 0; j < bk.pick.size(); ++j) worst += bk.w * (1 - std::exp(-stopOf(s0, bk.pick[j], bk.pair[j])));
