@@ -33,6 +33,14 @@ jobs:
         with:
           name: site
           path: site
+      # Every deploy names its scripts by the commit, so browsers fetch them again instead of
+      # running a cached older version.
+      - name: Version the scripts by the commit
+        run: |
+          V="${GITHUB_SHA::12}"
+          sed -i "s|app.js?v=[^\"]*|app.js?v=$V|" site/index.html
+          sed -i "s|'./wasm/ofm.js'|'./wasm/ofm.js?v=$V'|; s|'./gpu.js'|'./gpu.js?v=$V'|" site/app.js
+          grep -o 'app.js?v=[^"]*' site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
