@@ -106,6 +106,11 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
   const std::size_t F = 7;  // [1, opening move, market's opening move, gap, last day's open-to-close, close in its range, model forecast]
   book.featureNames = {"opening move", "market's opening move", "overnight gap", "last day's open-to-close", "last close in its range", "model forecast"};
   std::vector<Fit> fit(NK, Fit(F));
+  // The inputs standardised by everything seen so far and cut at Chauvenet's bound, so a few wild
+  // early values cannot dominate; no forecast before the fit has seen as many days as the model's
+  // middle horizon (its learnt time scale).
+  std::vector<day::Scaler> scal(NK, day::Scaler(F - 1));
+  const std::size_t warmDays = f.horizons[f.horizons.size() / 2];
   std::vector<std::vector<Fit>> pairFit(NK, std::vector<Fit>(P, Fit(2)));
   std::vector<day::Adwin> rec(NK);
   for (auto& a : rec) a.horizon = double(T);
@@ -147,9 +152,11 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
       if (rec[k].score() > rec[use].score()) use = k;
     const bool trade = rec[use].score() > 0;
     double dayRet = 0, dayOpt = 0;
+    const bool warm = book.days.size() > warmDays;
     for (std::size_t kk = 0; kk < NK; ++kk) {
       const std::size_t k = kEntry[kk];
-      const auto beta = fit[kk].solve();
+      const auto beta = warm ? fit[kk].solve() : std::vector<double>{};
+      const double zf = day::chauvenet(fit[kk].n + 1);
       std::vector<std::vector<double>> ab(P);
       for (std::size_t q = 0; q < P; ++q) ab[q] = pairFit[kk][q].solve();
       // The market's opening move: the candidates' mean.
@@ -158,14 +165,17 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
       mo /= double(cand.size());
       // Each candidate's forecast, best pair and outcomes.
       std::vector<std::tuple<double, std::size_t, std::size_t, double>> v;  // (expected, cand, pair, entry)
-      std::vector<std::vector<double>> xs(cand.size());
+      std::vector<std::vector<double>> xs(cand.size()), raw(cand.size());
       std::vector<double> yhat(cand.size(), 0.0);
       for (std::size_t c = 0; c < cand.size(); ++c) {
         const auto& C = cand[c];
         const double o = m.open(d, C.i), e = (*C.p)[k - 1].c;
-        xs[c] = {1.0, std::log(e / o) / C.sig, mo, C.gap, C.lastOC, C.lastLoc, C.fc};
+        raw[c] = {std::log(e / o) / C.sig, mo, C.gap, C.lastOC, C.lastLoc, C.fc};
+        const auto sc = scal[kk].apply(raw[c]);
+        xs[c] = {1.0};
+        xs[c].insert(xs[c].end(), sc.begin(), sc.end());
         if (beta.empty()) continue;
-        yhat[c] = fit[kk].predict(beta, xs[c]);
+        yhat[c] = std::clamp(fit[kk].predict(beta, xs[c]), -zf, zf);
         const double rest = C.sig * std::sqrt(double((*C.p).size() - k) / double((*C.p).size()));
         double best = -1e300;
         std::size_t bq = 0;
@@ -215,6 +225,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
         nz += 1;
       }
       (void)nz;
+      for (const auto& x : raw) scal[kk].add(x);
     }
     book.ret.push_back(dayRet), book.optimistic.push_back(dayOpt), book.entryBars.push_back(trade ? int(kEntry[use]) : 0);
   }
