@@ -1,11 +1,14 @@
-// A persistent store of daily bars, one JSON file per symbol under data/eoddata/store/ (kept
-// between workflow runs by actions/cache; git-ignored: EODData's licence does not allow
-// redistributing its data). Each run only asks the API for the days a symbol is missing, so a
-// symbol's history is downloaded once.
+// A persistent store of daily bars, one JSON file per symbol under <root>/store/. The root is a
+// clone of the private repository svr-net/eod: EOD_STORE, or data/eoddata where the workflow
+// checks it out (git-ignored here: EODData's licence does not allow redistributing its data).
+// Each run only asks the API for the days a symbol is missing, so a symbol's history is
+// downloaded once.
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const STORE = path.join('data', 'eoddata', 'store');
+/** The store's root: the svr-net/eod clone (EOD_STORE, e.g. a local clone) or data/eoddata. */
+export const ROOT = process.env.EOD_STORE || path.join('data', 'eoddata');
+export const STORE = path.join(ROOT, 'store');
 
 const safe = (s) => s.replace(/[^A-Za-z0-9.-]/g, '_');
 const fileOf = (group, code) => path.join(STORE, safe(group), `${safe(code)}.json`);
