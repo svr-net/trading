@@ -20,18 +20,20 @@ namespace {
 struct Fit {
   std::size_t k;
   std::vector<double> A, b;
-  double n = 0;
+  double n = 0, yy = 0;
   explicit Fit(std::size_t dim) : k(dim), A(dim * dim, 0.0), b(dim, 0.0) {}
   void add(const std::vector<double>& x, double y) {
     for (std::size_t i = 0; i < k; ++i) {
       b[i] += x[i] * y;
       for (std::size_t j = 0; j < k; ++j) A[i * k + j] += x[i] * x[j];
     }
-    n += 1;
+    n += 1, yy += y * y;
   }
-  std::vector<double> solve() const {
+  std::vector<double> solve() const { return solve(b); }
+  // A^-1 rhs (with a vanishing ridge), empty while there are too few observations.
+  std::vector<double> solve(const std::vector<double>& rhs) const {
     if (n <= double(k)) return {};
-    std::vector<double> M = A, v = b;
+    std::vector<double> M = A, v = rhs;
     double tr = 0;
     for (std::size_t i = 0; i < k; ++i) tr += M[i * k + i];
     for (std::size_t i = 0; i < k; ++i) M[i * k + i] += 1e-12 * tr;
@@ -62,6 +64,17 @@ struct Fit {
     double s = 0;
     for (std::size_t i = 0; i < k; ++i) s += beta[i] * x[i];
     return s;
+  }
+  // The prediction at x shrunk by its t statistic, as the records score: e max(0, 1 - 1/t^2), with
+  // t = e / its standard error (the residual variance times x' A^-1 x).
+  double shrunk(const std::vector<double>& beta, const std::vector<double>& x) const {
+    const double e = predict(beta, x);
+    const auto z = solve(x);
+    if (z.empty() || n <= double(k) + 1) return 0;
+    double bb = 0, xz = 0;
+    for (std::size_t i = 0; i < k; ++i) bb += beta[i] * b[i], xz += x[i] * z[i];
+    const double s2 = std::max(0.0, yy - bb) / (n - double(k)), se2 = s2 * xz;
+    return e * std::max(0.0, 1 - se2 / std::max(e * e, 1e-300));
   }
 };
 
@@ -187,9 +200,11 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
           const double e = (*C.p)[k - 1].c, rest = C.sig * std::sqrt(double((*C.p).size() - k) / double((*C.p).size()));
           double best = -1e300;
           std::size_t bq = 0;
+          // The pair whose expectation is best after shrinking by its own uncertainty: the plain best
+          // of 81 noisy fits favours the luckiest (in practice the tight stops).
           for (std::size_t q = 0; q < P; ++q)
             if (!ab[q].empty()) {
-              const double ex = ab[q][0] + ab[q][1] * yhat[mdl][c];
+              const double ex = pairFit[bkI][q].shrunk(ab[q], {1.0, yhat[mdl][c]});
               if (ex > best) best = ex, bq = q;
             }
           if (best > 0) v.emplace_back(best * rest, c, bq, e);

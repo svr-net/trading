@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -184,6 +185,14 @@ int main(int argc, char** argv) {
       m = ofm::parseMarketCsv(readFile(csv));
       if (!series.empty()) s = ofm::parseSeriesCsv(readFile(series), m.dates);
     }
+    // Each step's time, on stderr.
+    auto t0 = std::chrono::steady_clock::now();
+    auto lap = [&](const char* what) {
+      const auto t1 = std::chrono::steady_clock::now();
+      std::fprintf(stderr, "time: %s %.1f s\n", what, std::chrono::duration<double>(t1 - t0).count());
+      t0 = t1;
+    };
+    lap("reading the market");
     ofm::Forecast f;
     if (fcache.empty() || !loadForecast(fcache, m, engine, &f)) {
       f = ofm::runModel(m, engine);
@@ -203,19 +212,27 @@ int main(int argc, char** argv) {
       }
       if (intraday.empty()) return 0;
     }
+    lap("the model");
     ofm::day::Paths paths;
     if (!intraday.empty()) paths = readPaths(readFile(intraday), m);
+    lap("reading the intraday paths");
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
+    lap("the market structure");
     const ofm::Backtest bt = ofm::backtest(m, f, costs, s, &ms);
+    lap("the model portfolio's backtest");
     const std::size_t candFrom = candOut.empty() ? std::size_t(-1) : m.T() > candDays ? m.T() - candDays : 0;
     const ofm::DayBook day = ofm::dayBook(m, f, bt.start, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraday.empty() ? nullptr : &paths, candFrom, risk);
+    lap("the daily trades");
     if (!candOut.empty()) {
       std::ofstream o(candOut);
       o << "date,ticker\n";
       for (const auto& [d, i] : day.candidates) o << m.dates[d] << ',' << m.tickers[i] << '\n';
     }
     std::cout << ofm::reportText(m, f, bt, costs, &ms, &day);
-    if (intraStrategy) std::cout << ofm::intraText(m, ofm::intraBook(m, f, paths, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraUniverse), 1e-4 * costs.dayBps);
+    if (intraStrategy) {
+      std::cout << ofm::intraText(m, ofm::intraBook(m, f, paths, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraUniverse), 1e-4 * costs.dayBps);
+      lap("the US intraday strategy");
+    }
     if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms, &day);
     return 0;
   } catch (const std::exception& e) {
