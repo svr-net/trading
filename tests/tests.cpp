@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "ofm/intrabook.hpp"
 #include "ofm/kernels.hpp"
 #include "ofm/report.hpp"
 #include "ofm/structure.hpp"
@@ -110,6 +111,36 @@ TEST(nothing_uses_the_future) {
   const auto b2 = ofm::backtest(m, f2, c, series);
   // Day X's return is the first one that may see the change (positions held into day X).
   for (std::size_t k = 0; k + b1.start + 1 < X; ++k) CHECK(b1.model[k] == b2.model[k] && b1.hedged[k] == b2.hedged[k]);
+}
+
+TEST(intraday_strategy_uses_only_the_past) {
+  const auto& sm = sample();
+  const auto& m = sm.market;
+  const auto f = ofm::runModel(m);
+  // Synthetic 5-minute paths for the last 300 days: open, then low or high first, then the close.
+  auto pathsOf = [&](const ofm::Market& mk) {
+    ofm::day::Paths p;
+    for (std::size_t d = mk.T() - 300; d < mk.T(); ++d)
+      for (std::size_t i = 0; i < mk.N(); ++i) {
+        const double o = mk.open(d, i), h = mk.high(d, i), l = mk.low(d, i), c = mk.close(d, i);
+        if (!(o > 0 && h > l && l > 0 && c > 0)) continue;
+        auto& v = p[d * mk.N() + i];
+        for (int k = 0; k < 78; ++k) {
+          const double u = double(k + 1) / 78, px = u < 0.3 ? o + (l - o) * u / 0.3 : u < 0.6 ? l + (h - l) * (u - 0.3) / 0.3 : h + (c - h) * (u - 0.6) / 0.4;
+          v.push_back({std::max(px, std::min(h, px * 1.0005)), std::min(px, std::max(l, px * 0.9995)), px});
+        }
+      }
+    return p;
+  };
+  const auto b1 = ofm::intraBook(m, f, pathsOf(m), 1e-3, 1e-3, 60);
+  CHECK(b1.ret.size() == 300 && b1.optimistic.size() == 300 && b1.candidates > 0);
+  for (std::size_t k = 0; k < b1.ret.size(); ++k) CHECK(std::isfinite(b1.ret[k]) && b1.ret[k] > -1);
+  // Changing the last 50 days leaves every earlier day's return the same.
+  auto m2 = m;
+  for (std::size_t t = m.T() - 50; t < m.T(); ++t)
+    for (std::size_t i = 0; i < m.N(); ++i) m2.close(t, i) *= 1.02, m2.high(t, i) *= 1.02;
+  const auto b2 = ofm::intraBook(m2, f, pathsOf(m2), 1e-3, 1e-3, 60);
+  for (std::size_t k = 0; k + 50 < b1.ret.size(); ++k) CHECK(b1.ret[k] == b2.ret[k]);
 }
 
 TEST(intraday_path_decides_which_level_came_first) {

@@ -23,6 +23,9 @@ on:
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
       honest: { description: 'Honest backtest: each stock''s estimated spread on every trade, and each day only the 250 then most traded of a pool of 500', type: boolean, default: true }
       spread_costs: { description: 'With honest: charge each stock''s estimated spread (off: the point-in-time universe only)', type: boolean, default: true }
+      intraday_strategy: { description: 'US: also backtest the intraday strategy (5-minute bars of each day''s most traded)', type: boolean, default: false }
+      strategy_days: { description: 'Intraday strategy: recent trading days with 5-minute bars', default: '1000' }
+      strategy_universe: { description: 'Intraday strategy: the stocks then most traded, each day', default: '100' }
       intraday_days: { description: 'Recent trading days whose strongest candidates get intraday paths (US exchanges; 0: none)', default: '250' }
 
 permissions:
@@ -32,7 +35,7 @@ permissions:
 jobs:
   data:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +135,13 @@ jobs:
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
           # 5-minute bars (only the months not yet stored), then the run with exact fills.
-          if [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
+          if [ "$EXCH" != "LSE" ] && [ "${{ inputs.intraday_strategy }}" = "true" ]; then
+            # The intraday strategy: each recent day's most traded stocks, their 5-minute bars, the run.
+            U="${{ inputs.strategy_universe || '100' }}"
+            ./build/ofm_report "${ARGS[@]}" --universe-out data/universe.csv --universe-days "${{ inputs.strategy_days || '1000' }}" --intraday-universe "$U"
+            node tools/eoddata/intraday.mjs --candidates data/universe.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
+            ARGS+=(--intraday data/intraday.csv --intraday-strategy --intraday-universe "$U")
+          elif [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
             ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days "$DAYS" > /dev/null
             node tools/eoddata/intraday.mjs --candidates data/candidates.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
             ARGS+=(--intraday data/intraday.csv --candidates-out data/candidates.csv --candidates-days "$DAYS")

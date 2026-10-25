@@ -80,7 +80,7 @@ async function worker() {
     } catch (e) { ++counts.failed; console.warn(`  ${e.message}`); }
   }
 }
-await Promise.all(Array.from({ length: 8 }, worker));
+await Promise.all(Array.from({ length: 12 }, worker));
 
 // The paths of every stored day of the listed months.
 const outRows = ['date,ticker,time,high,low,close'];

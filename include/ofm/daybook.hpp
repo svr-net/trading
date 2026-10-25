@@ -74,7 +74,7 @@ struct Bar {
 
 /// One bar of a stock's regular session (5 minutes), in time order: its high and low.
 struct Tick {
-  double h, l;
+  double h, l, c = 0;  ///< high, low and close of the 5-minute bar
 };
 /// Intraday paths of some stocks on some days, keyed day * N + stock.
 using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;
@@ -107,6 +107,9 @@ struct Scaler {
 /// scale-free bound, confidence 1/horizon, each side at least the square root of the window) over
 /// a record, which drops its older part when the record changes; the score is the window's mean
 /// shrunk by its t-statistic, m * max(0, 1 - 1/t^2).
+/// Chauvenet's bound: the |z| beyond which fewer than half an observation of n is expected.
+double chauvenet(double n);
+
 struct Adwin {
   std::vector<double> p1{0.0}, p2{0.0};
   std::size_t from = 0;
