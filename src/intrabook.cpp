@@ -248,6 +248,36 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
   return book;
 }
 
+std::string intraJson(const Market& m, const IntraBook& b) {
+  std::string o = "{";
+  char buf[512];
+  const std::size_t n = b.ret.size(), h = n / 2;
+  if (n < 2) return "{}";
+  auto part = [&](std::size_t lo, std::size_t hi) {
+    const Metrics mt = metrics(std::vector<double>(b.ret.begin() + std::ptrdiff_t(lo), b.ret.begin() + std::ptrdiff_t(hi)));
+    std::snprintf(buf, sizeof buf, "{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"volatility\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}",
+                  m.dates[b.days[lo]].c_str(), m.dates[b.days[hi - 1]].c_str(), mt.annualReturn, mt.volatility, mt.sharpe, mt.maxDrawdown);
+    return std::string(buf);
+  };
+  o += "\"whole\":" + part(0, n) + ",\"halves\":[" + part(0, h) + "," + part(h, n) + "]";
+  const Metrics op = metrics(b.optimistic);
+  std::snprintf(buf, sizeof buf, ",\"tradesPerDay\":%.4g,\"stopShare\":%.4g,\"takeShare\":%.4g,\"fillOptimistic\":%.6g,\"candidatesPerDay\":%.4g,\"entryMinutes\":%d",
+                double(b.trades) / double(n), b.trades ? double(b.stops) / double(b.trades) : 0.0, b.trades ? double(b.takes) / double(b.trades) : 0.0,
+                op.annualReturn, double(b.candidates) / double(n), 5 * b.entryBars.back());
+  o += buf;
+  std::map<std::string, std::vector<double>> years;
+  for (std::size_t k = 0; k < n; ++k) years[m.dates[b.days[k]].substr(0, 4)].push_back(b.ret[k]);
+  o += ",\"years\":[";
+  bool first = true;
+  for (const auto& [y, r] : years) {
+    double w = 1;
+    for (double x : r) w *= 1 + x;
+    std::snprintf(buf, sizeof buf, "%s{\"year\":\"%s\",\"ret\":%.6g,\"days\":%zu}", first ? "" : ",", y.c_str(), w - 1, r.size());
+    o += buf, first = false;
+  }
+  return o + "]}";
+}
+
 std::string intraText(const Market& m, const IntraBook& b, double costPerSide) {
   std::string o;
   char buf[512];

@@ -93,6 +93,19 @@ function render(r, source = 'UK') {
   table($('recent'), [['Day'], ['Daily trades', 'num'], ['Market', 'num']],
     recent.slice().reverse().map((d) => [[d.date], d.day == null ? ['–', 'num'] : signed(d.day), signed(d.market)]));
   drawChart(r);
+  renderIntraday(r.intraday);
+}
+
+// The US intraday strategy's backtest (r.intraday, from the library).
+function renderIntraday(I) {
+  $('intraday').hidden = !I;
+  if (!I) return;
+  const W = I.whole, [h1, h2] = I.halves;
+  $('intra-asof').textContent = `${W.from} – ${W.to} · ${I.tradesPerDay.toFixed(1)} trades a day · ${pct(I.stopShare, 0)} of trades stopped, ${pct(I.takeShare, 0)} took profit · entry in use: ${I.entryMinutes ? `${I.entryMinutes} minutes after the open` : 'cash'}`;
+  $('intra-verdict').innerHTML = `
+    <div class="tile"><span class="k">Intraday strategy</span><span class="v">${pct(W.annualReturn)}</span><span class="s">a year · Sharpe ${W.sharpe.toFixed(2)} · max drawdown ${pct(W.maxDrawdown, 0).slice(1)} · halves ${pct(h1.annualReturn)} and ${pct(h2.annualReturn)}</span></div>
+    <div class="tile"><span class="k">Fill test</span><span class="v">${pct(I.fillOptimistic)}</span><span class="s">a year if a bar that touched both levels took the profit first (above: the stop first)</span></div>`;
+  table($('intra-years'), [['Year'], ['Return', 'num'], ['Days', 'num']], I.years.map((y) => [[y.year], signed(y.ret, 1), [String(y.days), 'num']]));
 }
 
 // The chart as laid out by the library (r.chart: heights and positions as shares of the chart);
@@ -147,7 +160,7 @@ function showMarket(m) {
   for (const b of document.querySelectorAll('.market-switch button')) b.setAttribute('aria-selected', String(b.dataset.market === m));
   const name = MARKETS[m];
   $('asof').textContent = `Loading the latest ${name} scan…`;
-  $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '';
+  $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '', $('intraday').hidden = true;
   fetch(`data/${m}.json`, { cache: 'no-cache' })
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
     .then((r) => { if (market === m) render(r, name); })

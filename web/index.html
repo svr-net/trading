@@ -34,6 +34,14 @@
     <div class="table-scroll"><table id="recent"></table></div>
   </section>
 
+  <section aria-labelledby="intra-title" id="intraday" hidden>
+    <h2 id="intra-title">Intraday strategy</h2>
+    <p class="muted" id="intra-asof"></p>
+    <div class="verdict" id="intra-verdict"></div>
+    <div class="table-scroll"><table id="intra-years"></table></div>
+    <p class="hint">Each day's 100 most traded shares, on 5-minute bars: bought 5 to 40 minutes after the open (the delay learnt), up to 10 trades, each sold at its learnt stop-loss, take-profit or the close. One unit in every trade; no fees or costs. The trades depend on the day's opening moves, so they are chosen after the open, not listed the evening before.</p>
+  </section>
+
   <h2>Run it yourself</h2>
   <p class="muted">On the sample market or your own daily bars, in this browser.</p>
   <section class="controls" aria-label="Run">
