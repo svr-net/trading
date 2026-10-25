@@ -243,6 +243,9 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
     }
     rec.push(recW, recX);
     book.forecastUsed.push_back(trade ? int(use % NM) : -1);
+    double mk = 0;
+    for (const auto& C : cand) mk += m.close(d, C.i) > 0 ? m.close(d, C.i) / m.close(t, C.i) - 1 : 0.0;
+    book.market.push_back(mk / double(cand.size()));
     book.ret.push_back(dayRet), book.optimistic.push_back(dayOpt), book.entryBars.push_back(trade ? int(kEntry[use / NM]) : 0);
   }
   return book;
@@ -253,6 +256,60 @@ std::string intraJson(const Market& m, const IntraBook& b) {
   char buf[512];
   const std::size_t n = b.ret.size(), h = n / 2;
   if (n < 2) return "{}";
+  // The page's chart, laid out here as the daily trades' is (report.cpp): the strategy and the
+  // candidates held, on a log scale, heights and positions as shares of the chart.
+  {
+    const std::size_t step = std::max<std::size_t>(1, n / 600);
+    const std::pair<const char*, const std::vector<double>*> sr[2] = {{"intraday strategy", &b.ret}, {"market (bought and held)", &b.market}};
+    std::vector<double> lv[2];
+    double lo = 0, hi = 0;
+    for (int s = 0; s < 2; ++s) {
+      double w = 0;
+      for (std::size_t k = 0; k < n; ++k) {
+        w += std::log1p((*sr[s].second)[k]);
+        if (k % step == 0) lv[s].push_back(w), lo = std::min(lo, w), hi = std::max(hi, w);
+      }
+    }
+    const double span = std::max(hi - lo, 1e-9);
+    o += "\"chart\":{\"series\":[";
+    for (int s = 0; s < 2; ++s) {
+      double w = 0;
+      for (double x : *sr[s].second) w += std::log1p(x);
+      std::snprintf(buf, sizeof buf, "%s{\"name\":\"%s\",\"final\":\"%.2f×\",\"y\":[", s ? "," : "", sr[s].first, std::exp(w));
+      o += buf;
+      for (std::size_t k = 0; k < lv[s].size(); ++k) std::snprintf(buf, sizeof buf, "%s%.4f", k ? "," : "", (lv[s][k] - lo) / span), o += buf;
+      o += "]}";
+    }
+    o += "],\"ticks\":[";
+    bool lead = true;
+    for (double v : {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0}) {
+      const double y = (std::log(v) - lo) / span;
+      if (y < -1e-9 || y > 1 + 1e-9) continue;
+      std::snprintf(buf, sizeof buf, "%s{\"label\":\"%g×\",\"y\":%.4f}", lead ? "" : ",", v, y), o += buf, lead = false;
+    }
+    o += "],\"years\":[";
+    lead = true;
+    const std::size_t npts = lv[0].size();
+    for (std::size_t k = 0, j = 0; k < n; k += step, ++j)
+      if (j == 0 || m.dates[b.days[k]].substr(0, 4) != m.dates[b.days[k - step]].substr(0, 4))
+        std::snprintf(buf, sizeof buf, "%s{\"label\":\"%s\",\"x\":%.4f}", lead ? "" : ",", m.dates[b.days[k]].substr(0, 4).c_str(),
+                      npts > 1 ? double(j) / double(npts - 1) : 0.0),
+            o += buf, lead = false;
+    o += "]},";
+  }
+  // The last 20 days: the strategy and the candidates held.
+  o += "\"recent\":[";
+  const std::size_t r0 = n > 20 ? n - 20 : 0;
+  for (std::size_t k = r0; k < n; ++k)
+    std::snprintf(buf, sizeof buf, "%s{\"date\":\"%s\",\"day\":%.6g,\"market\":%.6g}", k == r0 ? "" : ",", m.dates[b.days[k]].c_str(), b.ret[k],
+                  b.market[k]),
+        o += buf;
+  o += "],";
+  {
+    const Metrics mk = metrics(b.market);
+    std::snprintf(buf, sizeof buf, "\"market\":{\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g},", mk.annualReturn, mk.sharpe, mk.maxDrawdown);
+    o += buf;
+  }
   auto part = [&](std::size_t lo, std::size_t hi) {
     const Metrics mt = metrics(std::vector<double>(b.ret.begin() + std::ptrdiff_t(lo), b.ret.begin() + std::ptrdiff_t(hi)));
     std::snprintf(buf, sizeof buf, "{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"volatility\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}",

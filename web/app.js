@@ -8,7 +8,7 @@ const status = (t) => { $('status').textContent = t; };
 const pct = (x, d = 1) => (x == null ? '–' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(d)}%`);
 const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 const MODEL_COSTS = [10, 10, 1];  // the model portfolio's costs (bp); not shown, the forecasts do not depend on them
-const SERIES = [['daily trades', '--daybook'], ['market (bought and held)', '--market']];
+const SERIES = [['daily trades', '--daybook'], ['intraday strategy', '--daybook'], ['market (bought and held)', '--market']];
 
 let ofm = null;
 let shown = null;  // [report, source]
@@ -83,6 +83,9 @@ function render(r, source = 'UK') {
     n ? D.orders.map((o) => [[o.ticker], signed(o.tradeReturn, 3), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
       : [{ gap: D.backtestLoses ? 'no trades: the daily trades\' backtest gain in this market is not significant (t-statistic below 2); stay in cash' : 'no trades: none is expected to make money after costs; stay in cash' }]);
 
+  // A market whose daily trades have no edge but whose intraday strategy has (US): the intraday
+  // strategy leads, with its own chart and days.
+  if (r.intraday && D.backtestLoses) { renderIntraday(r.intraday, true); return; }
   const whole = r.parts[0].rows, b = whole.find((x) => x.name === D.name), k = whole.find((x) => x.name.startsWith('market'));
   const half = (i) => r.parts[i].rows.find((x) => x.name === D.name);
   $('verdict').innerHTML = `
@@ -96,8 +99,9 @@ function render(r, source = 'UK') {
   renderIntraday(r.intraday);
 }
 
-// The US intraday strategy's backtest (r.intraday, from the library).
-function renderIntraday(I) {
+// The US intraday strategy's backtest (r.intraday, from the library). lead: it takes the backtest
+// section (tiles, chart, last days) in place of the daily trades.
+function renderIntraday(I, lead = false) {
   $('intraday').hidden = !I;
   if (!I) return;
   const W = I.whole, [h1, h2] = I.halves;
@@ -106,6 +110,15 @@ function renderIntraday(I) {
     <div class="tile"><span class="k">Intraday strategy</span><span class="v">${pct(W.annualReturn)}</span><span class="s">a year · Sharpe ${W.sharpe.toFixed(2)} · max drawdown ${pct(W.maxDrawdown, 0).slice(1)} · halves ${pct(h1.annualReturn)} and ${pct(h2.annualReturn)}</span></div>
     <div class="tile"><span class="k">Fill test</span><span class="v">${pct(I.fillOptimistic)}</span><span class="s">a year if a bar that touched both levels took the profit first (above: the stop first)</span></div>`;
   table($('intra-years'), [['Year'], ['Return', 'num'], ['Days', 'num']], I.years.map((y) => [[y.year], signed(y.ret, 1), [String(y.days), 'num']]));
+  if (!lead) return;
+  table($('plan'), [['Buy after the open'], ['Expected return', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+    [{ gap: 'The daily trades have no edge among these shares; the intraday strategy below chooses its trades 5 to 40 minutes after the open, from the day\'s 100 most traded.' }]);
+  $('verdict').innerHTML = `
+    <div class="tile"><span class="k">Intraday strategy, ${W.from} – ${W.to}</span><span class="v">${pct(W.annualReturn)}</span><span class="s">a year · Sharpe ${W.sharpe.toFixed(2)} · max drawdown ${pct(W.maxDrawdown, 0).slice(1)} · halves ${pct(h1.annualReturn)} and ${pct(h2.annualReturn)}</span></div>
+    <div class="tile"><span class="k">The same shares, bought and held</span><span class="v">${pct(I.market.annualReturn)}</span><span class="s">a year · Sharpe ${I.market.sharpe.toFixed(2)} · max drawdown ${pct(I.market.maxDrawdown, 0).slice(1)}</span></div>`;
+  table($('recent'), [['Day'], ['Intraday strategy', 'num'], ['Market', 'num']],
+    I.recent.slice().reverse().map((d) => [[d.date], signed(d.day), signed(d.market)]));
+  drawChart({ chart: I.chart });
 }
 
 // The chart as laid out by the library (r.chart: heights and positions as shares of the chart);
@@ -136,7 +149,7 @@ function drawChart(r) {
   C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
   C.series.forEach((s) => {
     ctx.strokeStyle = color[s.name] || ctx.strokeStyle;
-    ctx.lineWidth = s.name === 'daily trades' ? 2 : 1.5;
+    ctx.lineWidth = s.name.startsWith('market') ? 1.5 : 2;
     ctx.beginPath();
     s.y.forEach((y, i) => (i ? ctx.lineTo(X(i / (s.y.length - 1)), Y(y)) : ctx.moveTo(X(0), Y(y))));
     ctx.stroke();
@@ -147,7 +160,7 @@ function drawChart(r) {
 $('src-files').addEventListener('change', () => { $('files').hidden = false; });
 $('src-sample').addEventListener('change', () => { $('files').hidden = true; });
 $('run').addEventListener('click', run);
-window.addEventListener('resize', () => { if (shown && shown[0].day) drawChart(shown[0]); });
+window.addEventListener('resize', () => { if (shown && shown[0].day) render(...shown); });
 
 // The latest scans, published by the scheduled workflow (results only, no prices): one per market.
 const MARKETS = { uk: 'UK', us: 'US' };

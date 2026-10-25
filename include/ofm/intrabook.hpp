@@ -31,6 +31,7 @@ struct IntraBook {
   std::vector<std::size_t> days;     ///< the days traded (with paths), in order
   std::vector<double> ret;           ///< each day's net return (stop first within a bar)
   std::vector<double> optimistic;    ///< the same trades with the take-profit first within a bar
+  std::vector<double> market;        ///< the day's candidates bought at the previous close and held (equal weights)
   std::vector<int> entryBars;        ///< the entry (k) of the book in use each day (0: cash)
   std::vector<int> forecastUsed;     ///< the forecast in use each day: 0 every input, 1 the strongest single input, -1 cash
   std::size_t trades = 0, stops = 0, takes = 0;
