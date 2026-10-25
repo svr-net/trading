@@ -1,6 +1,6 @@
 // #include header.wgsl
 // Each sample's gradient of the quantile (pinball) loss: output o is the quantile tau[o] of target
-// y[s][o]. x [nS][In], y [nS][Out], g [nS][nP]. Grid ceil(nS/64).
+// y[s][o]. x [nS][In], y [nS][Out], g [nS][nP]. Grid ceil(nS/8).
 @group(0) @binding(1) var<storage, read> w : array<f32>;
 @group(0) @binding(2) var<storage, read> x : array<f32>;
 @group(0) @binding(3) var<storage, read> y : array<f32>;
@@ -12,9 +12,9 @@ var<private> h2 : array<f32, 64>;
 var<private> d2 : array<f32, 64>;
 var<private> d3 : array<f32, 64>;
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(8)
 fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index) lane : u32) {
-  let s : u32 = wid.x * 64u + lane;
+  let s : u32 = wid.x * 8u + lane;
   if (s < P.nS) {
     let gs : u32 = s * P.nP;
     for (var o = 0u; o < P.Hd; o = o + 1u) {

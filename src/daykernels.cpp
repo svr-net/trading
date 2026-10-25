@@ -2,9 +2,11 @@
 #include "daykernels.hpp"
 
 #include <cmath>
+#include <stdexcept>
 
 #include "day_kernels.hpp"
 #include "invoke.hpp"
+#include "ofm/daybook.hpp"
 
 namespace ofm::day::kernels {
 
@@ -65,6 +67,49 @@ void pairTrades(const std::vector<double>& ticks, const std::vector<double>& can
   detail::dispatch(k, detail::groups(std::uint32_t(n), 64));
 }
 
+}  // namespace ofm::day::kernels
+
+namespace ofm::day {
+
+void AdwinBank::push(const std::vector<std::size_t>& which, const std::vector<double>& x) {
+  if (which.empty()) return;
+  const std::size_t stride = capacity + 1;
+  std::vector<double> list(which.size());
+  for (std::size_t k = 0; k < which.size(); ++k) {
+    long& s = slot[which[k]];
+    if (s < 0) {
+      s = long(st.size() / 2);
+      p1.resize(p1.size() + stride, 0.0), p2.resize(p2.size() + stride, 0.0), st.resize(st.size() + 2, 0.0);
+    }
+    if (std::size_t(st[2 * std::size_t(s) + 1]) >= capacity) throw std::runtime_error("AdwinBank: a record is full");
+    list[k] = double(s);
+  }
+  kernels::gen::DayHeader<double> P;
+  P.nS = std::uint32_t(which.size()), P.nP = std::uint32_t(stride), P.hzn = horizon;
+  kernels::gen::Adwin<double> k;
+  k.P = P, k.list = list.data(), k.x = const_cast<double*>(x.data()), k.p1 = p1.data(), k.p2 = p2.data(), k.st = st.data();
+  detail::dispatch(k, detail::groups(P.nS, 8));
+}
+
+}  // namespace ofm::day
+
+namespace ofm::day::kernels {
+
+Windows::Windows(std::size_t windows, std::size_t capacity, const std::vector<double>& tau0, const std::vector<double>& tau1)
+    : nW(windows), W(capacity), G(tau0.size()), has(windows, 0.0), x(windows, 0.0), ring(windows * capacity, 0.0), srt(windows * capacity, 0.0),
+      st(2 * windows, 0.0), out(windows * tau0.size(), 0.0) {
+  tau = tau0, tau.insert(tau.end(), tau1.begin(), tau1.end());
+}
+
+void Windows::run() {
+  H P;
+  P.nS = std::uint32_t(nW), P.nP = std::uint32_t(W), P.nH = std::uint32_t(G);
+  gen::Quantiles<double> k;
+  k.P = P, k.has = has.data(), k.x = x.data(), k.tau = tau.data(), k.ring = ring.data(), k.srt = srt.data(), k.st = st.data(), k.out = out.data();
+  detail::dispatch(k, detail::groups(P.nS, 64));
+  std::fill(has.begin(), has.end(), 0.0);
+}
+
 Net::Net(std::size_t in, std::size_t hidden, std::vector<double> quantiles) : In(in), Hd(hidden), Out(quantiles.size()), tau(std::move(quantiles)) {
   const std::size_t sizes[3][2] = {{Hd, In}, {Hd, Hd}, {Out, Hd}};
   std::uint64_t r = 0x9E3779B97F4A7C15ull;
@@ -85,20 +130,22 @@ std::vector<double> Net::predict(const std::vector<double>& x, std::size_t nS) c
   if (nS == 0) return y;
   gen::Forward<double> k;
   k.P = header(*this, nS), k.w = const_cast<double*>(w.data()), k.x = const_cast<double*>(x.data()), k.y = y.data();
-  detail::dispatch(k, detail::groups(std::uint32_t(nS), 64));
+  detail::dispatch(k, detail::groups(std::uint32_t(nS), 8));
   return y;
 }
 
 void Net::step(const std::vector<double>& x, const std::vector<double>& y, std::size_t nS) {
   if (nS == 0) return;
-  std::vector<double> g(nS * params(), 0.0);
+  // Every entry is written by the kernel: the buffer is kept between steps, not cleared.
+  if (grad.size() < nS * params()) grad.resize(nS * params());
+  double* g = grad.data();
   steps += 1;
   gen::Gradient<double> kg;
   kg.P = header(*this, nS), kg.w = w.data(), kg.x = const_cast<double*>(x.data()), kg.y = const_cast<double*>(y.data());
-  kg.tau = tau.data(), kg.g = g.data();
-  detail::dispatch(kg, detail::groups(std::uint32_t(nS), 64));
+  kg.tau = tau.data(), kg.g = g;
+  detail::dispatch(kg, detail::groups(std::uint32_t(nS), 8));
   gen::Adam<double> ka;
-  ka.P = header(*this, nS), ka.g = g.data(), ka.w = w.data(), ka.m = m.data(), ka.v = v.data();
+  ka.P = header(*this, nS), ka.g = g, ka.w = w.data(), ka.m = m.data(), ka.v = v.data();
   detail::dispatch(ka, detail::groups(std::uint32_t(params()), 64));
 }
 

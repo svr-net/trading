@@ -14,6 +14,8 @@
 //          2: z (read), 3: gram [day][stride] (read_write).
 //  expect  (workgroup 64; grid ceil(N/64) x days): E = z . v per stock and day, v staged in
 //          workgroup memory, four signals a step. 2: z (read), 3: v [day][K] (read), 4: E (read_write).
+//  structure (workgroup 1; grid half-lives): the market structure's covariances, effective dimension
+//          and minimum spanning tree at every close (structure.hpp), each half-life on its own thread.
 
 #include <string>
 #include <vector>
@@ -36,5 +38,9 @@ template <class F>
 void gram(const Plan& p, std::size_t chunk, const F* tables, std::vector<F>& z, std::vector<F>& gram);
 template <class F>
 void expect(const Plan& p, std::size_t chunk, std::vector<F>& z, std::vector<F>& v, std::vector<F>& e);
+
+/// The market structure kernel (kernels/model/structure.wgsl): returns [T][N]; out [3][T][H]
+/// (dimension, tree length, 1 where defined), left as given where not defined.
+void structure(const std::vector<double>& returns, std::size_t T, std::size_t N, const std::vector<std::uint32_t>& halfLives, std::vector<double>& out);
 
 }  // namespace ofm::kernels
