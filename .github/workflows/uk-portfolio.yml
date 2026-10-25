@@ -135,7 +135,9 @@ jobs:
           if [ "${{ format('{0}', inputs.honest) }}" != "false" ]; then
             # UK: the 250 most traded; US: the shares ranked 501 to 1000 by traded value (the US edge lies
             # in the less traded shares; the most traded have none).
-            if [ "$MARKET" = "US" ]; then ARGS+=(--universe "${{ inputs.universe || '500' }}" --universe-from 500); else ARGS+=(--universe "${{ inputs.universe || '250' }}"); fi
+            # US stops at most twice their take-profit (uncapped, the learnt stops ran about 7 times the
+            # take-profit: many small wins, a few large losses; capped: +33.7% a year against +18.6%).
+            if [ "$MARKET" = "US" ]; then ARGS+=(--universe "${{ inputs.universe || '500' }}" --universe-from 500 --max-risk-reward 2); else ARGS+=(--universe "${{ inputs.universe || '250' }}"); fi
             # No costs by default (pure share trading); spread_costs charges each stock's estimated spread.
             [ "${{ format('{0}', inputs.spread_costs) }}" = "true" ] && ARGS+=(--spread-costs)
           fi
