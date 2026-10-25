@@ -8,6 +8,7 @@
 //  forward     the network's outputs for a batch of samples.
 //  gradient    each sample's gradient of the quantile (pinball) loss.
 //  adam        one Adam step from a mini-batch's gradients.
+//  pairs       the intraday trades of every candidate, entry and (stop, take-profit) pair.
 
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,12 @@ void wilder(const std::vector<double>& bars, std::size_t T, std::size_t N, std::
 
 /// Bollinger bands at every close and horizon: out [T][N][3 horizons.size()] (kernels/day/bollinger.wgsl).
 void bollinger(const std::vector<double>& bars, std::size_t T, std::size_t N, const std::vector<std::uint32_t>& horizons, std::vector<double>& out);
+
+/// The intraday trades on 5-minute paths (kernels/day/pairs.wgsl): out [nC][entries][G G][3] (the
+/// return with the stop first, with the take-profit first, the first's exit). ticks [h, l, c] per bar;
+/// cand [first bar, bars, volatility] per candidate; mult [G], below 0 none; at most 4 entries.
+void pairTrades(const std::vector<double>& ticks, const std::vector<double>& cand, const std::vector<std::uint32_t>& entries,
+                const std::vector<double>& mult, double buy, double sell, std::vector<double>& out);
 
 /// A network of two hidden layers of rectified linear units (at most 64) and linear outputs,
 /// trained by Adam on the quantile loss (output o is the quantile tau[o] of its target).
