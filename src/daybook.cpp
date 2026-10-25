@@ -716,6 +716,21 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     const int us = int(use / G);
     const bool trade = limitRecord[use].score() > 0;
     if (trade) ++book.sourceDays[us];
+    // Diagnostics: how many candidates pass each gate (the source in use, no stop limit).
+    {
+      auto& g = book.gates;
+      g.days += 1, g.tradeDays += trade, g.cand += double(cand.size());
+      for (std::size_t i : cand) {
+        std::size_t q = 0;
+        const double e = bestPair(us, i, pl[i], kNone, &q, false);
+        const bool rec = record[i].score() > 0;
+        g.gain += e > 0, g.record += rec, g.both += e > 0 && rec;
+        g.spreads.push_back(2 * halfSpread(i));
+      }
+      double bestScore = -kNone;
+      for (std::size_t k = 0; k < limitRecord.size(); ++k) bestScore = std::max(bestScore, limitRecord[k].score());
+      g.bookAhead += bestScore > 0;
+    }
     std::vector<Book> books(nBooks);
     auto exactOn = [&](std::size_t i) { return pathOf(d, i) != nullptr; };
     for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(int(k / G), ranked(int(k / G), cand, pl, limitK(k), exactOn), K);
@@ -752,7 +767,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       book.pathDays += path != nullptr;
       int e;
       std::size_t q0 = 0;
-      if (bestPair(us, i, p, kNone, &q0, path != nullptr) > 0)  // the stock's own best trade, whenever a gain is expected: its record
+      // The stock's record: its best pair's actual outcome after costs, every day it has one (not only
+      // the days a gain was expected, which under costs would leave the record empty and block it).
+      if (bestPair(us, i, p, kNone, &q0, path != nullptr) > -kNone)
         record[i].push(std::log1p(tradeReturn(b, 1.0, stopOf(us, i, q0), takeOf(us, i, q0), buy, sell, true, &e, path, nullptr, halfSpread(i))));
       // The day's actual fall and rise from the open: the level predictors' targets and scores.
       if (!histStop[i].empty()) {
@@ -781,6 +798,27 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       book.bigTargets += std::fabs(raw) > zb;
       // Out-of-sample skill of the intraday forecast: its correlation with what happened.
       if (p.forecast) book.skill.add(p.mu, z);
+      // Each input's own relation to the outcome (correlation), in each half of the backtest.
+      {
+        std::vector<double> all = p.xs;
+        all.insert(all.end(), p.ind.begin(), p.ind.end());
+        all.insert(all.end(), p.wil.begin(), p.wil.end());
+        all.insert(all.end(), p.bol.begin(), p.bol.end());
+        if (p.forecast) all.push_back(p.mu);
+        auto& fs = book.featureSkill[d < start + (T - start) / 2 ? 0 : 1];
+        if (fs.size() < all.size()) fs.resize(all.size());
+        for (std::size_t j = 0; j < all.size(); ++j) fs[j].add(all[j], z);
+        if (book.featureNames.empty()) {
+          book.featureNames = {"model forecast", "volatility vs median", "day's open-to-close", "day's close-to-close", "day's gap", "close in day's range",
+                               "day's range", "5-day move", "volume", "market's move"};
+          for (auto h : indH)
+            for (const char* nm : {"momentum", "place in range", "RSI", "volume vs mean", "range vs mean"})
+              book.featureNames.push_back(std::string(nm) + " " + std::to_string(h) + "d");
+          for (std::size_t j = 0; j < p.wil.size(); ++j) book.featureNames.push_back("Wilder " + std::to_string(j));
+          for (std::size_t j = 0; j < p.bol.size(); ++j) book.featureNames.push_back("Bollinger " + std::to_string(j));
+          book.featureNames.push_back("intraday forecast (combined)");
+        }
+      }
       intraday.add(x1, z);
       if (p.forecast) {  // pair fits on genuine forecasts only
         // With intraday paths (where tight stops get traded), only honest outcomes: a stop outside

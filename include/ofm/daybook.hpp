@@ -31,8 +31,9 @@
 //    losses are reported but do not choose: a closer forecast of the low and high need not trade
 //    better.
 //  - Selection: down the ranking of expected return, a stock is booked only if its trade is
-//    expected to gain after costs and its own record of these trades (an ADWIN window, its mean
-//    shrunk by its t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the 10 strongest are taken.
+//    expected to gain after costs and its own record (an ADWIN window, its mean shrunk by its
+//    t-statistic, m * max(0, 1 - 1/t^2)) beats cash; the record is its best pair's actual outcome
+//    after costs every day, not only on the days a gain was expected; the 10 strongest are taken.
 //  - Capital: shared equally among the trades booked, scaled down when needed so the book's
 //    expected daily volatility is no more than the market's (the equal-weight index's
 //    open-to-close volatility); the rest stays in cash.
@@ -73,7 +74,7 @@ struct Bar {
 
 /// One bar of a stock's regular session (5 minutes), in time order: its high and low.
 struct Tick {
-  double h, l;
+  double h, l, c = 0;  ///< high, low and close of the 5-minute bar
 };
 /// Intraday paths of some stocks on some days, keyed day * N + stock.
 using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;
@@ -106,6 +107,9 @@ struct Scaler {
 /// scale-free bound, confidence 1/horizon, each side at least the square root of the window) over
 /// a record, which drops its older part when the record changes; the score is the window's mean
 /// shrunk by its t-statistic, m * max(0, 1 - 1/t^2).
+/// Chauvenet's bound: the |z| beyond which fewer than half an observation of n is expected.
+double chauvenet(double n);
+
 struct Adwin {
   std::vector<double> p1{0.0}, p2{0.0};
   std::size_t from = 0;
@@ -164,8 +168,16 @@ struct DayBook {
       return n > 2 && vx > 0 && vy > 0 ? (sxy - sx * sy / n) / std::sqrt(vx * vy) : 0.0;
     }
   } skill;
+  std::vector<Skill> featureSkill[2];
   std::size_t trades = 0, stops = 0, takes = 0;
   double spreadSum = 0;              ///< the trades' estimated round-trip spreads, summed (log)
+  /// Each input's correlation with the next open-to-close move (in volatilities), in each half.
+  std::vector<std::string> featureNames;
+  /// Diagnostics over the backtest: candidate stock-days and how many pass each gate.
+  struct Gates {
+    double days = 0, tradeDays = 0, bookAhead = 0, cand = 0, gain = 0, record = 0, both = 0;
+    std::vector<double> spreads;  ///< every candidate's estimated round-trip spread (log)
+  } gates;
   bool spreadCosts = false;
   std::size_t universe = 0;
   std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided

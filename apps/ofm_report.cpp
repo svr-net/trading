@@ -30,6 +30,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "ofm/intrabook.hpp"
+#include "ofm/liquidity.hpp"
 #include "ofm/report.hpp"
 
 namespace {
@@ -73,7 +75,7 @@ ofm::day::Paths readPaths(const std::string& text, const ofm::Market& m) {
     std::sort(r.begin(), r.end(), [](const Row& a, const Row& b) { return a.time < b.time; });
     if (!(h > 0) || !(l > 0) || r.empty() || r.back().c < l || r.back().c > h) continue;
     auto& path = out[key];
-    for (const auto& x : r) path.push_back({std::clamp(x.h, l, h), std::clamp(x.l, l, h)});
+    for (const auto& x : r) path.push_back({std::clamp(x.h, l, h), std::clamp(x.l, l, h), std::clamp(x.c, l, h)});
   }
   return out;
 }
@@ -126,7 +128,9 @@ bool loadForecast(const std::string& path, const ofm::Market& m, const std::stri
 
 int main(int argc, char** argv) {
   try {
-    std::string csv, series, engine = "reference", json, intraday, candOut, fcache;
+    std::string csv, series, engine = "reference", json, intraday, candOut, fcache, universeOut;
+    std::size_t universeDays = 0, intraUniverse = 0;
+    bool intraStrategy = false;
     std::size_t candDays = 0;
     ofm::DayRisk risk;
     double costPct = ofm::kDealingPct, stampPct = ofm::kStampPct, buyBps = -1, sellBps = -1, futBps = 1, dayPct = ofm::kDayDealingPct;
@@ -159,6 +163,10 @@ int main(int argc, char** argv) {
       else if (a == "--daily-budget") risk.dailyBudget = true;
       else if (a == "--spread-costs") risk.spreadCosts = true;
       else if (a == "--universe") risk.universe = std::stoul(next());
+      else if (a == "--universe-out") universeOut = next();
+      else if (a == "--universe-days") universeDays = std::stoul(next());
+      else if (a == "--intraday-universe") intraUniverse = std::stoul(next());
+      else if (a == "--intraday-strategy") intraStrategy = true;
       else throw std::invalid_argument("unknown option " + a);
     }
     ofm::Costs costs = ofm::Costs::fromPercent(costPct, stampPct, futBps);
@@ -182,6 +190,18 @@ int main(int argc, char** argv) {
     } else {
       std::cerr << "forecast: from the cache\n";
     }
+    // Each of the last n days' universe (the intraday strategy's stocks), for fetching their paths.
+    if (!universeOut.empty()) {
+      const ofm::Liquidity liq(m, f.horizons.empty() ? 16.0 : double(f.horizons[f.horizons.size() / 2]));
+      std::ofstream o(universeOut);
+      o << "date,ticker\n";
+      for (std::size_t d = m.T() > universeDays ? m.T() - universeDays : 1; d < m.T(); ++d) {
+        const auto in = liq.universeAt(d - 1, intraUniverse);
+        for (std::size_t i = 0; i < m.N(); ++i)
+          if (in[i]) o << m.dates[d] << ',' << m.tickers[i] << '\n';
+      }
+      if (intraday.empty()) return 0;
+    }
     ofm::day::Paths paths;
     if (!intraday.empty()) paths = readPaths(readFile(intraday), m);
     const ofm::MarketStructure ms = ofm::marketStructure(m, f.horizons, f.familyReturns);
@@ -194,6 +214,7 @@ int main(int argc, char** argv) {
       for (const auto& [d, i] : day.candidates) o << m.dates[d] << ',' << m.tickers[i] << '\n';
     }
     std::cout << ofm::reportText(m, f, bt, costs, &ms, &day);
+    if (intraStrategy) std::cout << ofm::intraText(m, ofm::intraBook(m, f, paths, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraUniverse), 1e-4 * costs.dayBps);
     if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms, &day);
     return 0;
   } catch (const std::exception& e) {
