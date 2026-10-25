@@ -5,7 +5,7 @@ struct DayHeader {
   Hd : u32, Out : u32, nP : u32, u0 : u32,
   lr : f32, b1 : f32, b2 : f32, steps : f32,
   nC : u32, G : u32, NK : u32, u1 : u32,
-  buy : f32, sell : f32, f0 : f32, f1 : f32,
+  buy : f32, sell : f32, hzn : f32, f1 : f32,
   ent : array<vec4<u32>, 1>,
   hz : array<vec4<u32>, 4>,
 };

@@ -109,13 +109,18 @@ struct Scaler {
 /// Chauvenet's bound: the |z| beyond which fewer than half an observation of n is expected.
 double chauvenet(double n);
 
-struct Adwin {
-  std::vector<double> p1{0.0}, p2{0.0};
-  std::size_t from = 0;
-  double horizon = 1;  ///< one false cut expected over this many observations
-  void push(double x);
-  double score() const;
-  std::size_t window() const { return p1.size() - 1 - from; }
+/// Records' ADWIN windows, each record taking at most `capacity` values; a day's pushes run as one
+/// fused kernel (kernels/day/adwin.wgsl). A record's storage is made at its first value.
+struct AdwinBank {
+  std::size_t capacity;
+  double horizon;  ///< one false cut expected over this many observations
+  std::vector<long> slot;  ///< each record's slot, -1 before its first value
+  std::vector<double> p1, p2, st;
+  AdwinBank(std::size_t records, std::size_t capacity, double horizon);
+  /// Record which[k] takes x[k] (each record at most once a call).
+  void push(const std::vector<std::size_t>& which, const std::vector<double>& x);
+  double score(std::size_t r) const;
+  std::size_t window(std::size_t r) const;
 };
 
 }  // namespace day

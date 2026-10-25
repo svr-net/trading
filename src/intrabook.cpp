@@ -112,8 +112,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
   const std::size_t NM = 2;
   std::vector<std::vector<Fit>> uni(NK, std::vector<Fit>(F - 1, Fit(2)));
   std::vector<std::vector<Fit>> pairFit(NK * NM, std::vector<Fit>(P, Fit(2)));
-  std::vector<day::Adwin> rec(NK * NM);
-  for (auto& a : rec) a.horizon = double(T);
+  day::AdwinBank rec(NK * NM, T, double(T));
   for (auto& fs : book.featureSkill) fs.resize(F - 1);
   // The first day with a path: the walk starts there (the volatility learns from every day before).
   std::size_t first = T;
@@ -157,8 +156,10 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
     // Each (entry, forecast) book; the one whose record is best so far trades.
     std::size_t use = 0;
     for (std::size_t k = 1; k < NK * NM; ++k)
-      if (rec[k].score() > rec[use].score()) use = k;
-    const bool trade = rec[use].score() > 0;
+      if (rec.score(k) > rec.score(use)) use = k;
+    const bool trade = rec.score(use) > 0;
+    std::vector<std::size_t> recW;  // the books' values of the day, pushed together
+    std::vector<double> recX;
     double dayRet = 0, dayOpt = 0;
     const bool warm = book.days.size() > warmDays;
     for (std::size_t kk = 0; kk < NK; ++kk) {
@@ -189,7 +190,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
       for (std::size_t mdl = 0; mdl < NM; ++mdl) {
         const std::size_t bkI = kk * NM + mdl;
         if ((mdl == 0 && beta.empty()) || (mdl == 1 && betaU.size() != 2)) {
-          rec[bkI].push(0.0);
+          recW.push_back(bkI), recX.push_back(0.0);
           continue;
         }
         std::vector<std::vector<double>> ab(P);
@@ -218,7 +219,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
           if (trade && bkI == use) ++book.trades, book.stops += o[2] == 1, book.takes += o[2] == 2;
         }
         if (trade && bkI == use) dayRet = r, dayOpt = ro;
-        rec[bkI].push(std::log1p(r));
+        recW.push_back(bkI), recX.push_back(std::log1p(r));
       }
       // After the close: the outcomes, for the fits (every candidate) and the skill.
       const double zb = day::chauvenet(fit[kk].n + double(cand.size()));
@@ -240,6 +241,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
       }
       for (const auto& x : raw) scal[kk].add(x);
     }
+    rec.push(recW, recX);
     book.forecastUsed.push_back(trade ? int(use % NM) : -1);
     book.ret.push_back(dayRet), book.optimistic.push_back(dayOpt), book.entryBars.push_back(trade ? int(kEntry[use / NM]) : 0);
   }
