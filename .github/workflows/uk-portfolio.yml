@@ -23,6 +23,7 @@ on:
       day_cost_pct: { description: 'Cost per side of the daily trades, percent', default: '0' }
       honest: { description: 'Honest backtest: each stock''s estimated spread on every trade, and each day only the 250 then most traded of a pool of 500', type: boolean, default: true }
       spread_costs: { description: 'With honest: charge each stock''s estimated spread (off: the point-in-time universe only)', type: boolean, default: false }
+      report_args: { description: 'Extra options for the report (tests)', default: '' }
       intraday_strategy: { description: 'US: also backtest the intraday strategy (5-minute bars of each day''s most traded)', type: boolean, default: false }
       strategy_days: { description: 'Intraday strategy: recent trading days with 5-minute bars', default: '1000' }
       strategy_universe: { description: 'Intraday strategy: the stocks then most traded, each day', default: '100' }
@@ -124,7 +125,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p report
-          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin)
+          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin ${{ inputs.report_args }})
           # Honest by default (scheduled runs too): each stock's estimated spread on every trade, and each
           # day only the 250 then most traded of the pool of 500.
           if [ "${{ format('{0}', inputs.honest) }}" != "false" ]; then
