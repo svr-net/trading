@@ -24,6 +24,8 @@ on:
       honest: { description: 'Honest backtest: each stock''s estimated spread on every trade, and each day only the 250 then most traded of a pool of 500', type: boolean, default: true }
       spread_costs: { description: 'With honest: charge each stock''s estimated spread (off: the point-in-time universe only)', type: boolean, default: false }
       report_args: { description: 'Extra options for the report (tests)', default: '' }
+      pool: { description: 'Honest backtest: the pool of most traded shares kept per exchange', default: '500' }
+      intraday_volume: { description: 'Fetch again, once, the 5-minute months stored without volumes', type: boolean, default: false }
       intraday_strategy: { description: 'US: also backtest the intraday strategy (5-minute bars of each day''s most traded)', type: boolean, default: false }
       strategy_days: { description: 'Intraday strategy: recent trading days with 5-minute bars', default: '1000' }
       strategy_universe: { description: 'Intraday strategy: the stocks then most traded, each day', default: '100' }
@@ -89,7 +91,7 @@ jobs:
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
-            ARGS=(--exchange "$EX" --universe "${{ format('{0}', inputs.honest) == 'false' && (inputs.universe || '250') || '500' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            ARGS=(--exchange "$EX" --universe "${{ format('{0}', inputs.honest) == 'false' && (inputs.universe || '250') || (inputs.pool || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             else
@@ -144,7 +146,8 @@ jobs:
             # The intraday strategy: each recent day's most traded stocks, their 5-minute bars, the run.
             U="${{ inputs.strategy_universe || '100' }}"
             ./build/ofm_report "${ARGS[@]}" --universe-out data/universe.csv --universe-days "${{ inputs.strategy_days || '1000' }}" --intraday-universe "$U"
-            node tools/eoddata/intraday.mjs --candidates data/universe.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
+            VOL=""; [ "${{ inputs.intraday_volume }}" = "true" ] && VOL="--volume"
+            node --max-old-space-size=6144 tools/eoddata/intraday.mjs $VOL --candidates data/universe.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
             ARGS+=(--intraday data/intraday.csv --intraday-strategy --intraday-universe "$U")
           elif [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
             ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days "$DAYS" > /dev/null
