@@ -3,10 +3,11 @@
 // store a month per symbol (<store root>/intraday/, in the private svr-net/eod (store.mjs), never
 // committed or published: EODData's licence). A month is fetched once (the current month again
 // only for the days it is missing), so each run makes requests only for new candidates' months.
-// Writes date,ticker,time,high,low,close for every stored day of the listed symbols' months.
+// Each bar keeps its volume; --volume fetches again, once, the months stored before volumes were
+// kept. Writes date,ticker,time,high,low,close,volume for every stored day of the listed months.
 //
 //   EODDATA_API_KEY=... node tools/eoddata/intraday.mjs --candidates data/candidates.csv \
-//       --exchanges NYSE,NASDAQ --out data/intraday.csv [--cached]
+//       --exchanges NYSE,NASDAQ --out data/intraday.csv [--cached] [--volume]
 import fs from 'node:fs';
 import path from 'node:path';
 import { field, day, ROOT as STORE_ROOT } from './store.mjs';
@@ -14,6 +15,7 @@ import { field, day, ROOT as STORE_ROOT } from './store.mjs';
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d; };
 const cached = argv.includes('--cached');
+const withVolume = argv.includes('--volume');
 const exchanges = opt('exchanges', 'NYSE,NASDAQ').split(',');
 const out = opt('out', 'data/intraday.csv');
 const key = process.env.EODDATA_API_KEY;
@@ -61,7 +63,7 @@ async function worker() {
     const [t, mo] = k.split('|'), ex = exchangeOf.get(t), f = fileOf(ex, t, mo);
     const have = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
     const missing = [...want].some((d) => !have?.days[d]);
-    if (have && (have.complete || !missing)) { ++counts.stored; continue; }
+    if (have && !(withVolume && !have.volume) && (have.complete || !missing)) { ++counts.stored; continue; }
     if (cached) continue;
     try {
       const list = await fetchMonth(ex, t, mo);
@@ -70,12 +72,12 @@ async function worker() {
       for (const q of rows) {
         const s = String(field(q, 'dateStamp', 'date') ?? ''), tm = s.slice(11, 16);
         if (tm < '09:30' || tm >= '16:00') continue;  // the regular session
-        const h = +field(q, 'high'), l = +field(q, 'low'), c = +field(q, 'close');
+        const h = +field(q, 'high'), l = +field(q, 'low'), c = +field(q, 'close'), v = +field(q, 'volume') || 0;
         if (!(h > 0 && l > 0 && c > 0)) continue;
-        (days[day(s)] ||= []).push([tm, h, l, c]);
+        (days[day(s)] ||= []).push([tm, h, l, c, v]);
       }
       fs.mkdirSync(path.dirname(f), { recursive: true });
-      fs.writeFileSync(f, JSON.stringify({ complete: lastDay(mo) < today, days }));
+      fs.writeFileSync(f, JSON.stringify({ complete: lastDay(mo) < today, volume: true, days }));
       ++counts.fetched;
     } catch (e) { ++counts.failed; console.warn(`  ${e.message}`); }
   }
@@ -83,14 +85,14 @@ async function worker() {
 await Promise.all(Array.from({ length: 12 }, worker));
 
 // The paths of every stored day of the listed months.
-const outRows = ['date,ticker,time,high,low,close'];
+const outRows = ['date,ticker,time,high,low,close,volume'];
 let stockDays = 0;
 for (const k of months.keys()) {
   const [t, mo] = k.split('|'), f = fileOf(exchangeOf.get(t), t, mo);
   if (!fs.existsSync(f)) continue;
   for (const [d, bars] of Object.entries(JSON.parse(fs.readFileSync(f, 'utf8')).days)) {
     ++stockDays;
-    for (const [tm, h, l, c] of bars) outRows.push(`${d},${t},${tm},${h},${l},${c}`);
+    for (const [tm, h, l, c, v] of bars) outRows.push(`${d},${t},${tm},${h},${l},${c},${v ?? ''}`);
   }
 }
 fs.mkdirSync(path.dirname(out), { recursive: true });
