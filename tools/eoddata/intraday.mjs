@@ -1,6 +1,6 @@
 // Intraday paths of the strongest candidates: 5-minute bars of the regular session (09:30-16:00,
 // exchange time) for each (date, ticker) the model lists (ofm_report --candidates-out), kept in a
-// store a month per symbol (data/eoddata/intraday/, kept between runs by actions/cache, never
+// store a month per symbol (<store root>/intraday/, in the private svr-net/eod (store.mjs), never
 // committed or published: EODData's licence). A month is fetched once (the current month again
 // only for the days it is missing), so each run makes requests only for new candidates' months.
 // Writes date,ticker,time,high,low,close for every stored day of the listed symbols' months.
@@ -9,7 +9,7 @@
 //       --exchanges NYSE,NASDAQ --out data/intraday.csv [--cached]
 import fs from 'node:fs';
 import path from 'node:path';
-import { field, day } from './store.mjs';
+import { field, day, ROOT as STORE_ROOT } from './store.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d; };
@@ -19,7 +19,7 @@ const out = opt('out', 'data/intraday.csv');
 const key = process.env.EODDATA_API_KEY;
 if (!key && !cached) { console.error('Set EODDATA_API_KEY in the environment (never pass it on the command line).'); process.exit(2); }
 const BASE = process.env.EODDATA_BASE || 'https://api.eoddata.com';
-const ROOT = path.join('data', 'eoddata', 'intraday');
+const ROOT = path.join(STORE_ROOT, 'intraday');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Which exchange each ticker is on (the share lists written by fetch.mjs).
