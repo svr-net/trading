@@ -183,7 +183,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
                 const DayRisk& risk) {
   using namespace day;
   DayBook book;
-  book.buy = buy, book.sell = sell, book.start = start, book.spreadCosts = risk.spreadCosts, book.universe = risk.universe;
+  book.buy = buy, book.sell = sell, book.start = start, book.spreadCosts = risk.spreadCosts, book.universe = risk.universe, book.universeFrom = risk.universeFrom;
   const std::size_t T = m.T(), N = m.N(), K = 10, F = 10;
   if (start == 0 || start >= T || f.E.T != T || f.horizons.empty()) return book;
   const std::vector<std::uint32_t>& halfLives = f.horizons;
@@ -357,7 +357,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (valueN[i] > 0 && barAt(t, i, &b)) v.emplace_back(tradedValue[i][vol.best()], i);
     std::sort(v.begin(), v.end(), [](const auto& a, const auto& c) { return a.first > c.first; });
     std::fill(in.begin(), in.end(), 0);
-    for (std::size_t k = 0; k < std::min(risk.universe, v.size()); ++k) in[v[k].second] = 1;
+    for (std::size_t k = risk.universeFrom; k < std::min(risk.universeFrom + risk.universe, v.size()); ++k) in[v[k].second] = 1;
     return in;
   };
   // Pair q of stock i: its stop and take-profit distances from the open (log), from its own moves.

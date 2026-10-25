@@ -133,7 +133,9 @@ jobs:
           # Honest by default (scheduled runs too): each stock's estimated spread on every trade, and each
           # day only the 250 then most traded of the pool of 500.
           if [ "${{ format('{0}', inputs.honest) }}" != "false" ]; then
-            ARGS+=(--universe "${{ inputs.universe || '250' }}")
+            # UK: the 250 most traded; US: the shares ranked 501 to 1000 by traded value (the US edge lies
+            # in the less traded shares; the most traded have none).
+            if [ "$MARKET" = "US" ]; then ARGS+=(--universe "${{ inputs.universe || '500' }}" --universe-from 500); else ARGS+=(--universe "${{ inputs.universe || '250' }}"); fi
             # No costs by default (pure share trading); spread_costs charges each stock's estimated spread.
             [ "${{ format('{0}', inputs.spread_costs) }}" = "true" ] && ARGS+=(--spread-costs)
           fi
@@ -141,8 +143,8 @@ jobs:
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
           # 5-minute bars (only the months not yet stored), then the run with exact fills.
-          # The intraday strategy runs on every scheduled US scan (and when asked).
-          if [ "$EXCH" != "LSE" ] && { [ "${{ inputs.intraday_strategy }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; }; then
+          # The intraday strategy runs only when asked.
+          if [ "$EXCH" != "LSE" ] && [ "${{ inputs.intraday_strategy }}" = "true" ]; then
             # The intraday strategy: each recent day's most traded stocks, their 5-minute bars, the run.
             U="${{ inputs.strategy_universe || '100' }}"
             ./build/ofm_report "${ARGS[@]}" --universe-out data/universe.csv --universe-days "${{ inputs.strategy_days || '1000' }}" --intraday-universe "$U"

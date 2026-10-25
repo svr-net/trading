@@ -184,7 +184,7 @@ struct DayBook {
     std::vector<double> spreads;  ///< every candidate's estimated round-trip spread (log)
   } gates;
   bool spreadCosts = false;
-  std::size_t universe = 0;
+  std::size_t universe = 0, universeFrom = 0;
   std::size_t pathTrades = 0, pathResolved = 0;  ///< trades with an intraday path; of them, both levels touched and the path decided
   std::size_t pathDays = 0;                      ///< stock-days with an intraday path
   /// Each day's strongest candidates (day, stock): every stock any of the books could trade.
@@ -214,6 +214,7 @@ struct DayRisk {
   // high trades through it by half the spread; and each day only the stocks then most traded.
   bool spreadCosts = false;     ///< charge each stock's estimated spread
   std::size_t universe = 0;     ///< each day only the stocks then among the most traded (0: all)
+  std::size_t universeFrom = 0; ///< ... below this many most traded: a band of less traded stocks (the US edge lies there)
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.

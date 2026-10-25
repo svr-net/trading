@@ -237,7 +237,7 @@ std::string reportJson(const Market& m, const Forecast& f, const Backtest& bt, c
     const double n = static_cast<double>(F.n);
     o << ",\"day\":{\"name\":" << str(kDayName) << ",\"buyBps\":" << num(1e4 * day->buy) << ",\"sellBps\":" << num(1e4 * day->sell)
       << ",\"trades\":" << day->trades << ",\"tradesPerDay\":" << num(static_cast<double>(day->trades) / n) << ",\"stops\":" << day->stops
-      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"levelLoss\":{\"history\":" << num(day->levelLoss[0]) << ",\"wilderAtr\":" << num(day->levelLoss[1]) << ",\"bollinger\":" << num(day->levelLoss[2]) << ",\"network\":" << num(day->levelLoss[3]) << ",\"networkWilder\":" << num(day->levelLoss[4]) << "}" << ",\"backtestSharpe\":" << num(day->backtestSharpe) << ",\"backtestT\":" << num(day->backtestT) << ",\"stopLimitUnits\":" << num(day->stopLimitUnits) << ",\"dayBudget\":" << num(day->dayBudget) << ",\"trendFits\":" << (day->trendFits ? "true" : "false") << ",\"minGain\":" << num(day->minGain) << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
+      << ",\"takes\":" << day->takes << ",\"halfLife\":" << day->halfLife << ",\"stopLimit\":" << num(day->stopLimit) << ",\"bookSize\":" << day->bookSize << ",\"levelsFrom\":\"" << day->levelsFrom << "\"" << ",\"levelLoss\":{\"history\":" << num(day->levelLoss[0]) << ",\"wilderAtr\":" << num(day->levelLoss[1]) << ",\"bollinger\":" << num(day->levelLoss[2]) << ",\"network\":" << num(day->levelLoss[3]) << ",\"networkWilder\":" << num(day->levelLoss[4]) << "}" << ",\"backtestSharpe\":" << num(day->backtestSharpe) << ",\"backtestT\":" << num(day->backtestT) << ",\"stopLimitUnits\":" << num(day->stopLimitUnits) << ",\"dayBudget\":" << num(day->dayBudget) << ",\"trendFits\":" << (day->trendFits ? "true" : "false") << ",\"minGain\":" << num(day->minGain) << ",\"universe\":" << day->universe << ",\"universeFrom\":" << day->universeFrom << ",\"backtestLoses\":" << (day->backtestLoses ? "true" : "false") << ",\"optimisticAnnual\":" << num(metrics(day->optimistic).annualReturn) << ",\"exposure\":" << num(day->exposure.empty() ? 0.0 : std::accumulate(day->exposure.begin(), day->exposure.end(), 0.0) / static_cast<double>(day->exposure.size())) << ",\"lead\":{\"mean\":" << num(L.mean) << ",\"t\":" << num(L.t) << ",\"ahead\":" << num(L.ahead)
       << "},\"screen\":{\"stocks\":" << day->screen.stocks << ",\"bars\":" << day->screen.bars << ",\"flatBars\":" << day->screen.flatBars
       << ",\"candidates\":" << day->screen.candidates << ",\"forecastUp\":" << day->screen.forecastUp << ",\"gainExpected\":"
       << day->screen.gainExpected << ",\"recordUp\":" << day->screen.recordUp << ",\"all\":" << day->screen.all << "},\"orders\":[";
@@ -348,7 +348,8 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
         o << b;
       }
       if (day->universe) {
-        std::snprintf(b, sizeof b, "Universe: each day the %zu most traded at that time, of %zu stocks\n", day->universe, m.N());
+        std::snprintf(b, sizeof b, "Universe: each day the stocks ranked %zu to %zu by traded value at that time, of %zu stocks\n", day->universeFrom + 1,
+                      day->universeFrom + day->universe, m.N());
         o << b;
       }
       {
