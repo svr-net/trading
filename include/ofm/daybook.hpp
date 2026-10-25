@@ -156,6 +156,7 @@ struct DayBook {
   double stopLimitUnits = 0;         ///< the learnt stop limit in multiples of each stock's band unit (with DayRisk::bandLimits)
   double dayBudget = 0;              ///< the worst-day budget at the last close (fraction of the capital)
   double minGain = 0;                ///< the learnt minimum expected gain of a trade at the last close (fraction)
+  std::size_t bandFrom = 0, bandTo = 0;  ///< the learnt liquidity band in use: ranks by traded value [from, to)
   std::string levelsFrom;            ///< what sets the stop and take-profit levels
   /// Mean pinball loss a stock-day of the level predictors (0: not scored): history, Wilder's true
   /// range, Bollinger bands, the network, the network with Wilder's and Bollinger's indicators.
