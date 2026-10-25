@@ -428,6 +428,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // lower squared error so far (out of sample, over every pair). Each level source has its own.
   std::vector<LeastSquares> pairFit[kSources], trendFit[kSources];
   for (int s0 = 0; s0 < kSources; ++s0) pairFit[s0].assign(P, LeastSquares(2)), trendFit[s0].assign(P, LeastSquares(4));
+  // Calibration of each source's expected trade returns: the actual return of every candidate's
+  // best pair (worst-case fills) on its expected one, over every past day (walk-forward), so a
+  // trade is judged on what such expectations have earned, not on the pair fits' own scale. No
+  // trades until a source is calibrated.
+  std::vector<LeastSquares> calib(kSources, LeastSquares(2));
+  std::vector<double> calibBeta[kSources];
+  auto calibrated = [&](int s0, double x) { return calibBeta[s0].size() == 2 ? calibBeta[s0][0] + calibBeta[s0][1] * x : kNaN; };
   double errPlain = 0, errTrend = 0, nErr = 0;
   auto useTrend = [&]() { return errTrend < errPlain; };
   // Each stock's record; each stop limit's book's record (the best trades).
@@ -686,7 +693,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     std::vector<std::tuple<double, std::size_t, std::size_t, double>> v1;  // (expected return, stock, pair, expect)
     for (std::size_t i : cand) {
       const double e = B.e(v, s0, l, i);
-      if (e > 0 && e * sigmaOf(i) >= minGain && record.score(i) > 0) v1.emplace_back(e * sigmaOf(i), i, B.pair(v, s0, l, i), e);
+      if (!(e > 0)) continue;
+      const double c = calibrated(s0, e * sigmaOf(i));
+      if (c > 0 && c >= minGain && record.score(i) > 0) v1.emplace_back(c, i, B.pair(v, s0, l, i), c / sigmaOf(i));
     }
     std::stable_sort(v1.begin(), v1.end(), [](const auto& a, const auto& c) { return std::get<0>(a) > std::get<0>(c); });
     if (v1.size() > K) v1.resize(K);
@@ -696,8 +705,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   auto medianGain = [&](const BestTable& B, std::size_t v, std::size_t l, int s0, const std::vector<std::size_t>& cand) {
     std::vector<double> g;
     for (std::size_t i : cand) {
-      const double e = B.e(v, s0, l, i);
-      if (e > 0) g.push_back(e * sigmaOf(i));
+      const double e = B.e(v, s0, l, i), c = e > 0 ? calibrated(s0, e * sigmaOf(i)) : kNaN;
+      if (c > 0) g.push_back(c);
     }
     if (g.empty()) return 0.0;
     std::nth_element(g.begin(), g.begin() + std::ptrdiff_t(g.size() / 2), g.end());
@@ -760,6 +769,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     double medSig, mkt;
     dayContext(t, cand, &medSig, &mkt);
     const auto pl = plan(t, cand, medSig, mkt);
+    for (int s0 = 0; s0 < kSources; ++s0) calibBeta[s0] = calib[s0].solve();
     setLevels(t, cand, pl);
     // Every source's and stop limit's book; the one in use trades.
     const std::size_t use = bestLimit(), nBooks = nLimitRecords;
@@ -844,6 +854,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       // the days a gain was expected, which under costs would leave the record empty and block it).
       if (B.e(1, us, G, i) > -kNone)
         recW.push_back(i), recX.push_back(std::log1p(tradeReturn(b, 1.0, stopOf(us, i, q0), takeOf(us, i, q0), buy, sell, true, &e, path, nullptr, halfSpread(i))));
+      // Each source's calibration: this best pair's actual return on its expected one.
+      for (int s0 = 0; s0 < kSources; ++s0) {
+        const double ex = B.e(1, s0, G, i);
+        if (!(ex > -kNone)) continue;
+        const std::size_t qs = B.pair(1, s0, G, i);
+        calib[s0].add({1.0, ex * sigmaOf(i)}, std::log1p(tradeReturn(b, 1.0, stopOf(s0, i, qs), takeOf(s0, i, qs), buy, sell, true, &e, path, nullptr, halfSpread(i))));
+      }
       // The day's actual fall and rise from the open: the level predictors' targets and scores.
       if (!histStop[i].empty()) {
         std::vector<double> y(2 * G);
@@ -948,6 +965,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   double medSig, mkt;
   dayContext(t, cand, &medSig, &mkt);
   const auto pl0 = plan(t, cand, medSig, mkt);
+  for (int s0 = 0; s0 < kSources; ++s0) calibBeta[s0] = calib[s0].solve();
   setLevels(t, cand, pl0);
   const std::size_t use = bestLimit();
   const int src = srcK(use);
