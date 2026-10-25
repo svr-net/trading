@@ -229,11 +229,19 @@ int main(int argc, char** argv) {
       for (const auto& [d, i] : day.candidates) o << m.dates[d] << ',' << m.tickers[i] << '\n';
     }
     std::cout << ofm::reportText(m, f, bt, costs, &ms, &day);
+    std::string intraJ;
     if (intraStrategy) {
-      std::cout << ofm::intraText(m, ofm::intraBook(m, f, paths, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraUniverse), 1e-4 * costs.dayBps);
+      const auto ib = ofm::intraBook(m, f, paths, 1e-4 * costs.dayBps, 1e-4 * costs.dayBps, intraUniverse);
+      std::cout << ofm::intraText(m, ib, 1e-4 * costs.dayBps);
+      intraJ = ofm::intraJson(m, ib);
       lap("the US intraday strategy");
     }
-    if (!json.empty()) std::ofstream(json) << ofm::reportJson(m, f, bt, costs, &ms, &day);
+    if (!json.empty()) {
+      std::string j = ofm::reportJson(m, f, bt, costs, &ms, &day);
+      // The intraday strategy's results join the scan's object.
+      if (!intraJ.empty() && intraJ != "{}") j.insert(j.rfind('}'), ",\"intraday\":" + intraJ);
+      std::ofstream(json) << j;
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

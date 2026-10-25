@@ -45,6 +45,8 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
 
 /// The strategy's report: the backtest over the days with paths (whole, each half, each year), the
 /// fill test, the entries used and each input's correlation with the outcome. Results only.
+/// The backtest's results as a JSON object (the page's US intraday section).
+std::string intraJson(const Market& m, const IntraBook& b);
 std::string intraText(const Market& m, const IntraBook& b, double costPerSide);
 
 }  // namespace ofm

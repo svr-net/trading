@@ -137,7 +137,8 @@ jobs:
           DAYS="${{ inputs.intraday_days || '250' }}"
           # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
           # 5-minute bars (only the months not yet stored), then the run with exact fills.
-          if [ "$EXCH" != "LSE" ] && [ "${{ inputs.intraday_strategy }}" = "true" ]; then
+          # The intraday strategy runs on every scheduled US scan (and when asked).
+          if [ "$EXCH" != "LSE" ] && { [ "${{ inputs.intraday_strategy }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; }; then
             # The intraday strategy: each recent day's most traded stocks, their 5-minute bars, the run.
             U="${{ inputs.strategy_universe || '100' }}"
             ./build/ofm_report "${ARGS[@]}" --universe-out data/universe.csv --universe-days "${{ inputs.strategy_days || '1000' }}" --intraday-universe "$U"
