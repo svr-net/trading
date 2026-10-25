@@ -143,8 +143,9 @@ jobs:
           fi
           ./build/ofm_report "${ARGS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      # What this run downloaded goes back to svr-net/eod (the other market's job may push first:
-      # rebase and retry).
+      # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
+      # rebase and retry; a file both jobs updated (the shared series) keeps the version already
+      # pushed, which holds the same days.
       - name: Push the new data to the EOD store (svr-net/eod)
         if: ${{ always() }}
         run: |
@@ -155,7 +156,8 @@ jobs:
           if git diff --cached --quiet; then echo "EOD store: nothing new"; exit 0; fi
           git commit -q -m "$MARKET data $(date -u +%Y-%m-%d)"
           for k in 1 2 3 4 5; do
-            git pull -q --rebase origin main && git push -q origin HEAD:main && { echo "EOD store: pushed"; exit 0; }
+            git pull -q --rebase -X ours origin main && git push -q origin HEAD:main && { echo "EOD store: pushed"; exit 0; }
+            git rebase --abort 2>/dev/null || true
             sleep $((k * 5))
           done
           exit 1
