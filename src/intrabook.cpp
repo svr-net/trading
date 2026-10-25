@@ -98,12 +98,8 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
   auto bar = [&](std::size_t t, std::size_t i) {
     return m.open(t, i) > 0 && m.high(t, i) > m.low(t, i) && m.low(t, i) > 0 && m.close(t, i) > 0;
   };
-  // [1, opening move, market's opening move, gap, last day's open-to-close, close in its range, model
-  // forecast, opening volume (the shares traded by the entry over the previous day's), opening move
-  // x opening volume (a move on heavy trading)]; the volumes are 0 where the bars have none.
-  const std::size_t F = 9;
-  book.featureNames = {"opening move", "market's opening move", "overnight gap", "last day's open-to-close", "last close in its range", "model forecast",
-                       "opening volume", "opening move x volume"};
+  const std::size_t F = 7;  // [1, opening move, market's opening move, gap, last day's open-to-close, close in its range, model forecast]
+  book.featureNames = {"opening move", "market's opening move", "overnight gap", "last day's open-to-close", "last close in its range", "model forecast"};
   std::vector<Fit> fit(NK, Fit(F));
   // The inputs standardised by everything seen so far and cut at Chauvenet's bound, so a few wild
   // early values cannot dominate; no forecast before the fit has seen as many days as the model's
@@ -184,10 +180,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
       for (std::size_t c = 0; c < cand.size(); ++c) {
         const auto& C = cand[c];
         const double o = m.open(d, C.i), e = (*C.p)[k - 1].c;
-        double ev = 0;
-        for (std::size_t j = 0; j < k; ++j) ev += (*C.p)[j].v;
-        const double rv = ev > 0 && m.volume(t, C.i) > 0 ? std::log(ev / m.volume(t, C.i)) : 0.0, om = std::log(e / o) / C.sig;
-        raw[c] = {om, mo, C.gap, C.lastOC, C.lastLoc, C.fc, rv, om * rv};
+        raw[c] = {std::log(e / o) / C.sig, mo, C.gap, C.lastOC, C.lastLoc, C.fc};
         const auto sc = scal[kk].apply(raw[c]);
         xs[c] = {1.0};
         xs[c].insert(xs[c].end(), sc.begin(), sc.end());

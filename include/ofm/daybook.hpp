@@ -74,7 +74,6 @@ struct Bar {
 /// One bar of a stock's regular session (5 minutes), in time order: its high and low.
 struct Tick {
   double h, l, c = 0;  ///< high, low and close of the 5-minute bar
-  double v = 0;        ///< its volume (0 where not known)
 };
 /// Intraday paths of some stocks on some days, keyed day * N + stock.
 using Paths = std::unordered_map<std::size_t, std::vector<Tick>>;

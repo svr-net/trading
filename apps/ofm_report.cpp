@@ -50,15 +50,15 @@ ofm::day::Paths readPaths(const std::string& text, const ofm::Market& m) {
   std::unordered_map<std::string, std::size_t> di, ti;
   for (std::size_t d = 0; d < m.dates.size(); ++d) di[m.dates[d]] = d;
   for (std::size_t i = 0; i < m.tickers.size(); ++i) ti[m.tickers[i]] = i;
-  struct Row { std::string time; double h, l, c, v; };
+  struct Row { std::string time; double h, l, c; };
   std::unordered_map<std::size_t, std::vector<Row>> rows;
   std::istringstream in(text);
   std::string line;
   std::getline(in, line);
   while (std::getline(in, line)) {
-    std::string f[7];
+    std::string f[6];
     std::size_t k = 0, p = 0;
-    for (; k < 7; ++k) {
+    for (; k < 6; ++k) {
       const std::size_t q = line.find(',', p);
       f[k] = line.substr(p, q == std::string::npos ? std::string::npos : q - p);
       if (q == std::string::npos) break;
@@ -67,7 +67,7 @@ ofm::day::Paths readPaths(const std::string& text, const ofm::Market& m) {
     if (k < 5) continue;
     const auto d = di.find(f[0]), i = ti.find(f[1]);
     if (d == di.end() || i == ti.end()) continue;
-    rows[d->second * m.N() + i->second].push_back({f[2], std::stod(f[3]), std::stod(f[4]), std::stod(f[5]), k >= 6 && !f[6].empty() ? std::stod(f[6]) : 0.0});
+    rows[d->second * m.N() + i->second].push_back({f[2], std::stod(f[3]), std::stod(f[4]), std::stod(f[5])});
   }
   ofm::day::Paths out;
   for (auto& [key, r] : rows) {
@@ -76,7 +76,7 @@ ofm::day::Paths readPaths(const std::string& text, const ofm::Market& m) {
     std::sort(r.begin(), r.end(), [](const Row& a, const Row& b) { return a.time < b.time; });
     if (!(h > 0) || !(l > 0) || r.empty() || r.back().c < l || r.back().c > h) continue;
     auto& path = out[key];
-    for (const auto& x : r) path.push_back({std::clamp(x.h, l, h), std::clamp(x.l, l, h), std::clamp(x.c, l, h), x.v});
+    for (const auto& x : r) path.push_back({std::clamp(x.h, l, h), std::clamp(x.l, l, h), std::clamp(x.c, l, h)});
   }
   return out;
 }
