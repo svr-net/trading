@@ -51,6 +51,20 @@ void bollinger(const std::vector<double>& bars, std::size_t T, std::size_t N, co
   detail::dispatch(k, detail::groups(std::uint32_t(N), 64));
 }
 
+void pairTrades(const std::vector<double>& ticks, const std::vector<double>& cand, const std::vector<std::uint32_t>& entries,
+                const std::vector<double>& mult, double buy, double sell, std::vector<double>& out) {
+  H P;
+  P.nC = std::uint32_t(cand.size() / 3), P.G = std::uint32_t(mult.size()), P.NK = std::uint32_t(entries.size()), P.buy = buy, P.sell = sell;
+  for (std::size_t k = 0; k < entries.size() && k < 4; ++k) P.ent[0][k] = entries[k];
+  const std::size_t n = std::size_t(P.nC) * P.NK * P.G * P.G;
+  out.assign(3 * n, 0.0);
+  if (n == 0) return;
+  gen::Pairs<double> k;
+  k.P = P, k.ticks = const_cast<double*>(ticks.data()), k.cand = const_cast<double*>(cand.data()), k.mult = const_cast<double*>(mult.data());
+  k.out = out.data();
+  detail::dispatch(k, detail::groups(std::uint32_t(n), 64));
+}
+
 Net::Net(std::size_t in, std::size_t hidden, std::vector<double> quantiles) : In(in), Hd(hidden), Out(quantiles.size()), tau(std::move(quantiles)) {
   const std::size_t sizes[3][2] = {{Hd, In}, {Hd, Hd}, {Out, Hd}};
   std::uint64_t r = 0x9E3779B97F4A7C15ull;

@@ -7,6 +7,7 @@
 
 #include "ofm/liquidity.hpp"
 #include "ofm/trade.hpp"
+#include "daykernels.hpp"
 
 #include <cstdio>
 #include <map>
@@ -64,27 +65,6 @@ struct Fit {
   }
 };
 
-// A trade bought at `entry` after bar k-1, sold at the stop, the take-profit or the last bar's
-// close: net return. stopFirst: when one bar touched both, the stop is taken. exit: 0 close, 1 stop,
-// 2 take-profit.
-double pathTrade(const std::vector<day::Tick>& p, std::size_t k, double entry, double stop, double take, double buy, double sell, bool stopFirst,
-                 int* exit) {
-  double px = p.back().c;
-  *exit = 0;
-  for (std::size_t j = k; j < p.size(); ++j) {
-    const bool hs = p[j].l <= stop, ht = p[j].h >= take;
-    if (hs && (stopFirst || !ht)) {
-      px = stop, *exit = 1;
-      break;
-    }
-    if (ht) {
-      px = take, *exit = 2;
-      break;
-    }
-  }
-  return (px / entry) * (1 - sell) / (1 + buy) - 1;
-}
-
 }  // namespace
 
 IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths, double buy, double sell, std::size_t universe) {
@@ -96,7 +76,7 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
   // horizons (h / h_mid), as in the daily trades.
   std::vector<double> mult;
   for (auto h : f.horizons) mult.push_back(double(h) / double(f.horizons[f.horizons.size() / 2]));
-  mult.push_back(std::numeric_limits<double>::infinity());  // no stop / no take-profit: held to the close
+  mult.push_back(-1);  // no stop / no take-profit: held to the close
   const std::size_t G = mult.size(), P = G * G;
   const double halfLife = double(f.horizons[f.horizons.size() / 2]), lam = std::exp(-std::log(2.0) / halfLife);
   const Liquidity liq(m, halfLife);
@@ -151,6 +131,14 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
                       (m.close(t, i) - m.low(t, i)) / hl - 0.5, std::isfinite(f.E(t, i)) ? f.E(t, i) / sig : 0.0});
     }
     if (cand.empty()) continue;
+    // Every candidate's trade at every entry and pair, in one fused kernel: out[((c NK + kk) P + q) 3].
+    std::vector<double> ticks, cinfo, out;
+    for (const auto& C : cand) {
+      cinfo.insert(cinfo.end(), {double(ticks.size() / 3), double(C.p->size()), C.sig});
+      for (const auto& b : *C.p) ticks.insert(ticks.end(), {b.h, b.l, b.c});
+    }
+    day::kernels::pairTrades(ticks, cinfo, std::vector<std::uint32_t>(kEntry, kEntry + NK), mult, buy, sell, out);
+    auto at = [&](std::size_t c, std::size_t kk, std::size_t q) { return &out[((c * NK + kk) * P + q) * 3]; };
     book.candidates += cand.size();
     book.days.push_back(d);
     // Each (entry, forecast) book; the one whose record is best so far trades.
@@ -210,13 +198,9 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
         if (v.size() > BOOK) v.resize(BOOK);
         double r = 0, ro = 0;
         for (const auto& [ex, c, q, e] : v) {
-          const auto& C = cand[c];
-          const double rest = C.sig * std::sqrt(double((*C.p).size() - k) / double((*C.p).size()));
-          const double stop = e * std::exp(-mult[q / G] * rest), take = e * std::exp(mult[q % G] * rest);
-          int x;
-          r += pathTrade(*C.p, k, e, stop, take, buy, sell, true, &x) / double(v.size());
-          if (trade && bkI == use) ++book.trades, book.stops += x == 1, book.takes += x == 2;
-          ro += pathTrade(*C.p, k, e, stop, take, buy, sell, false, &x) / double(v.size());
+          const double* o = at(c, kk, q);
+          r += o[0] / double(v.size()), ro += o[1] / double(v.size());
+          if (trade && bkI == use) ++book.trades, book.stops += o[2] == 1, book.takes += o[2] == 2;
         }
         if (trade && bkI == use) dayRet = r, dayOpt = ro;
         rec[bkI].push(std::log1p(r));
@@ -229,15 +213,13 @@ IntraBook intraBook(const Market& m, const Forecast& f, const day::Paths& paths,
         if (!beta.empty()) book.skill[kk].add(yhat[0][c], y);
         for (std::size_t j1 = 1; j1 < F; ++j1) book.featureSkill[kk][j1 - 1].add(xs[c][j1], y), uni[kk][j1 - 1].add({1.0, xs[c][j1]}, y);
         fit[kk].add(xs[c], y);
-        const double e = (*C.p)[k - 1].c, rest = C.sig * std::sqrt(double((*C.p).size() - k) / double((*C.p).size()));
+        const double rest = C.sig * std::sqrt(double((*C.p).size() - k) / double((*C.p).size()));
         for (std::size_t mdl = 0; mdl < NM; ++mdl) {
           if ((mdl == 0 && beta.empty()) || (mdl == 1 && betaU.size() != 2)) continue;
           for (std::size_t q = 0; q < P; ++q) {
-            int x;
-            const double out = pathTrade(*C.p, k, e, e * std::exp(-mult[q / G] * rest), e * std::exp(mult[q % G] * rest), buy, sell, true, &x);
             auto& pf = pairFit[kk * NM + mdl][q];
             const double zq = day::chauvenet(pf.n + 1);
-            pf.add({1.0, yhat[mdl][c]}, std::clamp(std::log1p(out) / rest, -zq, zq));
+            pf.add({1.0, yhat[mdl][c]}, std::clamp(std::log1p(at(c, kk, q)[0]) / rest, -zq, zq));
           }
         }
       }
