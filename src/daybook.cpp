@@ -721,6 +721,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (limitRecord.score(j) > limitRecord.score(k)) k = j;
     return k;
   };
+  // The traded trades' expected and actual returns (log), summed: the expected-return column is the
+  // forecast scaled by what the trades actually earned per unit of it (display only).
+  double expectedSum = 0, realisedSum = 0;
   auto dayReturn = [&](const Book& bk, std::size_t d, bool count, bool worstCase = true) {
     double r = 0;
     Bar b;
@@ -729,7 +732,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       int e;
       bool res;
       const auto* path = pathOf(d, bk.pick[j]);
-      r += bk.w * tradeReturn(b, 1.0, stopOf(bk.src, bk.pick[j], bk.pair[j]), takeOf(bk.src, bk.pick[j], bk.pair[j]), buy, sell, worstCase, &e, path, &res, halfSpread(bk.pick[j]));
+      const double tr = tradeReturn(b, 1.0, stopOf(bk.src, bk.pick[j], bk.pair[j]), takeOf(bk.src, bk.pick[j], bk.pair[j]), buy, sell, worstCase, &e, path, &res, halfSpread(bk.pick[j]));
+      r += bk.w * tr;
+      if (count) expectedSum += bk.expect[j] * sigmaOf(bk.pick[j]), realisedSum += std::log1p(tr);
       if (count) book.spreadSum += 2 * halfSpread(bk.pick[j]);
       if (count) ++book.trades, book.stops += e == 1, book.takes += e == 2, book.pathTrades += path != nullptr, book.pathResolved += res;
     }
@@ -993,13 +998,14 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   book.backtestSharpe = metrics(book.ret).sharpe;
   book.backtestT = mr.n > 1 && mr.sd() > 0 ? mr.mean() / mr.sd() * std::sqrt(mr.n - 1) : 0.0;
   book.backtestLoses = !(grown > 0) || !(book.backtestT >= risk.minT);
+  book.expectScale = expectedSum > 0 && realisedSum > 0 ? realisedSum / expectedSum : 1.0;
   if (limitRecord.score(use) > 0 && !book.backtestLoses) {
     const Book bk = makeBook(src, ranked(B, 1, src, lu, cand, book.minGain), book.bookSize);
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       const std::size_t i = bk.pick[j], q = bk.pair[j];
       DayOrder o;
       o.asset = i, o.expected = f.E(t, i), o.sigma = sigmaOf(i), o.stop = stopOf(src, i, q) / o.sigma, o.take = takeOf(src, i, q) / o.sigma;
-      o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(bk.expect[j] * o.sigma), o.weight = bk.w;
+      o.intraday = pl[i].mu * o.sigma, o.tradeReturn = std::expm1(book.expectScale * bk.expect[j] * o.sigma), o.weight = bk.w;
       o.record = record.score(i), o.window = record.window(i), o.limit = 1 - std::exp(-std::min(limit(i), maxStop));
       book.orders.push_back(o);
     }
