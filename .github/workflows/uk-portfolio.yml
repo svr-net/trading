@@ -95,7 +95,7 @@ jobs:
           SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
           MODE=""
           if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; fi
-          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY
+          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary (no prices)
         run: |
           {
