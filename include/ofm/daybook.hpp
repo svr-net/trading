@@ -39,10 +39,9 @@
 //    open-to-close volatility); the rest stays in cash.
 //  - Risk limits (DayRisk), adaptive: the stop limits are multiples of each stock's Bollinger band
 //    unit (its last h closes' standard deviation over the close, h the horizon nearest the
-//    volatility's chosen half-life), and the weights are scaled down so that a day when every stop
-//    is hit loses no more than the equal-weight market's typical distance from its close to its lower
-//    band (two of its band units; the median over the closes so far); the books compared are not
-//    scaled, so wide stops compete freely.
+//    volatility's chosen half-life), never beyond the stock's largest fall from the open over its
+//    last W days, so every stop is a real one. The books compared and the book traded are sized the
+//    same way (by expected volatility); an optional worst-day cap (every stop hit) can scale it.
 //  - Gate: no orders unless the backtest's gain is significant (t-statistic of at least 2).
 // Fills: the stop, the take-profit or the close from the day's real high, low and close; when a
 // bar touched both levels, the stock's intraday path (5-minute bars, where fetched: the strongest
@@ -201,6 +200,8 @@ struct DayRisk {
   double maxDayLoss = 0;        ///< a fixed worst-day budget (fraction; 0: adaptive, the market's median distance to its lower band)
   bool dailyBudget = false;     ///< the adaptive budget follows each day's band distance instead of its median so far
   bool capSizingOnly = true;    ///< the worst-day budget scales the book traded only, not the books compared (false: both)
+  bool worstDayCap = false;     ///< size the book so a day when every stop is hit loses at most the budget (off: the books compared
+                                ///< and traded are the same, sized by expected volatility)
   double minT = 2;              ///< no orders unless the daily trades' backtest gain has at least this t-statistic
   // Honest backtest: half (log) of each stock's bid-ask spread, estimated from its own past bars
   // (Abdi and Ranaldo 2017), paid on every purchase and sale, a take-profit filling only when the

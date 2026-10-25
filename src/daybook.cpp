@@ -342,7 +342,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     if (n > 0) vol.add(N, s / n);
   };
   for (std::size_t t = 0; t + 1 < start; ++t) addDay(t);
-  for (std::size_t t = 0; t + 1 < start; ++t) {
+  for (std::size_t t = 0; t < start; ++t) {
     Bar b;
     for (std::size_t i = 0; i < N; ++i)
       if (barAt(t, i, &b)) logVolume[i].add(std::log(b.v));
@@ -576,9 +576,12 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   // expected return.
   // The stop limit of stock i under candidate k at the close t (log distance): k's multiple of its
   // Bollinger band unit, or of the day's median volatility (without band limits or a band).
+  // Never beyond the stock's largest fall from the open to the low over its last W days: a stop
+  // further away than the stock has ever fallen in a day is no stop.
   auto limitOf = [&](std::size_t k, std::size_t i, std::size_t t, double medSig) {
     const double unit = risk.bandLimits && !bolH.empty() ? bollinger(t, i, bolUnitH(), 2) : 0.0;
-    return mult[k] * (unit > 0 ? unit : medSig);
+    const double lim = mult[k] * (unit > 0 ? unit : medSig);
+    return falls[i].empty() ? lim : std::min(lim, *std::max_element(falls[i].begin(), falls[i].end()));
   };
   // The worst-day budget at the close t: the equal-weight market's typical distance from its close
   // to its lower Bollinger band (two band units at the adaptive horizon): the median of that
@@ -609,6 +612,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   std::vector<double> pastDistances;  // the market's band distance at every close so far
   std::size_t distancesTo = 0;        // closes added
   auto budgetAt = [&](std::size_t t) {
+    if (!risk.worstDayCap) return kNone;  // the book is sized by its expected volatility only
     if (risk.maxDayLoss > 0 || bolH.empty()) return risk.maxDayLoss > 0 ? risk.maxDayLoss : 1.0;
     if (risk.dailyBudget) return bandDistance(t);
     for (; distancesTo <= t; ++distancesTo)

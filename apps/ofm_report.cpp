@@ -156,9 +156,10 @@ int main(int argc, char** argv) {
       else if (a == "--forecast-cache") fcache = next();
       else if (a == "--max-stop-pct") risk.maxStop = std::stod(next()) / 100;
       else if (a == "--max-risk-reward") risk.maxRiskReward = std::stod(next());
-      else if (a == "--max-day-loss-pct") risk.maxDayLoss = std::stod(next()) / 100;
+      else if (a == "--max-day-loss-pct") risk.maxDayLoss = std::stod(next()) / 100, risk.worstDayCap = true;
       else if (a == "--min-t") risk.minT = std::stod(next());
       else if (a == "--cap-books") risk.capSizingOnly = false;
+      else if (a == "--worst-day-cap") risk.worstDayCap = true;
       else if (a == "--vol-limits") risk.bandLimits = false;
       else if (a == "--daily-budget") risk.dailyBudget = true;
       else if (a == "--spread-costs") risk.spreadCosts = true;
