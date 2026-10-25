@@ -9,6 +9,7 @@
 //  gradient    each sample's gradient of the quantile (pinball) loss.
 //  adam        one Adam step from a mini-batch's gradients.
 //  adwin       a day's values pushed into many records' ADWIN windows (daybook.hpp's AdwinBank).
+//  best        each candidate's best stop and take-profit pair under each source, limit and fill.
 //  quantiles   rolling windows' quantiles (each window kept sorted, one value in and out a day).
 //  pairs       the intraday trades of every candidate, entry and (stop, take-profit) pair.
 
@@ -35,6 +36,11 @@ void bollinger(const std::vector<double>& bars, std::size_t T, std::size_t N, co
 /// cand [first bar, bars, volatility] per candidate; mult [G], below 0 none; at most 4 entries.
 void pairTrades(const std::vector<double>& ticks, const std::vector<double>& cand, const std::vector<std::uint32_t>& entries,
                 const std::vector<double>& mult, double buy, double sell, std::vector<double>& out);
+
+/// The best pairs (kernels/day/best.wgsl): out [V][S][L][nC][2] (best expected outcome, pair).
+void bestPairs(const std::vector<double>& lev, const std::vector<double>& e, const std::vector<double>& ok, const std::vector<double>& lim,
+               const std::vector<double>& flo, std::size_t nC, std::size_t S, std::size_t G, std::size_t L, std::size_t V, double maxStop,
+               double maxRiskReward, double none, std::vector<double>& out);
 
 /// Rolling windows of at most W values and their G quantiles (kernels/day/quantiles.wgsl). Window w
 /// uses the levels tau[w % 2] (two sets, G each). set() gives a window its next value; run() adds

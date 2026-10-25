@@ -95,6 +95,21 @@ void AdwinBank::push(const std::vector<std::size_t>& which, const std::vector<do
 
 namespace ofm::day::kernels {
 
+void bestPairs(const std::vector<double>& lev, const std::vector<double>& e, const std::vector<double>& ok, const std::vector<double>& lim,
+               const std::vector<double>& flo, std::size_t nC, std::size_t S, std::size_t G, std::size_t L, std::size_t V, double maxStop,
+               double maxRiskReward, double none, std::vector<double>& out) {
+  H P;
+  P.nC = std::uint32_t(nC), P.G = std::uint32_t(G), P.NK = std::uint32_t(S), P.u1 = std::uint32_t(L), P.nS = std::uint32_t(V);
+  P.buy = maxStop, P.sell = maxRiskReward, P.hzn = none;
+  const std::size_t n = V * S * L * nC;
+  out.assign(2 * n, 0.0);
+  if (n == 0) return;
+  gen::Best<double> k;
+  k.P = P, k.lev = const_cast<double*>(lev.data()), k.e = const_cast<double*>(e.data()), k.ok = const_cast<double*>(ok.data());
+  k.lim = const_cast<double*>(lim.data()), k.flo = const_cast<double*>(flo.data()), k.out = out.data();
+  detail::dispatch(k, detail::groups(std::uint32_t(n), 64));
+}
+
 Windows::Windows(std::size_t windows, std::size_t capacity, const std::vector<double>& tau0, const std::vector<double>& tau1)
     : nW(windows), W(capacity), G(tau0.size()), has(windows, 0.0), x(windows, 0.0), ring(windows * capacity, 0.0), srt(windows * capacity, 0.0),
       st(2 * windows, 0.0), out(windows * tau0.size(), 0.0) {
