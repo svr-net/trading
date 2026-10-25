@@ -54,6 +54,17 @@ jobs:
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
       # missing and pushes it back (the last step), so each bar is downloaded once, for every run.
       # EOD_TOKEN: a token with read and write access to svr-net/eod's contents.
+      # Until svr-net/eod holds every market: the store the runner's cache held, set aside, adds
+      # the files svr-net/eod lacks (it never replaces one).
+      - name: Seed from the runner's cache (until svr-net/eod holds this market)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
+          restore-keys: |
+            eoddata-${{ matrix.market }}-main-
+      - name: Set the cache's store aside
+        run: if [ -d data/eoddata ]; then mv data/eoddata data/seed; fi
       - name: Check out the EOD store (svr-net/eod)
         uses: actions/checkout@v4
         with:
@@ -61,15 +72,14 @@ jobs:
           token: ${{ secrets.EOD_TOKEN }}
           path: data/eoddata
           fetch-depth: 1
-      # Once, while svr-net/eod is still empty: start it from the store the runner's cache held.
-      - name: Seed the EOD store from the runner's cache (first run only)
-        if: ${{ hashFiles('data/eoddata/store/**') == '' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: data/eoddata
-          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
-          restore-keys: |
-            eoddata-${{ matrix.market }}-main-
+      - name: Add the files svr-net/eod lacks from the cache's store
+        run: |
+          if [ -d data/seed ]; then
+            before=$(find data/eoddata -type f -not -path '*/.git/*' | wc -l)
+            cp -rn data/seed/. data/eoddata/
+            echo "seed: $(( $(find data/eoddata -type f -not -path '*/.git/*' | wc -l) - before )) files added from the cache" | tee -a "$GITHUB_STEP_SUMMARY"
+            rm -rf data/seed
+          fi
       - name: Update the share bars (only the days missing from the store)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
