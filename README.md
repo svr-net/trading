@@ -1,112 +1,39 @@
 # Daily Trades (UK and US)
 
-A C++ factor model and daily-trades engine whose every setting is learnt from the data, with fused
-kernels (WGSL: WebGPU in the page, their C++ translation natively), a WebAssembly build and a page
-with the trades for the next open and their backtest.
+A walk-forward predictive model of every share's daily OHLCV, in C++ with fused kernels (WGSL,
+translated to C++ by `tools/wgsl2cpp.py` and run on every CPU thread), and a page with the next
+open's trades and the model's backtest, for the London Stock Exchange and for NYSE and NASDAQ.
 
-## One kernel source for every backend
+## The model (`apps/ofm_research`, `kernels/v2`, `kernels/net`)
 
-The maths runs in kernels written once, in WGSL (`kernels/model`: zscore, gram, expect;
-`kernels/day`: indicators, Wilder's indicators, Bollinger bands and the network's forward pass, gradient and Adam step). WebGPU
-runs the WGSL as written. At build time
-`tools/wgsl2cpp.py` lowers the same files to C++ templated on the float type: `double` runs
-natively, `float` checks the GPU's single-precision arithmetic in the tests. Kernels that cooperate through
-workgroup memory and barriers are lowered the way GPU compilers lower to CPUs: each stretch between
-two barriers becomes a loop over the workgroup's lanes, with per-lane copies of the variables that
-cross a barrier. Native builds run the workgroups on all CPU threads.
+- **Features** (`features.wgsl`): 27 per share and day from its own daily open, high, low, close
+  and volume: momentum over 2 to 64 days, intraday and overnight momentum (past open-to-close moves
+  continue, past overnight gaps reverse), volume and range shocks, the day's open-to-close,
+  close-to-close and gap, the close's place in its range, wicks, signed volume, liquidity (traded
+  value) and the volatility level. Only the past enters each day's features.
+- **Interactions** (`interact.wgsl`): the key signals times the share's liquidity and volatility,
+  so the model can weight each signal by where it works.
+- **Walk-forward fit** (`zscore.wgsl`, `gram.wgsl`, `predict.wgsl`): each close, a linear model of
+  the next day's open-to-close, refitted on every earlier day only. A neural network
+  (`kernels/net`: forward pass, gradient, Adam) is in the research output for comparison.
+- **Bounce-free**: the trades use the prediction made one close earlier, so the bid-ask bounce
+  between the last close and the next open is not learnt.
+- **Trades**: the next open's 10 highest predictions, bought at the open and sold at the close; one
+  unit in each; no fees or costs.
 
-- **zscore** (one workgroup per signal and day): the signals, then each stock's rank against tiles
-  of 64 stocks staged in workgroup memory (signal and rank fused; no limit on the universe).
-- **gram** (one workgroup per 8 x 8 tile of outputs): `[Z y]'[Z y]` as a tiled matrix product,
-  32 stocks a step through workgroup memory as `vec4` dot products.
-- **expect**: the day's factor weights staged in workgroup memory, four signals a step.
+`ofm_research --csv stocks.csv [--series futures.csv] [--lag 1] [--top N] [--json scan.json]`
+prints each feature's day-by-day predictive power and the backtests, and writes the page's scan.
 
-Engines on the page: the GPU; where there is no graphics support, the browser's software WebGPU
-adapter (a GPU simulated on the CPU, running the same WGSL); without WebGPU, the WebAssembly
-translation.
+## Data
 
-## What is traded
+EODData's daily bars (key in the `EODDATA_API_KEY` secret) are kept in the private repository
+`svr-net/eod` (`EOD_TOKEN`), checked out by every run, which downloads only what is missing
+(`tools/eoddata`). EODData's licence does not allow redistributing prices: only results are
+published.
 
-The page and the daily email give one thing, for two markets (a UK | US switch on the page: the
-250 most traded LSE shares, and the 250 most traded NYSE and the 250 most traded NASDAQ shares):
-up to 10 day trades for the next open (`include/ofm/daybook.hpp`), each bought at the open and sold at its stop-loss, its take-profit or
-the close, all learnt walk-forward:
+## Schedule
 
-- **Intraday forecast**: each stock's next open-to-close return, by least squares on its features
-  at the close (the model's forecast among them), fitted on every stock and day so far.
-- **Stop-loss and take-profit**: each trade's predicted low and high, at several quantiles, from
-  four sources: the stock's own history of moves; the same moves measured in its average true
-  range (J. Welles Wilder, *New Concepts in Technical Trading Systems*, 1978: his volatility unit,
-  so the levels follow the true range as it changes, like his Volatility System's stop a multiple
-  of the true range away); a neural network (fused kernels) that learns them from the actual lows
-  and highs, on the trade's features and technical indicators; and the same network also given
-  Wilder's indicators (`kernels/day/wilder.wgsl`: ATR, RSI, directional movement, ADX, ADXR and
-  the Parabolic SAR, with his parameters). Each stock takes the (stop, take-profit) pair with the
-  best fitted expected outcome; the outcome is fitted on the intraday forecast, and also on
-  Wilder's ADXR (his rating of whether a market trends), whichever has forecast the outcomes better
-  out of sample.
-- **Level source and stop limit**: learnt together. Each source and each candidate limit
-  (multiples of the median volatility) keeps its own book; the trades use the book whose record is
-  best so far (net of costs, not the closest forecast of the low and high, which need not trade
-  better), and stay in cash while none beats cash. The report shows each source's forecast loss.
-- **Intraday paths (US)**: the strongest candidates of the last 250 days get their 5-minute
-  session bars (`tools/eoddata/intraday.mjs`, stored a month per symbol); on those stock-days the
-  path decides whether the stop or the take-profit came first. EODData serves no intraday bars for
-  the LSE.
-- **Selection**: a trade only when it is expected to gain after costs and the stock's own record
-  of these trades beats cash; at most 10, best expected first; none in a market whose daily trades
-  lost over the backtest.
-- **Capital**: shared among the trades, scaled so the book is no riskier than the market; the
-  rest stays in cash.
-- **Risk limits, from adaptive Bollinger bands** (`kernels/day/bollinger.wgsl`; each stock's bands
-  at the horizon nearest the volatility's learnt half-life): each stock's stop limit is a multiple
-  of its band unit (the multiple learnt by the books), and the weights are scaled so that a day when
-  every stop is hit loses no more than the market's typical distance to its lower band (the median
-  over every close so far). The budget sizes the book traded only, so wide-stop books still compete.
-  Fixed settings remain for comparison (`--max-stop-pct`, `--max-day-loss-pct`, `--vol-limits`).
-- **Gate**: no trades in a market whose backtest gain is not significant (t-statistic below 2).
-- **Bollinger level source**: the stops and take-profits can also come from each stock's moves in
-  band units, and the second network sees the bands' position and width at every horizon.
+`.github/workflows/uk-portfolio.yml` runs on weekday evenings (UK 19:00 UTC, US 22:30 UTC):
+updates the data, runs the model, publishes the scan to the page and sends the daily email.
 
-Backtest fills come from the real high, low and close (the stop when a day touched both levels).
-The cost per side is a setting (`--day-cost-pct`, default 0; the page's "Cost per side").
-
-The multi-day model portfolio (below) is still computed and reported by `ofm_report` as the
-benchmark the daily trades are tested against.
-
-## The model
-
-- **Signals** in five families (return, low volatility, nearness to the high, trend quality, small
-  traded value) at dyadic horizons 2, 4, 8, ... days up to an eighth of the history.
-- **Forced orthonormality**: each day the signals' rank z-scores are made exactly orthonormal by
-  symmetric (Löwdin) orthogonalisation.
-- **Self-adaptive premia**: every factor's daily record, shrunk by its own t-statistic
-  (positive-part James–Stein). Weak evidence gives no tilt; the data choose the horizons and signs.
-- **Expected returns**: the projection of the factors' premia on each stock, relative to the market.
-- **Trading**: decisions at the close, fills at the next open. Start from the market; buy or sell a
-  stock only when its expected return over a forecast's measured life beats the round-trip cost.
-  Falling or overextended stocks are sold when their updated forecast says so (adaptive stops).
-- **Futures hedge**: the index future most correlated with the market before trading starts; its
-  own trend forecast, built the same way, decides a short hedge sized by the book's beta.
-- **Inputs**: only the costs (UK: 10 bp dealing plus 50 bp stamp duty on purchases).
-
-## Build and run
-
-```sh
-cmake -S . -B build -G Ninja && cmake --build build
-./build/ofm_tests
-./build/ofm_report                                   # sample market
-./build/ofm_report --csv stocks.csv --series futures.csv --json report.json
-```
-
-WebAssembly (emsdk 4.0.10): `emcmake cmake -S . -B build-wasm && cmake --build build-wasm`, then serve
-`web/` and open `index.html` (WebGPU). Tests: `node web/tests/wasm.test.mjs`,
-`node web/tests/e2e.mjs` (Playwright; WebGPU on SwiftShader).
-
-## UK data
-
-The *UK portfolio* workflow downloads LSE bars and futures from EODData (key in the
-`EODDATA_API_KEY` secret), runs the model and publishes results only: EODData's licence does not
-allow redistributing prices.
-
-Research, not investment advice.
+Research only, not investment advice.
