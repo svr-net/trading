@@ -207,14 +207,15 @@ int main(int argc, char** argv) {
     // alpha (0: the Bollinger stop, 1: the SAR, when the SAR trails below the open). The stop first
     // when the day's bar touched both; a stop sells half a spread below its level, a take-profit only
     // when the high clears it by half a spread. Every setting on a lattice keeps a record; each day the
-    // lattice point with the best record (mean shrunk by its t-statistic) is refined to a continuous
-    // optimum by a parabola through its neighbours along each axis, and today's trades use it.
+    // ranking with the best record (mean shrunk by its t-statistic) and, at it, the levels with the
+    // best mean over downside deviation (Sortino) so far are refined to a continuous optimum by a parabola through their
+    // neighbours along each axis, and today's trades use them.
     constexpr std::size_t nB = 5, nK = 13, nA = 5, nV = nB * nK * nK * nA;
     const auto axis = [](std::size_t d, double x) {  // lattice coordinate -> setting
       return d == 0 ? x / double(nB - 1) : d == 3 ? x / double(nA - 1) : std::exp2(-2.0 + 0.5 * x);
     };
     const std::size_t dims[4] = {nB, nK, nK, nA};
-    std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0);
+    std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);  // sums of the results, their squares, the losses' squares
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
     std::vector<std::array<double, 4>> used;
@@ -227,24 +228,36 @@ int main(int argc, char** argv) {
     };
     const auto index = [&](const std::size_t* c) { return ((c[0] * nK + c[1]) * nK + c[2]) * nA + c[3]; };
     // The continuous settings {beta, k_s, k_t, alpha} from the records so far.
+    // The levels' score: the record's mean over its downside deviation (Sortino).
+    const auto ddScore = [&](std::size_t g) { return nDays < 2 || !(dnv[g] > 0) ? 0.0 : s1v[g] / nDays / std::sqrt(dnv[g] / nDays); };
     const auto learnt = [&] {
+      // The ranking from the best record (mean); the levels, at that ranking, with the best return
+      // for their downside.
       std::size_t best = 0;
       for (std::size_t g = 1; g < nV; ++g)
         if (score(g) > score(best)) best = g;
-      std::size_t c[4] = {best / (nK * nK * nA), best / (nK * nA) % nK, best / nA % nK, best % nA};
+      const std::size_t b0 = best / (nK * nK * nA);
+      std::size_t lv = b0 * nK * nK * nA;
+      for (std::size_t g = lv + 1; g < (b0 + 1) * nK * nK * nA; ++g)
+        if (ddScore(g) > ddScore(lv)) lv = g;
+      std::size_t c[4] = {b0, lv / (nK * nA) % nK, lv / nA % nK, lv % nA};
       std::array<double, 4> x{};
       for (std::size_t d = 0; d < 4; ++d) {
+        const auto f = [&](std::size_t g) { return d == 0 ? score(g) : ddScore(g); };
+        std::size_t at[4] = {c[0], c[1], c[2], c[3]};
+        if (d == 0) at[1] = best / (nK * nA) % nK, at[2] = best / nA % nK, at[3] = best % nA;
         double off = 0;
-        if (c[d] > 0 && c[d] + 1 < dims[d]) {
-          std::size_t lo[4] = {c[0], c[1], c[2], c[3]}, hi[4] = {c[0], c[1], c[2], c[3]};
+        if (at[d] > 0 && at[d] + 1 < dims[d]) {
+          std::size_t lo[4] = {at[0], at[1], at[2], at[3]}, hi[4] = {at[0], at[1], at[2], at[3]};
           --lo[d], ++hi[d];
-          const double fm = score(index(lo)), f0 = score(best), fp = score(index(hi)), den = fm - 2 * f0 + fp;
+          const double fm = f(index(lo)), f0 = f(index(at)), fp = f(index(hi)), den = fm - 2 * f0 + fp;
           if (den < 0) off = std::min(0.5, std::max(-0.5, 0.5 * (fm - fp) / den));
         }
-        x[d] = axis(d, double(c[d]) + off);
+        x[d] = axis(d, double(at[d]) + off);
       }
       return x;
     };
+
     // The day's 10 trades ranked with beta, and their average result at the levels.
     const auto ranked = [&](std::size_t t, double b) {
       std::vector<std::pair<double, std::size_t>> v;
@@ -305,7 +318,7 @@ int main(int argc, char** argv) {
       }
       for (std::size_t g = 0; g < nV; ++g) {
         const double y = dayResult(t, v[g / (nK * nK * nA)], axis(1, double(g / (nK * nA) % nK)), axis(2, double(g / nA % nK)), axis(3, double(g % nA)));
-        s1v[g] += y, s2v[g] += y * y;
+        s1v[g] += y, s2v[g] += y * y, dnv[g] += std::min(y, 0.0) * std::min(y, 0.0);
       }
       nDays += 1;
     }

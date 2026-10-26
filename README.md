@@ -22,7 +22,8 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   take-profit, the stop-loss or the close. Learnt continuously each day from the records so far:
   the ranking (from the prediction in volatilities to the expected return), the take-profit and
   the stop-loss in standard deviations of the share's last 20 daily returns (Bollinger), and the
-  stop's blend with the share's parabolic SAR. The stop first when a day touched both; a stop sells
+  stop's blend with the share's parabolic SAR (the ranking for return, the levels for return per
+  unit of downside, Sortino). The stop first when a day touched both; a stop sells
   half a bid-ask spread (estimated from the daily bars) below its level, and a take-profit fills
   only when the high clears it by half a spread. One unit in each trade;
   no fees or costs. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
