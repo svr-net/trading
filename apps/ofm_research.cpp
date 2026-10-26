@@ -1,11 +1,10 @@
 // The predictive model's research: each OHLCV feature's power to predict the next day's moves.
 //   ofm_research --csv stocks.csv
 // Prints, for every feature and target, the mean of its day-by-day cross-sectional correlation
-// with the target, its t-statistic, and the same in each half (the features and the correlations
-// run in fused kernels, kernels/v2).
+// with the target and its t-statistic (the features and the correlations run in fused kernels,
+// kernels/v2).
 #include <algorithm>
 #include <cmath>
-#include <tuple>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -51,27 +50,22 @@ int main(int argc, char** argv) {
                         "volume shock 64d", "range shock 4d", "range shock 16d", "range shock 64d", "open-to-close", "close-to-close", "gap",
                         "close in range", "upper wick", "lower wick", "signed volume shock"};
   const char* tn[4] = {"next open-to-close", "next open-to-high", "next open-to-low (fall)", "next close-to-close"};
-  // Days with correlations defined, split in halves.
+  // Days with correlations defined.
   std::vector<std::size_t> days;
   for (std::size_t t = 0; t < T; ++t)
     if (ic[t * F * 4] != 0.0) days.push_back(t);
   std::printf("%zu stocks, %zu days with features (%s .. %s)\n", N, days.size(), days.empty() ? "" : m.dates[days.front()].c_str(),
               days.empty() ? "" : m.dates[days.back()].c_str());
   for (std::size_t k = 0; k < 4; ++k) {
-    std::printf("\n%s: mean daily correlation (t) | first half | second half\n", tn[k]);
+    std::printf("\n%s: mean daily correlation (t)\n", tn[k]);
     for (std::size_t j = 0; j < F; ++j) {
-      double s[3] = {0, 0, 0}, s2[3] = {0, 0, 0}, n[3] = {0, 0, 0};
-      for (std::size_t q = 0; q < days.size(); ++q) {
-        const double x = ic[(days[q] * F + j) * 4 + k];
-        for (int h : {0, q < days.size() / 2 ? 1 : 2}) s[h] += x, s2[h] += x * x, n[h] += 1;
+      double s1 = 0, s2 = 0, n = 0;
+      for (std::size_t t : days) {
+        const double x = ic[(t * F + j) * 4 + k];
+        s1 += x, s2 += x * x, n += 1;
       }
-      double mu[3], tt[3];
-      for (int h = 0; h < 3; ++h) {
-        mu[h] = n[h] > 1 ? s[h] / n[h] : 0.0;
-        const double sd = n[h] > 1 ? std::sqrt(std::max(0.0, s2[h] / n[h] - mu[h] * mu[h])) : 0.0;
-        tt[h] = sd > 0 ? mu[h] / sd * std::sqrt(n[h]) : 0.0;
-      }
-      std::printf("  %-22s %+.4f (%+6.1f) | %+.4f (%+6.1f) | %+.4f (%+6.1f)\n", fn[j], mu[0], tt[0], mu[1], tt[1], mu[2], tt[2]);
+      const double mu = n > 1 ? s1 / n : 0.0, sd = n > 1 ? std::sqrt(std::max(0.0, s2 / n - mu * mu)) : 0.0;
+      std::printf("  %-22s %+.4f (%+6.1f)\n", fn[j], mu, sd > 0 ? mu / sd * std::sqrt(n) : 0.0);
     }
   }
   // The walk-forward model: each day's sums (fused kernels), accumulated over the days before
@@ -135,11 +129,11 @@ int main(int argc, char** argv) {
     const double n = double(hi - lo), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
     return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
   };
-  const std::size_t n = strat.size(), h = n / 2;
+  const std::size_t n = strat.size();
   std::printf("\nWalk-forward model, top 10 by predicted open-to-close, bought at the open and sold at the close (%s .. %s):\n", sd.front().c_str(), sd.back().c_str());
-  for (auto [nm, lo, hi] : {std::tuple<const char*, std::size_t, std::size_t>{"whole", 0, n}, {"first half", 0, h}, {"second half", h, n}}) {
-    const auto a1 = stats(strat, lo, hi), a2 = stats(mkt, lo, hi);
-    std::printf("  %-12s strategy %+6.1f%% a year (Sharpe %5.2f) | market %+6.1f%% (Sharpe %5.2f)\n", nm, 100 * a1.first, a1.second, 100 * a2.first, a2.second);
+  {
+    const auto a1 = stats(strat, 0, n), a2 = stats(mkt, 0, n);
+    std::printf("  strategy %+6.1f%% a year (Sharpe %5.2f) | market %+6.1f%% (Sharpe %5.2f)\n", 100 * a1.first, a1.second, 100 * a2.first, a2.second);
   }
   return 0;
 }
