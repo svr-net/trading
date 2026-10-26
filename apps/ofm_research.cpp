@@ -5,6 +5,7 @@
 // kernels/v2).
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -157,9 +158,17 @@ int main(int argc, char** argv) {
     ofm::v2::gen::Zscore<double> kz;
     kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
     ofm::detail::dispatch(kz, ofm::detail::groups(std::uint32_t(T * F), 64));
-    ofm::day::kernels::Net net(F, 32, {0.5});
+    // Settings under test (NN_HIDDEN, NN_LR, NN_RANK: the target as the day's rank).
+    const auto env = [](const char* k, double d) { const char* v = std::getenv(k); return v ? std::atof(v) : d; };
+    ofm::day::kernels::Net net(F, std::size_t(env("NN_HIDDEN", 16)), {0.5});
+    net.lr = env("NN_LR", 3e-4);
+    const bool rankTarget = env("NN_RANK", 0) > 0;
     std::vector<double> memX, memY;  // every earlier day's samples (replay)
-    std::vector<double> always, ens, mkt;
+    std::vector<double> always, ens, mkt, adaptive, linOnly;
+    // The self-adaptive choice: each day the variant (linear, network, ensemble) whose record so far
+    // is best, its mean shrunk by its t-statistic, m max(0, 1 - 1/t^2).
+    double vs1[3] = {0, 0, 0}, vs2[3] = {0, 0, 0}, vn = 0;
+    std::size_t used[3] = {0, 0, 0};
     std::vector<std::string> sd;
     std::uint64_t rng = 0x9E3779B97F4A7C15ull;
     for (std::size_t q = 0; q < days.size(); ++q) {
@@ -173,8 +182,13 @@ int main(int argc, char** argv) {
         y.push_back(std::clamp(a[F], -6.0, 6.0)), who.push_back(i);
       }
       if (who.size() < 30) continue;
-      // The target relative to the day's average (the ranking is what is traded).
-      {
+      // The target relative to the day's average (the ranking is what is traded), or the day's rank.
+      if (rankTarget) {
+        std::vector<std::pair<double, std::size_t>> o(y.size());
+        for (std::size_t r = 0; r < y.size(); ++r) o[r] = {y[r], r};
+        std::sort(o.begin(), o.end());
+        for (std::size_t r = 0; r < o.size(); ++r) y[o[r].second] = (double(r) + 0.5) / double(o.size()) - 0.5;
+      } else {
         double my = 0;
         for (double v : y) my += v / double(y.size());
         for (double& v : y) v -= my;
@@ -197,6 +211,24 @@ int main(int argc, char** argv) {
         double r2 = 0;
         for (std::size_t r = 0; r < 10; ++r) r2 += (m.close(t + 1, sc[r].second) / m.open(t + 1, sc[r].second) - 1) / 10;
         ens.push_back(r2);
+        // The linear model's own top 10.
+        std::vector<std::pair<double, std::size_t>> lv(who.size());
+        for (std::size_t r = 0; r < who.size(); ++r) lv[r] = {linPred[(t * N + who[r]) * 4], who[r]};
+        std::partial_sort(lv.begin(), lv.begin() + 10, lv.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        double r0 = 0;
+        for (std::size_t r = 0; r < 10; ++r) r0 += (m.close(t + 1, lv[r].second) / m.open(t + 1, lv[r].second) - 1) / 10;
+        linOnly.push_back(r0);
+        const double rv[3] = {r0, r1, r2};
+        std::size_t best = 0;
+        double bs = -1e300;
+        for (std::size_t k = 0; k < 3; ++k) {
+          const double mu = vn > 1 ? vs1[k] / vn : 0.0, var = vn > 1 ? std::max(0.0, vs2[k] / vn - mu * mu) : 0.0;
+          const double sc = vn > 1 && mu != 0 ? mu * std::max(0.0, 1.0 - var / vn / (mu * mu)) : 0.0;
+          if (sc > bs) bs = sc, best = k;
+        }
+        adaptive.push_back(rv[best]), ++used[best];
+        for (std::size_t k = 0; k < 3; ++k) vs1[k] += rv[k], vs2[k] += rv[k] * rv[k];
+        vn += 1;
         for (std::size_t i : who) ms += (m.close(t + 1, i) / m.close(t, i) - 1) / double(who.size());
         always.push_back(r1), mkt.push_back(ms), sd.push_back(m.dates[t + 1]);
       }
@@ -236,10 +268,12 @@ int main(int argc, char** argv) {
       const double n = double(v.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
       return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
     };
-    const auto a1 = stats(always), a2 = stats(ens), a3 = stats(mkt);
+    const auto a1 = stats(always), a2 = stats(ens), a3 = stats(mkt), a4 = stats(adaptive), a0 = stats(linOnly);
     std::printf("\nNeural network on the stocks' own OHLCV (%s .. %s), the 10 highest predicted, open to close:\n", sd.front().c_str(), sd.back().c_str());
     std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
     std::printf("  ensemble with the linear model   %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a2.first, a2.second);
+    std::printf("  linear model alone               %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a0.first, a0.second);
+    std::printf("  self-adaptive choice             %+7.1f%% a year (Sharpe %5.2f); days linear %zu, network %zu, ensemble %zu\n", 100 * a4.first, a4.second, used[0], used[1], used[2]);
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
   }
   // With the market-wide series (futures and indices) as further inputs.
