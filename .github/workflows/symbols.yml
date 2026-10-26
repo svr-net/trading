@@ -16,4 +16,4 @@ jobs:
           node-version: 22
       - env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/symbols.mjs --find "${{ inputs.find }}" | head -400 | tee -a "$GITHUB_STEP_SUMMARY"
+        run: node tools/eoddata/symbols.mjs --exchanges --find "${{ inputs.find }}" | head -400 | tee -a "$GITHUB_STEP_SUMMARY"
