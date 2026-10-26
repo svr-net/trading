@@ -20,14 +20,15 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   between the last close and the next open is not learnt.
 - **Trades**: the next open's 10 highest predictions, bought at the open and sold at the
   take-profit, the stop-loss or the close. Learnt continuously each day from the records so far:
-  the ranking (from the prediction in volatilities to the expected return), the take-profit and
-  the stop-loss in standard deviations of the share's last 20 daily returns (Bollinger), and the
-  stop's blend with the share's parabolic SAR (the ranking for return, the levels for return per
-  unit of downside, Sortino). Position size learnt too: each day's units in every trade (up to
-  one) shrink with the trades' record's drawdown and its volatility against its average, by
-  responses learnt for the best Sortino. The stop first when a day touched both; a stop sells
-  half a bid-ask spread (estimated from the daily bars) below its level, and a take-profit fills
-  only when the high clears it by half a spread. One unit in each trade;
+  the pool (how many of the most traded shares), the ranking (from the prediction in volatilities to
+  the expected return), and the levels, relative to each share's own moves from the open over its
+  last 100 days: the stop at the fall it reached on a learnt fraction of those days (blended with its
+  parabolic SAR), the take-profit at the rise it reached on a learnt fraction of them (the pool and
+  ranking for return, the levels for return per unit of downside, Sortino). The stop first when a
+  day touched both; a stop sells half a bid-ask spread (estimated from the daily bars) below its
+  level, and a take-profit fills only when the high clears it by half a spread. Position size learnt
+  too: each day's units in every trade (up to one) shrink with the trades' record's drawdown and its
+  volatility against its average, by responses learnt for the best Sortino.
   no fees or costs. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
 
 `ofm_research --csv stocks.csv [--series futures.csv] [--lag 1] [--top N] [--json scan.json]`
