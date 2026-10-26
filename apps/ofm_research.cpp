@@ -193,7 +193,8 @@ int main(int argc, char** argv) {
     // own moves from the open over its last 100 days (log low/open and log high/open): the stop-loss
     // at the fall it reached on a fraction p_s of those days, blended geometrically with its parabolic
     // SAR by alpha (when the SAR trails below the open), and the take-profit at the rise it reached on
-    // a fraction p_t of them (p 1/2 to 1/50). The stop first when the day's bar touched both; a stop
+    // a fraction p_t of them (p 1/2 to 1/10: levels the stock reaches on its typical days, so they are
+    // hit). The stop first when the day's bar touched both; a stop
     // sells half a spread below its level, a take-profit fills only when the high clears it by half a
     // spread; otherwise sold at the close. Every setting on a lattice keeps a record; each day the pool
     // and ranking with the best record (mean shrunk by its t-statistic) and, at them, the levels with
@@ -204,7 +205,7 @@ int main(int argc, char** argv) {
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
       if (d == 4) return x / double(nA - 1);
-      return 0.5 * std::pow(0.04, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/50
+      return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
     const std::size_t dims[nD] = {nC, nB, nP, nP, nA};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);  // sums of the results, their squares, the losses' squares
