@@ -1,0 +1,19 @@
+# Lists EODData symbol codes and names matching prefixes (no prices), to find series codes.
+name: Find symbols
+on:
+  workflow_dispatch:
+    inputs:
+      find: { description: 'EXCHANGE:PREFIX,PREFIX;EXCHANGE:...', default: 'CME:ES,NQ,RTY,6E;CBOT:ZN,ZB,YM,ZF;NYMEX:CL,NG;COMEX:GC,SI;CFE:VX;INDEX:SPX,NDX,RUT,VIX,DJI' }
+permissions:
+  contents: read
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/symbols.mjs --find "${{ inputs.find }}" | head -400 | tee -a "$GITHUB_STEP_SUMMARY"
