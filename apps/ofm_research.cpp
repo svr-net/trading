@@ -4,6 +4,7 @@
 // with the target and its t-statistic (the features and the correlations run in fused kernels,
 // kernels/v2).
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -27,7 +28,7 @@ std::string readFile(const std::string& p) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, seriesCsv;
+  std::string csv, seriesCsv, jsonOut;
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   for (int k = 1; k + 1 < argc; ++k) {
@@ -35,6 +36,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
     if (std::string(argv[k]) == "--top") topN = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
+    if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
   }
   const ofm::Market m = ofm::parseMarketCsv(readFile(csv));
   const std::size_t T = m.T(), N = m.N(), F = 27, K = F + 5;
@@ -92,6 +94,12 @@ int main(int argc, char** argv) {
   // day buy the 10 stocks predicted highest at the open, sell at the close (always, and only on
   // days the 10 are predicted to gain on average). ft: [T][N][Km] with Fm inputs (the first nOwn
   // standardised within each day, the rest market-wide), 4 targets and the defined flag.
+  struct Run {
+    std::vector<double> ret, mkt;
+    std::vector<std::string> dates;
+    std::vector<std::pair<std::size_t, double>> picks;  // the next open's trades: (stock, expected open-to-close)
+  };
+  Run lastRun;
   auto model = [&](const std::vector<double>& ft, std::size_t Fm, std::size_t Km, std::size_t nOwn, const char* label) {
     ofm::v2::gen::V2Header<double> Q = P;
     Q.K = std::uint32_t(Km), Q.NT = std::uint32_t(Fm);
@@ -162,6 +170,26 @@ int main(int argc, char** argv) {
     std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
+    // The next open's trades: the 10 highest predictions lag closes before the last close, among
+    // the stocks with a bar at the last close (their targets are not known yet). Expected
+    // open-to-close: the prediction times the stock's volatility (feature 20, its log).
+    lastRun = Run{always, mkt, sd, {}};
+    {
+      const std::size_t t = T - 1;
+      std::vector<std::pair<double, std::size_t>> v;
+      if (t >= lag)
+        for (std::size_t i = 0; i < N; ++i) {
+          const double* a = &ft[((t - lag) * N + i) * Km];
+          if (!(a[Km - 1] > 0) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0)) continue;
+          if (topN > 0 && !tradable[(t - lag) * N + i]) continue;
+          v.emplace_back(pred[((t - lag) * N + i) * 4], i);
+        }
+      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(10, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (std::size_t q = 0; q < std::min<std::size_t>(10, v.size()); ++q) {
+        const double sig = std::exp(ft[((t - lag) * N + v[q].second) * Km + 20]);
+        if (v[q].first > 0) lastRun.picks.emplace_back(v[q].second, std::expm1(v[q].first * sig));
+      }
+    }
     return pred;
   };
   // The features with their interactions with liquidity and volatility (kernels/v2/interact.wgsl):
@@ -190,6 +218,76 @@ int main(int argc, char** argv) {
   }
   model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
   const auto linPred = model(ftI, FI, KI, FI, "Walk-forward model with liquidity and volatility interactions");
+  // The page's scan (--json): the model above (lagged by --lag), its trades for the next open, its
+  // backtest against the market, the chart laid out here and the last 20 days. Results only.
+  if (!jsonOut.empty()) {
+    const Run& R = lastRun;
+    auto metr = [](const std::vector<double>& x) {
+      double w = 0, s1 = 0, s2 = 0, peak = 0, dd = 0;
+      for (double y : x) {
+        w += std::log1p(y), s1 += y, s2 += y * y;
+        peak = std::max(peak, w), dd = std::max(dd, 1 - std::exp(w - peak));
+      }
+      const double n = double(x.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
+      return std::array<double, 3>{std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0, dd};
+    };
+    const auto ms = metr(R.ret), mm = metr(R.mkt);
+    std::ofstream o(jsonOut);
+    char b[256];
+    o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
+    std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
+                  R.dates.back().c_str(), ms[0], ms[1], ms[2]);
+    o << b;
+    std::snprintf(b, sizeof b, ",\"market\":{\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", mm[0], mm[1], mm[2]);
+    o << b << ",\"orders\":[";
+    for (std::size_t q = 0; q < R.picks.size(); ++q) {
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g}", q ? "," : "", m.tickers[R.picks[q].first].c_str(), R.picks[q].second);
+      o << b;
+    }
+    o << "],\"recent\":[";
+    for (std::size_t q = R.ret.size() > 20 ? R.ret.size() - 20 : 0, f = q; q < R.ret.size(); ++q) {
+      std::snprintf(b, sizeof b, "%s{\"date\":\"%s\",\"day\":%.6g,\"market\":%.6g}", q == f ? "" : ",", R.dates[q].c_str(), R.ret[q], R.mkt[q]);
+      o << b;
+    }
+    // The chart: both growth curves on a log scale, heights and positions as shares of the chart.
+    const std::size_t n = R.ret.size(), step = std::max<std::size_t>(1, n / 600);
+    std::vector<double> lv[2];
+    double lo = 0, hi = 0;
+    for (int k = 0; k < 2; ++k) {
+      double w = 0;
+      const auto& x = k == 0 ? R.ret : R.mkt;
+      for (std::size_t q = 0; q < n; ++q) {
+        w += std::log1p(x[q]);
+        if (q % step == 0) lv[k].push_back(w), lo = std::min(lo, w), hi = std::max(hi, w);
+      }
+    }
+    const double span = std::max(hi - lo, 1e-9);
+    o << "],\"chart\":{\"series\":[";
+    const char* nm[2] = {"daily trades", "market (bought and held)"};
+    for (int k = 0; k < 2; ++k) {
+      double w = 0;
+      for (double y : k == 0 ? R.ret : R.mkt) w += std::log1p(y);
+      std::snprintf(b, sizeof b, "%s{\"name\":\"%s\",\"final\":\"%.2f×\",\"y\":[", k ? "," : "", nm[k], std::exp(w));
+      o << b;
+      for (std::size_t q = 0; q < lv[k].size(); ++q) std::snprintf(b, sizeof b, "%s%.4f", q ? "," : "", (lv[k][q] - lo) / span), o << b;
+      o << "]}";
+    }
+    o << "],\"ticks\":[";
+    bool lead = true;
+    for (double v : {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0}) {
+      const double y = (std::log(v) - lo) / span;
+      if (y < -1e-9 || y > 1 + 1e-9) continue;
+      std::snprintf(b, sizeof b, "%s{\"label\":\"%g×\",\"y\":%.4f}", lead ? "" : ",", v, y), o << b, lead = false;
+    }
+    o << "],\"years\":[";
+    lead = true;
+    for (std::size_t q = 0, j = 0; q < n; q += step, ++j)
+      if (j == 0 || R.dates[q].substr(0, 4) != R.dates[q - step].substr(0, 4))
+        std::snprintf(b, sizeof b, "%s{\"label\":\"%s\",\"x\":%.4f}", lead ? "" : ",", R.dates[q].substr(0, 4).c_str(),
+                      lv[0].size() > 1 ? double(j) / double(lv[0].size() - 1) : 0.0),
+            o << b, lead = false;
+    o << "]}}";
+  }
   // The same inputs through a neural network (two hidden layers of rectified linear units, the
   // fused kernels of src/daykernels): each day it predicts every stock's next open-to-close from
   // the day's standardised features, then learns from that day's outcomes once they are known

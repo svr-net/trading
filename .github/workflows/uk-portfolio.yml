@@ -122,43 +122,17 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_report
+          cmake --build build --target ofm_research
+      # The predictive model (apps/ofm_research, fused kernels in kernels/v2): every share's
+      # features from its daily OHLCV, a walk-forward linear model with liquidity and volatility
+      # interactions, traded on the prediction one close older (so bid-ask bounce between the
+      # last close and the next open is not learnt); the next open's 10 highest, bought at the open
+      # and sold at the close. Results only.
       - name: The model and the daily trades (results only)
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
           mkdir -p report
-          ARGS=(--csv data/stocks.csv --series data/futures.csv --cost-pct "${{ inputs.cost_pct || '0' }}" --day-cost-pct "${{ inputs.day_cost_pct || '0' }}" --forecast-cache data/forecast.bin ${{ inputs.report_args }})
-          # Honest by default (scheduled runs too): each stock's estimated spread on every trade, and each
-          # day only the 250 then most traded of the pool of 500.
-          if [ "${{ format('{0}', inputs.honest) }}" != "false" ]; then
-            # UK: the 250 most traded; US: the shares ranked 501 to 1000 by traded value (the US edge lies
-            # in the less traded shares; the most traded have none).
-            # US stops at most twice their take-profit (uncapped, the learnt stops ran about 7 times the
-            # take-profit: many small wins, a few large losses; capped: +33.7% a year against +18.6%).
-            if [ "$MARKET" = "US" ]; then ARGS+=(--universe "${{ inputs.universe || '500' }}" --universe-from 500 --max-risk-reward 2); else ARGS+=(--universe "${{ inputs.universe || '250' }}"); fi
-            # No costs by default (pure share trading); spread_costs charges each stock's estimated spread.
-            [ "${{ format('{0}', inputs.spread_costs) }}" = "true" ] && ARGS+=(--spread-costs)
-          fi
-          EXCH="$EXCHANGES"
-          DAYS="${{ inputs.intraday_days || '250' }}"
-          # Intraday paths (US exchanges): the strongest candidates of the recent days, then their
-          # 5-minute bars (only the months not yet stored), then the run with exact fills.
-          # The intraday strategy runs only when asked.
-          if [ "$EXCH" != "LSE" ] && [ "${{ inputs.intraday_strategy }}" = "true" ]; then
-            # The intraday strategy: each recent day's most traded stocks, their 5-minute bars, the run.
-            U="${{ inputs.strategy_universe || '100' }}"
-            ./build/ofm_report "${ARGS[@]}" --universe-out data/universe.csv --universe-days "${{ inputs.strategy_days || '1000' }}" --intraday-universe "$U"
-            VOL=""; [ "${{ inputs.intraday_volume }}" = "true" ] && VOL="--volume"
-            node --max-old-space-size=6144 tools/eoddata/intraday.mjs $VOL --candidates data/universe.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
-            ARGS+=(--intraday data/intraday.csv --intraday-strategy --intraday-universe "$U")
-          elif [ "$EXCH" != "LSE" ] && [ "$DAYS" != "0" ]; then
-            ./build/ofm_report "${ARGS[@]}" --candidates-out data/candidates.csv --candidates-days "$DAYS" > /dev/null
-            node tools/eoddata/intraday.mjs --candidates data/candidates.csv --exchanges "$EXCH" --out data/intraday.csv | tee -a "$GITHUB_STEP_SUMMARY"
-            ARGS+=(--intraday data/intraday.csv --candidates-out data/candidates.csv --candidates-days "$DAYS")
-          fi
-          ./build/ofm_report "${ARGS[@]}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already

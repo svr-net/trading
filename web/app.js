@@ -73,6 +73,7 @@ async function run() {
 // Up to 10 day trades for the next open: buy at the open, sell at the stop, the take-profit or the close.
 function render(r, source = 'UK') {
   shown = [r, source];
+  if (r.model === 'v2') { renderModel(r, source); return; }
   const D = r.day;
   if (!D) { $('asof').textContent = 'This scan has no daily trades yet; they appear after the next scheduled run.'; return; }
   const n = D.orders.length;
@@ -98,6 +99,24 @@ function render(r, source = 'UK') {
     recent.slice().reverse().map((d) => [[d.date], d.day == null ? ['–', 'num'] : signed(d.day), signed(d.market)]));
   drawChart(r);
   renderIntraday(r.intraday);
+}
+
+// The predictive model's scan (r.model 'v2', from the library): the next open's trades, bought
+// at the open and sold at the close, and the model's walk-forward backtest.
+function renderModel(r, source) {
+  const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source] || source;
+  const n = r.orders.length;
+  $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · no fees or costs`;
+  table($('plan'), [['Buy at the open, sell at the close'], ['Expected return', 'num']],
+    n ? r.orders.map((o) => [[o.ticker], signed(o.expected, 3)]) : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
+  const B = r.backtest, M = r.market;
+  $('verdict').innerHTML = `
+    <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>
+    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${pct(M.annualReturn)}</span><span class="s">a year · Sharpe ${M.sharpe.toFixed(2)} · max drawdown ${pct(M.maxDrawdown, 0).slice(1)}</span></div>`;
+  table($('recent'), [['Day'], ['Daily trades', 'num'], ['Market', 'num']],
+    r.recent.slice().reverse().map((d) => [[d.date], signed(d.day), signed(d.market)]));
+  $('intraday').hidden = true;
+  drawChart(r);
 }
 
 // The US intraday strategy's backtest (r.intraday, from the library). lead: it takes the backtest
