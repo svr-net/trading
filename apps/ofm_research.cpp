@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "daykernels.hpp"
 #include "invoke.hpp"
 #include "ofm/data.hpp"
 #include "v2_kernels.hpp"
@@ -146,6 +147,65 @@ int main(int argc, char** argv) {
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
   };
   model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
+  // The same inputs through a neural network (two hidden layers of rectified linear units, the
+  // fused kernels of src/daykernels): each day it predicts every stock's next open-to-close from
+  // the day's standardised features, then learns from that day's outcomes once they are known
+  // (shuffled mini-batches of 32, one pass), so every prediction is out of sample.
+  {
+    std::vector<double> zs(T * F * 2, 0.0);
+    ofm::v2::gen::Zscore<double> kz;
+    kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
+    ofm::detail::dispatch(kz, ofm::detail::groups(std::uint32_t(T * F), 64));
+    ofm::day::kernels::Net net(F, 32, {0.5});
+    std::vector<double> always, mkt;
+    std::vector<std::string> sd;
+    std::uint64_t rng = 0x9E3779B97F4A7C15ull;
+    for (std::size_t q = 0; q < days.size(); ++q) {
+      const std::size_t t = days[q];
+      std::vector<double> x, y;
+      std::vector<std::size_t> who;
+      for (std::size_t i = 0; i < N; ++i) {
+        const double* a = &feat[(t * N + i) * K];
+        if (!(a[K - 1] > 0)) continue;
+        for (std::size_t f = 0; f < F; ++f) x.push_back(std::clamp((a[f] - zs[(t * F + f) * 2]) / zs[(t * F + f) * 2 + 1], -4.0, 4.0));
+        y.push_back(std::clamp(a[F], -6.0, 6.0)), who.push_back(i);
+      }
+      if (who.size() < 30) continue;
+      if (q >= 250 && t + 1 < T) {
+        const auto pr = net.predict(x, who.size());
+        std::vector<std::pair<double, std::size_t>> v;
+        for (std::size_t r = 0; r < who.size(); ++r) v.emplace_back(pr[r], who[r]);
+        std::partial_sort(v.begin(), v.begin() + 10, v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        double r1 = 0, ms = 0;
+        for (std::size_t r = 0; r < 10; ++r) r1 += (m.close(t + 1, v[r].second) / m.open(t + 1, v[r].second) - 1) / 10;
+        for (std::size_t i : who) ms += (m.close(t + 1, i) / m.close(t, i) - 1) / double(who.size());
+        always.push_back(r1), mkt.push_back(ms), sd.push_back(m.dates[t + 1]);
+      }
+      // Learn from the day's outcomes (known at the next close, before the next prediction).
+      std::vector<std::size_t> perm(who.size());
+      for (std::size_t r = 0; r < perm.size(); ++r) perm[r] = r;
+      for (std::size_t r = perm.size(); r-- > 1;) {
+        rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+        std::swap(perm[r], perm[rng % (r + 1)]);
+      }
+      for (std::size_t b0 = 0; b0 < perm.size(); b0 += 32) {
+        const std::size_t nb = std::min<std::size_t>(32, perm.size() - b0);
+        std::vector<double> bx, by;
+        for (std::size_t r = b0; r < b0 + nb; ++r) bx.insert(bx.end(), x.begin() + std::ptrdiff_t(perm[r] * F), x.begin() + std::ptrdiff_t((perm[r] + 1) * F)), by.push_back(y[perm[r]]);
+        net.step(bx, by, nb);
+      }
+    }
+    auto stats = [](const std::vector<double>& v) {
+      double w = 0, s1 = 0, s2 = 0;
+      for (double r : v) w += std::log1p(r), s1 += r, s2 += r * r;
+      const double n = double(v.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
+      return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
+    };
+    const auto a1 = stats(always), a3 = stats(mkt);
+    std::printf("\nNeural network on the stocks' own OHLCV (%s .. %s), the 10 highest predicted, open to close:\n", sd.front().c_str(), sd.back().c_str());
+    std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
+    std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
+  }
   // With the market-wide series (futures and indices) as further inputs.
   if (!seriesCsv.empty()) {
     const auto ser = ofm::parseSeriesCsv(readFile(seriesCsv), m.dates);
