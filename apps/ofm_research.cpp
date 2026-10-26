@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
   }
   const ofm::Market m = ofm::parseMarketCsv(readFile(csv));
-  const std::size_t T = m.T(), N = m.N(), F = 19, K = F + 5;
+  const std::size_t T = m.T(), N = m.N(), F = 21, K = F + 5;
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
   for (std::size_t f = 0; f < 5; ++f)
@@ -49,9 +49,9 @@ int main(int argc, char** argv) {
   ofm::v2::gen::Ic<double> ki;
   ki.P = P, ki.feat = feat.data(), ki.ic = ic.data();
   ofm::detail::dispatch(ki, ofm::detail::groups(std::uint32_t(T * F * 4), 64));
-  const char* fn[19] = {"momentum 2d", "momentum 4d", "momentum 8d", "momentum 16d", "momentum 32d", "momentum 64d", "volume shock 4d", "volume shock 16d",
+  const char* fn[21] = {"momentum 2d", "momentum 4d", "momentum 8d", "momentum 16d", "momentum 32d", "momentum 64d", "volume shock 4d", "volume shock 16d",
                         "volume shock 64d", "range shock 4d", "range shock 16d", "range shock 64d", "open-to-close", "close-to-close", "gap",
-                        "close in range", "upper wick", "lower wick", "signed volume shock"};
+                        "close in range", "upper wick", "lower wick", "signed volume shock", "liquidity (traded value)", "volatility level"};
   const char* tn[4] = {"next open-to-close", "next open-to-high", "next open-to-low (fall)", "next close-to-close"};
   // Days with correlations defined.
   std::vector<std::size_t> days;

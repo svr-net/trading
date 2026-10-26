@@ -10,8 +10,10 @@
 //   15     the close's place in the day's range (-0.5 low .. 0.5 high)
 //   16     upper wick, 17 lower wick (shares of the range)
 //   18     signed volume shock: the 16-day volume shock times the sign of the open-to-close
-//   19..22 the next day's targets: open-to-close, open-to-high, open-to-low (as a fall), close-to-close, over sigma
-//   23     1 where every feature and target is defined
+//   19     liquidity: the log of the traded value (close x volume), averaged over 16 days
+//   20     the log of sigma (the stock's volatility level)
+//   21..24 the next day's targets: open-to-close, open-to-high, open-to-low (as a fall), close-to-close, over sigma
+//   25     1 where every feature and target is defined
 // sigma: the exponentially weighted standard deviation of close-to-close log returns (half-life 16 days).
 @group(0) @binding(1) var<storage, read> bars : array<f32>;
 @group(0) @binding(2) var<storage, read_write> out : array<f32>;
@@ -19,6 +21,7 @@
 var<private> ret : array<f32, 65>;
 var<private> lv : array<f32, 3>;
 var<private> lr : array<f32, 3>;
+var<private> ltv : f32;
 
 fn bar(f : u32, t : u32, a : u32) -> f32 { return bars[(f * P.T + t) * P.N + a]; }
 
@@ -31,6 +34,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var pc : f32 = 0.0;
     for (var j = 0u; j < 65u; j = j + 1u) { ret[j] = 0.0; }
     for (var j = 0u; j < 3u; j = j + 1u) { lv[j] = 0.0; lr[j] = 0.0; }
+    ltv = 0.0;
     let l16 : f32 = pow(2.0, -1.0 / 16.0);
     for (var t = 0u; t < P.T; t = t + 1u) {
       let row : u32 = (t * P.N + a) * P.K;
@@ -78,6 +82,8 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
         var sgn : f32 = 0.0;
         if (c > o) { sgn = 1.0; } else if (c < o) { sgn = -1.0; }
         out[row + 18u] = sgn * (lvol - lv[1]);
+        out[row + 19u] = ltv;
+        out[row + 20u] = log(sig);
         // The next day's targets.
         if (t + 1u < P.T) {
           let o1 : f32 = bar(0u, t + 1u, a);
@@ -85,11 +91,11 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
           let l1 : f32 = bar(2u, t + 1u, a);
           let c1 : f32 = bar(3u, t + 1u, a);
           if (o1 > 0.0 && h1 >= l1 && l1 > 0.0 && c1 > 0.0) {
-            out[row + 19u] = log(c1 / o1) / sig;
-            out[row + 20u] = log(h1 / o1) / sig;
-            out[row + 21u] = log(o1 / l1) / sig;
-            out[row + 22u] = log(c1 / c) / sig;
-            out[row + 23u] = 1.0;
+            out[row + 21u] = log(c1 / o1) / sig;
+            out[row + 22u] = log(h1 / o1) / sig;
+            out[row + 23u] = log(o1 / l1) / sig;
+            out[row + 24u] = log(c1 / c) / sig;
+            out[row + 25u] = 1.0;
           }
         }
       }
@@ -100,6 +106,10 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
           if (v > 0.0) { lv[j] = lam * lv[j] + (1.0 - lam) * lvol; }
           lr[j] = lam * lr[j] + (1.0 - lam) * rg;
         }
+      }
+      if (v > 0.0) {
+        let x : f32 = log(c * v);
+        if (n == 0u) { ltv = x; } else { ltv = l16 * ltv + (1.0 - l16) * x; }
       }
       pc = c;
       n = n + 1u;
