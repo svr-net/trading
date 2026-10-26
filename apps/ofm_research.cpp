@@ -28,9 +28,13 @@ std::string readFile(const std::string& p) {
 
 int main(int argc, char** argv) {
   std::string csv, seriesCsv;
+  std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
+  std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
+    if (std::string(argv[k]) == "--top") topN = std::size_t(std::atol(argv[k + 1]));
+    if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
   }
   const ofm::Market m = ofm::parseMarketCsv(readFile(csv));
   const std::size_t T = m.T(), N = m.N(), F = 27, K = F + 5;
@@ -54,6 +58,17 @@ int main(int argc, char** argv) {
                         "volume shock 64d", "range shock 4d", "range shock 16d", "range shock 64d", "open-to-close", "close-to-close", "gap",
                         "close in range", "upper wick", "lower wick", "signed volume shock", "liquidity (traded value)", "volatility level", "intraday momentum 4d", "intraday momentum 16d", "intraday momentum 64d", "overnight momentum 4d", "overnight momentum 16d", "overnight momentum 64d"};
   const char* tn[4] = {"next open-to-close", "next open-to-high", "next open-to-low (fall)", "next close-to-close"};
+  // Each day's tradable stocks: with --top, the topN most traded by their own traded value.
+  std::vector<char> tradable(T * N, 1);
+  if (topN > 0)
+    for (std::size_t t = 0; t < T; ++t) {
+      std::vector<std::pair<double, std::size_t>> v;
+      for (std::size_t i = 0; i < N; ++i)
+        if (feat[(t * N + i) * K + K - 1] > 0) v.emplace_back(feat[(t * N + i) * K + 19], i);
+      std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (std::size_t i = 0; i < N; ++i) tradable[t * N + i] = 0;
+      for (std::size_t r = 0; r < std::min(topN, v.size()); ++r) tradable[t * N + v[r].second] = 1;
+    }
   // Days with correlations defined.
   std::vector<std::size_t> days;
   for (std::size_t t = 0; t < T; ++t)
@@ -122,9 +137,10 @@ int main(int argc, char** argv) {
       if (t + 1 >= T) continue;
       std::vector<std::pair<double, std::size_t>> v;
       double ms = 0, mn = 0;
+      if (t < lag) continue;
       for (std::size_t i = 0; i < N; ++i) {
-        if (!(ft[(t * N + i) * Km + Km - 1] > 0)) continue;
-        v.emplace_back(pred[(t * N + i) * 4 + 0], i);
+        if (!(ft[(t * N + i) * Km + Km - 1] > 0) || !tradable[t * N + i] || !(ft[((t - lag) * N + i) * Km + Km - 1] > 0)) continue;
+        v.emplace_back(pred[((t - lag) * N + i) * 4 + 0], i);
         ms += m.close(t + 1, i) / m.close(t, i) - 1, mn += 1;
       }
       if (v.size() < 30) continue;
@@ -221,7 +237,8 @@ int main(int argc, char** argv) {
       if (q >= 250 && t + 1 < T) {
         const auto pr = net.predict(x, who.size());
         std::vector<std::pair<double, std::size_t>> v;
-        for (std::size_t r = 0; r < who.size(); ++r) v.emplace_back(pr[r], who[r]);
+        for (std::size_t r = 0; r < who.size(); ++r)
+          if (tradable[t * N + who[r]]) v.emplace_back(pr[r], who[r]);
         std::partial_sort(v.begin(), v.begin() + 10, v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         double r1 = 0, ms = 0;
         for (std::size_t r = 0; r < 10; ++r) r1 += (m.close(t + 1, v[r].second) / m.open(t + 1, v[r].second) - 1) / 10;
@@ -232,6 +249,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<double, std::size_t>> sc(who.size());
         for (std::size_t r = 0; r < who.size(); ++r) sc[r].second = who[r];
         for (std::size_t r = 0; r < who.size(); ++r) sc[rn[r].second].first += double(r), sc[rl[r].second].first += double(r);
+        sc.erase(std::remove_if(sc.begin(), sc.end(), [&](const auto& e) { return !tradable[t * N + e.second]; }), sc.end());
         std::partial_sort(sc.begin(), sc.begin() + 10, sc.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         double r2 = 0;
         for (std::size_t r = 0; r < 10; ++r) r2 += (m.close(t + 1, sc[r].second) / m.open(t + 1, sc[r].second) - 1) / 10;
@@ -239,6 +257,7 @@ int main(int argc, char** argv) {
         // The linear model's own top 10.
         std::vector<std::pair<double, std::size_t>> lv(who.size());
         for (std::size_t r = 0; r < who.size(); ++r) lv[r] = {linPred[(t * N + who[r]) * 4], who[r]};
+        lv.erase(std::remove_if(lv.begin(), lv.end(), [&](const auto& e) { return !tradable[t * N + e.second]; }), lv.end());
         std::partial_sort(lv.begin(), lv.begin() + 10, lv.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         double r0 = 0;
         for (std::size_t r = 0; r < 10; ++r) r0 += (m.close(t + 1, lv[r].second) / m.open(t + 1, lv[r].second) - 1) / 10;
