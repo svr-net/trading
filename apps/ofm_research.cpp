@@ -159,6 +159,7 @@ int main(int argc, char** argv) {
       double expected, stop, take;  // expected open-to-close; the stop and take-profit from the open (NaN: none)
     };
     std::vector<Pick> picks;
+    double size = 1;  // units in each of the next open's trades
   };
   Run lastRun;
   auto model = [&](const std::vector<double>& ft, std::size_t Fm, std::size_t Km, std::size_t nOwn, const char* label) {
@@ -322,6 +323,54 @@ int main(int argc, char** argv) {
       }
       nDays += 1;
     }
+    // Position sizing, learnt: each day's units in every trade, f = min(1, (vbar / v)^gamma) *
+    // exp(-lambda * dd), from the trades' record up to the last close: v its recent volatility (about
+    // 20 days), vbar that volatility's average so far, dd its drawdown from its peak. gamma (0 to 2)
+    // and lambda (0 to 64) on a lattice, each point's sized record kept; each day the point with the
+    // best Sortino so far (scaling every day alike leaves it unchanged, so it learns when to trade
+    // less, not to trade less) is refined by parabolas, as the levels are.
+    constexpr std::size_t nG = 9, nL = 11, nZ = nG * nL;
+    const auto gAxis = [](double x) { return 0.25 * x; };
+    const auto lAxis = [](double x) { return x <= 0 ? 0.0 : std::exp2(x - 4.0); };  // 0, 1/8 .. 64
+    std::vector<double> z1(nZ, 0.0), zd(nZ, 0.0), sized;
+    std::vector<std::array<double, 2>> sizeUsed;
+    double ev = 0, ew = 0, vsum = 0, vn = 0, eq = 0, peak = 0;
+    const auto sizeScore = [&](std::size_t g) { return zd[g] > 0 ? z1[g] / std::sqrt(zd[g]) : 0.0; };
+    const auto sizeOf = [&](double gm, double lm) {
+      if (ew <= 0 || vn < 1) return 1.0;
+      const double vol = std::sqrt(ev / ew), vbar = vsum / vn, dd = 1 - std::exp(eq - peak);
+      return std::min(1.0, vol > 0 ? std::pow(vbar / vol, gm) : 1.0) * std::exp(-lm * dd);
+    };
+    const auto sizeLearnt = [&] {
+      std::size_t best = 0;
+      for (std::size_t g = 1; g < nZ; ++g)
+        if (sizeScore(g) > sizeScore(best)) best = g;
+      const std::size_t c[2] = {best / nL, best % nL}, dims2[2] = {nG, nL};
+      std::array<double, 2> x{};
+      for (std::size_t d = 0; d < 2; ++d) {
+        double off = 0;
+        if (c[d] > 0 && c[d] + 1 < dims2[d]) {
+          const std::size_t lo = d == 0 ? best - nL : best - 1, hi = d == 0 ? best + nL : best + 1;
+          const double fm = sizeScore(lo), f0 = sizeScore(best), fp = sizeScore(hi), den = fm - 2 * f0 + fp;
+          if (den < 0) off = std::min(0.5, std::max(-0.5, 0.5 * (fm - fp) / den));
+        }
+        x[d] = d == 0 ? gAxis(double(c[d]) + off) : lAxis(double(c[d]) + off);
+      }
+      return x;
+    };
+    for (double y : adaptiveLevels) {
+      const auto x = sizeLearnt();
+      const double f = sizeOf(x[0], x[1]);
+      sized.push_back(f * y), sizeUsed.push_back({x[0], f});
+      for (std::size_t g = 0; g < nZ; ++g) {
+        const double yg = sizeOf(gAxis(double(g / nL)), lAxis(double(g % nL))) * y;
+        z1[g] += yg, zd[g] += std::min(yg, 0.0) * std::min(yg, 0.0);
+      }
+      // The record takes today: its volatility (about 20 days), that volatility's average, its drawdown.
+      ev += (y * y - ev) / 20, ew += (1 - ew) / 20;
+      if (ew > 0.6) vsum += std::sqrt(ev / ew), vn += 1;
+      eq += std::log1p(y), peak = std::max(peak, eq);
+    }
     auto stats = [](const std::vector<double>& x) {
       double w = 0, s1 = 0, s2 = 0;
       for (double y : x) w += std::log1p(y), s1 += y, s2 += y * y;
@@ -369,6 +418,18 @@ int main(int argc, char** argv) {
                     nu ? 100 * tu / nu : 0.0);
       }
     }
+    {
+      const auto a = stats(sized);
+      double mf = 0, wd = 0, pk = 0, dmax = 0, w0 = 0, pk0 = 0, d0 = 0;
+      for (std::size_t q = 0; q < sized.size(); ++q) {
+        mf += sizeUsed[q][1] / double(sized.size());
+        wd += std::log1p(sized[q]), pk = std::max(pk, wd), dmax = std::max(dmax, 1 - std::exp(wd - pk));
+        w0 += std::log1p(adaptiveLevels[q]), pk0 = std::max(pk0, w0), d0 = std::max(d0, 1 - std::exp(w0 - pk0));
+      }
+      const auto fz = sizeLearnt();
+      std::printf("  with learnt position sizes       %+7.1f%% a year (Sharpe %5.2f), max drawdown %.0f%% (unsized %.0f%%); mean size %.2f; next open: gamma %.2f, lambda %.2f, size %.2f\n",
+                  100 * a.first, a.second, 100 * dmax, 100 * d0, mf, fz[0], fz[1], sizeOf(fz[0], fz[1]));
+    }
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
     // The next open's trades: the 10 highest predictions lag closes before the last close, among
@@ -376,7 +437,11 @@ int main(int argc, char** argv) {
     // levels by the settings learnt over the whole backtest. Expected open-to-close: the prediction
     // times the stock's volatility (feature 20, its log). The SAR stop is from the last close (the
     // open is not known yet).
-    lastRun = Run{adaptiveLevels, mkt, sd, {}};
+    lastRun = Run{sized, mkt, sd, {}};
+    {
+      const auto fz = sizeLearnt();
+      lastRun.size = sizeOf(fz[0], fz[1]);
+    }
     {
       const std::size_t t = T - 1;
       std::vector<std::pair<double, std::size_t>> v;
@@ -445,6 +510,7 @@ int main(int argc, char** argv) {
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;
     std::snprintf(b, sizeof b, ",\"market\":{\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", mm[0], mm[1], mm[2]);
+    std::snprintf(b, sizeof b, ",\"size\":%.4f", R.size);
     o << b << ",\"orders\":[";
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];

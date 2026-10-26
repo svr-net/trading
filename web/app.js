@@ -32,8 +32,9 @@ function render(r, source) {
   const n = r.orders.length;
   $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · no fees or costs`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
-  table($('plan'), [['Buy at the open'], ['Expected return', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
-    n ? r.orders.map((o) => [[o.ticker], signed(o.expected, 3), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
+  const size = r.size == null ? 1 : r.size;
+  table($('plan'), [['Buy at the open'], ['Units', 'num'], ['Expected return', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+    n ? r.orders.map((o) => [[o.ticker], [size.toFixed(2), 'num'], signed(o.expected, 3), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
       : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
   const B = r.backtest, M = r.market;
   $('verdict').innerHTML = `
