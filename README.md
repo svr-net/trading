@@ -22,8 +22,8 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   take-profit, the stop-loss or the close. Learnt continuously each day from the records so far:
   the pool (how many of the most traded shares), the ranking (from the prediction in volatilities to
   the expected return), and the levels, relative to each share's own moves from the open over its
-  last 100 days: the stop at the fall it reached on a learnt fraction of those days (blended with its
-  parabolic SAR), the take-profit at the rise it reached on a learnt fraction of them (the pool and
+  last 100 days: the stop at the fall it reached on a learnt fraction (1 in 2 to 1 in 10) of those days (blended with its
+  parabolic SAR), the take-profit at the rise it reached on a learnt fraction (1 in 2 to 1 in 10) of them (the pool and
   ranking for return, the levels for return per unit of downside, Sortino). The stop first when a
   day touched both; a stop sells half a bid-ask spread (estimated from the daily bars) below its
   level, and a take-profit fills only when the high clears it by half a spread. One unit in each trade;
