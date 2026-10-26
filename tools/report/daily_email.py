@@ -34,7 +34,7 @@ def update_track(scan, track):
     day = recent[-1]
     if any(d["date"] == day["date"] for d in track["days"]):
         return False
-    entry = {"date": day["date"], "ret": day["ret"], "market": day.get("market")}
+    entry = {"date": day["date"], "ret": day.get("ret", day.get("day")), "market": day.get("market")}
     if day.get("day") is not None:
         entry["day"] = day["day"]
     track["days"].append(entry)
@@ -49,7 +49,29 @@ def compound(rets):
     return w - 1
 
 
+def build_model(scan, track):
+    """The email of the predictive model's scan (model 'v2'): the day, the next open's trades, the backtest."""
+    recent = scan.get("recent", [])
+    day = recent[-1] if recent else {}
+    date = day.get("date", scan["asOf"])
+    live = [d["day"] for d in track["days"] if d.get("day") is not None]
+    orders = scan.get("orders", [])
+    B, M = scan["backtest"], scan["market"]
+    subject = (f"{os.environ.get('MARKET', 'UK')} daily trades · {date}: {pct(day.get('day'))} (market {pct(day.get('market'))})"
+               f" · next open: {len(orders)} trade{'' if len(orders) == 1 else 's'}")
+    lines = [f"Day {date}: daily trades {pct(day.get('day'))}, market {pct(day.get('market'))}",
+             f"Live record: {pct(compound(live))} over {len(live)} days",
+             f"Backtest {B['from']} – {B['to']}: {pct(B['annualReturn'], 1)} a year, Sharpe {B['sharpe']:.2f}, max drawdown"
+             f" {100 * B['maxDrawdown']:.1f}%; market {pct(M['annualReturn'], 1)} a year", "",
+             f"Trades for the next open (after the close of {scan['asOf']}): buy at the open, sell at the close"]
+    lines += [f"  BUY {o['ticker']:<6} expected {pct(o['expected'])}" for o in orders] or ["  none: stay in cash"]
+    html = "<pre>" + "\n".join(lines) + "</pre>"
+    return subject, "\n".join(lines), html
+
+
 def build(scan, track):
+    if scan.get("model") == "v2":
+        return build_model(scan, track)
     recent = scan.get("recent", [])
     day = recent[-1] if recent else None
     date = day["date"] if day else scan["asOf"]

@@ -18,14 +18,14 @@
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
       <button type="button" role="tab" id="mk-us" data-market="us" aria-selected="false">US</button>
     </div>
-    <p class="lede" id="lede">Up to 10 day trades for the next open among the most traded shares: buy at the open, sell at the stop-loss, the take-profit or the close. A trade is listed only when it is expected to make money after costs.</p>
+    <p class="lede" id="lede">Up to 10 day trades for the next open: the shares a walk-forward model, learnt from every share's daily prices and volumes, expects to rise most from the open to the close. Buy at the open, sell at the close.</p>
   </header>
 
   <section aria-labelledby="trades-title">
     <h2 id="trades-title">Trades for the next open</h2>
     <p class="muted" id="asof">Loading the latest scan…</p>
     <div class="table-scroll"><table id="plan"></table></div>
-    <p class="hint">Per trade, relative to its purchase at the open: the expected return, the stop-loss and the take-profit. One unit in every trade; the backtest's daily result is the average of the day's trades. No fees or costs; each day only the shares then most traded. Prices are not published under the data licence.</p>
+    <p class="hint">Each trade's expected return from the open to the close. One unit in every trade; the backtest's daily result is the average of the day's trades, every prediction made only from earlier days. No fees or costs. Prices are not published under the data licence.</p>
 
     <h2>Backtest</h2>
     <div class="verdict" id="verdict"></div>
