@@ -18,8 +18,11 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   (`kernels/net`: forward pass, gradient, Adam) is in the research output for comparison.
 - **Bounce-free**: the trades use the prediction made one close earlier, so the bid-ask bounce
   between the last close and the next open is not learnt.
-- **Trades**: the next open's 10 highest predictions, bought at the open and sold at the close; one
-  unit in each; no fees or costs.
+- **Trades**: the next open's 10 highest predictions, bought at the open and sold at the
+  take-profit, the stop-loss or the close. The levels are multiples (1, 2, 4 or none) of the model's
+  own forecasts of each share's rise to the high and fall to the low, the multiples whose record
+  so far is best (self-adaptive; the stop first when a day touched both). One unit in each trade;
+  no fees or costs. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
 
 `ofm_research --csv stocks.csv [--series futures.csv] [--lag 1] [--top N] [--json scan.json]`
 prints each feature's day-by-day predictive power and the backtests, and writes the page's scan.
