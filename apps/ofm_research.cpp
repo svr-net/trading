@@ -510,6 +510,7 @@ int main(int argc, char** argv) {
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;
     std::snprintf(b, sizeof b, ",\"market\":{\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", mm[0], mm[1], mm[2]);
+    o << b;
     std::snprintf(b, sizeof b, ",\"size\":%.4f", R.size);
     o << b << ",\"orders\":[";
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
