@@ -113,10 +113,9 @@ namespace {
 struct LeastSquares {
   std::size_t k;
   std::vector<double> A, b;
-  double n = 0, yy = 0;
+  double n = 0;
   explicit LeastSquares(std::size_t dim) : k(dim), A(dim * dim, 0.0), b(dim, 0.0) {}
   void add(const std::vector<double>& x, double y) {
-    yy += y * y;
     for (std::size_t i = 0; i < k; ++i) {
       b[i] += x[i] * y;
       for (std::size_t j = 0; j < k; ++j) A[i * k + j] += x[i] * x[j];
@@ -124,40 +123,9 @@ struct LeastSquares {
     n += 1;
   }
   // The coefficients (empty until there are more observations than unknowns or if singular).
-  std::vector<double> solve() const { return solve(b); }
-  // A^-1 (row-major; empty as solve), for the standard errors of predictions.
-  std::vector<double> inverse() const {
-    std::vector<double> inv(k * k), e(k, 0.0);
-    for (std::size_t c = 0; c < k; ++c) {
-      e.assign(k, 0.0), e[c] = 1;
-      const auto col = solve(e);
-      if (col.empty()) return {};
-      for (std::size_t r = 0; r < k; ++r) inv[r * k + c] = col[r];
-    }
-    return inv;
-  }
-  // The residual variance under the coefficients beta (0 while undefined).
-  double residualVar(const std::vector<double>& beta) const {
-    if (beta.size() != k || n <= double(k) + 1) return 0.0;
-    double fit = 0;
-    for (std::size_t i = 0; i < k; ++i) fit += beta[i] * b[i];
-    return std::max(0.0, yy - fit) / (n - double(k));
-  }
-  // The prediction at x shrunk by its own uncertainty, as the records are scored: m max(0, 1 - 1/t^2)
-  // with t = m / its standard error (s^2 x' A^-1 x); inv and s2 from inverse() and residualVar().
-  static double shrunk(const std::vector<double>& beta, const std::vector<double>& inv, double s2, const std::vector<double>& x) {
-    double m = 0, q = 0;
-    const std::size_t k1 = beta.size();
-    for (std::size_t i = 0; i < k1; ++i) {
-      m += beta[i] * x[i];
-      for (std::size_t j = 0; j < k1; ++j) q += x[i] * inv[i * k1 + j] * x[j];
-    }
-    if (inv.size() != k1 * k1 || !(m * m > 0)) return m;
-    return m * std::max(0.0, 1.0 - s2 * q / (m * m));
-  }
-  std::vector<double> solve(const std::vector<double>& rhs) const {
+  std::vector<double> solve() const {
     if (n <= double(k)) return {};
-    std::vector<double> M = A, v = rhs;
+    std::vector<double> M = A, v = b;
     double tr = 0;
     for (std::size_t i = 0; i < k; ++i) tr += M[i * k + i];
     for (std::size_t i = 0; i < k; ++i) M[i * k + i] += 1e-12 * tr;  // numerical floor only
@@ -215,7 +183,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
                 const DayRisk& risk) {
   using namespace day;
   DayBook book;
-  book.buy = buy, book.sell = sell, book.start = start, book.spreadCosts = risk.spreadCosts, book.universe = risk.universe;
+  book.buy = buy, book.sell = sell, book.start = start, book.spreadCosts = risk.spreadCosts, book.universe = risk.universe, book.universeFrom = risk.universeFrom;
   const std::size_t T = m.T(), N = m.N(), K = 10, F = 10;
   if (start == 0 || start >= T || f.E.T != T || f.horizons.empty()) return book;
   const std::vector<std::uint32_t>& halfLives = f.horizons;
@@ -378,25 +346,20 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       if (barAt(t, i, &b)) logVolume[i].add(std::log(b.v));
   }
   auto sigmaOf = [&](std::size_t i) { return vol.sigma(i); };
-  // The day's liquidity bands at the close t (traded value so far): ranks [0, U), [U, 2U), [2U, 4U),
-  // ... (U = risk.universe), each twice the one before. Each band has its own books; the band traded
-  // is learnt (the edge may lie in less traded stocks). -1: no traded value yet. Without a universe,
-  // one band of every stock.
-  const std::size_t U = risk.universe;
-  const std::size_t NB = U == 0 || N <= U ? 1 : 2 + std::size_t(std::floor(std::log2(double(N - 1) / double(U))));
-  auto bandsAt = [&](std::size_t t) {
-    std::vector<int> band(N, U == 0 ? 0 : -1);
-    if (U == 0) return band;
+  // The day's universe: the risk.universe most traded stocks at the close t (traded value so far);
+  // every stock when it is 0.
+  auto inUniverse = [&](std::size_t t) {
+    std::vector<char> in(N, 1);
+    if (risk.universe == 0) return in;
     std::vector<std::pair<double, std::size_t>> v;
     Bar b;
     for (std::size_t i = 0; i < N; ++i)
       if (valueN[i] > 0 && barAt(t, i, &b)) v.emplace_back(tradedValue[i][vol.best()], i);
     std::sort(v.begin(), v.end(), [](const auto& a, const auto& c) { return a.first > c.first; });
-    for (std::size_t r = 0; r < v.size(); ++r)
-      band[v[r].second] = r < U ? 0 : int(std::min<std::size_t>(NB - 1, 1 + std::size_t(std::floor(std::log2(double(r) / double(U))))));
-    return band;
+    std::fill(in.begin(), in.end(), 0);
+    for (std::size_t k = risk.universeFrom; k < std::min(risk.universeFrom + risk.universe, v.size()); ++k) in[v[k].second] = 1;
+    return in;
   };
-  auto bandFrom = [&](std::size_t bd) { return bd == 0 ? std::size_t(0) : U << (bd - 1); };
   // Pair q of stock i: its stop and take-profit distances from the open (log), from its own moves.
   auto stopOf = [&](int s0, std::size_t i, std::size_t q) { return levStop[s0][i].empty() ? kNone : levStop[s0][i][q / G]; };
   auto takeOf = [&](int s0, std::size_t i, std::size_t q) { return levTake[s0][i].empty() ? kNone : levTake[s0][i][q % G]; };
@@ -475,13 +438,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   const double kThr[] = {0.0, 1.0, 2.0, 4.0};
   const std::size_t NT = 4;
   double dayMedianGain = 0;  // set at each close
-  // Books: (liquidity band, level source, stop limit, minimum gain), the band outermost.
-  const std::size_t nPerBand = kSources * G * NT, nLimitRecords = NB * nPerBand;
-  auto bandK = [&](std::size_t k) { return k / nPerBand; };
-  auto srcK = [&](std::size_t k) { return int((k % nPerBand) / (G * NT)); };
-  auto limK = [&](std::size_t k) { return (k / NT) % G; };
-  AdwinBank record(N, T - start, double(T - start)), limitRecord(nLimitRecords, T - start, double(T - start)),
-      bandRecord(NB, T - start, double(T - start));
+  AdwinBank record(N, T - start, double(T - start)), limitRecord(kSources * G * NT, T - start, double(T - start));
+  const std::size_t nLimitRecords = kSources * G * NT;
   // The day's median volatility over the candidates and the market's close-to-close move at t.
   auto dayContext = [&](std::size_t t, const std::vector<std::size_t>& cand, double* medSig, double* mkt) {
     std::vector<double> sigs;
@@ -504,15 +462,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   };
   auto plan = [&](std::size_t t, const std::vector<std::size_t>& cand, double medSig, double mkt) {
     const auto beta = intraday.solve();
-    std::vector<std::vector<double>> ab(kSources * P), abT(kSources * P), iv(kSources * P), ivT(kSources * P);
-    std::vector<double> s2(kSources * P, 0.0), s2T(kSources * P, 0.0);
+    std::vector<std::vector<double>> ab(kSources * P), abT(kSources * P);
     for (int s0 = 0; s0 < kSources; ++s0)
-      for (std::size_t q = 0; q < P; ++q) {
-        const std::size_t j = std::size_t(s0) * P + q;
-        ab[j] = pairFit[s0][q].solve(), abT[j] = trendFit[s0][q].solve();
-        iv[j] = pairFit[s0][q].inverse(), ivT[j] = trendFit[s0][q].inverse();
-        s2[j] = pairFit[s0][q].residualVar(ab[j]), s2T[j] = trendFit[s0][q].residualVar(abT[j]);
-      }
+      for (std::size_t q = 0; q < P; ++q) ab[s0 * P + q] = pairFit[s0][q].solve(), abT[s0 * P + q] = trendFit[s0][q].solve();
     const bool trend = useTrend();
     std::vector<TradePlan> out(N);
     for (std::size_t i : cand) {
@@ -536,11 +488,8 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         for (std::size_t q = 0; q < P; ++q) {
           const auto& a = ab[s0 * P + q];
           const auto& c = abT[s0 * P + q];
-          // Each pair's expected outcome shrunk by its own uncertainty: the best of 81 noisy fits
-          // otherwise favours the luckiest (in practice wide stops with small take-profits).
-          const std::size_t j = std::size_t(s0) * P + q;
-          if (!a.empty()) pl.ePlain[s0][q] = LeastSquares::shrunk(a, iv[j], s2[j], {1.0, pl.mu});
-          if (!c.empty()) pl.eTrend[s0][q] = LeastSquares::shrunk(c, ivT[j], s2T[j], {1.0, pl.mu, pl.adxr, pl.adxr * pl.mu});
+          if (!a.empty()) pl.ePlain[s0][q] = a[0] + a[1] * pl.mu;
+          if (!c.empty()) pl.eTrend[s0][q] = c[0] + c[1] * pl.mu + (c[2] + c[3] * pl.mu) * pl.adxr;
         }
         pl.e[s0] = trend ? pl.eTrend[s0] : pl.ePlain[s0];
       }
@@ -766,20 +715,11 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   };
   // The level source and stop limit in use: the book whose record is best so far; cash while none
   // beats cash.
-  // Two levels, so the choice is not the luckiest of hundreds of books: within each band its best
-  // book; each band keeps one record, of what its best book traded; the band whose record is best
-  // trades.
-  auto bestInBand = [&](std::size_t bd) {
-    std::size_t k = bd * nPerBand;
-    for (std::size_t j = k + 1; j < (bd + 1) * nPerBand; ++j)
+  auto bestLimit = [&]() {
+    std::size_t k = 0;
+    for (std::size_t j = 1; j < nLimitRecords; ++j)
       if (limitRecord.score(j) > limitRecord.score(k)) k = j;
     return k;
-  };
-  auto bestLimit = [&]() {
-    std::size_t bd = 0;
-    for (std::size_t j = 1; j < NB; ++j)
-      if (bandRecord.score(j) > bandRecord.score(bd)) bd = j;
-    return bestInBand(bd);
   };
   // The traded trades' expected and actual returns (log), summed: the expected-return column is the
   // forecast scaled by what the trades actually earned per unit of it (display only).
@@ -808,20 +748,17 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     if (t > 0) addDay(t);
     // Candidates: in the day's universe, a forecast at the close t, a volatility, and a bar on day d.
     std::vector<std::size_t> cand;
-    const auto bandOf = bandsAt(t);
+    const auto inU = inUniverse(t);
     for (std::size_t i = 0; i < N; ++i)
-      if (bandOf[i] >= 0 && std::isfinite(f.E(t, i)) && sigmaOf(i) > 0 && barAt(d, i, &b)) cand.push_back(i);
-    std::vector<std::vector<std::size_t>> inBand(NB);
-    for (std::size_t i : cand) inBand[std::size_t(bandOf[i])].push_back(i);
+      if (inU[i] && std::isfinite(f.E(t, i)) && sigmaOf(i) > 0 && barAt(d, i, &b)) cand.push_back(i);
     double medSig, mkt;
     dayContext(t, cand, &medSig, &mkt);
     const auto pl = plan(t, cand, medSig, mkt);
     setLevels(t, cand, pl);
     // Every source's and stop limit's book; the one in use trades.
     const std::size_t use = bestLimit(), nBooks = nLimitRecords;
-    std::vector<std::size_t> bestBefore(NB);
-    for (std::size_t bd = 0; bd < NB; ++bd) bestBefore[bd] = bestInBand(bd);
     budget = budgetAt(t);
+    auto srcK = [&](std::size_t k) { return int(k / (G * NT)); };
     // The day's best pairs: limits g < G (each book's) and G (none); fills 0 the daily bar only,
     // 1 exact where the day has an intraday path, 2 exact everywhere (the candidates for paths).
     auto exactOn = [&](std::size_t i) { return pathOf(d, i) != nullptr; };
@@ -835,10 +772,9 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       }
       return bestPairs(cand, pl, lims, flos);
     }();
-    std::vector<double> medGain(NB * kSources);
-    for (std::size_t bd = 0; bd < NB; ++bd)
-      for (int s0 = 0; s0 < kSources; ++s0) medGain[bd * kSources + std::size_t(s0)] = medianGain(B, 0, G, s0, inBand[bd]);
-    auto minK = [&](std::size_t k) { return kThr[k % NT] * medGain[bandK(k) * kSources + std::size_t(srcK(k))]; };
+    double medGain[kSources];
+    for (int s0 = 0; s0 < kSources; ++s0) medGain[s0] = medianGain(B, 0, G, s0, cand);
+    auto minK = [&](std::size_t k) { return kThr[k % NT] * medGain[srcK(k)]; };
     const int us = srcK(use);
     const bool trade = limitRecord.score(use) > 0;
     if (trade) ++book.sourceDays[us];
@@ -857,13 +793,13 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
       g.bookAhead += bestScore > 0;
     }
     std::vector<Book> books(nBooks);
-    for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(srcK(k), ranked(B, 1, srcK(k), limK(k), inBand[bandK(k)], minK(k)), K);
+    for (std::size_t k = 0; k < nBooks; ++k) books[k] = makeBook(srcK(k), ranked(B, 1, srcK(k), (k / NT) % G, cand, minK(k)), K);
     // The strongest candidates: every stock a book could trade, with and without exact fills.
     if (d >= candidatesFrom) {
       std::vector<char> seen(N, 0);
       for (int ex = 0; ex < 2; ++ex)
         for (std::size_t k = 0; k < nBooks; ++k)
-          for (const auto& c : ranked(B, ex == 1 ? 2 : 0, srcK(k), limK(k), inBand[bandK(k)], minK(k)))
+          for (const auto& c : ranked(B, ex == 1 ? 2 : 0, srcK(k), (k / NT) % G, cand, minK(k)))
             if (!seen[std::get<1>(c)]) seen[std::get<1>(c)] = 1, book.candidates.emplace_back(d, std::get<1>(c));
     }
     const double r = trade ? dayReturn(books[use], d, true) : 0.0;
@@ -880,12 +816,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
         if (risk.capSizingOnly) bk.w = bk.wRaw;
         which[k] = k, x[k] = std::log1p(dayReturn(bk, d, false));
       }
-      // Each band's record: what its best book (chosen before the day) traded.
-      std::vector<std::size_t> bw(NB);
-      std::vector<double> bx(NB);
-      for (std::size_t bd = 0; bd < NB; ++bd) bw[bd] = bd, bx[bd] = x[bestBefore[bd]];
       limitRecord.push(which, x);
-      bandRecord.push(bw, bx);
     }
     // After the close d: the day's outcomes, for the stocks' records and the fits.
     for (int s0 = 0; s0 < kSources; ++s0)  // the two fits of a source see the same outcomes
@@ -1005,20 +936,15 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   addDay(t);
   book.halfLife = halfLives[vol.best()];
   std::vector<std::size_t> cand;
-  const auto bandOf = bandsAt(t);
+  const auto inU = inUniverse(t);
   for (std::size_t i = 0; i < N; ++i)
-    if (bandOf[i] >= 0 && std::isfinite(f.E(t, i)) && sigmaOf(i) > 0 && barAt(t, i, &b)) cand.push_back(i);
+    if (inU[i] && std::isfinite(f.E(t, i)) && sigmaOf(i) > 0 && barAt(t, i, &b)) cand.push_back(i);
   double medSig, mkt;
   dayContext(t, cand, &medSig, &mkt);
   const auto pl0 = plan(t, cand, medSig, mkt);
   setLevels(t, cand, pl0);
   const std::size_t use = bestLimit();
-  const int src = srcK(use);
-  const std::size_t ub = bandK(use);
-  book.universeFrom = bandFrom(ub), book.universe = (ub + 1 < NB ? bandFrom(ub + 1) : N) - book.universeFrom;
-  std::vector<std::size_t> candU;  // the candidates in the band in use
-  for (std::size_t i : cand)
-    if (std::size_t(bandOf[i]) == ub) candU.push_back(i);
+  const int src = int(use / (G * NT));
   book.levelsFrom = src == kWnet  ? "neural network with Wilder's and Bollinger's indicators (predicted lows and highs)"
                     : src == kNet ? "neural network (predicted lows and highs)"
                     : src == kBol ? "Bollinger bands (each stock's moves in band units, adaptive horizon)"
@@ -1041,7 +967,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
     }
     return bestPairs(cand, pl0, lims, flos);
   }();
-  dayMedianGain = medianGain(B, 0, G, src, candU);
+  dayMedianGain = medianGain(B, 0, G, src, cand);
   book.minGain = kThr[use % NT] * dayMedianGain;
   budget = budgetAt(t);
   book.dayBudget = budget;
@@ -1074,7 +1000,7 @@ DayBook dayBook(const Market& m, const Forecast& f, std::size_t start, double bu
   book.backtestLoses = !(grown > 0) || !(book.backtestT >= risk.minT);
   book.expectScale = expectedSum > 0 && realisedSum > 0 ? realisedSum / expectedSum : 1.0;
   if (limitRecord.score(use) > 0 && !book.backtestLoses) {
-    const Book bk = makeBook(src, ranked(B, 1, src, lu, candU, book.minGain), book.bookSize);
+    const Book bk = makeBook(src, ranked(B, 1, src, lu, cand, book.minGain), book.bookSize);
     for (std::size_t j = 0; j < bk.pick.size(); ++j) {
       const std::size_t i = bk.pick[j], q = bk.pair[j];
       DayOrder o;

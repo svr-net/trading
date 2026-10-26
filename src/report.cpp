@@ -348,7 +348,7 @@ std::string reportText(const Market& m, const Forecast& f, const Backtest& bt, c
         o << b;
       }
       if (day->universe) {
-        std::snprintf(b, sizeof b, "Learnt universe: the band of stocks ranked %zu to %zu by traded value each day, of %zu stocks\n", day->universeFrom + 1,
+        std::snprintf(b, sizeof b, "Universe: each day the stocks ranked %zu to %zu by traded value at that time, of %zu stocks\n", day->universeFrom + 1,
                       day->universeFrom + day->universe, m.N());
         o << b;
       }
