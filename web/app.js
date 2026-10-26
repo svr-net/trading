@@ -31,8 +31,10 @@ function render(r, source) {
   const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source] || source;
   const n = r.orders.length;
   $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · no fees or costs`;
-  table($('plan'), [['Buy at the open, sell at the close'], ['Expected return', 'num']],
-    n ? r.orders.map((o) => [[o.ticker], signed(o.expected, 3)]) : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
+  const level = (x) => (x == null ? 'none' : pct(x, 2));
+  table($('plan'), [['Buy at the open'], ['Expected return', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+    n ? r.orders.map((o) => [[o.ticker], signed(o.expected, 3), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
+      : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
   const B = r.backtest, M = r.market;
   $('verdict').innerHTML = `
     <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>

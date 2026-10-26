@@ -18,7 +18,7 @@ on:
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
-      pool: { description: 'The most traded shares kept per exchange', default: '500' }
+      pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US)', default: '' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -80,7 +80,7 @@ jobs:
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
-            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || '500' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             else
