@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "daykernels.hpp"
+#include "net.hpp"
 #include "invoke.hpp"
 #include "ofm/data.hpp"
 #include "v2_kernels.hpp"
@@ -289,7 +289,7 @@ int main(int argc, char** argv) {
     o << "]}}";
   }
   // The same inputs through a neural network (two hidden layers of rectified linear units, the
-  // fused kernels of src/daykernels): each day it predicts every stock's next open-to-close from
+  // fused kernels of src/net): each day it predicts every stock's next open-to-close from
   // the day's standardised features, then learns from that day's outcomes once they are known
   // (shuffled mini-batches of 32, one pass), so every prediction is out of sample.
   {
@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
     ofm::detail::dispatch(kz, ofm::detail::groups(std::uint32_t(T * F), 64));
     // Settings under test (NN_HIDDEN, NN_LR, NN_RANK: the target as the day's rank).
     const auto env = [](const char* k, double d) { const char* v = std::getenv(k); return v ? std::atof(v) : d; };
-    ofm::day::kernels::Net net(F, std::size_t(env("NN_HIDDEN", 16)), {0.5});
+    ofm::net::Net net(F, std::size_t(env("NN_HIDDEN", 16)), {0.5});
     net.lr = env("NN_LR", 3e-4);
     const bool rankTarget = env("NN_RANK", 0) > 0;
     std::vector<double> memX, memY;  // every earlier day's samples (replay)

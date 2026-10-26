@@ -1,6 +1,6 @@
 name: Pages
 
-# Publishes the page (web/ with the WebAssembly module built by CI) to GitHub Pages; the checks ran on the pull request.
+# Publishes the page (web/ and the published scans) to GitHub Pages; the checks ran on the pull request.
 on:
   push:
     branches: [main]
@@ -39,7 +39,6 @@ jobs:
         run: |
           V="${GITHUB_SHA::12}"
           sed -i "s|app.js?v=[^\"]*|app.js?v=$V|" site/index.html
-          sed -i "s|'./wasm/ofm.js'|'./wasm/ofm.js?v=$V'|; s|'./gpu.js'|'./gpu.js?v=$V'|" site/app.js
           grep -o 'app.js?v=[^"]*' site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -22,21 +22,13 @@ jobs:
       - name: Build and test
         run: |
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_tests
+          cmake --build build
           ./build/ofm_tests
 
-  wasm:
+  site:
     runs-on: ubuntu-24.04
-    container: emscripten/emsdk:4.0.10
     steps:
       - uses: actions/checkout@v4
-      - name: Build the WebAssembly module
-        run: |
-          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-wasm -j"$(nproc)"
-      - name: Node test
-        if: ${{ !inputs.site-only }}
-        run: node web/tests/wasm.test.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: site
@@ -45,18 +37,14 @@ jobs:
 
   e2e:
     if: ${{ !inputs.site-only }}
-    needs: wasm
+    needs: site
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.56.1-noble
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: site
-          path: web
       - name: Install Playwright
         run: npm install --no-save --no-audit --no-fund playwright@1.56.1
-      - name: Browser test (the page on WebGPU, SwiftShader)
+      - name: Browser test (the page renders the published scans)
         env:
           PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
         run: node web/tests/e2e.mjs

@@ -12,7 +12,7 @@
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Orthonormal shrinkage factor model · C++ · WebGPU kernels</div>
+    <div class="eyebrow">Walk-forward model of daily OHLCV · C++ · fused kernels</div>
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
@@ -34,41 +34,7 @@
     <div class="table-scroll"><table id="recent"></table></div>
   </section>
 
-  <section aria-labelledby="intra-title" id="intraday" hidden>
-    <h2 id="intra-title">Intraday strategy</h2>
-    <p class="muted" id="intra-asof"></p>
-    <div class="verdict" id="intra-verdict"></div>
-    <div class="table-scroll"><table id="intra-years"></table></div>
-    <p class="hint">Each day's 100 most traded shares, on 5-minute bars: bought 5 to 40 minutes after the open (the delay learnt), up to 10 trades, each sold at its learnt stop-loss, take-profit or the close. One unit in every trade; no fees or costs. The trades depend on the day's opening moves, so they are chosen after the open, not listed the evening before.</p>
-  </section>
-
-  <h2>Run it yourself</h2>
-  <p class="muted">On the sample market or your own daily bars, in this browser.</p>
-  <section class="controls" aria-label="Run">
-    <div class="field">
-      <span class="label">Data</span>
-      <div class="row">
-        <label class="radio"><input type="radio" name="source" id="src-sample" value="sample" checked> Sample market (synthetic)</label>
-        <label class="radio"><input type="radio" name="source" id="src-files" value="files"> My files</label>
-      </div>
-      <div class="row files" id="files" hidden>
-        <label>Stocks CSV <input type="file" id="stocks-file" accept=".csv,text/csv"></label>
-        <label>Futures / index CSV (optional) <input type="file" id="series-file" accept=".csv,text/csv"></label>
-        <p class="hint">Format <code>date,ticker,open,high,low,close,volume</code>. Files are read in this browser and never uploaded.</p>
-      </div>
-    </div>
-    <div class="field costs">
-      <label class="label" for="cost-pct">Cost per side (%)</label>
-      <div class="row"><input type="number" id="cost-pct" value="0" min="0" step="0.01"></div>
-      <p class="hint">Commission, spread and slippage on each purchase and each sale.</p>
-    </div>
-    <div class="field run">
-      <button id="run" type="button">Run model</button>
-      <p class="status" id="status" role="status">Loading the model…</p>
-    </div>
-  </section>
-
-  <footer>Research tool, not investment advice. Backtest fills: the stop when a day touched both levels. Results on the sample market come from synthetic data. With your own files: survivorship bias in a list of today's stocks, prices without dividends and fills at the open flatter results.</footer>
+  <footer>Research tool, not investment advice. Backtest: buy at the open and sell at the close, one unit in each of the day's trades, no fees or costs; every prediction is made only from earlier days, and the shares are today's most traded (survivorship), prices without dividends.</footer>
 </div>
 <script type="module" src="app.js?v=51"></script>
 </body>
