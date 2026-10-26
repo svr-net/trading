@@ -165,7 +165,6 @@ int main(int argc, char** argv) {
       else if (a == "--daily-budget") risk.dailyBudget = true;
       else if (a == "--spread-costs") risk.spreadCosts = true;
       else if (a == "--universe") risk.universe = std::stoul(next());
-      else if (a == "--universe-from") risk.universeFrom = std::stoul(next());
       else if (a == "--universe-out") universeOut = next();
       else if (a == "--universe-days") universeDays = std::stoul(next());
       else if (a == "--intraday-universe") intraUniverse = std::stoul(next());

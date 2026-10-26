@@ -214,8 +214,7 @@ struct DayRisk {
   // (Abdi and Ranaldo 2017), paid on every purchase and sale, a take-profit filling only when the
   // high trades through it by half the spread; and each day only the stocks then most traded.
   bool spreadCosts = false;     ///< charge each stock's estimated spread
-  std::size_t universe = 0;     ///< each day only the stocks then among the most traded (0: all)
-  std::size_t universeFrom = 0; ///< ... below this many most traded: a band of less traded stocks (the US edge lies there)
+  std::size_t universe = 0;     ///< liquidity bands by traded value: this many most traded, then bands twice as wide each (the band traded is learnt; 0: one band of every stock)
 };
 
 /// The daily trades from day `start` to the last day, and the orders for the next open.
