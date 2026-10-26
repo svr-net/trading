@@ -145,8 +145,9 @@ int main(int argc, char** argv) {
     std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
+    return pred;
   };
-  model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
+  const auto linPred = model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
   // The same inputs through a neural network (two hidden layers of rectified linear units, the
   // fused kernels of src/daykernels): each day it predicts every stock's next open-to-close from
   // the day's standardised features, then learns from that day's outcomes once they are known
@@ -157,7 +158,8 @@ int main(int argc, char** argv) {
     kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
     ofm::detail::dispatch(kz, ofm::detail::groups(std::uint32_t(T * F), 64));
     ofm::day::kernels::Net net(F, 32, {0.5});
-    std::vector<double> always, mkt;
+    std::vector<double> memX, memY;  // every earlier day's samples (replay)
+    std::vector<double> always, ens, mkt;
     std::vector<std::string> sd;
     std::uint64_t rng = 0x9E3779B97F4A7C15ull;
     for (std::size_t q = 0; q < days.size(); ++q) {
@@ -171,6 +173,12 @@ int main(int argc, char** argv) {
         y.push_back(std::clamp(a[F], -6.0, 6.0)), who.push_back(i);
       }
       if (who.size() < 30) continue;
+      // The target relative to the day's average (the ranking is what is traded).
+      {
+        double my = 0;
+        for (double v : y) my += v / double(y.size());
+        for (double& v : y) v -= my;
+      }
       if (q >= 250 && t + 1 < T) {
         const auto pr = net.predict(x, who.size());
         std::vector<std::pair<double, std::size_t>> v;
@@ -178,6 +186,17 @@ int main(int argc, char** argv) {
         std::partial_sort(v.begin(), v.begin() + 10, v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         double r1 = 0, ms = 0;
         for (std::size_t r = 0; r < 10; ++r) r1 += (m.close(t + 1, v[r].second) / m.open(t + 1, v[r].second) - 1) / 10;
+        // The ensemble: each stock's rank under the network plus its rank under the linear model.
+        std::vector<std::pair<double, std::size_t>> rn(who.size()), rl(who.size());
+        for (std::size_t r = 0; r < who.size(); ++r) rn[r] = {pr[r], r}, rl[r] = {linPred[(t * N + who[r]) * 4], r};
+        std::sort(rn.begin(), rn.end()), std::sort(rl.begin(), rl.end());
+        std::vector<std::pair<double, std::size_t>> sc(who.size());
+        for (std::size_t r = 0; r < who.size(); ++r) sc[r].second = who[r];
+        for (std::size_t r = 0; r < who.size(); ++r) sc[rn[r].second].first += double(r), sc[rl[r].second].first += double(r);
+        std::partial_sort(sc.begin(), sc.begin() + 10, sc.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        double r2 = 0;
+        for (std::size_t r = 0; r < 10; ++r) r2 += (m.close(t + 1, sc[r].second) / m.open(t + 1, sc[r].second) - 1) / 10;
+        ens.push_back(r2);
         for (std::size_t i : who) ms += (m.close(t + 1, i) / m.close(t, i) - 1) / double(who.size());
         always.push_back(r1), mkt.push_back(ms), sd.push_back(m.dates[t + 1]);
       }
@@ -188,10 +207,26 @@ int main(int argc, char** argv) {
         rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
         std::swap(perm[r], perm[rng % (r + 1)]);
       }
+      // Replay: as many samples again drawn from every earlier day, so the network keeps learning
+      // from the whole history rather than drifting with the last days.
+      const std::size_t nNew = who.size(), nOld = std::min(memY.size(), nNew);
+      std::vector<double> tx(x), ty(y);
+      for (std::size_t r = 0; r < nOld; ++r) {
+        rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+        const std::size_t k = rng % memY.size();
+        tx.insert(tx.end(), memX.begin() + std::ptrdiff_t(k * F), memX.begin() + std::ptrdiff_t((k + 1) * F)), ty.push_back(memY[k]);
+      }
+      memX.insert(memX.end(), x.begin(), x.end()), memY.insert(memY.end(), y.begin(), y.end());
+      perm.resize(ty.size());
+      for (std::size_t r = 0; r < perm.size(); ++r) perm[r] = r;
+      for (std::size_t r = perm.size(); r-- > 1;) {
+        rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+        std::swap(perm[r], perm[rng % (r + 1)]);
+      }
       for (std::size_t b0 = 0; b0 < perm.size(); b0 += 32) {
         const std::size_t nb = std::min<std::size_t>(32, perm.size() - b0);
         std::vector<double> bx, by;
-        for (std::size_t r = b0; r < b0 + nb; ++r) bx.insert(bx.end(), x.begin() + std::ptrdiff_t(perm[r] * F), x.begin() + std::ptrdiff_t((perm[r] + 1) * F)), by.push_back(y[perm[r]]);
+        for (std::size_t r = b0; r < b0 + nb; ++r) bx.insert(bx.end(), tx.begin() + std::ptrdiff_t(perm[r] * F), tx.begin() + std::ptrdiff_t((perm[r] + 1) * F)), by.push_back(ty[perm[r]]);
         net.step(bx, by, nb);
       }
     }
@@ -201,9 +236,10 @@ int main(int argc, char** argv) {
       const double n = double(v.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
       return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
     };
-    const auto a1 = stats(always), a3 = stats(mkt);
+    const auto a1 = stats(always), a2 = stats(ens), a3 = stats(mkt);
     std::printf("\nNeural network on the stocks' own OHLCV (%s .. %s), the 10 highest predicted, open to close:\n", sd.front().c_str(), sd.back().c_str());
     std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
+    std::printf("  ensemble with the linear model   %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a2.first, a2.second);
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
   }
   // With the market-wide series (futures and indices) as further inputs.
