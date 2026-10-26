@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
   }
   const ofm::Market m = ofm::parseMarketCsv(readFile(csv));
-  const std::size_t T = m.T(), N = m.N(), F = 21, K = F + 5;
+  const std::size_t T = m.T(), N = m.N(), F = 27, K = F + 5;
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
   for (std::size_t f = 0; f < 5; ++f)
@@ -50,9 +50,9 @@ int main(int argc, char** argv) {
   ofm::v2::gen::Ic<double> ki;
   ki.P = P, ki.feat = feat.data(), ki.ic = ic.data();
   ofm::detail::dispatch(ki, ofm::detail::groups(std::uint32_t(T * F * 4), 64));
-  const char* fn[21] = {"momentum 2d", "momentum 4d", "momentum 8d", "momentum 16d", "momentum 32d", "momentum 64d", "volume shock 4d", "volume shock 16d",
+  const char* fn[27] = {"momentum 2d", "momentum 4d", "momentum 8d", "momentum 16d", "momentum 32d", "momentum 64d", "volume shock 4d", "volume shock 16d",
                         "volume shock 64d", "range shock 4d", "range shock 16d", "range shock 64d", "open-to-close", "close-to-close", "gap",
-                        "close in range", "upper wick", "lower wick", "signed volume shock", "liquidity (traded value)", "volatility level"};
+                        "close in range", "upper wick", "lower wick", "signed volume shock", "liquidity (traded value)", "volatility level", "intraday momentum 4d", "intraday momentum 16d", "intraday momentum 64d", "overnight momentum 4d", "overnight momentum 16d", "overnight momentum 64d"};
   const char* tn[4] = {"next open-to-close", "next open-to-high", "next open-to-low (fall)", "next close-to-close"};
   // Days with correlations defined.
   std::vector<std::size_t> days;
@@ -148,7 +148,32 @@ int main(int argc, char** argv) {
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
     return pred;
   };
-  const auto linPred = model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
+  // The features with their interactions with liquidity and volatility (kernels/v2/interact.wgsl):
+  // momentum 2d, volume shock 4d, open-to-close, gap, close in range, intraday and overnight
+  // momentum 64d.
+  const std::vector<double> sigs = {0, 6, 12, 14, 15, 23, 26};
+  const std::size_t MI = sigs.size(), FI = F + 2 * MI, KI = FI + 5;
+  std::vector<double> ftI(T * N * KI, 0.0);
+  {
+    std::vector<double> zs(T * F * 2, 0.0), ia(T * N * 2 * MI, 0.0);
+    ofm::v2::gen::Zscore<double> kz;
+    kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
+    ofm::detail::dispatch(kz, ofm::detail::groups(std::uint32_t(T * F), 64));
+    ofm::v2::gen::V2Header<double> Q = P;
+    Q.u0 = std::uint32_t(MI);
+    ofm::v2::gen::Interact<double> kx;
+    kx.P = Q, kx.feat = feat.data(), kx.zs = zs.data(), kx.sig = const_cast<double*>(sigs.data()), kx.out = ia.data();
+    ofm::detail::dispatch(kx, ofm::detail::groups(std::uint32_t(T * N), 64));
+    for (std::size_t r = 0; r < T * N; ++r) {
+      const double* a = &feat[r * K];
+      double* o = &ftI[r * KI];
+      for (std::size_t f = 0; f < F; ++f) o[f] = a[f];
+      for (std::size_t f = 0; f < 2 * MI; ++f) o[F + f] = ia[r * 2 * MI + f];
+      for (std::size_t f = 0; f < 5; ++f) o[FI + f] = a[F + f];
+    }
+  }
+  model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
+  const auto linPred = model(ftI, FI, KI, FI, "Walk-forward model with liquidity and volatility interactions");
   // The same inputs through a neural network (two hidden layers of rectified linear units, the
   // fused kernels of src/daykernels): each day it predicts every stock's next open-to-close from
   // the day's standardised features, then learns from that day's outcomes once they are known
