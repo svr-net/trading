@@ -24,6 +24,7 @@ jobs:
           cmake -S . -B build -G Ninja
           cmake --build build
           ./build/ofm_tests
+          node tools/eoddata/clean.test.mjs
 
   site:
     runs-on: ubuntu-24.04

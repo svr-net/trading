@@ -1,0 +1,13 @@
+# ninja log v5
+1	21	0	/home/user/trading/build2/CMakeFiles/cmake.verify_globs	2a411e15d769f5b3
+21	78	1793088482732084683	generated/net_kernels.hpp	62ec0929ce2ac2c8
+21	78	1793088482732084683	/home/user/trading/build2/generated/net_kernels.hpp	62ec0929ce2ac2c8
+22	103	1793088482754647172	generated/v2_kernels.hpp	7f38002160623be3
+22	103	1793088482754647172	/home/user/trading/build2/generated/v2_kernels.hpp	7f38002160623be3
+104	6721	1793088489375840146	CMakeFiles/ofm_tests.dir/tests/tests.cpp.o	5d1061d66b03cbf2
+104	6746	1793088489399840146	CMakeFiles/ofm.dir/src/net.cpp.o	54e37ea89fc1c447
+103	7542	1793088490195840151	CMakeFiles/ofm.dir/src/data.cpp.o	91dd75bef4790fa5
+7542	10335	1793088492987840167	libofm.a	e4696e8b197a49a
+10335	10462	1793088493118955491	ofm_tests	9707ce1ff22045bd
+104	13525	1793088496179840187	CMakeFiles/ofm_research.dir/apps/ofm_research.cpp.o	19cb9b375b7e8a60
+13525	13625	1793088496282446119	ofm_research	47e8c582fea3d435

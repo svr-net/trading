@@ -1,0 +1,78 @@
+# Model study on the EOD store (results only, nothing published): the backtests with the old
+# loading and model (main), the cleaned data with main's model, and the cleaned data with this
+# branch's model. Runs on pushes to its branch; makes no requests.
+name: Model study
+
+on:
+  push:
+    branches: [claude/adaptive-fit]
+
+permissions:
+  contents: read
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        market: [UK, US]
+    env:
+      MARKET: ${{ matrix.market }}
+      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
+      POOL: ${{ matrix.market == 'US' && '2000' || '500' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Seed from the runner's cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
+          restore-keys: |
+            eoddata-${{ matrix.market }}-main-
+      - name: Set the cache's store aside
+        run: if [ -d data/eoddata ]; then mv data/eoddata data/seed; fi
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
+        with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
+          path: data/eoddata
+          fetch-depth: 1
+      - name: Add the files svr-net/eod lacks from the cache's store
+        run: if [ -d data/seed ]; then cp -rn data/seed/. data/eoddata/; rm -rf data/seed; fi
+      - name: Bars, old and cleaned (no requests; counts only)
+        run: |
+          for mode in old clean; do
+            F=data/stocks_$mode.csv
+            echo 'date,ticker,open,high,low,close,volume' > $F
+            for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+              CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+              FLAG=""; [ $mode = old ] && FLAG="--no-clean"
+              node tools/eoddata/fetch.mjs --cached --skip-missing $FLAG --exchange "$EX" --universe "$POOL" --years 9 --currency "$CUR" --out "data/${EX}_$mode.csv" > fetch.log 2>&1 || true
+              echo "$mode $EX: $(($(wc -l < "data/${EX}_$mode.csv") - 1)) bars; $(grep 'cleaning:' fetch.log)"
+              tail -n +2 "data/${EX}_$mode.csv" >> $F
+            done
+          done
+      - name: Build (this branch, and main)
+        run: |
+          sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
+          cmake -S . -B build -G Ninja >/dev/null && cmake --build build --target ofm_research >/dev/null
+          git worktree add -q main origin/main
+          cmake -S main -B main/build -G Ninja >/dev/null && cmake --build main/build --target ofm_research >/dev/null
+      - name: Backtests (results only)
+        run: |
+          show() { grep -E "^impossible|stocks, [0-9]+ days|interactions \(|^  (every day|ranked by|self-adaptive pool|only days|market)|the fit learnt|^   (all|1000|500|250|125)/" "$1" | grep -v "^  learnt for" ; }
+          for v in "main model, old data:main/build/ofm_research:old" "main model, cleaned data:main/build/ofm_research:clean" "adaptive fit, cleaned data:build/ofm_research:clean"; do
+            IFS=: read -r label bin data <<< "$v"
+            echo "=== $MARKET | $label"
+            ./$bin --csv data/stocks_$data.csv --lag 1 > out.txt 2>&1 || echo "failed"
+            show out.txt
+          done | tee study.txt
+          { echo '```'; cat study.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

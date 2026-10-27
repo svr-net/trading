@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as S from './store.mjs';
+import { cleanBars } from './clean.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : fallback; };
@@ -152,11 +153,13 @@ async function barsOf(code) {
 }
 
 const rows = ['date,ticker,open,high,low,close,volume'];
+const cleaned = { short: 0 };
+let shares = 0;  // shares kept (a share's earlier segments, code~n, are not counted)
 const kept = [];
 for (const [i, { code }] of ranked.entries()) {
-  if (kept.length >= universe) break;
+  if (shares >= universe) break;
   const stored = await barsOf(code).catch((e) => {
-    if (cached) { console.error(`cached: ${e.message}`); process.exit(3); }
+    if (cached && !argv.includes('--skip-missing')) { console.error(`cached: ${e.message}`); process.exit(3); }
     console.warn(`  skip ${code}: ${e.message}`);
     return new Map();
   });
@@ -166,15 +169,24 @@ for (const [i, { code }] of ranked.entries()) {
     .filter((b) => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0)
     .sort((a, b) => (a.d < b.d ? -1 : 1));
   if (i === 0) console.log(`  ${code}: ${bars.length} bars`);
-  if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
   for (const { date, ratio } of splits.get(code) || [])
     for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
-  const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6));
-  if (jump > 0) { console.log(`  ${code}: unexplained move on ${bars[jump].d} (${bars[jump - 1].c} -> ${bars[jump].c}), dropped`); continue; }
-  for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
-  kept.push({ code, name: nameOf.get(code) || '', days: bars.length });
-  if (kept.length % 20 === 0) console.log(`  kept ${kept.length}`);
+  // Cleaning (clean.mjs): unit swaps, reused tickers, quotes without trades, bad ticks and prints.
+  // Only counts are printed (EODData's licence: no prices in the logs).
+  // --no-clean: the old loading, for comparison (a share with a close-to-close move over 60% dropped).
+  const raw = argv.includes('--no-clean');
+  if (raw && (bars.length < minDays || bars.some((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6)))) { ++cleaned.short; continue; }
+  const { segments, counts } = raw ? { segments: [{ code, bars }], counts: {} } : cleanBars(code, bars, { minDays });
+  for (const [k, n] of Object.entries(counts)) cleaned[k] = (cleaned[k] || 0) + n;
+  if (!segments.length) { ++cleaned.short; continue; }
+  ++shares;
+  for (const sg of segments) {
+    for (const b of sg.bars) rows.push(`${b.d},${sg.code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
+    kept.push({ code: sg.code, name: nameOf.get(code) || '', days: sg.bars.length });
+  }
+  if (shares % 20 === 0) console.log(`  kept ${shares}`);
 }
+console.log(`  cleaning: ${Object.entries(cleaned).map(([k, n]) => `${k} ${n}`).join(', ')} (clean.mjs)`);
 console.log(`  store: ${counts.full} full histories downloaded, ${counts.gap} gaps filled, ${counts.quote} days from the quote list, ${counts.current} up to date`);
 // Dated lists keep only their newest copy.
 if (!cached) {
