@@ -216,26 +216,108 @@ int main(int argc, char** argv) {
     ofm::v2::gen::Gram<double> kg;
     kg.P = Q, kg.feat = const_cast<double*>(ft.data()), kg.zs = zs.data(), kg.out = gram.data();
     ofm::detail::dispatch(kg, ofm::detail::groups(std::uint32_t(T * E), 64));
-    std::vector<double> acc(E, 0.0);
+    // The fit, learnt walk-forward: how fast to forget old days (sums weighted by a half-life in
+    // days; none keeps every day equally) and how much to shrink the coefficients (ridge, a multiple
+    // of the inputs' mean variance). Each candidate's predictions are scored by their correlation
+    // with what happened across the stocks each day (the information coefficient); each close the
+    // open-to-close coefficients come from the candidate whose record so far is best (its mean
+    // shrunk by its t-statistic), from outcomes no later than the fit itself sees. The other targets
+    // keep every day and the smallest ridge.
+    const double halfLives[] = {0, 1000, 500, 250, 125}, ridges[] = {1e-6, 1e-2, 1e-1, 1.0};
+    constexpr std::size_t nHl = 5, nRg = 4, nCd = nHl * nRg;
+    std::vector<std::vector<double>> acc(nHl, std::vector<double>(E, 0.0));
+    const auto solve = [&](const std::vector<double>& a0, std::size_t k, double ridge, double* out) {
+      std::vector<double> M(a0.begin(), a0.begin() + std::ptrdiff_t(D * D)), v(D);
+      for (std::size_t q = 0; q < D; ++q) v[q] = a0[D * D + k * D + q];
+      double tr = 0;
+      for (std::size_t q = 0; q < D; ++q) tr += M[q * D + q];
+      if (!(tr > 0)) return false;
+      for (std::size_t q = 0; q < D; ++q) M[q * D + q] += ridge * tr / double(D);
+      for (std::size_t c = 0; c < D; ++c)
+        for (std::size_t r = 0; r < D; ++r)
+          if (r != c) {
+            const double q2 = M[r * D + c] / M[c * D + c];
+            for (std::size_t q = 0; q < D; ++q) M[r * D + q] -= q2 * M[c * D + q];
+            v[r] -= q2 * v[c];
+          }
+      for (std::size_t q = 0; q < D; ++q) out[q] = v[q] / M[q * D + q];
+      return true;
+    };
+    std::vector<double> cb(nCd * D, 0.0), ic1(nCd, 0.0), ic2(nCd, 0.0), cpred[2] = {std::vector<double>(nCd * N, 0.0), std::vector<double>(nCd * N, 0.0)};
+    std::vector<std::size_t> chosen(nCd, 0);
+    std::vector<char> cfit(nCd, 0), had[2] = {std::vector<char>(nCd, 0), std::vector<char>(nCd, 0)};
+    double icN = 0;
+    std::vector<double> xs(N * Fm);
+    std::vector<char> def(N);
     for (std::size_t t = 0; t < T; ++t) {
-      for (std::size_t k = 0; k < 4; ++k) {
-        std::vector<double> M(acc.begin(), acc.begin() + std::ptrdiff_t(D * D)), v(D);
-        for (std::size_t q = 0; q < D; ++q) v[q] = acc[D * D + k * D + q];
-        double tr = 0;
-        for (std::size_t q = 0; q < D; ++q) tr += M[q * D + q];
-        if (!(tr > 0)) continue;
-        for (std::size_t q = 0; q < D; ++q) M[q * D + q] += 1e-6 * tr;
-        for (std::size_t c = 0; c < D; ++c)
-          for (std::size_t r = 0; r < D; ++r)
-            if (r != c) {
-              const double q2 = M[r * D + c] / M[c * D + c];
-              for (std::size_t q = 0; q < D; ++q) M[r * D + q] -= q2 * M[c * D + q];
-              v[r] -= q2 * v[c];
+      // The candidates' predictions made two closes ago, scored now (their outcomes are within the
+      // sums the fit has seen).
+      if (t >= 2 && had[t % 2][0]) {
+        const std::size_t u = t - 2;
+        std::vector<std::size_t> who;
+        for (std::size_t i = 0; i < N; ++i)
+          if (ft[(u * N + i) * Km + Km - 1] > 0) who.push_back(i);
+        if (who.size() >= 30) {
+          for (std::size_t c = 0; c < nCd; ++c) {
+            double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, n = 0;
+            for (std::size_t i : who) {
+              const double x = cpred[t % 2][c * N + i], y = std::clamp(ft[(u * N + i) * Km + Fm], -6.0, 6.0);
+              sx += x, sy += y, sxx += x * x, syy += y * y, sxy += x * y, n += 1;
             }
-        for (std::size_t q = 0; q < D; ++q) beta[(t * 4 + k) * D + q] = v[q] / M[q * D + q];
+            const double vx = sxx - sx * sx / n, vy = syy - sy * sy / n, r = vx > 0 && vy > 0 ? (sxy - sx * sy / n) / std::sqrt(vx * vy) : 0.0;
+            ic1[c] += r, ic2[c] += r * r;
+          }
+          icN += 1;
+        }
+      }
+      for (std::size_t c = 0; c < nCd; ++c) cfit[c] = solve(acc[c / nRg], 0, ridges[c % nRg], &cb[c * D]);
+      std::size_t best = 0;
+      double bs = -1e300;
+      for (std::size_t c = 0; c < nCd; ++c) {
+        if (!cfit[c]) continue;
+        const double mu = icN > 1 ? ic1[c] / icN : 0.0, var = icN > 1 ? std::max(0.0, ic2[c] / icN - mu * mu) : 0.0;
+        const double sc = icN > 1 && mu != 0 ? mu * std::max(0.0, 1.0 - var / icN / (mu * mu)) : 0.0;
+        if (sc > bs + 1e-15) bs = sc, best = c;
+      }
+      if (cfit[best]) {
+        for (std::size_t q = 0; q < D; ++q) beta[(t * 4) * D + q] = cb[best * D + q];
+        ++chosen[best];
+      }
+      for (std::size_t k = 1; k < 4; ++k) solve(acc[0], k, ridges[0], &beta[(t * 4 + k) * D]);
+      // Every candidate's predictions at this close, for its record two closes on.
+      for (std::size_t i = 0; i < N; ++i) {
+        const double* a = &ft[(t * N + i) * Km];
+        def[i] = a[Km - 1] > 0;
+        if (def[i])
+          for (std::size_t f = 0; f < Fm; ++f) xs[i * Fm + f] = std::clamp((a[f] - zs[(t * Fm + f) * 2]) / zs[(t * Fm + f) * 2 + 1], -4.0, 4.0);
+      }
+      auto& pr = cpred[t % 2];
+      for (std::size_t c = 0; c < nCd; ++c) {
+        had[t % 2][c] = cfit[c];
+        if (!cfit[c]) continue;
+        const double* bb = &cb[c * D];
+        for (std::size_t i = 0; i < N; ++i) {
+          if (!def[i]) { pr[c * N + i] = 0; continue; }
+          double y = bb[0];
+          for (std::size_t f = 0; f < Fm; ++f) y += bb[1 + f] * xs[i * Fm + f];
+          pr[c * N + i] = y;
+        }
       }
       if (t > 0)
-        for (std::size_t e = 0; e < E; ++e) acc[e] += gram[(t - 1) * E + e];
+        for (std::size_t h = 0; h < nHl; ++h) {
+          const double lam = halfLives[h] > 0 ? std::exp(-std::log(2.0) / halfLives[h]) : 1.0;
+          for (std::size_t e = 0; e < E; ++e) acc[h][e] = lam * acc[h][e] + gram[(t - 1) * E + e];
+        }
+    }
+    {
+      std::size_t top = 0;
+      for (std::size_t c = 1; c < nCd; ++c)
+        if (chosen[c] > chosen[top]) top = c;
+      std::printf("\n%s: the fit learnt walk-forward: most used forgetting %s, ridge %g (%zu of the days); each candidate's mean daily IC:", label,
+                  halfLives[top / nRg] > 0 ? (std::to_string(int(halfLives[top / nRg])) + "-day half-life").c_str() : "none", ridges[top % nRg], chosen[top]);
+      for (std::size_t c = 0; c < nCd; ++c)
+        std::printf("%s%s/%g %+.4f", c % nRg ? " " : "\n   ", halfLives[c / nRg] > 0 ? std::to_string(int(halfLives[c / nRg])).c_str() : "all", ridges[c % nRg], icN > 0 ? ic1[c] / icN : 0.0);
+      std::printf("\n");
     }
     ofm::v2::gen::Predict<double> kp;
     kp.P = Q, kp.feat = const_cast<double*>(ft.data()), kp.zs = zs.data(), kp.beta = beta.data(), kp.out = pred.data();
