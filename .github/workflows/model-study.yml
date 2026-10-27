@@ -60,6 +60,8 @@ jobs:
               tail -n +2 "data/${EX}_$mode.csv" >> $F
             done
           done
+      - name: Audit of the cleaned bars (results only)
+        run: python3 tools/audit/data_audit.py data/stocks_clean.csv
       - name: Build (this branch, and main)
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
