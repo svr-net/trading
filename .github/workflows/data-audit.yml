@@ -40,7 +40,9 @@ jobs:
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
-            node tools/eoddata/fetch.mjs --cached --exchange "$EX" --universe "$POOL" --years 9 --currency "$CUR" --out "data/$EX.csv" | grep -E "dropped|unexplained|kept [0-9]*00$|store:" | head -60
+            # The loader's messages name prices when it drops a share: only their counts are shown.
+            node tools/eoddata/fetch.mjs --cached --skip-missing --exchange "$EX" --universe "$POOL" --years 9 --currency "$CUR" --out "data/$EX.csv" > fetch.log 2>&1 || true
+            echo "$EX: kept $(($(wc -l < "data/$EX.csv") - 1)) bars; dropped for a move over 60%: $(grep -c 'unexplained move' fetch.log); too short: $(grep -c ' days, dropped' fetch.log); not in the store: $(grep -c 'skip ' fetch.log)"
             tail -n +2 "data/$EX.csv" >> data/stocks.csv
           done
       - name: Audit (results only)

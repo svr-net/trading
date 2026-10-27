@@ -156,7 +156,7 @@ const kept = [];
 for (const [i, { code }] of ranked.entries()) {
   if (kept.length >= universe) break;
   const stored = await barsOf(code).catch((e) => {
-    if (cached) { console.error(`cached: ${e.message}`); process.exit(3); }
+    if (cached && !argv.includes('--skip-missing')) { console.error(`cached: ${e.message}`); process.exit(3); }
     console.warn(`  skip ${code}: ${e.message}`);
     return new Map();
   });
