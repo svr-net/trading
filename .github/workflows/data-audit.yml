@@ -1,0 +1,47 @@
+# Audit of the cached share bars (results only: counts, tickers, dates and ratios, never prices).
+# Runs on pushes to its branch; reads main's EODData store and makes no requests.
+name: Data audit
+
+on:
+  push:
+    branches: [claude/data-audit]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        market: [UK, US]
+    env:
+      MARKET: ${{ matrix.market }}
+      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
+      POOL: ${{ matrix.market == 'US' && '2000' || '500' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Restore main's EODData store
+        uses: actions/cache/restore@v4
+        with:
+          path: data/eoddata
+          key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
+          restore-keys: |
+            eoddata-${{ matrix.market }}-main-
+      - name: Bars from the store (no requests)
+        run: |
+          set -o pipefail
+          mkdir -p data
+          echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+            node tools/eoddata/fetch.mjs --cached --exchange "$EX" --universe "$POOL" --years 9 --currency "$CUR" --out "data/$EX.csv" | grep -E "dropped|unexplained|kept [0-9]*00$|store:" | head -60
+            tail -n +2 "data/$EX.csv" >> data/stocks.csv
+          done
+      - name: Audit (results only)
+        run: python3 tools/audit/data_audit.py data/stocks.csv | tee -a "$GITHUB_STEP_SUMMARY"
