@@ -1,5 +1,5 @@
 # Audit of the cached share bars (results only: counts, tickers, dates and ratios, never prices).
-# Runs on pushes to its branch; reads main's EODData store and makes no requests.
+# Runs on pushes to its branch; reads the EOD store (svr-net/eod, as the live runs) and makes no requests.
 name: Data audit
 
 on:
@@ -26,13 +26,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Restore main's EODData store
+      - name: Seed from the runner's cache
         uses: actions/cache/restore@v4
         with:
           path: data/eoddata
           key: eoddata-${{ matrix.market }}-main-${{ github.run_id }}
           restore-keys: |
             eoddata-${{ matrix.market }}-main-
+      - name: Set the cache's store aside
+        run: if [ -d data/eoddata ]; then mv data/eoddata data/seed; fi
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
+        with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
+          path: data/eoddata
+          fetch-depth: 1
+      - name: Add the files svr-net/eod lacks from the cache's store
+        run: if [ -d data/seed ]; then cp -rn data/seed/. data/eoddata/; rm -rf data/seed; fi
       - name: Bars from the store (no requests)
         run: |
           set -o pipefail
