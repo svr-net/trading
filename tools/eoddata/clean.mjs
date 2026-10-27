@@ -4,6 +4,12 @@
 //
 //   unit     a close-to-close move within 25% of x100 or /100 (pence and pounds swapped): the
 //            earlier bars are rescaled to the later unit.
+//   split    an overnight jump (open over the previous close) of x1.8 or more, up or down, within
+//            2% of a usual split ratio (2, 3, 4, 5, 8, 10 ... 50, 100), after a day that moved less than x1.5:
+//            a split or reverse split missing from
+//            EODData's list (common among small NASDAQ shares); the earlier bars are adjusted.
+//   jump     any other overnight jump beyond x3 (again after a day that moved less than x1.5): a
+//            corporate action or a new instrument on the same ticker; the share is cut there.
 //   segment  a hole of more than 90 calendar days (a ticker reused, or a listing suspended and
 //            back): the share is cut there; the earlier part keeps its own series (code~1, ~2, ...)
 //            and the latest the code, so two companies are never stitched together.
@@ -17,9 +23,10 @@
 // Moves over 60% that last are kept: they happened, and dropping the share would leave out the
 // shares that crashed (survivorship bias).
 const LOG = Math.log;
+const SPLITS = [2, 3, 4, 5, 8, 10, 15, 20, 25, 30, 40, 50, 100];  // the ratios companies split and consolidate by
 
 export function cleanBars(code, input, { minDays = 0 } = {}) {
-  const counts = { unit: 0, segment: 0, novol: 0, wick: 0, badopen: 0, spike: 0, bigmove: 0 };
+  const counts = { unit: 0, split: 0, segment: 0, jump: 0, novol: 0, wick: 0, badopen: 0, spike: 0, bigmove: 0 };
   let bars = input.map((b) => ({ ...b }));
   // Units: rescale the bars before a x100 or /100 move, from the latest backwards.
   for (let k = bars.length - 1; k > 0; --k) {
@@ -30,10 +37,26 @@ export function cleanBars(code, input, { minDays = 0 } = {}) {
         ++counts.unit;
       }
   }
-  // Segments at holes of more than 90 calendar days.
+  // Splits missing from the list: adjust the earlier bars, from the latest backwards.
+  for (let k = bars.length - 1; k > 0; --k) {
+    if (!(bars[k].v > 0) || !(bars[k - 1].v > 0)) continue;
+    // Not after a day that itself jumped (a bad print coming back is not a split).
+    if (k > 1 && Math.abs(LOG(bars[k - 1].c / bars[k - 2].c)) > LOG(1.5)) continue;
+    const g = bars[k].o / bars[k - 1].c, big = Math.max(g, 1 / g);
+    if (big < 1.8) continue;
+    const ratio = SPLITS.reduce((b, r) => (Math.abs(LOG(big / r)) < Math.abs(LOG(big / b)) ? r : b));
+    if (Math.abs(big / ratio - 1) < 0.02) {
+      const f = g > 1 ? ratio : 1 / ratio;
+      for (let j = 0; j < k; ++j) { for (const p of ['o', 'h', 'l', 'c']) bars[j][p] *= f; bars[j].v /= f; }
+      ++counts.split;
+    }
+  }
+  // Segments at holes of more than 90 calendar days, and at other overnight jumps beyond x3.
   const parts = [[]];
   for (let k = 0; k < bars.length; ++k) {
     if (k > 0 && (Date.parse(bars[k].d) - Date.parse(bars[k - 1].d)) / 864e5 > 90) parts.push([]), ++counts.segment;
+    else if (k > 0 && bars[k].v > 0 && Math.abs(LOG(bars[k].o / bars[k - 1].c)) > LOG(3) && !(k > 1 && Math.abs(LOG(bars[k - 1].c / bars[k - 2].c)) > LOG(1.5)))
+      parts.push([]), ++counts.jump;
     parts[parts.length - 1].push(bars[k]);
   }
   const segments = [];
