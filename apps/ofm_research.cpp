@@ -39,7 +39,18 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
   }
-  const ofm::Market m = ofm::parseMarketCsv(readFile(csv));
+  ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
+  // Impossible bars (a low above the open or the close, a high below them, a price not above zero)
+  // are dropped as missing.
+  std::size_t dropped = 0;
+  for (std::size_t t = 0; t < mk.T(); ++t)
+    for (std::size_t i = 0; i < mk.N(); ++i) {
+      const double o = mk.open(t, i), h = mk.high(t, i), l = mk.low(t, i), c = mk.close(t, i);
+      if (!std::isfinite(o) || !std::isfinite(c)) continue;
+      if (o > 0 && h > 0 && l > 0 && c > 0 && l <= std::min(o, c) * (1 + 1e-9) && h >= std::max(o, c) * (1 - 1e-9)) continue;
+      mk.open(t, i) = mk.high(t, i) = mk.low(t, i) = mk.close(t, i) = mk.volume(t, i) = kNaN, ++dropped;
+    }
+  const ofm::Market& m = mk;
   const std::size_t T = m.T(), N = m.N(), F = 27, K = F + 5;
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
@@ -114,6 +125,50 @@ int main(int argc, char** argv) {
       nx = up ? std::min({nx, l1, l2}) : nx;
       if (up) sar[t * N + i] = nx;
     }
+  }
+  // Outlier shares, left out of the trades each day: from each share's last 60 days up to the close
+  // (at least 40 with a bar), its mean log traded value, its share of days the close did not move
+  // and its mean log range (high / low); a share more than 3 robust standard deviations (1.4826
+  // times the median absolute deviation; the mean absolute deviation times 1.2533 where that is
+  // zero) from the day's median, on the side of illiquid (low value), stale (unmoved closes) or
+  // erratic (wide range), is an outlier.
+  {
+    std::vector<double> stat(3 * N), ok(N);
+    std::size_t out = 0, seen = 0;
+    for (std::size_t t = 0; t < T; ++t) {
+      for (std::size_t i = 0; i < N; ++i) {
+        double n = 0, lv = 0, st = 0, sn = 0, rg = 0;
+        for (std::size_t u = t >= 59 ? t - 59 : 0; u <= t; ++u) {
+          const double c = m.close(u, i), v = m.volume(u, i), h = m.high(u, i), l = m.low(u, i);
+          if (!(c > 0) || !(h > 0) || !(l > 0)) continue;
+          n += 1, lv += std::log(c * std::max(v, 1.0)), rg += std::log(h / l);
+          if (u > 0 && m.close(u - 1, i) > 0) st += c == m.close(u - 1, i), sn += 1;
+        }
+        ok[i] = n >= 40 && sn > 0;
+        if (ok[i]) stat[i] = lv / n, stat[N + i] = st / sn, stat[2 * N + i] = rg / n;
+      }
+      double med[3], sc[3];
+      for (std::size_t k = 0; k < 3; ++k) {
+        std::vector<double> z;
+        for (std::size_t i = 0; i < N; ++i)
+          if (ok[i]) z.push_back(stat[k * N + i]);
+        if (z.size() < 30) { med[k] = 0, sc[k] = 0; continue; }
+        auto mid = [](std::vector<double> y) { std::nth_element(y.begin(), y.begin() + std::ptrdiff_t(y.size() / 2), y.end()); return y[y.size() / 2]; };
+        med[k] = mid(z);
+        std::vector<double> d;
+        double mean = 0;
+        for (double x : z) d.push_back(std::abs(x - med[k])), mean += std::abs(x - med[k]) / double(z.size());
+        sc[k] = 1.4826 * mid(d);
+        if (!(sc[k] > 0)) sc[k] = 1.2533 * mean;
+      }
+      for (std::size_t i = 0; i < N; ++i) {
+        if (!ok[i]) { tradable[t * N + i] = 0; continue; }
+        const bool o = (sc[0] > 0 && stat[i] < med[0] - 3 * sc[0]) || (sc[1] > 0 && stat[N + i] > med[1] + 3 * sc[1]) || (sc[2] > 0 && stat[2 * N + i] > med[2] + 3 * sc[2]);
+        if (o) tradable[t * N + i] = 0;
+        if (t + 1 == T) out += o, ++seen;
+      }
+    }
+    std::printf("impossible bars dropped: %zu; outlier shares at the last close: %zu of %zu\n", dropped, out, seen);
   }
   // Days with correlations defined.
   std::vector<std::size_t> days;
@@ -403,7 +458,7 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < N; ++i) {
           const double* a = &ft[((t - lag) * N + i) * Km];
           if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0)) continue;
-          if (topN > 0 && !tradable[t * N + i]) continue;
+          if (!tradable[t * N + i]) continue;
           v.emplace_back(pred[((t - lag) * N + i) * 4] * std::exp(fx[1] * a[20]), i);
         }
       }
