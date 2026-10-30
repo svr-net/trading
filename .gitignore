@@ -83,3 +83,4 @@ __pycache__/
 # Local secrets (IB Gateway login, tokens)
 .env
 docker/ibkr/.env
+docker/ibkr/nas/

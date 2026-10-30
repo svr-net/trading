@@ -15,6 +15,8 @@
 # Every answer can come from the environment instead (IBKR_DIR, TWS_USERID, TWS_PASSWORD,
 # TRADING_MODE, EOD_READ_TOKEN, CAPITAL, TZ, BRIDGE_KEY, HTTPS_MODE=lan|public, LAN_HOST,
 # HTTPS_PORT, BRIDGE_DOMAIN, HTTP_PORT, REPO_REF), e.g. for a script without questions.
+# REPO_DIR: a clone of the repository to build from (deploy-nas.sh) instead of downloading the files;
+# SKIP_START=1 writes the files without starting anything.
 set -eu
 
 REPO_REF=${REPO_REF:-main}
@@ -53,11 +55,18 @@ else die "Docker Compose is missing (docker compose or docker-compose)."; fi
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "curl or wget is needed."
 case "$(uname -m)" in x86_64|amd64|aarch64|arm64) ;; *) die "this processor ($(uname -m)) is not supported by the IB Gateway image (x86-64 or 64-bit ARM needed)." ;; esac
 
-mkdir -p "$DIR/tools/ibkr"
+mkdir -p "$DIR"
 cd "$DIR"
 say "Setting up in $DIR"
-for f in tools/ibkr/bridge.py tools/ibkr/submit.py; do fetch "$RAW/$f" "$f"; done
-cat > Dockerfile.bridge <<'EOF'
+if [ -n "${REPO_DIR:-}" ]; then
+  # Built from the clone: its docker/ibkr/Dockerfile.bridge and tools/ibkr.
+  [ -f "$REPO_DIR/docker/ibkr/Dockerfile.bridge" ] || die "no repository clone at $REPO_DIR"
+  BUILD_CONTEXT=$REPO_DIR; BUILD_FILE=docker/ibkr/Dockerfile.bridge
+else
+  BUILD_CONTEXT=.; BUILD_FILE=Dockerfile.bridge
+  mkdir -p tools/ibkr
+  for f in tools/ibkr/bridge.py tools/ibkr/submit.py; do fetch "$RAW/$f" "$f"; done
+  cat > Dockerfile.bridge <<'EOF'
 FROM python:3.12-slim
 RUN pip install --no-cache-dir ib_async
 WORKDIR /app
@@ -65,6 +74,7 @@ COPY tools/ibkr/ tools/ibkr/
 EXPOSE 8765
 CMD ["python", "tools/ibkr/bridge.py"]
 EOF
+fi
 
 # --- The answers (kept in .env) -------------------------------------------------------------------
 if [ -f .env ]; then set -a; . ./.env; set +a; say "Using the answers in $DIR/.env"; fi
@@ -162,8 +172,8 @@ services:
       TZ: \${TZ}
   bridge:
     build:
-      context: .
-      dockerfile: Dockerfile.bridge
+      context: $BUILD_CONTEXT
+      dockerfile: $BUILD_FILE
     restart: always
     depends_on: [ib-gateway]
     environment:
@@ -189,6 +199,7 @@ volumes:
   caddy-config:
 EOF
 
+if [ "${SKIP_START:-}" = 1 ]; then say "Files written in $DIR (SKIP_START=1: nothing started)."; exit 0; fi
 say ""
 say "Starting (the first time downloads the images: a few minutes)..."
 $COMPOSE up -d --build
