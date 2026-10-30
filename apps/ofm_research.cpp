@@ -198,7 +198,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> dates;
     struct Pick {
       std::size_t stock;
-      double expected, stop, take;  // expected open-to-close; the stop and take-profit from the open (NaN: none)
+      double expected, stop, take;  // expected open-to-close; the stop and take-profit from the entry (NaN: none)
+      double limit;                 // the buy limit from the last close
     };
     std::vector<Pick> picks;
   };
@@ -247,7 +248,11 @@ int main(int argc, char** argv) {
     std::vector<double> always, gated, mkt;
     // The trades' settings, learnt continuously: the pool (the 250 * 2^c most traded by traded value,
     // c 0 to 3), the ranking (the prediction times the volatility to the power beta: 0 ranks by the
-    // prediction in volatilities, 1 by the expected return), and the levels, relative to each stock's
+    // prediction in volatilities, 1 by the expected return), the entry (a limit buy d standard
+    // deviations below the previous close, d -2 to 2: filled at the open when the stock opens at or
+    // below it, else during the day when its low trades half a spread through it, else not traded;
+    // after a fill during the day the take-profit is not credited, its high may have come first), and
+    // the levels, from the entry, relative to each stock's
     // own moves from the open over its last 100 days (log low/open and log high/open): the stop-loss
     // at the fall it reached on a fraction p_s of those days, blended geometrically with its parabolic
     // SAR by alpha (when the SAR trails below the open), and the take-profit at the rise it reached on
@@ -258,24 +263,25 @@ int main(int argc, char** argv) {
     // and ranking with the best record (mean shrunk by its t-statistic) and, at them, the levels with
     // the best mean over downside deviation (Sortino) so far are refined to a continuous optimum by a
     // parabola through their neighbours along each axis, and today's trades use them.
-    constexpr std::size_t nC = 4, nB = 5, nP = 7, nA = 5, nR = nC * nB, nLv = nP * nP * nA, nV = nR * nLv, nD = 5;
+    constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nR = nC * nB, nLv = nP * nP * nA, nV = nR * nE * nLv, nD = 6;
     const auto axis = [](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
-      if (d == 4) return x / double(nA - 1);
+      if (d == 2) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
+      if (d == 5) return x / double(nA - 1);
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
-    const std::size_t dims[nD] = {nC, nB, nP, nP, nA};
+    const std::size_t dims[nD] = {nC, nB, nE, nP, nP, nA};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);  // sums of the results, their squares, the losses' squares
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
     std::vector<std::array<double, nD>> used;
-    std::vector<std::array<double, 4>> paths;  // per trade: the stop and the take-profit from the open, stopped, took profit
+    std::vector<std::array<double, 5>> paths;  // per candidate trade: filled, the stop and the take-profit from the entry, stopped, took profit
     std::vector<std::string> sd;
     std::FILE* tradeLog = nullptr;
     if (std::getenv("X_TRADELOG") && std::string(label).find("interactions") != std::string::npos) {
       tradeLog = std::fopen(std::getenv("X_TRADELOG"), "w");
-      std::fprintf(tradeLog, "date,ticker,rank,pred,sigma,liq_rank,spread,low,high,close,stop,take,market,exit,ret,gap\n");
+      std::fprintf(tradeLog, "date,ticker,rank,pred,sigma,liq_rank,spread,low,high,close,stop,take,market,exit,ret,gap,limit,filled\n");
     }
     const auto score = [&](std::size_t g) {
       if (nDays < 2) return 0.0;
@@ -283,11 +289,11 @@ int main(int argc, char** argv) {
       return mu != 0 ? mu * std::max(0.0, 1.0 - var / nDays / (mu * mu)) : 0.0;
     };
     const auto ddScore = [&](std::size_t g) { return nDays < 2 || !(dnv[g] > 0) ? 0.0 : s1v[g] / nDays / std::sqrt(dnv[g] / nDays); };
-    const auto index = [&](const std::size_t* c) { return (((c[0] * nB + c[1]) * nP + c[2]) * nP + c[3]) * nA + c[4]; };
+    const auto index = [&](const std::size_t* c) { return ((((c[0] * nB + c[1]) * nE + c[2]) * nP + c[3]) * nP + c[4]) * nA + c[5]; };
     const auto coords = [&](std::size_t g, std::size_t* c) {
-      c[4] = g % nA, g /= nA, c[3] = g % nP, g /= nP, c[2] = g % nP, g /= nP, c[1] = g % nB, c[0] = g / nB;
+      c[5] = g % nA, g /= nA, c[4] = g % nP, g /= nP, c[3] = g % nP, g /= nP, c[2] = g % nE, g /= nE, c[1] = g % nB, c[0] = g / nB;
     };
-    // The continuous settings {pool, beta, p_s, p_t, alpha} from the records so far.
+    // The continuous settings {pool, beta, d, p_s, p_t, alpha} from the records so far.
     const auto learnt = [&] {
       std::size_t best = 0;
       for (std::size_t g = 1; g < nV; ++g)
@@ -300,7 +306,7 @@ int main(int argc, char** argv) {
       coords(best, bc), coords(lv, lc);
       std::array<double, nD> x{};
       for (std::size_t d = 0; d < nD; ++d) {
-        const bool pick = d < 2;  // the pool and ranking by return; the levels by Sortino
+        const bool pick = d < 3;  // the pool, ranking and entry by return; the levels by Sortino
         const auto f = [&](std::size_t g) { return pick ? score(g) : ddScore(g); };
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
@@ -369,15 +375,36 @@ int main(int argc, char** argv) {
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
     };
-    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double ps, double pt, double al) {
+    // One trade: the limit (a fraction of the previous close), whether it filled and where, its exit
+    // (0 close, 1 stop, 2 take-profit) and its return from the entry.
+    struct Trade {
+      double limit, entry;
+      int filled, exit;
+      double ret, stop, take;
+    };
+    const auto trade = [&](std::size_t t, std::size_t i, double d, double ps, double pt, double al) {
+      Trade r{};
+      const double pc = m.close(t, i), sig = std::exp(ft[(t * N + i) * Km + 20]);
+      const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i), half = std::exp(0.5 * spread[t * N + i]);
+      const double L = pc * std::exp(-d * sig);
+      r.limit = L / pc - 1;
+      bool intraday = false;
+      if (o <= L) r.entry = o, r.filled = 1;
+      else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
+      else return r;
+      const auto [fs, fk] = levelsAt(t, i, r.entry, ps, pt, al);
+      const double stop = r.entry * fs, take = r.entry * fk;
+      r.stop = fs - 1, r.take = fk < 1e300 ? fk - 1 : 0.0;
+      double px = c;
+      if (lo <= stop) px = stop / half, r.exit = 1;
+      else if (!intraday && hi >= take * half) px = take, r.exit = 2;
+      r.ret = px / r.entry - 1;
+      return r;
+    };
+    // The day's result: every trade one unit, a trade not filled stays in cash.
+    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al) {
       double rg = 0;
-      for (const auto& e : w) {
-        const std::size_t i = e.second;
-        const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i);
-        const auto [fs, fk] = levelsAt(t, i, o, ps, pt, al);
-        const double stop = o * fs, take = o * fk, half = std::exp(0.5 * spread[t * N + i]);
-        rg += ((lo <= stop ? stop / half : hi >= take * half ? take : c) / o - 1) / double(w.size());
-      }
+      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al).ret / double(w.size());
       return w.empty() ? 0.0 : rg;
     };
     for (std::size_t q = warm; q < days.size(); ++q) {
@@ -400,29 +427,21 @@ int main(int argc, char** argv) {
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1]);
-      adaptiveLevels.push_back(dayResult(t, today, x[2], x[3], x[4])), used.push_back(x);
-      if (tradeLog)  // one line per trade, for the single-trade analysis (X_TRADELOG; local, not published)
-        for (std::size_t k = 0; k < today.size(); ++k) {
-          const std::size_t i = today[k].second, src = (t - lag) * N + i;
-          const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i);
-          const auto [fs, fk] = levelsAt(t, i, o, x[2], x[3], x[4]);
-          const double half = std::exp(0.5 * spread[t * N + i]);
-          const int exit = lo <= o * fs ? 1 : hi >= o * fk * half ? 2 : 0;
-          const double px = exit == 1 ? o * fs / half : exit == 2 ? o * fk : c;
-          std::fprintf(tradeLog, "%s,%s,%zu,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%.6g\n", m.dates[t + 1].c_str(), m.tickers[i].c_str(), k,
-                       pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], lo / o - 1, hi / o - 1, c / o - 1, fs - 1, fk < 1e300 ? fk - 1 : 0.0,
-                       ms / mn, exit, px / o - 1, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0);
-        }
-      for (const auto& e : today) {  // the trades' levels, for the diagnostics
-        const std::size_t i = e.second;
+      adaptiveLevels.push_back(dayResult(t, today, x[2], x[3], x[4], x[5])), used.push_back(x);
+      for (std::size_t k = 0; k < today.size(); ++k) {  // the trades, for the diagnostics and the log
+        const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
-        const auto [fs, fk] = levelsAt(t, i, o, x[2], x[3], x[4]);
-        if (fs > 0) paths.push_back({fs - 1, fk - 1, double(m.low(t + 1, i) <= o * fs), double(m.low(t + 1, i) > o * fs && m.high(t + 1, i) >= o * fk)});
+        const Trade tr = trade(t, i, x[2], x[3], x[4], x[5]);
+        paths.push_back({double(tr.filled > 0), tr.stop, tr.take, double(tr.exit == 1), double(tr.exit == 2)});
+        if (tradeLog)  // one line per trade, for the single-trade analysis (X_TRADELOG; local, not published)
+          std::fprintf(tradeLog, "%s,%s,%zu,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%.6g,%.6g,%d\n", m.dates[t + 1].c_str(), m.tickers[i].c_str(), k,
+                       pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], m.low(t + 1, i) / o - 1, m.high(t + 1, i) / o - 1,
+                       m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
       }
       for (std::size_t g = 0; g < nV; ++g) {
         std::size_t c[nD];
         coords(g, c);
-        const double y = dayResult(t, v[g / nLv], axis(2, double(c[2])), axis(3, double(c[3])), axis(4, double(c[4])));
+        const double y = dayResult(t, v[g / (nE * nLv)], axis(2, double(c[2])), axis(3, double(c[3])), axis(4, double(c[4])), axis(5, double(c[5])));
         s1v[g] += y, s2v[g] += y * y, dnv[g] += std::min(y, 0.0) * std::min(y, 0.0);
       }
       nDays += 1;
@@ -446,9 +465,10 @@ int main(int argc, char** argv) {
       double mx[nD] = {};
       for (const auto& x : used)
         for (std::size_t d = 0; d < nD; ++d) mx[d] += x[d] / double(used.size());
-      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], 1 / mx[2], 1 / mx[3], mx[4]);
-      std::printf("  learnt for the next open: pool %.0f, beta %.2f, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n", fx[0], fx[1], 1 / fx[2], 1 / fx[3], fx[4]);
+      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n",
+                  100 * a.first, a.second, mx[0], mx[1], mx[2], 1 / mx[3], 1 / mx[4], mx[5]);
+      std::printf("  learnt for the next open: pool %.0f, beta %.2f, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n", fx[0], fx[1], fx[2], 1 / fx[3],
+                  1 / fx[4], fx[5]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         std::vector<double> z;
@@ -456,12 +476,12 @@ int main(int argc, char** argv) {
         std::nth_element(z.begin(), z.begin() + std::ptrdiff_t(p * double(z.size() - 1)), z.end());
         return z[std::size_t(p * double(z.size() - 1))];
       };
-      double st = 0, tk = 0;
-      for (const auto& x : paths) st += x[2], tk += x[3];
-      std::printf("  trades: %zu; stop from the open: median %+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), touched %.1f%%; take-profit: median %+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), "
-                  "taken %.1f%%\n",
-                  paths.size(), 100 * qt(0, 0.5), 100 * qt(0, 0.1), 100 * qt(0, 0.9), 100 * st / double(paths.size()), 100 * qt(1, 0.5), 100 * qt(1, 0.1),
-                  100 * qt(1, 0.9), 100 * tk / double(paths.size()));
+      double fl = 0, st = 0, tk = 0;
+      for (const auto& x : paths) fl += x[0], st += x[3], tk += x[4];
+      std::printf("  candidate trades: %zu, filled %.1f%%; stop from the entry: median %+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), touched %.1f%% of filled; take-profit: median "
+                  "%+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), taken %.1f%% of filled\n",
+                  paths.size(), 100 * fl / double(paths.size()), 100 * qt(1, 0.5), 100 * qt(1, 0.1), 100 * qt(1, 0.9), 100 * st / std::max(fl, 1.0), 100 * qt(2, 0.5),
+                  100 * qt(2, 0.1), 100 * qt(2, 0.9), 100 * tk / std::max(fl, 1.0));
     }
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
     std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
@@ -487,8 +507,10 @@ int main(int argc, char** argv) {
       for (std::size_t q = 0; q < std::min<std::size_t>(nPick, v.size()); ++q) {
         const std::size_t i = v[q].second, src = (t - lag) * N + i;
         const double sig = std::exp(ft[src * Km + 20]);
-        const auto [fs, fk] = levelsAt(t, i, m.close(t, i), fx[2], fx[3], fx[4]);
-        if (v[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN});
+        // The limit from the last close; the levels from the limit (the entry at worst).
+        const double limit = std::exp(-fx[2] * std::exp(ft[(t * N + i) * Km + 20]));
+        const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * limit, fx[3], fx[4], fx[5]);
+        if (v[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
       }
     }
     return pred;
@@ -553,8 +575,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
       auto lvl = [](double x) { return std::isfinite(x) ? std::to_string(x) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"stop\":%s,\"take\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(), pk.expected,
-                    lvl(pk.stop).c_str(), lvl(pk.take).c_str());
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
+                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str());
       o << b;
     }
     o << "],\"recent\":[";
