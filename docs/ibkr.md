@@ -96,6 +96,31 @@ second, so a long random key cannot be guessed); use a key of 32 or more random 
 than a password. With a **live** account IB Gateway needs the approval on your phone at each login
 (at least weekly); start with the paper account.
 
+## 2d. Or: on a NAS (setup script)
+
+On a NAS with Docker (Synology Container Manager, QNAP Container Station, Unraid, TrueNAS, or any
+Linux with Docker; x86-64 or 64-bit ARM), over SSH:
+
+```
+curl -fsSL https://raw.githubusercontent.com/svr-net/trading/main/docker/ibkr/setup-nas.sh -o setup-nas.sh
+sh setup-nas.sh            # sudo sh setup-nas.sh if this user may not use Docker
+```
+
+It asks for the paper login, the read-only GitHub token, the amount a trade and how to reach the
+bridge over HTTPS, makes a key, writes `ibkr-bridge/` (docker-compose.yml, Caddyfile, .env readable
+only by you) and starts IB Gateway, the bridge and Caddy. The page cannot call a plain http address on
+your network, so the bridge is always behind HTTPS:
+
+- **lan** (default): private to your network. Caddy's own certificate authority signs a certificate
+  for the NAS's address; install `ibkr-bridge/caddy-root.crt` once as a trusted root on each device
+  you open the page on (the script prints how for Windows, macOS, iPhone/iPad and Android).
+- **public**: a domain or DuckDNS name with a Let's Encrypt certificate; the router forwards outside
+  ports 80 and 443 to the NAS (by default to 8080 and 8443, as NAS often use 80 and 443 themselves).
+
+It ends with the page's address for your bridge (`https://svr-net.github.io/trading/?bridge=...`) and
+the key to enter in *Your broker*. Run it again to change anything (delete `ibkr-bridge/.env` to answer
+the questions again).
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |
