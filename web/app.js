@@ -113,3 +113,48 @@ function showMarket(m) {
 }
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => showMarket(b.dataset.market));
 showMarket(market);
+
+// Your broker: a bridge on this computer (tools/ibkr/bridge.py, docker/ibkr) next to IB Gateway. The
+// panel appears only when it answers; the orders and their prices come from it, never from the page.
+const BRIDGE = 'http://127.0.0.1:8765';
+const bridgeKey = () => { try { return localStorage.getItem('bridgeKey') || ''; } catch { return ''; } };
+const bridge = (path, body) => fetch(BRIDGE + path, {
+  method: body ? 'POST' : 'GET',
+  headers: { 'X-Bridge-Key': bridgeKey(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+  body: body ? JSON.stringify(body) : undefined,
+}).then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok && !j.log) throw new Error(j.error || `HTTP ${r.status}`); return j; });
+const brokerMarket = () => MARKETS[market];
+function brokerLog(text) { $('broker-log').textContent = text; }
+function brokerOrders() {
+  if (!bridgeKey()) { $('broker-orders').innerHTML = ''; brokerLog('Enter your bridge key to see the orders.'); return; }
+  const m = brokerMarket();
+  bridge(`/orders?market=${m}`).then((b) => {
+    const px = (x) => (x == null ? 'none' : x.toFixed(m === 'UK' ? 2 : 2));
+    table($('broker-orders'), [['Share'], ['Quantity', 'num'], ['Buy limit', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
+      b.orders.length ? b.orders.map((o) => [[o.ticker], [String(o.quantity), 'num'], [px(o.limit), 'num'], [px(o.stop), 'num neg'], [px(o.take), 'num pos']])
+        : [{ gap: 'no orders for the next open' }]);
+    brokerLog(`${m}: ${b.orders.length} orders for the open after the close of ${b.asOf}, ${b.capital} a trade${m === 'UK' ? ' (prices in pence)' : ''}.`);
+  }).catch((e) => { $('broker-orders').innerHTML = ''; brokerLog(`Orders not available: ${e.message}`); });
+}
+function brokerAct(path, body, question) {
+  if (question && !window.confirm(question)) return;
+  brokerLog('Working…');
+  bridge(path, body).then((r) => brokerLog(r.log || JSON.stringify(r))).catch((e) => brokerLog(`Failed: ${e.message}`));
+}
+function brokerProbe() {
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(), 1500);
+  fetch(`${BRIDGE}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
+    $('broker').hidden = false;
+    $('broker-status').textContent = `Bridge found on this computer · IB Gateway ${s.gateway ? `answering on port ${s.port}` : 'not answering (start it and log in)'} · ${s.capital} a trade`;
+    try { $('broker-key').value = bridgeKey(); } catch { /* no storage */ }
+    brokerOrders();
+  }).catch(() => { /* no bridge here: the panel stays hidden */ });
+}
+$('broker-save').addEventListener('click', () => { try { localStorage.setItem('bridgeKey', $('broker-key').value.trim()); } catch { /* no storage */ } brokerOrders(); });
+$('broker-dry').addEventListener('click', () => brokerAct('/place', { market: brokerMarket(), dryRun: true }));
+$('broker-place').addEventListener('click', () => brokerAct('/place', { market: brokerMarket() }, `Place the ${brokerMarket()} orders with Interactive Brokers?`));
+$('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
+for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (!$('broker').hidden) brokerOrders(); });
+brokerProbe();
+
