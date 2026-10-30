@@ -25,13 +25,21 @@ function table(el, head, rows) {
 const signed = (x, d = 2) => [pct(x, d), `num ${x >= 0 ? 'pos' : 'neg'}`];
 
 let shown = null;
+// The costs the backtest charges (r.costs, from the model's --costs), or none.
+const costs = (r) => {
+  const c = r.costs;
+  if (!c) return 'no fees or costs';
+  const cur = c.market === 'UK' ? '£' : '$';
+  return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying` : ''})`;
+};
+
 // The next open's trades (a buy limit from the last close; sold at the stop-loss, the take-profit or the
 // close), and the backtest.
 function render(r, source) {
   shown = r;
   const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source] || source;
   const n = r.orders.length;
-  $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · no fees or costs`;
+  $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · ${costs(r)}`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
   const head = [['Share'], ['Buy limit (vs last close)', 'num'], ['Expected return', 'num']];

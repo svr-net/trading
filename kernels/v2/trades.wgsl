@@ -10,7 +10,10 @@
 // with 20 days of history, then the falls at the u0 tail fractions and the rises at them (logs from
 // the open over the last 100 days). dv [t0] the limit depths (sigmas below the previous close). av
 // [u1] the SAR weights. s1, s2, dn [T]: the records' sums of the day's results, of their squares, of
-// the losses' squares.
+// the losses' squares. cost [3]: the broker's costs, charged on every filled trade: 0 none, 1 IBKR
+// UK (0.05% an order, at least GBP 1, plus 0.005% exchange and clearing; stamp duty on the buy), 2
+// IBKR US (USD 0.0035 a share, at least 0.35 and at most 1% of the order, plus 0.0005 a share; SEC and
+// FINRA fees on the sale); the amount a trade (the account's currency); UK stamp duty.
 @group(0) @binding(1) var<storage, read> cand : array<f32>;
 @group(0) @binding(2) var<storage, read> st : array<f32>;
 @group(0) @binding(3) var<storage, read> dv : array<f32>;
@@ -18,6 +21,26 @@
 @group(0) @binding(5) var<storage, read_write> s1 : array<f32>;
 @group(0) @binding(6) var<storage, read_write> s2 : array<f32>;
 @group(0) @binding(7) var<storage, read_write> dn : array<f32>;
+@group(0) @binding(8) var<storage, read> cost : array<f32>;
+
+// A filled trade's costs, a share of its value: bought at entry (a share's price in the account's
+// currency for the US) and sold r higher.
+fn costOf(entry : f32, r : f32) -> f32 {
+  let cap : f32 = cost[1];
+  if (cost[0] == 1.0) {
+    let sell : f32 = cap * (1.0 + r);
+    return (max(1.0, 0.0005 * cap) + 0.00005 * cap + max(1.0, 0.0005 * sell) + 0.00005 * sell) / cap + cost[2];
+  }
+  if (cost[0] == 2.0) {
+    let n : f32 = max(1.0, floor(cap / entry));
+    let v : f32 = n * entry;
+    let sell : f32 = v * (1.0 + r);
+    let cb : f32 = min(max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n;
+    let cs : f32 = min(max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
+    return (cb + cs + 0.0000278 * sell + min(0.000166 * n, 8.3)) / v;
+  }
+  return 0.0;
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index) lane : u32) {
@@ -62,7 +85,8 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       }
       var px : f32 = c;
       if (l <= stop) { px = stop / half; } else if (!intra && h >= take * half) { px = take; }
-      y = y + px / entry - 1.0;
+      let gross : f32 = px / entry - 1.0;
+      y = y + gross - costOf(entry, gross);
     }
     if (n > 0.0) { y = y / n; }
     s1[g] = s1[g] + y;
