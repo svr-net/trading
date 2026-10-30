@@ -36,8 +36,10 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   traded shares), the ranking (from the prediction in volatilities to the expected return), the
   limit's depth d (pool, ranking and limit for return), the levels (for return per unit of
   downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only
-  when the high clears it by half a spread. One unit in each trade;
-  no fees or costs. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
+  when the high clears it by half a spread. Net of costs: every filled trade pays Interactive Brokers' commissions (UK 0.05% an
+  order, at least GBP 1; US USD 0.0035 a share, at least 0.35; plus exchange, clearing and US
+  regulatory fees) on GBP/USD 5,000 a trade, and UK buys 0.5% stamp duty (`--costs UK|US
+  --capital 5000 --stamp 0.005`); everything above is learnt net of them. One unit in each trade. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
 
 Orders for Interactive Brokers: `--orders orders.json` writes the next open's orders in prices (to
 the private store, by the daily job), and `tools/ibkr/submit.py` places them through IB Gateway; see

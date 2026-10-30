@@ -32,7 +32,10 @@ int main(int argc, char** argv) {
   std::string csv, seriesCsv, jsonOut, ordersOut;
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
-  bool closeOnly = false;  // --exit close: no stop-loss or take-profit, every trade sold at the close
+  bool closeOnly = false;
+  // --costs UK|US: the broker's costs on every filled trade (kernels/v2/trades.wgsl), --capital the
+  // amount a trade, --stamp the UK stamp duty on buying.
+  double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
@@ -41,6 +44,9 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close";
+    if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : 0;
+    if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
+    if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
   }
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
   // Impossible bars (a low above the open or the close, a high below them, a price not above zero)
@@ -276,7 +282,7 @@ int main(int argc, char** argv) {
     };
     const std::size_t dims[nD] = {nC, nB, nE, nP, nP, nA};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);
-    std::vector<double> dvals(nE), avals(nA);  // the lattice's limit depths and SAR weights, for the kernel
+    std::vector<double> dvals(nE), avals(nA), costs = {costKind, capital, stamp};  // the lattice's limit depths and SAR weights, the costs, for the kernel
     for (std::size_t q = 0; q < nE; ++q) dvals[q] = axis(2, double(q));
     for (std::size_t q = 0; q < nA; ++q) avals[q] = axis(5, double(q));  // sums of the results, their squares, the losses' squares
     double nDays = 0;
@@ -381,6 +387,19 @@ int main(int argc, char** argv) {
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
     };
+    // A filled trade's costs as a share of its value (as kernels/v2/trades.wgsl's costOf).
+    const auto costOf = [&](double entry, double r) {
+      if (costKind == 1) {
+        const double sell = capital * (1 + r);
+        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stamp;
+      }
+      if (costKind == 2) {
+        const double n = std::max(1.0, std::floor(capital / entry)), v = n * entry, sell = v * (1 + r);
+        const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
+        return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
+      }
+      return 0.0;
+    };
     // One trade: the limit (a fraction of the previous close), whether it filled and where, its exit
     // (0 close, 1 stop, 2 take-profit) and its return from the entry.
     struct Trade {
@@ -405,6 +424,7 @@ int main(int argc, char** argv) {
       if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = take, r.exit = 2;
       r.ret = px / r.entry - 1;
+      r.ret -= costOf(r.entry, r.ret);
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
@@ -467,7 +487,7 @@ int main(int argc, char** argv) {
         H.T = std::uint32_t(nV), H.N = std::uint32_t(ns), H.K = std::uint32_t(9 + 2 * nP), H.NT = std::uint32_t(nPick);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
         ofm::v2::gen::Trades<double> kt;
-        kt.P = H, kt.cand = cand.data(), kt.st = st.data(), kt.dv = dvals.data(), kt.av = avals.data(), kt.s1 = s1v.data(), kt.s2 = s2v.data(), kt.dn = dnv.data();
+        kt.P = H, kt.cand = cand.data(), kt.st = st.data(), kt.dv = dvals.data(), kt.av = avals.data(), kt.s1 = s1v.data(), kt.s2 = s2v.data(), kt.dn = dnv.data(), kt.cost = costs.data();
         ofm::detail::dispatch(kt, ofm::detail::groups(std::uint32_t(nV), 64));
       }
       nDays += 1;
@@ -613,6 +633,7 @@ int main(int argc, char** argv) {
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
+    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : "US") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0) << "}";
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;
