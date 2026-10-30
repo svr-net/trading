@@ -1,0 +1,23 @@
+# On a server (VPS): HTTPS in front of the bridge, so the page can reach it from anywhere.
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+# Caddy obtains and renews a Let's Encrypt certificate for BRIDGE_DOMAIN (its DNS must point to this
+# server, and ports 80 and 443 must be open). IB Gateway and the bridge stay private (127.0.0.1 and
+# the containers' own network); only Caddy listens publicly.
+services:
+  caddy:
+    image: caddy:2.8
+    restart: always
+    depends_on: [bridge]
+    environment:
+      BRIDGE_DOMAIN: ${BRIDGE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

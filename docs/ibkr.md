@@ -65,6 +65,37 @@ Both containers listen on 127.0.0.1 only; the bridge answers only the page's add
 key. A paper account normally logs in without two-factor approval; a live account needs the approval
 on your phone at each login (the image waits for it and restarts if it times out).
 
+## 2c. Or: on a server (VPS), always on, with HTTPS
+
+The same containers on a small Linux server, with **Caddy** in front of the bridge for HTTPS (a free
+Let's Encrypt certificate, obtained and renewed automatically). Only Caddy is public; IB Gateway and
+the bridge stay private on the server.
+
+1. **A server**: any small Linux VPS (1 vCPU, 2 GB memory is enough; about GBP 4-6 a month at
+   Hetzner, DigitalOcean, Vultr or AWS Lightsail), Ubuntu 24.04. A location in London or Western
+   Europe keeps it near both IBKR and the LSE.
+2. **A name for it**: an `A` record of a domain you own (e.g. `bridge.example.com`) pointing to the
+   server's IP address, or a free subdomain from DuckDNS (`yourname.duckdns.org`).
+3. **On the server** (as root or with sudo):
+   ```
+   apt update && apt install -y docker.io docker-compose-v2 git ufw
+   ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
+   git clone https://github.com/svr-net/trading.git && cd trading/docker/ibkr
+   cp .env.example .env && nano .env      # paper login, BRIDGE_KEY, EOD_READ_TOKEN, BRIDGE_DOMAIN
+   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+   ```
+   `docker compose logs -f caddy` shows the certificate being obtained (a minute after the DNS
+   record is live); `docker compose logs -f ib-gateway` shows the login.
+4. **The page**: open `https://svr-net.github.io/trading/?bridge=https://bridge.example.com` once
+   (or *Broker bridge…* at the bottom of the page, then the address), enter the `BRIDGE_KEY`, Save.
+   The browser keeps both; the panel then appears whenever the page is opened there.
+
+Security: the bridge answers only the page's address and only with the key (a wrong key costs a
+second, so a long random key cannot be guessed); use a key of 32 or more random characters
+(`openssl rand -hex 24`). Keep the server updated (`apt upgrade`), and log in with an SSH key rather
+than a password. With a **live** account IB Gateway needs the approval on your phone at each login
+(at least weekly); start with the paper account.
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |
