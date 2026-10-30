@@ -32,12 +32,14 @@ int main(int argc, char** argv) {
   std::string csv, seriesCsv, jsonOut;
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
+  bool closeOnly = false;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
     if (std::string(argv[k]) == "--series") seriesCsv = argv[k + 1];
     if (std::string(argv[k]) == "--top") topN = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
+    if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close";
   }
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
   // Impossible bars (a low above the open or the close, a high below them, a price not above zero)
@@ -370,7 +372,7 @@ int main(int argc, char** argv) {
     // The stop and the take-profit as fractions of the reference price (the open; the last close for
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
-      if (!tails(t, i)) return std::make_pair(0.0, 1e300);
+      if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -478,7 +480,10 @@ int main(int argc, char** argv) {
       };
       double fl = 0, st = 0, tk = 0;
       for (const auto& x : paths) fl += x[0], st += x[3], tk += x[4];
-      std::printf("  candidate trades: %zu, filled %.1f%%; stop from the entry: median %+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), touched %.1f%% of filled; take-profit: median "
+      if (closeOnly)
+        std::printf("  candidate trades: %zu, filled %.1f%%; sold at the close\n", paths.size(), 100 * fl / double(paths.size()));
+      else
+        std::printf("  candidate trades: %zu, filled %.1f%%; stop from the entry: median %+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), touched %.1f%% of filled; take-profit: median "
                   "%+.2f%% (10%% %+.2f%%, 90%% %+.2f%%), taken %.1f%% of filled\n",
                   paths.size(), 100 * fl / double(paths.size()), 100 * qt(1, 0.5), 100 * qt(1, 0.1), 100 * qt(1, 0.9), 100 * st / std::max(fl, 1.0), 100 * qt(2, 0.5),
                   100 * qt(2, 0.1), 100 * qt(2, 0.9), 100 * tk / std::max(fl, 1.0));
