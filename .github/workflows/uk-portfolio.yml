@@ -130,6 +130,8 @@ jobs:
       # pushed, which holds the same days.
       - name: Push the new data to the EOD store (svr-net/eod)
         if: ${{ always() }}
+        # A failure here (e.g. an expired EOD_TOKEN) is reported but does not stop the page's scan.
+        continue-on-error: true
         run: |
           cd data/eoddata
           git config user.name "github-actions[bot]"
