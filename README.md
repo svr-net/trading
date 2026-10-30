@@ -39,6 +39,10 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   when the high clears it by half a spread. One unit in each trade;
   no fees or costs. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
 
+Orders for Interactive Brokers: `--orders orders.json` writes the next open's orders in prices (to
+the private store, by the daily job), and `tools/ibkr/submit.py` places them through IB Gateway; see
+[docs/ibkr.md](docs/ibkr.md) for opening the account, connecting and the daily routine.
+
 `ofm_research --csv stocks.csv [--series futures.csv] [--lag 1] [--top N] [--json scan.json]`
 prints each feature's day-by-day predictive power and the backtests, and writes the page's scan.
 
