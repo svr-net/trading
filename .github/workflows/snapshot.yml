@@ -1,0 +1,46 @@
+# Downloads the 5-minute bars of futures and index series over their whole session into the
+# private store svr-net/eod (tools/eoddata/snapshot.mjs), for snapshots at the US open. Prices
+# stay in that private repository (EODData's licence); the log shows counts and stamps only.
+name: Intraday series
+on:
+  workflow_dispatch:
+    inputs:
+      symbols: { description: 'EXCHANGE:CODE, comma separated', default: 'EUREX:FX.C' }
+      from: { description: 'First month (YYYY-MM)', default: '2019-01' }
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
+        with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
+          path: data/eoddata
+          fetch-depth: 1
+      - name: Download the 5-minute bars
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/snapshot.mjs --symbols "${{ inputs.symbols }}" --from "${{ inputs.from }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Push the new data to the EOD store (svr-net/eod)
+        if: ${{ always() }}
+        run: |
+          cd data/eoddata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .
+          if git diff --cached --quiet; then echo "EOD store: nothing new"; exit 0; fi
+          git commit -q -m "Intraday series $(date -u +%Y-%m-%d)"
+          for k in 1 2 3 4 5; do
+            git pull -q --rebase -X ours origin main && git push -q origin HEAD:main && { echo "EOD store: pushed"; exit 0; }
+            git rebase --abort 2>/dev/null || true
+            sleep $((k * 5))
+          done
+          exit 1
