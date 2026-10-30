@@ -29,9 +29,11 @@ git_() {  # git, or git in a container (alpine/git) on the folder above the clon
 mkdir -p "$(dirname "$TARGET")"
 if [ -d "$TARGET/.git" ]; then
   say "Updating $TARGET ($BRANCH)"
-  git_ -C "$TARGET" fetch -q origin "$BRANCH"
-  git_ -C "$TARGET" checkout -q "$BRANCH"
-  git_ -C "$TARGET" merge -q --ff-only "origin/$BRANCH" || die "the clone has local changes; keep your settings in docker/ibkr/nas/ only"
+  # Always over HTTPS (the repository is public): a clone made with the SSH address would need an SSH
+  # key for root under sudo.
+  git_ -C "$TARGET" fetch -q "$URL" "$BRANCH"
+  git_ -C "$TARGET" checkout -q "$BRANCH" 2>/dev/null || git_ -C "$TARGET" checkout -q -b "$BRANCH" FETCH_HEAD
+  git_ -C "$TARGET" merge -q --ff-only FETCH_HEAD || die "the clone has local changes; keep your settings in docker/ibkr/nas/ only"
 else
   if [ -e "$TARGET" ] && [ -n "$(ls -A "$TARGET" 2>/dev/null)" ]; then die "$TARGET exists and is not a clone; move it away or set TARGET"; fi
   say "Cloning into $TARGET"
