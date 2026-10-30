@@ -19,6 +19,7 @@ on:
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US)', default: '' }
+      us_exchanges: { description: 'US exchanges (comma separated)', default: 'NYSE,NASDAQ' }
 
 permissions:
   contents: write   # commit the scan (results only) to main
@@ -34,7 +35,7 @@ jobs:
         market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || '["UK","US"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      EXCHANGES: ${{ matrix.market == 'US' && 'NYSE,NASDAQ' || 'LSE' }}
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
