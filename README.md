@@ -26,12 +26,13 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   left out of the trades.
 - **Trades**: the next open's 10 highest predictions, each a buy limit d standard deviations below
   the last close: filled at the open when the share opens at or below it, during the day when its
-  low trades half a bid-ask spread through it, otherwise not traded (cash). UK: sold at the
+  low trades half a bid-ask spread through it, otherwise not traded (cash). Sold at the
   take-profit, the stop-loss or the close, the levels relative to each share's own moves from the
   open over its last 100 days (the fall and the rise it reached on a learnt fraction, 1 in 2 to 1
   in 10, of those days; the stop blended with its parabolic SAR); after a fill during the day the
-  take-profit is not credited (the high may have come first). US: sold at the close (`--exit
-  close`). Learnt continuously each day from the records so far: the pool (how many of the most
+  take-profit is not credited (the high may have come first); `--exit close` sells every trade
+  at the close instead. Every lattice point's daily trades are one fused kernel
+  (kernels/v2/trades.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
   traded shares), the ranking (from the prediction in volatilities to the expected return), the
   limit's depth d (pool, ranking and limit for return), the levels (for return per unit of
   downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only

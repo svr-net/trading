@@ -274,7 +274,10 @@ int main(int argc, char** argv) {
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
     const std::size_t dims[nD] = {nC, nB, nE, nP, nP, nA};
-    std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);  // sums of the results, their squares, the losses' squares
+    std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);
+    std::vector<double> dvals(nE), avals(nA);  // the lattice's limit depths and SAR weights, for the kernel
+    for (std::size_t q = 0; q < nE; ++q) dvals[q] = axis(2, double(q));
+    for (std::size_t q = 0; q < nA; ++q) avals[q] = axis(5, double(q));  // sums of the results, their squares, the losses' squares
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
     std::vector<std::array<double, nD>> used;
@@ -440,11 +443,31 @@ int main(int argc, char** argv) {
                        pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], m.low(t + 1, i) / o - 1, m.high(t + 1, i) / o - 1,
                        m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
       }
-      for (std::size_t g = 0; g < nV; ++g) {
-        std::size_t c[nD];
-        coords(g, c);
-        const double y = dayResult(t, v[g / (nE * nLv)], axis(2, double(c[2])), axis(3, double(c[3])), axis(4, double(c[4])), axis(5, double(c[5])));
-        s1v[g] += y, s2v[g] += y * y, dnv[g] += std::min(y, 0.0) * std::min(y, 0.0);
+      // Every lattice point's record takes today (kernels/v2/trades.wgsl): the day's candidates in
+      // slots, each with its prices, sigma, half-spread, SAR and level quantiles at the lattice's tails.
+      {
+        std::vector<double> cand(nR * nPick, -1.0), st;
+        std::vector<long> slotOf(N, -1);
+        std::size_t ns = 0;
+        for (std::size_t k = 0; k < nR; ++k)
+          for (std::size_t j = 0; j < v[k].size(); ++j) {
+            const std::size_t i = v[k][j].second;
+            if (slotOf[i] < 0) {
+              slotOf[i] = long(ns++);
+              const bool ok = tails(t, i);
+              st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0});
+              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(3, double(q))) : 0.0);
+              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(rises[i], 1 - axis(4, double(q))) : 0.0);
+            }
+            cand[k * nPick + j] = double(slotOf[i]);
+          }
+        ofm::v2::gen::V2Header<double> H{};
+        H.T = std::uint32_t(nV), H.N = std::uint32_t(ns), H.K = std::uint32_t(9 + 2 * nP), H.NT = std::uint32_t(nPick);
+        H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
+        ofm::v2::gen::Trades<double> kt;
+        kt.P = H, kt.cand = cand.data(), kt.st = st.data(), kt.dv = dvals.data(), kt.av = avals.data(), kt.s1 = s1v.data(), kt.s2 = s2v.data(), kt.dn = dnv.data();
+        ofm::detail::dispatch(kt, ofm::detail::groups(std::uint32_t(nV), 64));
       }
       nDays += 1;
     }
