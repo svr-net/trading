@@ -37,6 +37,7 @@
   <section id="broker" hidden aria-labelledby="broker-title">
     <h2 id="broker-title">Your broker</h2>
     <p class="muted" id="broker-status"></p>
+    <div class="broker-key"><label for="broker-url">Bridge</label> <input id="broker-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:8765 or https://your-server"></div>
     <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
     <div class="table-scroll"><table id="broker-orders"></table></div>
     <div class="broker-actions">
@@ -45,9 +46,10 @@
       <button type="button" id="broker-close">Close at the close</button>
     </div>
     <pre id="broker-log" class="broker-log"></pre>
-    <p class="hint">Shown only on your own computer, where the bridge (docker/ibkr) runs next to IB Gateway: the orders and their prices come from it, not from this page. Place before the open (UK by 07:50 London, US by 09:25 New York); close shortly before the close (UK 16:20, US 15:40).</p>
+    <p class="hint">For your own bridge (docker/ibkr: on this computer, or on a server behind HTTPS) next to IB Gateway: the orders and their prices come from it, not from this page; the bridge's address and key stay in this browser. Place before the open (UK by 07:50 London, US by 09:25 New York); close shortly before the close (UK 16:20, US 15:40).</p>
   </section>
 
+  <p class="muted broker-open"><a href="#broker" id="broker-open">Broker bridge…</a></p>
   <footer>Research tool, not investment advice. Backtest: a buy limit from the last close, sold at the stop-loss, the take-profit or the close, one unit in each of the day's trades, after Interactive Brokers' commissions and UK stamp duty; every prediction is made only from earlier days, and the shares are today's most traded (survivorship), prices without dividends.</footer>
 </div>
 <script type="module" src="app.js?v=51"></script>

@@ -1,0 +1,9 @@
+# The bridge over HTTPS (certificate from Let's Encrypt for BRIDGE_DOMAIN, renewed automatically).
+{$BRIDGE_DOMAIN} {
+	encode gzip
+	reverse_proxy bridge:8765
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

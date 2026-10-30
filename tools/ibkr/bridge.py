@@ -10,18 +10,21 @@ and buttons that place them or close the positions through IB Gateway (tools/ibk
   POST /close  {"market": "UK"}    cancel the unfilled ones and sell at the close (submit.py --close)
 
 Only the page's origin may call it (CORS, with Chrome's private-network permission), and every call
-must carry the key (header X-Bridge-Key) that you set in BRIDGE_KEY and enter once on the page.
+must carry the key (header X-Bridge-Key) that you set in BRIDGE_KEY and enter once on the page; a
+wrong key costs a second. On a server it sits behind HTTPS (docker/ibkr/docker-compose.vps.yml).
 
 Environment: BRIDGE_KEY, EOD_READ_TOKEN (read-only, svr-net/eod contents), IB_HOST, IB_PORT
 (4002 paper), CAPITAL (a trade's amount, default 5000), ALLOWED_ORIGIN, BIND (127.0.0.1; 0.0.0.0
 inside Docker, published on 127.0.0.1 only), PORT (8765).
 """
+import hmac
 import json
 import math
 import os
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -90,7 +93,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Origin') not in (None, ORIGIN):
             self.reply(403, {'error': 'origin not allowed'})
             return False
-        if not KEY or self.headers.get('X-Bridge-Key') != KEY:
+        if not KEY or not hmac.compare_digest(self.headers.get('X-Bridge-Key', ''), KEY):
+            time.sleep(1.0)  # a wrong key costs a second: guessing a long key is hopeless
             self.reply(401, {'error': 'key missing or wrong'})
             return False
         return True

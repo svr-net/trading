@@ -104,3 +104,5 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 .broker-key input { flex: 1 1 220px; min-width: 0; padding: 6px 8px; font: inherit; border: 1px solid var(--line, #ccc); border-radius: 6px; background: transparent; color: inherit; }
 .broker-actions button, .broker-key button { padding: 7px 12px; font: inherit; border: 1px solid var(--line, #ccc); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .broker-log { white-space: pre-wrap; font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 10px; border: 1px solid var(--line, #ccc); border-radius: 6px; min-height: 2.5em; overflow-x: auto; }
+.broker-key label { min-width: 3.5em; }
+.broker-open { margin-top: 24px; font-size: 13px; }

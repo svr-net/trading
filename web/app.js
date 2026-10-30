@@ -116,9 +116,14 @@ showMarket(market);
 
 // Your broker: a bridge on this computer (tools/ibkr/bridge.py, docker/ibkr) next to IB Gateway. The
 // panel appears only when it answers; the orders and their prices come from it, never from the page.
-const BRIDGE = 'http://127.0.0.1:8765';
-const bridgeKey = () => { try { return localStorage.getItem('bridgeKey') || ''; } catch { return ''; } };
-const bridge = (path, body) => fetch(BRIDGE + path, {
+// The bridge's address: on this computer by default, or a server's HTTPS address (set in the panel, or
+// once with ?bridge=https://...), kept in this browser with the key.
+const stored = (k, d = '') => { try { return localStorage.getItem(k) || d; } catch { return d; } };
+const store = (k, v) => { try { localStorage.setItem(k, v); } catch { /* no storage */ } };
+try { const q = new URLSearchParams(location.search).get('bridge'); if (q) store('bridgeUrl', q); } catch { /* no URL */ }
+const bridgeUrl = () => stored('bridgeUrl', 'http://127.0.0.1:8765').replace(/\/+$/, '');
+const bridgeKey = () => stored('bridgeKey');
+const bridge = (path, body) => fetch(bridgeUrl() + path, {
   method: body ? 'POST' : 'GET',
   headers: { 'X-Bridge-Key': bridgeKey(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
   body: body ? JSON.stringify(body) : undefined,
@@ -141,17 +146,29 @@ function brokerAct(path, body, question) {
   brokerLog('Working…');
   bridge(path, body).then((r) => brokerLog(r.log || JSON.stringify(r))).catch((e) => brokerLog(`Failed: ${e.message}`));
 }
-function brokerProbe() {
+// Looks for the bridge; the panel shows when it answers (or when opened by hand, to set the address).
+function brokerProbe(opened) {
+  $('broker-url').value = bridgeUrl();
+  $('broker-key').value = bridgeKey();
   const ctl = new AbortController();
-  setTimeout(() => ctl.abort(), 1500);
-  fetch(`${BRIDGE}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
+  setTimeout(() => ctl.abort(), 3000);
+  fetch(`${bridgeUrl()}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
     $('broker').hidden = false;
-    $('broker-status').textContent = `Bridge found on this computer · IB Gateway ${s.gateway ? `answering on port ${s.port}` : 'not answering (start it and log in)'} · ${s.capital} a trade`;
-    try { $('broker-key').value = bridgeKey(); } catch { /* no storage */ }
+    $('broker-status').textContent = `Bridge at ${bridgeUrl()} · IB Gateway ${s.gateway ? `answering on port ${s.port}` : 'not answering (start it and log in)'} · ${s.capital} a trade`;
     brokerOrders();
-  }).catch(() => { /* no bridge here: the panel stays hidden */ });
+  }).catch(() => {
+    if (!opened) return;  // no bridge: the panel stays hidden unless opened
+    $('broker').hidden = false;
+    $('broker-status').textContent = `No bridge answered at ${bridgeUrl()}. Set its address and key, then Save.`;
+    $('broker-orders').innerHTML = '';
+  });
 }
-$('broker-save').addEventListener('click', () => { try { localStorage.setItem('bridgeKey', $('broker-key').value.trim()); } catch { /* no storage */ } brokerOrders(); });
+$('broker-save').addEventListener('click', () => {
+  store('bridgeUrl', $('broker-url').value.trim() || 'http://127.0.0.1:8765');
+  store('bridgeKey', $('broker-key').value.trim());
+  brokerProbe(true);
+});
+$('broker-open').addEventListener('click', (e) => { e.preventDefault(); brokerProbe(true); $('broker').scrollIntoView({ behavior: 'smooth' }); });
 $('broker-dry').addEventListener('click', () => brokerAct('/place', { market: brokerMarket(), dryRun: true }));
 $('broker-place').addEventListener('click', () => brokerAct('/place', { market: brokerMarket() }, `Place the ${brokerMarket()} orders with Interactive Brokers?`));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
