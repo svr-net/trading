@@ -167,6 +167,8 @@ async function barsOf(code) {
 }
 
 const rows = ['date,ticker,open,high,low,close,volume'];
+const US = ['NYSE', 'NASDAQ', 'AMEX'];
+let inferredSplits = 0, movedExchange = 0;
 const kept = [];
 let notOrdinary = 0;  // in the pool (the most traded) but not ordinary shares: counted, not kept
 for (const [i, { code }] of ranked.entries()) {
@@ -182,9 +184,42 @@ for (const [i, { code }] of ranked.entries()) {
     .filter((b) => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0)
     .sort((a, b) => (a.d < b.d ? -1 : 1));
   if (i === 0) console.log(`  ${code}: ${bars.length} bars`);
+  // A share that moved between US exchanges (Walmart: NYSE to NASDAQ): its earlier days from the
+  // other exchange, stored or (not --cached) downloaded once.
+  if (bars.length < minDays && US.includes(exchange)) {
+    for (const other of US.filter((x) => x !== exchange)) {
+      let older = S.load(other, code);
+      if (!older.size && !cached && !S.has(other, code)) {
+        older = new Map();
+        S.merge(older, asList(await get(`/Quote/List/${other}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: from, ToDateStamp: stamp }).catch(() => [])));
+        S.save(other, code, older);
+      }
+      const first = bars.length ? bars[0].d : '9999';
+      const add = [...older.entries()].filter(([d]) => d >= from && d < first).map(([d, b]) => ({ d, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }))
+        .filter((b) => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0);
+      if (add.length) { bars.unshift(...add.sort((p, q) => (p.d < q.d ? -1 : 1))); ++movedExchange; }
+    }
+  }
   if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
   for (const { date, ratio } of splits.get(code) || [])
     for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
+  // Splits the list lacks, read from the prices: a day whose close-to-close and close-to-open ratios
+  // are both a split's (2, 3, 4, 5, 8, 10, ... for one, the inverse for a reverse split; within 3% and
+  // 10%, or 10% and 15% from 5 up, where no day's move could be mistaken for one) and whose volume moves the other way (more shares after a split, fewer after a reverse
+  // one: the 20 days' median after against before, at least half the split in logs).
+  const med = (xs) => { const z = xs.filter((x) => x > 0).sort((p, q) => p - q); return z.length ? z[z.length >> 1] : 0; };
+  for (let k = 1; k < bars.length; k++) {
+    const r = bars[k - 1].c / bars[k].c, ro = bars[k - 1].c / bars[k].o;
+    for (const n of [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 100])
+      for (const q of [n, 1 / n]) {
+        if (!(Math.abs(Math.log(r / q)) < (n >= 5 ? 0.1 : 0.03) && Math.abs(Math.log(ro / q)) < (n >= 5 ? 0.15 : 0.1))) continue;
+        const vb = med(bars.slice(Math.max(0, k - 20), k).map((b) => b.v)), va = med(bars.slice(k, k + 20).map((b) => b.v));
+        if (!(vb > 0 && va > 0 && Math.log(va / vb) * Math.sign(Math.log(q)) > 0.5 * Math.abs(Math.log(q)))) continue;
+        for (let j = 0; j < k; ++j) { bars[j].o /= q; bars[j].h /= q; bars[j].l /= q; bars[j].c /= q; bars[j].v *= q; }
+        ++inferredSplits;
+        if (argv.includes('--verbose')) console.log(`  ${code}: split ${q >= 1 ? q : '1/' + Math.round(1 / q)} read on ${bars[k].d}`);
+      }
+  }
   const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6));
   if (jump > 0) { console.log(`  ${code}: unexplained move on ${bars[jump].d} (${bars[jump - 1].c} -> ${bars[jump].c}), dropped`); continue; }
   if (!isOrdinary(code)) { ++notOrdinary; continue; }
@@ -200,4 +235,4 @@ if (!cached) {
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, rows.join('\n') + '\n');
 fs.writeFileSync(out.replace(/\.csv$/, '.symbols.json'), JSON.stringify({ exchange, currency: field(exchangeInfo, 'currency', 'currencyCode') ?? null, from, to: stamp, symbols: kept }, null, 1));
-console.log(`wrote ${out}: ${kept.length} stocks (${notOrdinary} of the most traded left out: not ordinary shares), ${rows.length - 1} bars`);
+console.log(`wrote ${out}: ${kept.length} stocks (${notOrdinary} of the most traded left out: not ordinary shares; ${inferredSplits} splits read from the prices; ${movedExchange} histories joined across exchanges), ${rows.length - 1} bars`);
