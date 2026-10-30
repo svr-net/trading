@@ -101,7 +101,7 @@ case "$HTTPS_MODE" in
     guess=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
     [ -n "$guess" ] || guess=$(hostname -I 2>/dev/null | awk '{print $1}')
     ask LAN_HOST "  the NAS's address on your network" "$guess"
-    ask HTTPS_PORT "  HTTPS port (not one the NAS already uses)" "8765"
+    ask HTTPS_PORT "  HTTPS port (not 80 or 443, nor one the NAS already uses)" "8765"
     HTTP_PORT=""; BRIDGE_DOMAIN=""
     SITE="https://$LAN_HOST:$HTTPS_PORT"
     ;;
@@ -139,6 +139,9 @@ if [ "$HTTPS_MODE" = lan ]; then
 {
 	skip_install_trust
 	default_sni $LAN_HOST
+	auto_https disable_redirects
+	http_port 8080
+	https_port $HTTPS_PORT
 }
 https://$LAN_HOST:$HTTPS_PORT {
 	tls internal
