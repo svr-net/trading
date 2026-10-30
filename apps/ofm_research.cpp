@@ -29,7 +29,7 @@ std::string readFile(const std::string& p) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, seriesCsv, jsonOut;
+  std::string csv, seriesCsv, jsonOut, ordersOut;
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   bool closeOnly = false;  // --exit close: no stop-loss or take-profit, every trade sold at the close
@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--top") topN = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
+    if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close";
   }
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
@@ -580,6 +581,23 @@ int main(int argc, char** argv) {
   const auto linPred = model(ftI, FI, KI, FI, "Walk-forward model with liquidity and volatility interactions");
   // The page's scan (--json): the model above (lagged by --lag), its trades for the next open, its
   // backtest against the market, the chart laid out here and the last 20 days. Results only.
+  // The next open's orders in prices (--orders; prices come from EODData's data, so the file goes to
+  // the private store, never the page): each trade's last close, its buy limit and its stop-loss and
+  // take-profit from the limit (the entry at worst), for tools/ibkr/submit.py.
+  if (!ordersOut.empty()) {
+    std::ofstream o(ordersOut);
+    o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"orders\":[";
+    char b[512];
+    for (std::size_t q = 0; q < lastRun.picks.size(); ++q) {
+      const auto& pk = lastRun.picks[q];
+      const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit);
+      auto px = [&](double x) { return std::isfinite(x) ? std::to_string(lim * (1 + x)) : std::string("null"); };
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g}", q ? "," : "",
+                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected);
+      o << b;
+    }
+    o << "]}\n";
+  }
   if (!jsonOut.empty()) {
     const Run& R = lastRun;
     auto metr = [](const std::vector<double>& x) {
