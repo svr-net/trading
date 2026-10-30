@@ -97,7 +97,22 @@ const isShare = (code) => {
   if (t && !/(share|stock|equity|ord|common)/.test(t)) return false;  // funds, ETFs, warrants, bonds
   const n = (nameOf.get(code) || '').toLowerCase();
   if (/\b(etf|etc|etn|fund|trust plc|investment trust|ucits|tracker|swap|s&p|msci|ftse|warrant|bond|gilt|pref)\b/.test(n)) return false;
-  return /\b(plc|ltd|limited|s\.a\.|sa|ag|n\.v\.|nv|se|inc|corp|group|holdings|ord)\b/.test(n);  // a company's name, not a product's
+  const company = /\b(plc|ltd|limited|s\.a\.|sa|ag|n\.v\.|nv|se|inc|corp|group|holdings|ord)\b/.test(n);  // a company's name, not a product's
+  if (exchange === 'LSE') return company;
+  // US: many companies' names carry no such word (JP Morgan Chase & Company, Alphabet Cl A); a fund's
+  // does not either, but it names a fund family or a product.
+  return company || !FUND_FAMILY.test(n);
+};
+const FUND_FAMILY = /\b(ishares|spdr|proshares|direxion|vanguard|invesco|wisdomtree|global x|vaneck|first trust|graniteshares|tidal|defiance|roundhill|yieldmax|grayscale|ark|amplify|pacer|schwab|fidelity|jpmorgan(?! chase)|franklin|janus|dimensional|avantis|t-rowe|xtrackers|simplify|rex|tuttle|leverage shares|microsectors|kraneshares|pgim|x-links|eaton vance|nuveen|blackrock|gabelli|templeton|voya|pimco|john hancock|legg mason|columbia|lazard|abrdn|aberdeen|cohen & steers|calamos|western asset|doubleline|guggenheim|mfs|putnam|neuberger|tortoise|kayne|clearbridge|flaherty|rivernorth|duff & phelps|babson|northern lights|virtus|allianz|liberty all-star|tri-continental|saba|trust|index|bitcoin|ether|ultra|2x|3x|bull|bear|daily|leveraged|inverse|portfolio|treasury|strategy shares|municipal|muni|tax-advantaged|tax-advantage|tax advantaged|tax-managed|buffer|laddered|definedterm|term|income fund|income fun|income f|income opportunity|income t|dividend opportunity|global dividend|dividend achievers|enhanced|managed duration|total return|stocksplus|precious metals|commodity strategy|source capital|income shares)\b/;
+// US exchanges: ordinary shares only. Preferred shares, notes and other fixed-income lines are
+// typed "Equity" too; they show in the name (a coupon, "Notes Due", "Pfd", "Depositary", "Series A",
+// structured trusts) or, on NASDAQ, in a fifth ticker letter (L-P preferred and other classes, Q
+// bankruptcy, R rights, T with warrants, U units, V when issued, W warrants, Z miscellaneous).
+const NOT_ORDINARY = /(\d+(\.\d+)?\s*%|\b\d+\.\d{2,3}\b|\bnotes?\b|\bdue\b|\bpfd\b|\bpref(erred)?\b|\bdepositary\b|\bdebentures?\b|\bsenior\b|\bjunior\b|\bsubordinated?\b|\bfixed[- ]to[- ]floating\b|\bfloating rate\b|\bperpetual\b|\b(non-)?cumula|\bcum\b|\bseries [a-z]\b|\bunits?\b|\brights?\b|\bwarrants?\b|\bwt\b|\babs\b|\bstrats\b|\bsecurit)/i;
+const isOrdinary = (code) => {
+  if (exchange === 'LSE') return true;
+  if (NOT_ORDINARY.test(nameOf.get(code) || '')) return false;
+  return !(exchange === 'NASDAQ' && code.length === 5 && 'LMNOPQRTUVWZ'.includes(code[4]));
 };
 const ranked = quotes
   .map((q) => ({ code: field(q, 'symbolCode', 'code', 'symbol'), value: Number(field(q, 'close')) * Number(field(q, 'volume')) }))
@@ -153,8 +168,9 @@ async function barsOf(code) {
 
 const rows = ['date,ticker,open,high,low,close,volume'];
 const kept = [];
+let notOrdinary = 0;  // in the pool (the most traded) but not ordinary shares: counted, not kept
 for (const [i, { code }] of ranked.entries()) {
-  if (kept.length >= universe) break;
+  if (kept.length + notOrdinary >= universe) break;
   const stored = await barsOf(code).catch((e) => {
     if (cached) { console.error(`cached: ${e.message}`); process.exit(3); }
     console.warn(`  skip ${code}: ${e.message}`);
@@ -171,6 +187,7 @@ for (const [i, { code }] of ranked.entries()) {
     for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
   const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6));
   if (jump > 0) { console.log(`  ${code}: unexplained move on ${bars[jump].d} (${bars[jump - 1].c} -> ${bars[jump].c}), dropped`); continue; }
+  if (!isOrdinary(code)) { ++notOrdinary; continue; }
   for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);
   kept.push({ code, name: nameOf.get(code) || '', days: bars.length });
   if (kept.length % 20 === 0) console.log(`  kept ${kept.length}`);
@@ -183,4 +200,4 @@ if (!cached) {
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, rows.join('\n') + '\n');
 fs.writeFileSync(out.replace(/\.csv$/, '.symbols.json'), JSON.stringify({ exchange, currency: field(exchangeInfo, 'currency', 'currencyCode') ?? null, from, to: stamp, symbols: kept }, null, 1));
-console.log(`wrote ${out}: ${kept.length} stocks, ${rows.length - 1} bars`);
+console.log(`wrote ${out}: ${kept.length} stocks (${notOrdinary} of the most traded left out: not ordinary shares), ${rows.length - 1} bars`);

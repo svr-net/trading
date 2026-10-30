@@ -25,16 +25,23 @@ function table(el, head, rows) {
 const signed = (x, d = 2) => [pct(x, d), `num ${x >= 0 ? 'pos' : 'neg'}`];
 
 let shown = null;
-// The next open's trades, bought at the open and sold at the close, and the backtest.
+// The next open's trades (a buy limit from the last close; sold at the stop-loss, the take-profit or the
+// close), and the backtest.
 function render(r, source) {
   shown = r;
   const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source] || source;
   const n = r.orders.length;
   $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · no fees or costs`;
   const level = (x) => (x == null ? 'none' : pct(x, 2));
-  table($('plan'), [['Buy at the open'], ['Expected return', 'num'], ['Stop-loss', 'num'], ['Take-profit', 'num']],
-    n ? r.orders.map((o) => [[o.ticker], signed(o.expected, 3), [level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']])
-      : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
+  const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
+  const head = [['Share'], ['Buy limit (vs last close)', 'num'], ['Expected return', 'num']];
+  if (levels) head.push(['Stop-loss', 'num'], ['Take-profit', 'num']);
+  table($('plan'), head,
+    n ? r.orders.map((o) => {
+      const row = [[o.ticker], [o.limit == null ? 'at the open' : pct(o.limit, 2), 'num'], signed(o.expected, 3)];
+      if (levels) row.push([level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']);
+      return row;
+    }) : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
   const B = r.backtest, M = r.market;
   $('verdict').innerHTML = `
     <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>
