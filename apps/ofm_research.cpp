@@ -272,6 +272,11 @@ int main(int argc, char** argv) {
     std::vector<std::array<double, nD>> used;
     std::vector<std::array<double, 4>> paths;  // per trade: the stop and the take-profit from the open, stopped, took profit
     std::vector<std::string> sd;
+    std::FILE* tradeLog = nullptr;
+    if (std::getenv("X_TRADELOG") && std::string(label).find("interactions") != std::string::npos) {
+      tradeLog = std::fopen(std::getenv("X_TRADELOG"), "w");
+      std::fprintf(tradeLog, "date,ticker,rank,pred,sigma,liq_rank,spread,low,high,close,stop,take,market,exit,ret,gap\n");
+    }
     const auto score = [&](std::size_t g) {
       if (nDays < 2) return 0.0;
       const double mu = s1v[g] / nDays, var = std::max(0.0, s2v[g] / nDays - mu * mu);
@@ -396,6 +401,18 @@ int main(int argc, char** argv) {
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1]);
       adaptiveLevels.push_back(dayResult(t, today, x[2], x[3], x[4])), used.push_back(x);
+      if (tradeLog)  // one line per trade, for the single-trade analysis (X_TRADELOG; local, not published)
+        for (std::size_t k = 0; k < today.size(); ++k) {
+          const std::size_t i = today[k].second, src = (t - lag) * N + i;
+          const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i);
+          const auto [fs, fk] = levelsAt(t, i, o, x[2], x[3], x[4]);
+          const double half = std::exp(0.5 * spread[t * N + i]);
+          const int exit = lo <= o * fs ? 1 : hi >= o * fk * half ? 2 : 0;
+          const double px = exit == 1 ? o * fs / half : exit == 2 ? o * fk : c;
+          std::fprintf(tradeLog, "%s,%s,%zu,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%.6g\n", m.dates[t + 1].c_str(), m.tickers[i].c_str(), k,
+                       pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], lo / o - 1, hi / o - 1, c / o - 1, fs - 1, fk < 1e300 ? fk - 1 : 0.0,
+                       ms / mn, exit, px / o - 1, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0);
+        }
       for (const auto& e : today) {  // the trades' levels, for the diagnostics
         const std::size_t i = e.second;
         const double o = m.open(t + 1, i);
@@ -410,6 +427,7 @@ int main(int argc, char** argv) {
       }
       nDays += 1;
     }
+    if (tradeLog) std::fclose(tradeLog);
     auto stats = [](const std::vector<double>& x) {
       double w = 0, s1 = 0, s2 = 0;
       for (double y : x) w += std::log1p(y), s1 += y, s2 += y * y;
