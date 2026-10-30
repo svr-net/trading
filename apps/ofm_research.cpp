@@ -203,6 +203,9 @@ int main(int argc, char** argv) {
     std::vector<Pick> picks;
   };
   Run lastRun;
+  const std::size_t nPick = std::getenv("X_NPICK") ? std::size_t(std::atol(std::getenv("X_NPICK"))) : 10;
+  const double ridgeK = std::getenv("X_RIDGE") ? std::atof(std::getenv("X_RIDGE")) : 1e-6;
+  const double forget = std::getenv("X_HALF") ? std::exp2(-1.0 / std::atof(std::getenv("X_HALF"))) : 1.0;
   auto model = [&](const std::vector<double>& ft, std::size_t Fm, std::size_t Km, std::size_t nOwn, const char* label) {
     ofm::v2::gen::V2Header<double> Q = P;
     Q.K = std::uint32_t(Km), Q.NT = std::uint32_t(Fm);
@@ -224,7 +227,7 @@ int main(int argc, char** argv) {
         double tr = 0;
         for (std::size_t q = 0; q < D; ++q) tr += M[q * D + q];
         if (!(tr > 0)) continue;
-        for (std::size_t q = 0; q < D; ++q) M[q * D + q] += 1e-6 * tr;
+        for (std::size_t q = 0; q < D; ++q) M[q * D + q] += ridgeK * tr;
         for (std::size_t c = 0; c < D; ++c)
           for (std::size_t r = 0; r < D; ++r)
             if (r != c) {
@@ -235,7 +238,7 @@ int main(int argc, char** argv) {
         for (std::size_t q = 0; q < D; ++q) beta[(t * 4 + k) * D + q] = v[q] / M[q * D + q];
       }
       if (t > 0)
-        for (std::size_t e = 0; e < E; ++e) acc[e] += gram[(t - 1) * E + e];
+        for (std::size_t e = 0; e < E; ++e) acc[e] = forget * acc[e] + gram[(t - 1) * E + e];
     }
     ofm::v2::gen::Predict<double> kp;
     kp.P = Q, kp.feat = const_cast<double*>(ft.data()), kp.zs = zs.data(), kp.beta = beta.data(), kp.out = pred.data();
@@ -329,8 +332,8 @@ int main(int argc, char** argv) {
         const std::size_t src = (t - lag) * N + i;
         v.emplace_back(pred[src * 4] * std::exp(b * ft[src * Km + 20]), i);
       }
-      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(10, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-      v.resize(std::min<std::size_t>(10, v.size()));
+      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(nPick, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      v.resize(std::min<std::size_t>(nPick, v.size()));
       return v;
     };
     // A stock's moves from the open over its last 100 days to the close t, sorted: the falls to the
@@ -384,10 +387,10 @@ int main(int argc, char** argv) {
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / nB)), axis(1, double(k % nB)));
       const auto& all0 = v[(nC - 1) * nB], &all1 = v[(nC - 1) * nB + nB - 1];
       double r = 0, pm = 0;
-      for (const auto& e : all0) r += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / 10, pm += e.first / 10;
+      for (const auto& e : all0) r += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / double(all0.size()), pm += e.first / double(all0.size());
       always.push_back(r), gated.push_back(pm > 0 ? r : 0.0), mkt.push_back(ms / mn), sd.push_back(m.dates[t + 1]);
       double rk = 0;
-      for (const auto& e : all1) rk += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / 10;
+      for (const auto& e : all1) rk += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / double(all1.size());
       byRank[1].push_back(rk);
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
@@ -462,8 +465,8 @@ int main(int argc, char** argv) {
           v.emplace_back(pred[((t - lag) * N + i) * 4] * std::exp(fx[1] * a[20]), i);
         }
       }
-      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(10, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-      for (std::size_t q = 0; q < std::min<std::size_t>(10, v.size()); ++q) {
+      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(nPick, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (std::size_t q = 0; q < std::min<std::size_t>(nPick, v.size()); ++q) {
         const std::size_t i = v[q].second, src = (t - lag) * N + i;
         const double sig = std::exp(ft[src * Km + 20]);
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i), fx[2], fx[3], fx[4]);
@@ -476,9 +479,17 @@ int main(int argc, char** argv) {
   // momentum 2d, volume shock 4d, open-to-close, gap, close in range, intraday and overnight
   // momentum 64d.
   const std::vector<double> sigs = {0, 6, 12, 14, 15, 23, 26};
-  const std::size_t MI = sigs.size(), FI = F + 2 * MI, KI = FI + 5;
+  const std::size_t NR = std::getenv("X_NORES") ? 0 : 3;  // the residual reversal (5 and 21 days) and the tug of war (kernels/v2/resid.wgsl)
+  const std::size_t MI = sigs.size(), FI = F + 2 * MI + NR, KI = FI + 5;
   std::vector<double> ftI(T * N * KI, 0.0);
   {
+    std::vector<double> mk(T, 0.0), rs(T * N * 3, 0.0);
+    ofm::v2::gen::Mret<double> km;
+    km.P = P, km.bars = bars.data(), km.out = mk.data();
+    ofm::detail::dispatch(km, ofm::detail::groups(std::uint32_t(T), 64));
+    ofm::v2::gen::Resid<double> kr;
+    kr.P = P, kr.bars = bars.data(), kr.mk = mk.data(), kr.out = rs.data();
+    ofm::detail::dispatch(kr, ofm::detail::groups(std::uint32_t(N), 64));
     std::vector<double> zs(T * F * 2, 0.0), ia(T * N * 2 * MI, 0.0);
     ofm::v2::gen::Zscore<double> kz;
     kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
@@ -493,6 +504,7 @@ int main(int argc, char** argv) {
       double* o = &ftI[r * KI];
       for (std::size_t f = 0; f < F; ++f) o[f] = a[f];
       for (std::size_t f = 0; f < 2 * MI; ++f) o[F + f] = ia[r * 2 * MI + f];
+      for (std::size_t f = 0; f < NR; ++f) o[F + 2 * MI + f] = rs[r * 3 + f];
       for (std::size_t f = 0; f < 5; ++f) o[FI + f] = a[F + f];
     }
   }
