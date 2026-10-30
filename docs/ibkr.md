@@ -42,6 +42,29 @@ not on GitHub).
      https://raw.githubusercontent.com/svr-net/eod/main/orders/UK.json -o UK.json
    ```
 
+## 2b. Or: IB Gateway in Docker, with buttons on the page
+
+`docker/ibkr` runs IB Gateway (paper, logged in automatically by the community image
+`ghcr.io/gnzsnz/ib-gateway`) and a small bridge (`tools/ibkr/bridge.py`) on your own computer. The
+page then shows a **Your broker** panel (only on that computer): the day's orders with their prices
+and quantities, and buttons to check (dry run), place them and close at the close.
+
+1. Install Docker Desktop (Windows, Mac) or Docker Engine (Linux).
+2. In the repository: `cd docker/ibkr && cp .env.example .env`, then fill in `.env`: the paper
+   account's username and password, a long random `BRIDGE_KEY`, and the read-only GitHub token
+   `EOD_READ_TOKEN` (step 2.4).
+3. `docker compose up -d --build`. The gateway takes a minute or two to log in; `docker compose logs
+   -f ib-gateway` shows it (with `VNC_SERVER_PASSWORD` set, a VNC viewer at 127.0.0.1:5900 shows its
+   screen).
+4. Open https://svr-net.github.io/trading/ on the same computer: the **Your broker** panel appears
+   under the backtest. Enter the `BRIDGE_KEY` once (kept in this browser), switch to UK or US, check
+   with **Check (dry run)**, then **Place orders** before the open and **Close at the close** before
+   the close.
+
+Both containers listen on 127.0.0.1 only; the bridge answers only the page's address and only with the
+key. A paper account normally logs in without two-factor approval; a live account needs the approval
+on your phone at each login (the image waits for it and restarts if it times out).
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |

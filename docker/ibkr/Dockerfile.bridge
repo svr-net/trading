@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+RUN pip install --no-cache-dir ib_async
+WORKDIR /app
+COPY tools/ibkr/ tools/ibkr/
+EXPOSE 8765
+CMD ["python", "tools/ibkr/bridge.py"]
