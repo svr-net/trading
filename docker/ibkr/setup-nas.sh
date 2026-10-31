@@ -98,7 +98,8 @@ say ""
 say "HTTPS for the bridge:"
 say "  lan    : private, on your network only (install a root certificate once on each device)"
 say "  public : a domain or DuckDNS name; the router forwards two ports to this NAS"
-ask HTTPS_MODE "  lan or public" "lan"
+say "  synology : your DSM certificate (e.g. name.synology.me); the router forwards one port to this NAS"
+ask HTTPS_MODE "  lan, public or synology" "lan"
 case "$HTTPS_MODE" in
   lan)
     guess=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
@@ -115,7 +116,21 @@ case "$HTTPS_MODE" in
     LAN_HOST=""
     SITE="https://$BRIDGE_DOMAIN"
     ;;
-  *) die "HTTPS_MODE must be lan or public" ;;
+  synology)
+    ask BRIDGE_DOMAIN "  the certificate's name (e.g. name.synology.me)"
+    ask HTTPS_PORT "  HTTPS port (router: the same outside port to this NAS; not 80 or 443)" "8765"
+    if [ -z "${CERT_DIR:-}" ]; then  # the DSM certificate holding the name (Control Panel, Security, Certificate)
+      for d in /usr/syno/etc/certificate/_archive/*/; do
+        [ -f "${d}fullchain.pem" ] && [ -f "${d}privkey.pem" ] || continue
+        if openssl x509 -in "${d}cert.pem" -noout -text 2>/dev/null | grep -q "DNS:$BRIDGE_DOMAIN"; then CERT_DIR=${d%/}; break; fi
+      done
+    fi
+    [ -n "${CERT_DIR:-}" ] && [ -f "$CERT_DIR/fullchain.pem" ] || die "no DSM certificate for $BRIDGE_DOMAIN found (set CERT_DIR to its folder in /usr/syno/etc/certificate/_archive)."
+    say "  certificate: $CERT_DIR"
+    HTTP_PORT=""; LAN_HOST=""
+    SITE="https://$BRIDGE_DOMAIN:$HTTPS_PORT"
+    ;;
+  *) die "HTTPS_MODE must be lan, public or synology" ;;
 esac
 [ -n "$TWS_USERID" ] && [ -n "$TWS_PASSWORD" ] && [ -n "$EOD_TOKEN" ] || die "the username, password and token are needed."
 
@@ -134,6 +149,7 @@ LAN_HOST=$LAN_HOST
 HTTPS_PORT=$HTTPS_PORT
 HTTP_PORT=$HTTP_PORT
 BRIDGE_DOMAIN=$BRIDGE_DOMAIN
+CERT_DIR=${CERT_DIR:-}
 EOF
 umask 022
 
@@ -153,6 +169,23 @@ https://$LAN_HOST:$HTTPS_PORT {
 }
 EOF
   CADDY_PORTS="      - \"$HTTPS_PORT:$HTTPS_PORT\""
+elif [ "$HTTPS_MODE" = synology ]; then
+  # DSM's own certificate (renewed by DSM in place; the folder is mounted, so a restart picks it up).
+  cat > Caddyfile <<EOF
+{
+	default_sni $BRIDGE_DOMAIN
+	auto_https disable_redirects
+	http_port 8080
+	https_port $HTTPS_PORT
+}
+https://$BRIDGE_DOMAIN:$HTTPS_PORT {
+	tls /certs/fullchain.pem /certs/privkey.pem
+	reverse_proxy bridge:8765
+	header Strict-Transport-Security "max-age=31536000"
+}
+EOF
+  CADDY_PORTS="      - \"$HTTPS_PORT:$HTTPS_PORT\""
+  CADDY_CERTS="      - $CERT_DIR:/certs:ro"
 else
   cat > Caddyfile <<EOF
 $BRIDGE_DOMAIN {
@@ -205,6 +238,7 @@ $CADDY_PORTS
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+${CADDY_CERTS:-}
 volumes:
   caddy-data:
   caddy-config:
@@ -230,6 +264,11 @@ say "Done. IB Gateway logs in within a minute or two: $COMPOSE -f $DIR/docker-co
 say ""
 say "Your bridge:   $SITE"
 say "Your key:      $BRIDGE_KEY   (also in $DIR/.env)"
+if [ "$HTTPS_MODE" = synology ]; then
+  say ""
+  say "DSM renews the certificate in place; Caddy reads it when it starts. In DSM, Control Panel, Task"
+  say "Scheduler, add a weekly task (user root): cd $DIR && $COMPOSE restart caddy"
+fi
 if [ "$HTTPS_MODE" = lan ]; then
   say ""
   say "Trust the bridge's certificate once on each device you open the page on:"
