@@ -185,21 +185,33 @@ https://$BRIDGE_DOMAIN:$HTTPS_PORT {
 }
 EOF
   CADDY_PORTS="      - \"$HTTPS_PORT:$HTTPS_PORT\""
-  # Caddy reads a certificate when it starts: this wrapper reloads it when DSM renews the files
-  # (checked daily; DSM renews a month ahead); a reload that fails leaves the running certificate in place.
+  # Caddy reads a certificate when it starts. The wrapper reloads it only when the one in use fails:
+  # it sleeps until that certificate's end date, then loads DSM's renewed files (DSM renews a month
+  # ahead); while the files hold no valid certificate yet, it retries hourly. A failed reload keeps
+  # the running certificate. The image is Caddy's with openssl added (to read the end date).
+  cat > Dockerfile.caddy <<'EOF'
+FROM caddy:2.8
+RUN apk add --no-cache openssl
+EOF
   cat > caddy-watch.sh <<'EOF'
 #!/bin/sh
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 pid=$!
 trap 'kill $pid 2>/dev/null; wait $pid; exit 0' TERM INT
-sum() { cat /certs/fullchain.pem /certs/privkey.pem 2>/dev/null | sha256sum; }
-last=$(sum)
+ends() {  # the end of the certificate in the files, in seconds since 1970 (0 if unreadable)
+  e=$(openssl x509 -in /certs/fullchain.pem -noout -dateopt iso_8601 -enddate 2>/dev/null | cut -d= -f2)
+  date -u -d "${e%Z}" +%s 2>/dev/null || echo 0
+}
+end=$(ends)
+echo "certificate valid until $(date -u -d "@$end" 2>/dev/null)"
 while kill -0 $pid 2>/dev/null; do
-  sleep "${CERT_CHECK_SECONDS:-86400}" & wait $!
-  now=$(sum)
-  if [ "$now" != "$last" ]; then
-    echo "certificate changed: reloading"
-    caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && last=$now || echo "reload failed: the running certificate stays"
+  now=$(date +%s)
+  if [ "$end" -gt "$now" ]; then sleep $((end - now)) & wait $!; continue; fi
+  new=$(ends)
+  if [ "$new" -gt "$now" ] && caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile; then
+    end=$new; echo "certificate expired: renewed one loaded"
+  else
+    echo "certificate expired and no renewed one loaded yet: retrying in an hour"; sleep 3600 & wait $!
   fi
 done
 exit 1  # Caddy stopped: Docker restarts the container
@@ -207,6 +219,7 @@ EOF
   CADDY_CERTS="      - $CERT_DIR:/certs:ro
       - ./caddy-watch.sh:/caddy-watch.sh:ro
     command: [\"sh\", \"/caddy-watch.sh\"]"
+  CADDY_IMAGE="    build: { context: ., dockerfile: Dockerfile.caddy }"
 else
   cat > Caddyfile <<EOF
 $BRIDGE_DOMAIN {
@@ -250,7 +263,7 @@ services:
     volumes:
       - ./history:/data/history   # the orders placed and the fills, kept across updates
   caddy:
-    image: caddy:2.8
+${CADDY_IMAGE:-    image: caddy:2.8}
     restart: always
     depends_on: [bridge]
     ports:
@@ -287,7 +300,7 @@ say "Your bridge:   $SITE"
 say "Your key:      $BRIDGE_KEY   (also in $DIR/.env)"
 if [ "$HTTPS_MODE" = synology ]; then
   say ""
-  say "DSM renews the certificate in place; the bridge's HTTPS picks it up within a day by itself."
+  say "DSM renews the certificate in place; the bridge's HTTPS loads the renewed one by itself when the current one expires."
 fi
 if [ "$HTTPS_MODE" = lan ]; then
   say ""
