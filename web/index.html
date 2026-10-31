@@ -44,8 +44,12 @@
       <button type="button" id="broker-dry">Check (dry run)</button>
       <button type="button" id="broker-place">Place orders</button>
       <button type="button" id="broker-close">Close at the close</button>
+      <button type="button" id="broker-report">Record results</button>
     </div>
     <pre id="broker-log" class="broker-log"></pre>
+    <h3>History (your paper or live fills)</h3>
+    <p class="muted" id="broker-summary"></p>
+    <div class="table-scroll"><table id="broker-history"></table></div>
     <p class="hint">For your own bridge (docker/ibkr: on this computer, or on a server behind HTTPS) next to IB Gateway: the orders and their prices come from it, not from this page; the bridge's address and key stay in this browser. Place before the open (UK by 07:50 London, US by 09:25 New York); close shortly before the close (UK 16:20, US 15:40).</p>
   </section>
 

@@ -139,12 +139,13 @@ function brokerOrders() {
       b.orders.length ? b.orders.map((o) => [[o.ticker], [String(o.quantity), 'num'], [px(o.limit), 'num'], [px(o.stop), 'num neg'], [px(o.take), 'num pos']])
         : [{ gap: 'no orders for the next open' }]);
     brokerLog(`${m}: ${b.orders.length} orders for the open after the close of ${b.asOf}, ${b.capital} a trade${m === 'UK' ? ' (prices in pence)' : ''}.`);
-  }).catch((e) => { $('broker-orders').innerHTML = ''; brokerLog(`Orders not available: ${e.message}`); });
+    brokerHistory();
+  }).catch((e) => { $('broker-orders').innerHTML = ''; brokerLog(`Orders not available: ${e.message}`); brokerHistory(); });
 }
 function brokerAct(path, body, question) {
   if (question && !window.confirm(question)) return;
   brokerLog('Working…');
-  bridge(path, body).then((r) => brokerLog(r.log || JSON.stringify(r))).catch((e) => brokerLog(`Failed: ${e.message}`));
+  bridge(path, body).then((r) => { brokerLog(r.log || JSON.stringify(r)); brokerHistory(); }).catch((e) => brokerLog(`Failed: ${e.message}`));
 }
 // Looks for the bridge; the panel shows when it answers (or when opened by hand, to set the address).
 function brokerProbe(opened) {
@@ -174,6 +175,42 @@ $('broker-save').addEventListener('click', () => {
 $('broker-open').addEventListener('click', (e) => { e.preventDefault(); brokerProbe(true); $('broker').scrollIntoView({ behavior: 'smooth' }); });
 $('broker-dry').addEventListener('click', () => brokerAct('/place', { market: brokerMarket(), dryRun: true }));
 $('broker-place').addEventListener('click', () => brokerAct('/place', { market: brokerMarket() }, `Place the ${brokerMarket()} orders with Interactive Brokers?`));
+// The history kept by the bridge: each day's orders placed and what was traded (fills from IBKR).
+function brokerHistory() {
+  if (!bridgeKey()) return;
+  bridge('/history').then((h) => {
+    const rows = [];
+    let n = 0, wins = 0, pnl = {}, placedN = 0;
+    for (const d of h.days) {
+      const traded = Object.fromEntries(d.trades.map((t) => [t.ticker.replace(' ', '.'), t]));
+      placedN += d.orders.length;
+      const names = new Set([...d.orders.map((o) => o.ticker), ...Object.keys(traded)]);
+      for (const name of names) {
+        const o = d.orders.find((x) => x.ticker === name) || {};
+        const t = traded[name];
+        const filled = t && t.bought > 0;
+        if (filled) {
+          n += 1;
+          if (t.ret > 0) wins += 1;
+          pnl[t.currency] = (pnl[t.currency] || 0) + t.pnl;  // IBKR's realised P&L, after its commissions
+        }
+        rows.push([[d.date], [d.market], [name], [o.limit != null ? o.limit.toFixed(2) : '', 'num'],
+          [filled ? `${t.bought} @ ${t.buy.toFixed(2)}` : (d.trades.length ? 'not filled' : 'open'), 'num'],
+          [filled && t.sell != null ? `${t.sold} @ ${t.sell.toFixed(2)}` : '', 'num'],
+          filled && t.ret != null ? signed(t.ret, 2) : ['', 'num'],
+          filled ? [`${t.pnl.toFixed(2)} ${t.currency}`, `num ${t.pnl >= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
+          filled ? [`${t.commission.toFixed(2)}`, 'num'] : ['', 'num']]);
+      }
+    }
+    table($('broker-history'), [['Day'], ['Market'], ['Share'], ['Limit', 'num'], ['Bought', 'num'], ['Sold', 'num'], ['Return', 'num'], ['P&L (IBKR, after costs)', 'num'], ['Commission', 'num']],
+      rows.length ? rows : [{ gap: 'nothing yet: the history starts with the first orders placed' }]);
+    const money = Object.entries(pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
+    $('broker-summary').textContent = h.days.length
+      ? `${h.days.length} day${h.days.length === 1 ? '' : 's'} · ${placedN} orders placed · ${n} filled (${placedN ? Math.round(100 * n / placedN) : 0}%) · ${n ? Math.round(100 * wins / n) : 0}% of them won · total ${money || '0'}`
+      : '';
+  }).catch(() => { /* an older bridge without history */ });
+}
+$('broker-report').addEventListener('click', () => brokerAct('/report', { market: brokerMarket() }));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (!$('broker').hidden) brokerOrders(); });
 brokerProbe();

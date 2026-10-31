@@ -35,5 +35,9 @@ services:
       IB_PORT: "4004"           # the image's paper API for other containers (4003: live)
       BIND: 0.0.0.0
       ALLOWED_ORIGIN: https://svr-net.github.io
+      AUTO_MARKETS: ${AUTO_MARKETS:-}
+      HISTORY_DIR: /data/history
+    volumes:
+      - ./history:/data/history
     ports:
       - "127.0.0.1:8765:8765"

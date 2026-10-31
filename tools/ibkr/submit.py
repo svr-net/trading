@@ -49,11 +49,12 @@ def main():
     a.add_argument('--port', type=int, default=4002, help='4002 IB Gateway paper, 4001 live')
     a.add_argument('--client-id', type=int, default=17)
     a.add_argument('--close', action='store_true', help='cancel unfilled orders and sell what is left at the close')
+    a.add_argument('--report', action='store_true', help="print today's fills of these orders as JSON (after the close)")
     a.add_argument('--dry-run', action='store_true', help='print the orders; do not connect')
     args = a.parse_args()
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
-    if not args.close:
+    if not args.close and not args.report:
         if not args.orders:
             sys.exit('--orders is required (or --close)')
         book = json.load(open(args.orders))
@@ -69,6 +70,35 @@ def main():
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id)
     exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+
+    if args.report:
+        # Today's fills of this model's orders, a share at a time: bought, sold, average prices, the
+        # return, the realised profit and loss IBKR reports for the closing fills (after its
+        # commissions), and the commissions.
+        per = {}
+        for f in ib.fills():
+            if f.execution.orderRef != ref:
+                continue
+            e = per.setdefault(f.contract.symbol, {'ticker': f.contract.symbol, 'currency': f.contract.currency,
+                                                    'bought': 0.0, 'buy_value': 0.0, 'sold': 0.0, 'sell_value': 0.0, 'pnl': 0.0, 'commission': 0.0})
+            side = 'bought' if f.execution.side == 'BOT' else 'sold'
+            e[side] += f.execution.shares
+            e['buy_value' if side == 'bought' else 'sell_value'] += f.execution.shares * f.execution.price
+            cr = f.commissionReport
+            if cr is not None:
+                if cr.commission and abs(cr.commission) < 1e300:
+                    e['commission'] += cr.commission
+                if cr.realizedPNL and abs(cr.realizedPNL) < 1e300:
+                    e['pnl'] += cr.realizedPNL
+        out = []
+        for e in per.values():
+            buy = e['buy_value'] / e['bought'] if e['bought'] else None
+            sell = e['sell_value'] / e['sold'] if e['sold'] else None
+            out.append({'ticker': e['ticker'], 'currency': e['currency'], 'bought': e['bought'], 'buy': buy, 'sold': e['sold'], 'sell': sell,
+                        'ret': (sell / buy - 1) if buy and sell else None, 'pnl': e['pnl'], 'commission': e['commission']})
+        print(json.dumps({'date': date.today().isoformat(), 'market': args.market, 'trades': out}))
+        ib.disconnect()
+        return
 
     if args.close:
         # Cancel this model's open orders of today, then sell each position they opened at the close.

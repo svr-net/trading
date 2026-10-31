@@ -130,6 +130,16 @@ change them), each once a day; an orders file more than 4 days old is not placed
 broker* line shows the schedule and the last automatic action; `docker compose logs bridge` shows
 every one. IB Gateway must stay logged in (the container restarts it daily).
 
+## 2f. History of orders and fills
+
+The bridge keeps a history on the NAS (`docker/ibkr/nas/history/history.jsonl`, kept across updates):
+the orders each time they are placed, and after each close (automatically at 16:45 London for the
+UK, 16:10 New York for the US, or with *Record results*) the day's fills from IBKR: what was bought
+and sold, at what prices, the return, IBKR's realised profit and loss after its commissions, and the
+commissions. *Your broker* shows it as a table with the days, the fill rate, the share of winning
+trades and the total. It is shown only where the bridge answers (your own devices); nothing of it is
+published.
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |
