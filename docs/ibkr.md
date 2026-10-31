@@ -120,7 +120,8 @@ your network, so the bridge is always behind HTTPS:
 - **synology**: the certificate DSM already holds for your name (e.g. `name.synology.me`, Control
   Panel, Security, Certificate); the router forwards one port (default 8765) to the NAS. Works from
   anywhere with no certificate to install, if the home connection takes incoming connections (not
-  behind the provider's CGNAT). A weekly DSM task restarting Caddy picks up DSM's renewals.
+  behind the provider's CGNAT). DSM's renewals are picked up within an hour (Caddy reloads when the
+  certificate files change; a failed reload keeps the running certificate).
 
 It ends with the page's address for your bridge (`https://svr-net.github.io/trading/?bridge=...`) and
 the key to enter in *Your broker*. Run it again to change anything (delete `ibkr-bridge/.env` to answer
