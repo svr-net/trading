@@ -185,7 +185,28 @@ https://$BRIDGE_DOMAIN:$HTTPS_PORT {
 }
 EOF
   CADDY_PORTS="      - \"$HTTPS_PORT:$HTTPS_PORT\""
-  CADDY_CERTS="      - $CERT_DIR:/certs:ro"
+  # Caddy reads a certificate when it starts: this wrapper reloads it when DSM renews the files
+  # (checked hourly); a reload that fails leaves the running certificate in place.
+  cat > caddy-watch.sh <<'EOF'
+#!/bin/sh
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+pid=$!
+trap 'kill $pid 2>/dev/null; wait $pid; exit 0' TERM INT
+sum() { cat /certs/fullchain.pem /certs/privkey.pem 2>/dev/null | sha256sum; }
+last=$(sum)
+while kill -0 $pid 2>/dev/null; do
+  sleep "${CERT_CHECK_SECONDS:-3600}" & wait $!
+  now=$(sum)
+  if [ "$now" != "$last" ]; then
+    echo "certificate changed: reloading"
+    caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && last=$now || echo "reload failed: the running certificate stays"
+  fi
+done
+exit 1  # Caddy stopped: Docker restarts the container
+EOF
+  CADDY_CERTS="      - $CERT_DIR:/certs:ro
+      - ./caddy-watch.sh:/caddy-watch.sh:ro
+    command: [\"sh\", \"/caddy-watch.sh\"]"
 else
   cat > Caddyfile <<EOF
 $BRIDGE_DOMAIN {
@@ -266,8 +287,7 @@ say "Your bridge:   $SITE"
 say "Your key:      $BRIDGE_KEY   (also in $DIR/.env)"
 if [ "$HTTPS_MODE" = synology ]; then
   say ""
-  say "DSM renews the certificate in place; Caddy reads it when it starts. In DSM, Control Panel, Task"
-  say "Scheduler, add a weekly task (user root): cd $DIR && $COMPOSE restart caddy"
+  say "DSM renews the certificate in place; the bridge's HTTPS picks it up within an hour by itself."
 fi
 if [ "$HTTPS_MODE" = lan ]; then
   say ""
