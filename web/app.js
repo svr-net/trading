@@ -160,7 +160,7 @@ function brokerProbe(opened) {
   setTimeout(() => ctl.abort(), 3000);
   fetch(`${bridgeUrl()}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
     $('broker').hidden = false;
-    const auto = Object.entries(s.auto || {}).map(([m, a]) => `${m} places ${a.place}, closes ${a.close}`).join('; ');
+    const auto = Object.entries(s.auto || {}).map(([m, a]) => `${m} places ${a.place}${a.auction ? `, records the auction ${a.auction}` : ''}, closes ${a.close}`).join('; ');
     const last = (s.last || [])[0];
     $('broker-status').textContent = `Bridge at ${bridgeUrl()} · IB Gateway ${s.gateway ? `answering on port ${s.port}` : 'not answering (start it and log in)'} · ${s.capital} a trade`
       + ` · automatic: ${auto || 'off'}` + (last ? ` · last: ${last.market} ${last.action} ${last.when} ${last.ok ? 'ok' : 'FAILED'}` : '');

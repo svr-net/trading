@@ -8,6 +8,7 @@ and buttons that place them or close the positions through IB Gateway (tools/ibk
   GET  /orders?market=UK           the day's orders, with each trade's quantity for --capital
   POST /place  {"market": "UK"}    place them (submit.py)
   POST /close  {"market": "UK"}    cancel the unfilled ones and sell at the close (submit.py --close)
+  POST /bars   {"market": "UK"}    fetch the pool's daily bars from IBKR into the private store (background)
 
 Only the page's origin may call it (CORS, with Chrome's private-network permission), and every call
 must carry the key (header X-Bridge-Key) that you set in BRIDGE_KEY and enter once on the page; a
@@ -18,6 +19,15 @@ market's orders before its open and closes what is left before its close, by the
 (UK 07:45 and 16:20 London, US 09:20 and 15:40 New York; AUTO_UK_PLACE, AUTO_UK_CLOSE, AUTO_US_PLACE,
 AUTO_US_CLOSE change them), each once a day, and skips an orders file more than 4 days old.
 
+Opening auctions (AUCTION=1, the default; 0 off): on the same days, at UK 07:52 London and US 09:24
+New York (AUTO_UK_AUCTION, AUTO_US_AUCTION), the bridge records the opening auction of the day's 60
+highest ranked candidates (submit.py --auction; it places nothing): the indicative price, volume and
+imbalance every 15 seconds until the open, then the open. Each day's recording is kept in
+HISTORY_DIR/auction and written to the private store as auction/<MARKET>/<date>.json, where the
+research reads it. On Saturdays at AUTO_BARS (06:00; empty: off), and on POST /bars, it fetches
+IBKR's daily bars for the pool into the private store (ibkr/<MARKET>/daily.csv): IBKR's opens are the
+opening auctions', to check the opens the model learns from.
+
 History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, and after
 each close (automatically at UK 16:45 London, US 16:10 New York, or with POST /report) the day's
 fills from IBKR (submit.py --report); GET /history returns them by day for the page's History.
@@ -26,6 +36,7 @@ Environment: BRIDGE_KEY, EOD_TOKEN (the daily job's token, svr-net/eod contents;
 (4002 paper), CAPITAL (a trade's amount, default 5000), ALLOWED_ORIGIN, BIND (127.0.0.1; 0.0.0.0
 inside Docker, published on 127.0.0.1 only), PORT (8765).
 """
+import base64
 import hmac
 import json
 import math
@@ -57,6 +68,10 @@ TIMES = {'UK': (os.environ.get('AUTO_UK_PLACE', '07:45'), os.environ.get('AUTO_U
          'US': (os.environ.get('AUTO_US_PLACE', '09:20'), os.environ.get('AUTO_US_CLOSE', '15:40'))}
 HISTORY = os.environ.get('HISTORY_DIR', os.environ.get('ORDERS_DIR', '/tmp/ofm-orders'))
 REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10')}
+# The opening auction's recording (submit.py --auction; places nothing), after the orders are in: the
+# LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
+BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
+AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24')} if os.environ.get('AUCTION', '1') != '0' else {}
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -94,9 +109,9 @@ def fetch_orders(market):
     return path
 
 
-def run_submit(args):
+def run_submit(args, timeout=300):
     p = subprocess.run([sys.executable, os.path.join(HERE, 'submit.py'), *args, '--host', IB_HOST, '--port', str(IB_PORT)],
-                       capture_output=True, text=True, timeout=300)
+                       capture_output=True, text=True, timeout=timeout)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -124,6 +139,67 @@ def report(market):
     rec['kind'] = 'result'
     history_add(rec)
     return True, f"{len(rec['trades'])} shares traded"
+
+
+def store_put(path, data, message):
+    """Writes one file to the private store (svr-net/eod) with EOD_TOKEN (Contents read and write)."""
+    url = f'https://api.github.com/repos/svr-net/eod/contents/{path}'
+    head = {'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'ofm-bridge'}
+    sha = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=20) as r:
+            sha = json.load(r).get('sha')
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    body = {'message': message, 'content': base64.b64encode(data).decode()}
+    if sha:
+        body['sha'] = sha
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**head, 'Content-Type': 'application/json'}, method='PUT')
+    with urllib.request.urlopen(req, timeout=30):
+        pass
+
+
+def record_auction(market):
+    """The candidates' opening auction (submit.py --auction), kept with the history and in the private
+    store as auction/<MARKET>/<date>.json; returns (ok, summary)."""
+    path = fetch_orders(market)
+    code, out = run_submit(['--market', market, '--orders', path, '--auction'], timeout=1500)
+    line = next((l for l in reversed(out.splitlines()) if l.startswith('{')), '')
+    if code != 0 or not line:
+        return False, out.splitlines()[-1] if out else 'no recording'
+    rec = json.loads(line)
+    os.makedirs(os.path.join(HISTORY, 'auction'), exist_ok=True)
+    with open(os.path.join(HISTORY, 'auction', f"{market}-{rec['date']}.json"), 'w') as f:
+        f.write(line + '\n')
+    summary = next((l for l in out.splitlines() if 'auction:' in l), f"{len(rec['shares'])} shares")
+    try:
+        store_put(f"auction/{market}/{rec['date']}.json", (line + '\n').encode(), f"{market} opening auction {rec['date']}")
+    except Exception as e:  # noqa: BLE001
+        return True, f'{summary}; kept here, not stored in svr-net/eod ({e})'
+    return True, summary
+
+
+BARS_RUNNING = set()
+
+
+def fetch_bars(market):
+    """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), written to the
+    private store as ibkr/<MARKET>/daily.csv; returns (ok, summary)."""
+    if market in BARS_RUNNING:
+        return False, 'already running'
+    BARS_RUNNING.add(market)
+    try:
+        out_file = os.path.join(HISTORY, f'ibkr-{market}.csv')
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', out_file], timeout=6 * 3600)
+        summary = out.splitlines()[-1] if out else ''
+        if code != 0:
+            return False, summary or 'failed'
+        with open(out_file, 'rb') as f:
+            store_put(f'ibkr/{market}/daily.csv', f.read(), f'{market} daily bars from IBKR {date.today().isoformat()}')
+        return True, summary
+    finally:
+        BARS_RUNNING.discard(market)
 
 
 def history():
@@ -156,6 +232,10 @@ def auto_run(market, action):
             placed(market, path, False)
     elif action == 'report':
         return report(market)
+    elif action == 'auction':
+        return record_auction(market)
+    elif action == 'bars':
+        return fetch_bars(market)
     else:
         code, out = run_submit(['--market', market, '--close'])
     return code == 0, out.splitlines()[-1] if out else ''
@@ -168,9 +248,13 @@ def scheduler():
     while True:
         for m in AUTO:
             now = datetime.now(ZoneInfo(ZONE[m]))
-            if now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS'):  # AUTO_WEEKENDS: for testing only
+            weekend = now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS')  # AUTO_WEEKENDS: for testing only
+            plan = [('bars', BARS_AT)] if now.weekday() == 5 and BARS_AT else []  # Saturdays: IBKR's daily bars
+            if not weekend:
+                plan += [('place', TIMES[m][0]), ('auction', AUCTION.get(m)), ('close', TIMES[m][1]), ('report', REPORT[m])]
+            if not plan:
                 continue
-            for action, hhmm in zip(('place', 'close', 'report'), TIMES[m] + (REPORT[m],)):
+            for action, hhmm in ((a, t) for a, t in plan if t):
                 h, mi = (int(x) for x in hhmm.split(':'))
                 due = now.replace(hour=h, minute=mi, second=0, microsecond=0)
                 mark = os.path.join(CACHE, f'done-{m}-{action}-{now.date().isoformat()}')
@@ -232,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == '/status':  # no key needed: tells the page the bridge is there
             return self.reply(200, {'bridge': True, 'gateway': gateway_up(), 'port': IB_PORT, 'capital': CAPITAL, 'keyed': bool(KEY),
-                                    'auto': {m: {'place': TIMES[m][0], 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m]} for m in AUTO},
+                                    'auto': {m: {'place': TIMES[m][0], 'auction': AUCTION.get(m), 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m]} for m in AUTO},
                                     'last': [{'when': w, 'market': mk, 'action': a, 'ok': ok, 'summary': sm} for w, mk, a, ok, sm in LAST]})
         if not self.allowed():
             return
@@ -273,6 +357,16 @@ class Handler(BaseHTTPRequestHandler):
             if code == 0:
                 placed(m, fetch_orders(m) if not os.environ.get(f'ORDERS_FILE_{m}') else os.environ[f'ORDERS_FILE_{m}'], bool(body.get('dryRun')))
             return self.reply(200 if code == 0 else 500, {'ok': code == 0, 'log': out})
+        if path == '/bars':  # in the background: it takes over an hour
+            if m in BARS_RUNNING:
+                return self.reply(409, {'ok': False, 'log': f'{m} bars: already running'})
+
+            def run():
+                ok, summary = fetch_bars(m)
+                LAST.insert(0, (datetime.now(ZoneInfo(ZONE[m])).strftime('%Y-%m-%d %H:%M %Z'), m, 'bars', ok, summary))
+                del LAST[10:]
+            threading.Thread(target=run, daemon=True).start()
+            return self.reply(202, {'ok': True, 'log': f'{m}: fetching the pool\'s daily bars from IBKR (about an hour); the status shows when done'})
         if path == '/report':
             ok, summary = report(m)
             return self.reply(200 if ok else 500, {'ok': ok, 'log': summary})

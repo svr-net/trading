@@ -146,6 +146,23 @@ commissions. *Your broker* shows it as a table with the days, the fill rate, the
 trades and the total. It is shown only where the bridge answers (your own devices); nothing of it is
 published.
 
+## 2g. Opening auctions and IBKR's daily bars (research)
+
+The bridge also collects data for improving the model; it places nothing.
+
+- **Opening auctions**: each weekday (UK 07:52 London, US 09:24 New York) it records the opening
+  auction of the day's 60 highest ranked candidates: the indicative price, volume and imbalance every
+  15 seconds until the open, then the open. Kept in `history/auction` and in the private store as
+  `auction/<MARKET>/<date>.json`. `AUCTION=0` in `.env` turns it off.
+- **Daily bars**: on Saturdays (06:00) it fetches IBKR's own daily bars for the model's pool (two
+  years; IBKR allows 60 requests in 10 minutes, so about 75 minutes for the UK) into
+  `ibkr/<MARKET>/daily.csv` in the private store, to check the opens the model learns from. Start it
+  by hand with `curl -X POST -H "X-Bridge-Key: <key>" -d '{"market":"UK"}' https://<bridge>/bars`.
+
+Both need the exchange's real-time data on the account (for the UK: the LSE level 1 subscription,
+a few pounds a month; a paper account shares the live account's subscriptions). Without it the
+auction samples stay empty and the bars are refused.
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |

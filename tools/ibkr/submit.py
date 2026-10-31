@@ -9,7 +9,14 @@ prices). This script runs next to a logged-in IB Gateway:
                     then rests during the day, as in the backtest), with its take-profit (limit
                     sell) and stop-loss (stop sell) attached, one cancelling the other;
   before the close: python tools/ibkr/submit.py --market UK --close
-                    cancels today's unfilled orders and sells what is left at the close (MOC).
+                    cancels today's unfilled orders and sells what is left at the close (MOC);
+  the auction:      python tools/ibkr/submit.py --market UK --orders UK.json --auction
+                    records (places nothing) the opening auction of the file's candidates: every 15
+                    seconds until the open, the indicative auction price, volume and imbalance and
+                    the bid and ask; after it, the open; one JSON line on standard output;
+  IBKR's bars:      python tools/ibkr/submit.py --market UK --orders UK.json --bars --out ibkr-UK.csv
+                    the pool's daily bars over --years (2) from IBKR, paced at one request every 10.5
+                    seconds (IBKR allows 60 in 10 minutes), as date,ticker,open,high,low,close,volume.
 
 --capital is the amount per trade (the account's currency); --port 4002 is IB Gateway's paper
 account (4001 live, 7497/7496 TWS). --dry-run prints the orders without connecting. Every order
@@ -51,9 +58,17 @@ def main():
     a.add_argument('--close', action='store_true', help='cancel unfilled orders and sell what is left at the close')
     a.add_argument('--report', action='store_true', help="print today's fills of these orders as JSON (after the close)")
     a.add_argument('--dry-run', action='store_true', help='print the orders; do not connect')
+    a.add_argument('--auction', action='store_true', help="record the candidates' opening auction (places nothing)")
+    a.add_argument('--bars', action='store_true', help="fetch the pool's daily bars from IBKR into --out")
+    a.add_argument('--out', help='the CSV file for --bars')
+    a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     args = a.parse_args()
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
+    if args.auction:
+        return auction(args)
+    if args.bars:
+        return daily_bars(args)
     if not args.close and not args.report:
         if not args.orders:
             sys.exit('--orders is required (or --close)')
@@ -163,6 +178,95 @@ def main():
         print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {getattr(c, "lmtPrice", None) or c.auxPrice}' for c in children))
     ib.sleep(2)
     ib.disconnect()
+
+
+OPEN = {'UK': ('Europe/London', 8, 0), 'US': ('America/New_York', 9, 30)}
+
+
+def auction(args):
+    """The candidates' opening auction, as IBKR streams it (generic tick 225: the indicative price,
+    volume and imbalance), sampled every 15 seconds until the open, then the open itself. Needs the
+    exchange's real-time data on the account (otherwise the samples stay empty, which is recorded)."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from ib_async import IB, Stock
+
+    book = json.load(open(args.orders))
+    cands = book.get('candidates') or book['orders']
+    zone, h, mi = OPEN[args.market]
+    tz = ZoneInfo(zone)
+    now = datetime.now(tz)
+    opens = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+    if now > opens + timedelta(minutes=5):
+        sys.exit(f'{args.market} opened at {opens:%H:%M}: too late to record its auction')
+    ib = IB()
+    ib.connect(args.host, args.port, clientId=args.client_id + 1)  # beside the orders' client
+    ib.reqMarketDataType(1)  # real time
+    exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+    num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > -1e300 else None  # noqa: E731
+    tickers = {}
+    for c in cands:
+        contract = Stock(ib_symbol(c['ticker'], args.market), exch, cur)
+        if ib.qualifyContracts(contract):
+            tickers[c['ticker']] = ib.reqMktData(contract, '225', False, False)
+    rows = {t: {'ticker': t, 'close': c['close'], 'score': c.get('score'), 'samples': []} for t, c in ((c['ticker'], c) for c in cands) if t in tickers}
+
+    def sample(at):
+        for t, k in tickers.items():
+            rows[t]['samples'].append({'at': at, 'price': num(k.auctionPrice), 'volume': num(k.auctionVolume), 'imbalance': num(k.auctionImbalance),
+                                       'bid': num(k.bid), 'ask': num(k.ask), 'bidSize': num(k.bidSize), 'askSize': num(k.askSize), 'last': num(k.last),
+                                       'type': k.marketDataType})
+
+    while datetime.now(tz) < opens:  # every 15 seconds until the open (the auction ends then, or up to 30 s later in London)
+        ib.sleep(max(0.5, min(15.0, (opens - datetime.now(tz)).total_seconds())))
+        sample(datetime.now(tz).strftime('%H:%M:%S'))
+    ib.sleep(120)  # the uncross and the first trades
+    for t, k in tickers.items():
+        rows[t].update(open=num(k.open), last=num(k.last), volume=num(k.volume), high=num(k.high), low=num(k.low))
+        ib.cancelMktData(k.contract)
+    ib.disconnect()
+    filled = sum(1 for r in rows.values() if any(s['price'] for s in r['samples']))
+    sys.stderr.write(f'{args.market} auction: {len(rows)} shares, an indicative price for {filled}\n')
+    print(json.dumps({'date': opens.date().isoformat(), 'market': args.market, 'asOf': book.get('asOf'), 'shares': list(rows.values())}))
+
+
+def daily_bars(args):
+    """IBKR's own daily bars (trades, regular hours) for the file's pool, to check the opens the model
+    learns from against the exchange's: IBKR's open is the opening auction's price."""
+    import csv
+    import time
+    from ib_async import IB, Stock
+
+    if not args.out:
+        sys.exit('--out is required with --bars')
+    book = json.load(open(args.orders))
+    pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
+    ib = IB()
+    ib.connect(args.host, args.port, clientId=args.client_id + 2)
+    exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+    got = missing = 0
+    with open(args.out, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['date', 'ticker', 'open', 'high', 'low', 'close', 'volume'])
+        for k, t in enumerate(pool):
+            start = time.monotonic()
+            contract = Stock(ib_symbol(t, args.market), exch, cur)
+            bars = []
+            if ib.qualifyContracts(contract):
+                try:
+                    bars = ib.reqHistoricalData(contract, '', f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f'  {t}: {e}\n')
+            for b in bars:
+                w.writerow([b.date.isoformat(), t, b.open, b.high, b.low, b.close, b.volume])
+            got, missing = got + bool(bars), missing + (not bars)
+            if (k + 1) % 50 == 0:
+                sys.stderr.write(f'  {k + 1} of {len(pool)}\n')
+                f.flush()
+            if k + 1 < len(pool):
+                time.sleep(max(0.0, 10.5 - (time.monotonic() - start)))
+    ib.disconnect()
+    print(f'{args.market} bars: {got} shares from IBKR, {missing} without bars')
 
 
 if __name__ == '__main__':
