@@ -9,7 +9,8 @@
 // previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, then
 // the falls at the u0 tail fractions and the rises at them (logs from the open over the last 100
 // days). dv [t0] the limit depths (sigmas below the previous close), av [u1] the SAR weights, cost [3]
-// the broker's costs (as in costOf). ret [N][T]: the trade's return (0 when the limit is not reached).
+// the broker's costs (as in costOf). ret [N][T]: the trade's return (0 when the limit is not reached,
+// or when the stop-loss sits within a spread of the entry: a trade stopped as it fills is skipped).
 @group(0) @binding(1) var<storage, read> st : array<f32>;
 @group(0) @binding(2) var<storage, read> dv : array<f32>;
 @group(0) @binding(3) var<storage, read> av : array<f32>;
@@ -68,10 +69,13 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
         stop = entry * exp(ls);
         take = entry * exp(st[b + 9u + P.u0 + ct]);
       }
-      var px : f32 = c;
-      if (l <= stop) { px = stop / half; } else if (!intra && h >= take * half) { px = take; }
-      let gross : f32 = px / entry - 1.0;
-      y = gross - costOf(entry, gross);
+      // A stop within a spread of the entry would sell as the trade fills: no trade (cash).
+      if (stop * half * half <= entry) {
+        var px : f32 = c;
+        if (l <= stop) { px = stop / half; } else if (!intra && h >= take * half) { px = take; }
+        let gross : f32 = px / entry - 1.0;
+        y = gross - costOf(entry, gross);
+      }
     }
     ret[i] = y;
   }
