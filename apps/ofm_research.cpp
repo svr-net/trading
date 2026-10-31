@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -35,7 +36,9 @@ int main(int argc, char** argv) {
   bool closeOnly = false;
   bool scanOnly = false;  // --scan: only the page's model (no comparison models), for the daily job
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
-  // amount a trade, --stamp the UK stamp duty on buying.
+  // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
+  // from it (AIM shares, one ticker a line).
+  std::string stampFree;
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
@@ -49,6 +52,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : 0;
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
+    if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
   }
   for (int k = 1; k < argc; ++k)
     if (std::string(argv[k]) == "--scan") scanOnly = true;
@@ -65,6 +69,17 @@ int main(int argc, char** argv) {
     }
   const ofm::Market& m = mk;
   const std::size_t T = m.T(), N = m.N(), F = 27, K = F + 5;
+  // Each stock's stamp duty on buying (none for the tickers in --stamp-free).
+  std::vector<double> stampOf(N, costKind == 1 ? stamp : 0.0);
+  if (!stampFree.empty()) {
+    std::istringstream in(readFile(stampFree));
+    std::set<std::string> free;
+    for (std::string w; in >> w;) free.insert(w);
+    std::size_t nf = 0;
+    for (std::size_t i = 0; i < N; ++i)
+      if (free.count(m.tickers[i])) stampOf[i] = 0, ++nf;
+    std::printf("stamp duty: %zu of %zu stocks exempt (%s)\n", nf, N, stampFree.c_str());
+  }
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
   for (std::size_t f = 0; f < 5; ++f)
@@ -385,10 +400,10 @@ int main(int argc, char** argv) {
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
     };
     // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf).
-    const auto costOf = [&](double entry, double r) {
+    const auto costOf = [&](double entry, double r, double stp) {
       if (costKind == 1) {
         const double sell = capital * (1 + r);
-        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stamp;
+        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stp;
       }
       if (costKind == 2) {
         const double n = std::max(1.0, std::floor(capital / entry)), v = n * entry, sell = v * (1 + r);
@@ -422,7 +437,7 @@ int main(int argc, char** argv) {
       if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = take, r.exit = 2;
       r.ret = px / r.entry - 1;
-      r.ret -= costOf(r.entry, r.ret);
+      r.ret -= costOf(r.entry, r.ret, stampOf[i]);
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
@@ -477,7 +492,7 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0, stampOf[i]});
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(3, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(rises[i], 1 - axis(4, double(q))) : 0.0);
             }
@@ -486,7 +501,7 @@ int main(int argc, char** argv) {
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(9 + 2 * nP);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(10 + 2 * nP);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.cost = costs.data(), kl.ret = ret.data();
@@ -579,11 +594,17 @@ int main(int argc, char** argv) {
   // momentum 2d, volume shock 4d, open-to-close, gap, close in range, intraday and overnight
   // momentum 64d.
   const std::vector<double> sigs = {0, 6, 12, 14, 15, 23, 26};
-  const std::size_t NR = std::getenv("X_NORES") ? 0 : 3;  // the residual reversal (5 and 21 days) and the tug of war (kernels/v2/resid.wgsl)
+  // The residual reversal (5 and 21 days), the tug of war, the largest return, the distance from the
+  // 52-week high and the idiosyncratic volatility (kernels/v2/resid.wgsl); X_RES picks them (a mask, research).
+  const std::string resMask = std::getenv("X_RES") ? std::getenv("X_RES") : "111101";  // the 52-week high did not help (UK and US)
+  std::vector<std::size_t> resUsed;
+  for (std::size_t f = 0; f < 6 && f < resMask.size(); ++f)
+    if (resMask[f] == '1') resUsed.push_back(f);
+  const std::size_t NR = std::getenv("X_NORES") ? 0 : resUsed.size();
   const std::size_t MI = sigs.size(), FI = F + 2 * MI + NR, KI = FI + 5;
   std::vector<double> ftI(T * N * KI, 0.0);
   {
-    std::vector<double> mk(T, 0.0), rs(T * N * 3, 0.0);
+    std::vector<double> mk(T, 0.0), rs(T * N * 6, 0.0);
     ofm::v2::gen::Mret<double> km;
     km.P = P, km.bars = bars.data(), km.out = mk.data();
     ofm::detail::dispatch(km, ofm::detail::groups(std::uint32_t(T), 64));
@@ -604,7 +625,7 @@ int main(int argc, char** argv) {
       double* o = &ftI[r * KI];
       for (std::size_t f = 0; f < F; ++f) o[f] = a[f];
       for (std::size_t f = 0; f < 2 * MI; ++f) o[F + f] = ia[r * 2 * MI + f];
-      for (std::size_t f = 0; f < NR; ++f) o[F + 2 * MI + f] = rs[r * 3 + f];
+      for (std::size_t f = 0; f < NR; ++f) o[F + 2 * MI + f] = rs[r * 6 + resUsed[f]];
       for (std::size_t f = 0; f < 5; ++f) o[FI + f] = a[F + f];
     }
   }
@@ -654,7 +675,8 @@ int main(int argc, char** argv) {
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
-    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : "US") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0) << "}";
+    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : "US") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
+                      << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << "}";
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;

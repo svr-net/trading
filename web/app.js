@@ -30,7 +30,7 @@ const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
   const cur = c.market === 'UK' ? '£' : '$';
-  return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying` : ''})`;
+  return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
 };
 
 // The next open's trades (a buy limit from the last close; sold at the stop-loss, the take-profit or the
