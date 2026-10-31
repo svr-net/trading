@@ -215,6 +215,8 @@ int main(int argc, char** argv) {
       double limit;                 // the buy limit from the last close
     };
     std::vector<Pick> picks;
+    std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
+    std::vector<std::size_t> pool;                           // the learnt pool for the next open (IBKR's daily bars are fetched for it)
   };
   Run lastRun;
   const std::size_t nPick = std::getenv("X_NPICK") ? std::size_t(std::atol(std::getenv("X_NPICK"))) : 10;
@@ -557,7 +559,10 @@ int main(int argc, char** argv) {
           v.emplace_back(pred[((t - lag) * N + i) * 4] * std::exp(fx[1] * a[20]), i);
         }
       }
-      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(nPick, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      constexpr std::size_t nCand = 60;
+      std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(std::max(nPick, nCand), v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (std::size_t q = 0; q < std::min<std::size_t>(nCand, v.size()); ++q) lastRun.candidates.emplace_back(v[q].second, v[q].first);
+      for (const auto& e : v) lastRun.pool.push_back(e.second);
       for (std::size_t q = 0; q < std::min<std::size_t>(nPick, v.size()); ++q) {
         const std::size_t i = v[q].second, src = (t - lag) * N + i;
         const double sig = std::exp(ft[src * Km + 20]);
@@ -609,7 +614,9 @@ int main(int argc, char** argv) {
   // backtest against the market, the chart laid out here and the last 20 days. Results only.
   // The next open's orders in prices (--orders; prices come from EODData's data, so the file goes to
   // the private store, never the page): each trade's last close, its buy limit and its stop-loss and
-  // take-profit from the limit (the entry at worst), for tools/ibkr/submit.py.
+  // take-profit from the limit (the entry at worst), for tools/ibkr/submit.py; and the 60 highest
+  // ranked of the pool with their last closes, whose opening auctions the bridge records (--auction),
+  // and the pool's tickers, whose daily bars the bridge fetches from IBKR (--bars).
   if (!ordersOut.empty()) {
     std::ofstream o(ordersOut);
     o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"orders\":[";
@@ -622,6 +629,14 @@ int main(int argc, char** argv) {
                     m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected);
       o << b;
     }
+    o << "],\"candidates\":[";
+    for (std::size_t q = 0; q < lastRun.candidates.size(); ++q) {
+      const auto [i, sc] = lastRun.candidates[q];
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"score\":%.6g}", q ? "," : "", m.tickers[i].c_str(), m.close(T - 1, i), sc);
+      o << b;
+    }
+    o << "],\"pool\":[";
+    for (std::size_t q = 0; q < lastRun.pool.size(); ++q) o << (q ? ",\"" : "\"") << m.tickers[lastRun.pool[q]] << '"';
     o << "]}\n";
   }
   if (!jsonOut.empty()) {
