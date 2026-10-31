@@ -186,7 +186,7 @@ https://$BRIDGE_DOMAIN:$HTTPS_PORT {
 EOF
   CADDY_PORTS="      - \"$HTTPS_PORT:$HTTPS_PORT\""
   # Caddy reads a certificate when it starts: this wrapper reloads it when DSM renews the files
-  # (checked hourly); a reload that fails leaves the running certificate in place.
+  # (checked daily; DSM renews a month ahead); a reload that fails leaves the running certificate in place.
   cat > caddy-watch.sh <<'EOF'
 #!/bin/sh
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
@@ -195,7 +195,7 @@ trap 'kill $pid 2>/dev/null; wait $pid; exit 0' TERM INT
 sum() { cat /certs/fullchain.pem /certs/privkey.pem 2>/dev/null | sha256sum; }
 last=$(sum)
 while kill -0 $pid 2>/dev/null; do
-  sleep "${CERT_CHECK_SECONDS:-3600}" & wait $!
+  sleep "${CERT_CHECK_SECONDS:-86400}" & wait $!
   now=$(sum)
   if [ "$now" != "$last" ]; then
     echo "certificate changed: reloading"
@@ -287,7 +287,7 @@ say "Your bridge:   $SITE"
 say "Your key:      $BRIDGE_KEY   (also in $DIR/.env)"
 if [ "$HTTPS_MODE" = synology ]; then
   say ""
-  say "DSM renews the certificate in place; the bridge's HTTPS picks it up within an hour by itself."
+  say "DSM renews the certificate in place; the bridge's HTTPS picks it up within a day by itself."
 fi
 if [ "$HTTPS_MODE" = lan ]; then
   say ""
