@@ -62,9 +62,12 @@ def main():
     a.add_argument('--bars', action='store_true', help="fetch the pool's daily bars from IBKR into --out")
     a.add_argument('--out', help='the CSV file for --bars')
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
+    a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     args = a.parse_args()
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
+    if args.diag:
+        return diag(args)
     if args.auction:
         return auction(args)
     if args.bars:
@@ -228,6 +231,40 @@ def auction(args):
     filled = sum(1 for r in rows.values() if any(s['price'] for s in r['samples']))
     sys.stderr.write(f'{args.market} auction: {len(rows)} shares, an indicative price for {filled}\n')
     print(json.dumps({'date': opens.date().isoformat(), 'market': args.market, 'asOf': book.get('asOf'), 'shares': list(rows.values())}))
+
+
+def diag(args):
+    """The API's answer, the account (paper or live) and whether the market's real-time and historical
+    data come through (they need the exchange's subscription), on one liquid share."""
+    from ib_async import IB, Stock
+
+    out = {'market': args.market}
+    errors = []
+    ib = IB()
+    ib.errorEvent += lambda req, code, msg, contract: errors.append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2158) else None
+    try:
+        ib.connect(args.host, args.port, clientId=args.client_id + 3, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({**out, 'api': False, 'error': str(e) or type(e).__name__}))
+        return
+    accounts = ib.managedAccounts()
+    out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
+               serverTime=ib.reqCurrentTime().isoformat())
+    contract = Stock('VOD', 'LSE', 'GBP') if args.market == 'UK' else Stock('AAPL', 'SMART', 'USD')
+    if ib.qualifyContracts(contract):
+        ib.reqMarketDataType(1)
+        k = ib.reqMktData(contract, '', False, False)
+        ib.sleep(4)
+        num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > 0 else None  # noqa: E731
+        out.update(probe=contract.symbol, dataType=k.marketDataType, bid=num(k.bid), ask=num(k.ask), last=num(k.last), close=num(k.close))
+        ib.cancelMktData(contract)
+        try:
+            out['historyBars'] = len(ib.reqHistoricalData(contract, '', '5 D', '1 day', 'TRADES', useRTH=True, timeout=20) or [])
+        except Exception as e:  # noqa: BLE001
+            out['historyBars'], out['historyError'] = 0, str(e)
+    out['errors'] = errors[-5:]
+    ib.disconnect()
+    print(json.dumps(out))
 
 
 def daily_bars(args):
