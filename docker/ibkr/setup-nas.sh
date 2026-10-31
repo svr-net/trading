@@ -13,7 +13,7 @@
 #
 # Re-running keeps the answers in <dir>/.env (delete it to answer again) and updates the files.
 # Every answer can come from the environment instead (IBKR_DIR, TWS_USERID, TWS_PASSWORD,
-# TRADING_MODE, EOD_READ_TOKEN, CAPITAL, TZ, BRIDGE_KEY, HTTPS_MODE=lan|public, LAN_HOST,
+# TRADING_MODE, EOD_TOKEN, CAPITAL, TZ, BRIDGE_KEY, HTTPS_MODE=lan|public, LAN_HOST,
 # HTTPS_PORT, BRIDGE_DOMAIN, HTTP_PORT, REPO_REF), e.g. for a script without questions.
 # REPO_DIR: a clone of the repository to build from (deploy-nas.sh) instead of downloading the files;
 # SKIP_START=1 writes the files without starting anything.
@@ -83,8 +83,9 @@ say "Interactive Brokers (the paper account's login: the free trial's username a
 ask TWS_USERID "  username"
 ask_secret TWS_PASSWORD "  password (not shown)"
 ask TRADING_MODE "  paper or live" "paper"
-say "GitHub: a fine-grained token, repository svr-net/eod only, Contents read-only"
-ask_secret EOD_READ_TOKEN "  token (not shown)"
+say "GitHub: the EOD_TOKEN (the daily job's token: repository svr-net/eod, Contents read and write)"
+[ -n "${EOD_TOKEN:-}" ] || EOD_TOKEN=${EOD_READ_TOKEN:-}
+ask_secret EOD_TOKEN "  token (not shown)"
 ask CAPITAL "Amount a trade (account currency)" "5000"
 ask AUTO_MARKETS "Place and close automatically each weekday (UK, US, UK,US, or none)" "UK"
 true
@@ -116,14 +117,14 @@ case "$HTTPS_MODE" in
     ;;
   *) die "HTTPS_MODE must be lan or public" ;;
 esac
-[ -n "$TWS_USERID" ] && [ -n "$TWS_PASSWORD" ] && [ -n "$EOD_READ_TOKEN" ] || die "the username, password and token are needed."
+[ -n "$TWS_USERID" ] && [ -n "$TWS_PASSWORD" ] && [ -n "$EOD_TOKEN" ] || die "the username, password and token are needed."
 
 umask 077
 cat > .env <<EOF
 TWS_USERID=$TWS_USERID
 TWS_PASSWORD=$TWS_PASSWORD
 TRADING_MODE=$TRADING_MODE
-EOD_READ_TOKEN=$EOD_READ_TOKEN
+EOD_TOKEN=$EOD_TOKEN
 CAPITAL=$CAPITAL
 AUTO_MARKETS=$AUTO_MARKETS
 TZ=$TZ
@@ -184,7 +185,7 @@ services:
     depends_on: [ib-gateway]
     environment:
       BRIDGE_KEY: \${BRIDGE_KEY}
-      EOD_READ_TOKEN: \${EOD_READ_TOKEN}
+      EOD_TOKEN: \${EOD_TOKEN}
       CAPITAL: \${CAPITAL}
       AUTO_MARKETS: \${AUTO_MARKETS:-}
       HISTORY_DIR: /data/history

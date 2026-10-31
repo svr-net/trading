@@ -22,7 +22,7 @@ History (HISTORY_DIR, default the orders cache): every placing writes the orders
 each close (automatically at UK 16:45 London, US 16:10 New York, or with POST /report) the day's
 fills from IBKR (submit.py --report); GET /history returns them by day for the page's History.
 
-Environment: BRIDGE_KEY, EOD_READ_TOKEN (read-only, svr-net/eod contents), IB_HOST, IB_PORT
+Environment: BRIDGE_KEY, EOD_TOKEN (the daily job's token, svr-net/eod contents; EOD_READ_TOKEN also read), IB_HOST, IB_PORT
 (4002 paper), CAPITAL (a trade's amount, default 5000), ALLOWED_ORIGIN, BIND (127.0.0.1; 0.0.0.0
 inside Docker, published on 127.0.0.1 only), PORT (8765).
 """
@@ -43,7 +43,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KEY = os.environ.get('BRIDGE_KEY', '')
-TOKEN = os.environ.get('EOD_READ_TOKEN', '')
+TOKEN = os.environ.get('EOD_TOKEN') or os.environ.get('EOD_READ_TOKEN', '')  # the same token as the daily job's secret
 IB_HOST = os.environ.get('IB_HOST', '127.0.0.1')
 IB_PORT = int(os.environ.get('IB_PORT', '4002'))
 CAPITAL = float(os.environ.get('CAPITAL', '5000'))

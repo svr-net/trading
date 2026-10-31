@@ -36,9 +36,10 @@ not on GitHub).
 3. On the same machine: Python 3.10+ and `pip install ib_async`.
 4. The orders file: the daily job writes `orders/UK.json` and `orders/US.json` into the private
    repository svr-net/eod after each close (prices stay private under EODData's licence). Create a
-   fine-grained GitHub token with **read-only Contents** access to svr-net/eod and fetch it with
+   the same GitHub token as the daily job's `EOD_TOKEN` secret (repository svr-net/eod, Contents read
+   and write) and fetch it with
    ```
-   curl -fsS -H "Authorization: Bearer $EOD_READ_TOKEN" \
+   curl -fsS -H "Authorization: Bearer $EOD_TOKEN" \
      https://raw.githubusercontent.com/svr-net/eod/main/orders/UK.json -o UK.json
    ```
 
@@ -51,8 +52,8 @@ and quantities, and buttons to check (dry run), place them and close at the clos
 
 1. Install Docker Desktop (Windows, Mac) or Docker Engine (Linux).
 2. In the repository: `cd docker/ibkr && cp .env.example .env`, then fill in `.env`: the paper
-   account's username and password, a long random `BRIDGE_KEY`, and the read-only GitHub token
-   `EOD_READ_TOKEN` (step 2.4).
+   account's username and password, a long random `BRIDGE_KEY`, and the GitHub token `EOD_TOKEN`
+   `EOD_TOKEN` (step 2.4).
 3. `docker compose up -d --build`. The gateway takes a minute or two to log in; `docker compose logs
    -f ib-gateway` shows it (with `VNC_SERVER_PASSWORD` set, a VNC viewer at 127.0.0.1:5900 shows its
    screen).
@@ -81,7 +82,7 @@ the bridge stay private on the server.
    apt update && apt install -y docker.io docker-compose-v2 git ufw
    ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
    git clone https://github.com/svr-net/trading.git && cd trading/docker/ibkr
-   cp .env.example .env && nano .env      # paper login, BRIDGE_KEY, EOD_READ_TOKEN, BRIDGE_DOMAIN
+   cp .env.example .env && nano .env      # paper login, BRIDGE_KEY, EOD_TOKEN, BRIDGE_DOMAIN
    docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
    ```
    `docker compose logs -f caddy` shows the certificate being obtained (a minute after the DNS
@@ -106,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/svr-net/trading/main/docker/ibkr/se
 sh setup-nas.sh            # sudo sh setup-nas.sh if this user may not use Docker
 ```
 
-It asks for the paper login, the read-only GitHub token, the amount a trade and how to reach the
+It asks for the paper login, the GitHub token `EOD_TOKEN`, the amount a trade and how to reach the
 bridge over HTTPS, makes a key, writes `ibkr-bridge/` (docker-compose.yml, Caddyfile, .env readable
 only by you) and starts IB Gateway, the bridge and Caddy. The page cannot call a plain http address on
 your network, so the bridge is always behind HTTPS:
