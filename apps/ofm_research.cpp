@@ -413,6 +413,7 @@ int main(int argc, char** argv) {
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       const auto [fs, fk] = levelsAt(t, i, r.entry, ps, pt, al);
+      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0};  // a stop within a spread of the entry: skipped (cash)
       const double stop = r.entry * fs, take = r.entry * fk;
       r.stop = fs - 1, r.take = fk < 1e300 ? fk - 1 : 0.0;
       double px = c;
@@ -563,6 +564,7 @@ int main(int argc, char** argv) {
         // The limit from the last close; the levels from the limit (the entry at worst).
         const double limit = std::exp(-fx[2] * std::exp(ft[(t * N + i) * Km + 20]));
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * limit, fx[3], fx[4], fx[5]);
+        if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
         if (v[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
       }
     }
