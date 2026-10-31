@@ -29,7 +29,7 @@ services:
     depends_on: [ib-gateway]
     environment:
       BRIDGE_KEY: ${BRIDGE_KEY}
-      EOD_READ_TOKEN: ${EOD_READ_TOKEN}
+      EOD_TOKEN: ${EOD_TOKEN}
       CAPITAL: ${CAPITAL:-5000}
       IB_HOST: ib-gateway
       IB_PORT: "4004"           # the image's paper API for other containers (4003: live)
