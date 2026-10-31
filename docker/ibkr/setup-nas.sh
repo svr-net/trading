@@ -68,7 +68,7 @@ else
   for f in tools/ibkr/bridge.py tools/ibkr/submit.py; do fetch "$RAW/$f" "$f"; done
   cat > Dockerfile.bridge <<'EOF'
 FROM python:3.12-slim
-RUN pip install --no-cache-dir ib_async
+RUN pip install --no-cache-dir ib_async tzdata
 WORKDIR /app
 COPY tools/ibkr/ tools/ibkr/
 EXPOSE 8765
@@ -86,6 +86,8 @@ ask TRADING_MODE "  paper or live" "paper"
 say "GitHub: a fine-grained token, repository svr-net/eod only, Contents read-only"
 ask_secret EOD_READ_TOKEN "  token (not shown)"
 ask CAPITAL "Amount a trade (account currency)" "5000"
+ask AUTO_MARKETS "Place and close automatically each weekday (UK, US, UK,US, or none)" "UK"
+true
 ask TZ "Time zone" "Europe/London"
 if [ -z "${BRIDGE_KEY:-}" ]; then
   if command -v openssl >/dev/null 2>&1; then BRIDGE_KEY=$(openssl rand -hex 24)
@@ -123,6 +125,7 @@ TWS_PASSWORD=$TWS_PASSWORD
 TRADING_MODE=$TRADING_MODE
 EOD_READ_TOKEN=$EOD_READ_TOKEN
 CAPITAL=$CAPITAL
+AUTO_MARKETS=$AUTO_MARKETS
 TZ=$TZ
 BRIDGE_KEY=$BRIDGE_KEY
 HTTPS_MODE=$HTTPS_MODE
@@ -183,6 +186,7 @@ services:
       BRIDGE_KEY: \${BRIDGE_KEY}
       EOD_READ_TOKEN: \${EOD_READ_TOKEN}
       CAPITAL: \${CAPITAL}
+      AUTO_MARKETS: \${AUTO_MARKETS:-}
       IB_HOST: ib-gateway
       IB_PORT: "${IB_API_PORT:-$([ "$TRADING_MODE" = live ] && echo 4003 || echo 4004)}"
       BIND: 0.0.0.0

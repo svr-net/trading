@@ -121,6 +121,15 @@ It ends with the page's address for your bridge (`https://svr-net.github.io/trad
 the key to enter in *Your broker*. Run it again to change anything (delete `ibkr-bridge/.env` to answer
 the questions again).
 
+## 2e. Automatic placing and closing
+
+The bridge can place and close the orders by itself on weekdays (`AUTO_MARKETS` in `.env`, asked by
+the setup script: `UK`, `US`, `UK,US` or `none`): at 07:45 and 16:20 London time for the UK, 09:20 and
+15:40 New York time for the US (`AUTO_UK_PLACE`, `AUTO_UK_CLOSE`, `AUTO_US_PLACE`, `AUTO_US_CLOSE`
+change them), each once a day; an orders file more than 4 days old is not placed. The page's *Your
+broker* line shows the schedule and the last automatic action; `docker compose logs bridge` shows
+every one. IB Gateway must stay logged in (the container restarts it daily).
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |
