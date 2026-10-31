@@ -232,13 +232,13 @@ int main(int argc, char** argv) {
       for (std::size_t f = nOwn; f < Fm; ++f) zs[(t * Fm + f) * 2] = 0, zs[(t * Fm + f) * 2 + 1] = 1;
     ofm::v2::gen::Gram<double> kg;
     kg.P = Q, kg.feat = const_cast<double*>(ft.data()), kg.zs = zs.data(), kg.out = gram.data();
-    ofm::detail::dispatch(kg, ofm::detail::groups(std::uint32_t(T * E), 64));
+    if (D > 64) { std::fprintf(stderr, "too many inputs for the kernels (%zu > 63)\n", D - 1); std::exit(1); }
+    ofm::detail::dispatch(kg, std::uint32_t(T));  // one workgroup per day (kernels/v2/gram.wgsl)
     // The sums of the days before each day (exponentially forgotten with --half), then every day's and
     // target's coefficients at once (kernels/v2/solve.wgsl).
     std::vector<double> acc(T * E, 0.0), rk = {ridgeK};
     for (std::size_t t = 2; t < T; ++t)
       for (std::size_t e = 0; e < E; ++e) acc[t * E + e] = forget * acc[(t - 1) * E + e] + gram[(t - 2) * E + e];
-    if (D > 64) { std::fprintf(stderr, "too many inputs for the solve kernel (%zu > 63)\n", D - 1); std::exit(1); }
     {
       ofm::v2::gen::V2Header<double> S = Q;
       S.T = std::uint32_t(T), S.u0 = std::uint32_t(D), S.u1 = std::uint32_t(E);

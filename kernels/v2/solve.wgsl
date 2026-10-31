@@ -31,7 +31,17 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
         for (var r = 0u; r < D; r = r + 1u) {
           if (r != c) {
             let q2 : f32 = M[r * D + c] / M[c * D + c];
-            for (var q = 0u; q < D; q = q + 1u) { M[r * D + q] = M[r * D + q] - q2 * M[c * D + q]; }
+            let ro : u32 = r * D;
+            let co : u32 = c * D;
+            // Four columns a step (unrolled; each entry updated exactly as one at a time), then the rest.
+            let D4 : u32 = D - D % 4u;
+            for (var q = 0u; q < D4; q = q + 4u) {
+              M[ro + q] = M[ro + q] - q2 * M[co + q];
+              M[ro + q + 1u] = M[ro + q + 1u] - q2 * M[co + q + 1u];
+              M[ro + q + 2u] = M[ro + q + 2u] - q2 * M[co + q + 2u];
+              M[ro + q + 3u] = M[ro + q + 3u] - q2 * M[co + q + 3u];
+            }
+            for (var q = D4; q < D; q = q + 1u) { M[ro + q] = M[ro + q] - q2 * M[co + q]; }
             v[r] = v[r] - q2 * v[c];
           }
         }

@@ -619,7 +619,8 @@ def translate(source, structs, struct_defs, name):
         prelude = [f"const uvec3 lid_ = {lane_vec(wg, 'L')};", "(void)lid_;"]
         prelude += [f"const {t} {p} = {value[b]};  (void){p};" for p, t, b in plist if b in LANE_BUILTINS]
         uniform = [f"    const uvec3 {p} = wid_;" for p, _, b in plist if b == "workgroup_id"]
-        privs = [f"    for (auto& x_ : {v}_p) x_ = {{}};" for v in private_vars]
+        # Per lane: a scalar's copies, or an array's (an array of arrays, zeroed whole).
+        privs = [f"    std::fill_n(reinterpret_cast<unsigned char*>(&{v}_p), sizeof({v}_p), static_cast<unsigned char>(0));" for v in private_vars]
         out += ["  void workgroup(uvec3 wid_) {"] + reset + privs + uniform + ["    L = 0;"]
         out += em.lowered(body, em.priv, 2, prelude) + ["  }"]
     else:
