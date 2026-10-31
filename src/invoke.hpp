@@ -6,9 +6,9 @@
 // workgroup and per-lane memory); WebAssembly runs them in order.
 //
 // Native builds keep one pool of worker threads for the whole run, with no locks: a dispatch
-// publishes its job and bumps an epoch the workers spin on, each thread claims workgroups with an
-// atomic fetch-add, and the caller works too, then spins until every worker has checked out. Idle
-// workers spin briefly, then yield.
+// publishes its job and bumps an epoch the workers spin on, each thread claims chunks of workgroups
+// with a compare-exchange, and the caller works too, then spins until every worker has checked out.
+// Idle workers spin briefly, then yield; nothing locks or blocks.
 
 #include <algorithm>
 #include <atomic>
@@ -95,10 +95,19 @@ void dispatch(const Kernel& kernel, std::uint32_t gx, std::uint32_t gy = 1, std:
   const std::uint32_t n = gx * gy * gz;
   if (n == 0) return;
 #ifndef __EMSCRIPTEN__
+  // Each thread claims a chunk of workgroups with a compare-exchange (about 8 chunks a thread, so the
+  // atomic is touched rarely and the tail still balances), then runs them on its own copy.
   std::atomic<std::uint32_t> next{0};
+  const std::uint32_t chunk = std::max<std::uint32_t>(1, n / (8 * Pool::get().threads()));
   auto body = [&](std::uint32_t) {
     auto k = std::make_unique<Kernel>(kernel);
-    for (std::uint32_t w; (w = next.fetch_add(1, std::memory_order_relaxed)) < n;) k->workgroup({w % gx, (w / gx) % gy, w / (gx * gy)});
+    for (std::uint32_t w = next.load(std::memory_order_relaxed);;) {
+      if (w >= n) break;
+      const std::uint32_t end = std::min(n, w + chunk);
+      if (!next.compare_exchange_weak(w, end, std::memory_order_relaxed)) continue;  // w now holds the current value
+      for (; w < end; ++w) k->workgroup({w % gx, (w / gx) % gy, w / (gx * gy)});
+      w = next.load(std::memory_order_relaxed);
+    }
   };
   Pool::get().run(n, body);
 #else
