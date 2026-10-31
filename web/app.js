@@ -120,7 +120,12 @@ showMarket(market);
 // once with ?bridge=https://...), kept in this browser with the key.
 const stored = (k, d = '') => { try { return localStorage.getItem(k) || d; } catch { return d; } };
 const store = (k, v) => { try { localStorage.setItem(k, v); } catch { /* no storage */ } };
-try { const q = new URLSearchParams(location.search).get('bridge'); if (q) store('bridgeUrl', q); } catch { /* no URL */ }
+// ?bridge= is taken once and dropped from the address, so a bookmark or a reload with it does not
+// overwrite an address saved later in the panel.
+try {
+  const u = new URL(location.href), q = u.searchParams.get('bridge');
+  if (q) { store('bridgeUrl', q); u.searchParams.delete('bridge'); history.replaceState(null, '', u.pathname + u.search + u.hash); }
+} catch { /* no URL */ }
 const bridgeUrl = () => stored('bridgeUrl', 'http://127.0.0.1:8765').replace(/\/+$/, '');
 const bridgeKey = () => stored('bridgeKey');
 const bridge = (path, body) => fetch(bridgeUrl() + path, {
