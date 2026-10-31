@@ -13,6 +13,10 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   value) and the volatility level. Only the past enters each day's features.
 - **Interactions** (`interact.wgsl`): the key signals times the share's liquidity and volatility,
   so the model can weight each signal by where it works.
+- **Residual and literature signals** (`resid.wgsl`): the residual reversal over 5 and 21 days and
+  the tug of war (overnight up, daytime down), the largest daily return of the last month (Bali,
+  Cakici and Whitelaw 2011) and the idiosyncratic volatility (Ang, Hodrick, Xing and Zhang 2006);
+  the 52-week high (George and Hwang 2004) is computed but left out, as it did not help.
 - **Walk-forward fit** (`zscore.wgsl`, `gram.wgsl`, `predict.wgsl`): each close, a linear model of
   the next day's open-to-close, refitted on every earlier day only. A neural network
   (`kernels/net`: forward pass, gradient, Adam) is in the research output for comparison.
@@ -38,8 +42,9 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only
   when the high clears it by half a spread. Net of costs: every filled trade pays Interactive Brokers' commissions (UK 0.05% an
   order, at least GBP 1; US USD 0.0035 a share, at least 0.35; plus exchange, clearing and US
-  regulatory fees) on GBP/USD 5,000 a trade, and UK buys 0.5% stamp duty (`--costs UK|US
-  --capital 5000 --stamp 0.005`); everything above is learnt net of them. One unit in each trade. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
+  regulatory fees) on GBP/USD 5,000 a trade, and UK buys 0.5% stamp duty, except AIM shares, exempt since 2014 (`--costs UK|US
+  --capital 5000 --stamp 0.005 --stamp-free tools/eoddata/aim.txt`, the list refreshed daily by
+  tools/eoddata/aim.mjs); everything above is learnt net of them. One unit in each trade. US: the 2,000 most traded shares per exchange; UK: the 500 most traded.
 
 Orders for Interactive Brokers: `--orders orders.json` writes the next open's orders in prices (to
 the private store, by the daily job), and `tools/ibkr/submit.py` places them through IB Gateway; see
