@@ -35,6 +35,7 @@ import subprocess
 import sys
 import time
 import threading
+import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -72,10 +73,24 @@ def fetch_orders(market):
     os.makedirs(CACHE, exist_ok=True)
     path = os.environ.get(f'ORDERS_FILE_{market}') or os.path.join(CACHE, f'{market}.json')
     if not os.environ.get(f'ORDERS_FILE_{market}'):
-        req = urllib.request.Request(f'https://raw.githubusercontent.com/svr-net/eod/main/orders/{market}.json',
-                                     headers={'Authorization': f'Bearer {TOKEN}', 'Cache-Control': 'no-cache'})
-        with urllib.request.urlopen(req, timeout=20) as r, open(path, 'wb') as f:
-            f.write(r.read())
+        if not TOKEN:
+            raise RuntimeError('no EOD_TOKEN in the bridge (.env next to docker-compose.yml)')
+        # The contents API (not the raw CDN): no cache, and it tells a bad token from a missing grant.
+        req = urllib.request.Request(f'https://api.github.com/repos/svr-net/eod/contents/orders/{market}.json',
+                                     headers={'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github.raw',
+                                              'User-Agent': 'ofm-bridge', 'Cache-Control': 'no-cache'})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                body = r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise RuntimeError('EOD_TOKEN rejected by GitHub (expired or revoked): put the current token in .env') from None
+            if e.code == 404:
+                raise RuntimeError(f'orders/{market}.json not readable: the EOD_TOKEN has no access to svr-net/eod '
+                                   f'(Repository access, Contents read), or the {market} job has not written it yet') from None
+            raise
+        with open(path, 'wb') as f:
+            f.write(body)
     return path
 
 
