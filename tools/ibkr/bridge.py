@@ -18,6 +18,10 @@ market's orders before its open and closes what is left before its close, by the
 (UK 07:45 and 16:20 London, US 09:20 and 15:40 New York; AUTO_UK_PLACE, AUTO_UK_CLOSE, AUTO_US_PLACE,
 AUTO_US_CLOSE change them), each once a day, and skips an orders file more than 4 days old.
 
+History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, and after
+each close (automatically at UK 16:45 London, US 16:10 New York, or with POST /report) the day's
+fills from IBKR (submit.py --report); GET /history returns them by day for the page's History.
+
 Environment: BRIDGE_KEY, EOD_READ_TOKEN (read-only, svr-net/eod contents), IB_HOST, IB_PORT
 (4002 paper), CAPITAL (a trade's amount, default 5000), ALLOWED_ORIGIN, BIND (127.0.0.1; 0.0.0.0
 inside Docker, published on 127.0.0.1 only), PORT (8765).
@@ -50,6 +54,8 @@ AUTO = [m.strip().upper() for m in os.environ.get('AUTO_MARKETS', '').split(',')
 ZONE = {'UK': 'Europe/London', 'US': 'America/New_York'}
 TIMES = {'UK': (os.environ.get('AUTO_UK_PLACE', '07:45'), os.environ.get('AUTO_UK_CLOSE', '16:20')),
          'US': (os.environ.get('AUTO_US_PLACE', '09:20'), os.environ.get('AUTO_US_CLOSE', '15:40'))}
+HISTORY = os.environ.get('HISTORY_DIR', os.environ.get('ORDERS_DIR', '/tmp/ofm-orders'))
+REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10')}
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -79,6 +85,50 @@ def run_submit(args):
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
+def history_add(record):
+    """Appends one record (JSON per line) to the history."""
+    os.makedirs(HISTORY, exist_ok=True)
+    with open(os.path.join(HISTORY, 'history.jsonl'), 'a') as f:
+        f.write(json.dumps(record) + '\n')
+
+
+def placed(market, path, dry):
+    if not dry:
+        book = json.load(open(path))
+        history_add({'kind': 'placed', 'date': date.today().isoformat(), 'market': market, 'asOf': book.get('asOf'),
+                     'capital': CAPITAL, 'orders': book.get('orders', [])})
+
+
+def report(market):
+    """Today's fills from IBKR into the history; returns (ok, summary)."""
+    code, out = run_submit(['--market', market, '--report'])
+    line = next((l for l in reversed(out.splitlines()) if l.startswith('{')), '')
+    if code != 0 or not line:
+        return False, out.splitlines()[-1] if out else 'no report'
+    rec = json.loads(line)
+    rec['kind'] = 'result'
+    history_add(rec)
+    return True, f"{len(rec['trades'])} shares traded"
+
+
+def history():
+    """The history by day and market: the orders placed and what was traded."""
+    f = os.path.join(HISTORY, 'history.jsonl')
+    days = {}
+    if os.path.exists(f):
+        for line in open(f):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            d = days.setdefault((r['date'], r['market']), {'date': r['date'], 'market': r['market'], 'orders': [], 'trades': []})
+            if r['kind'] == 'placed':
+                d['orders'] = r['orders']
+            elif r['kind'] == 'result':
+                d['trades'] = r['trades']  # the latest report of the day wins
+    return sorted(days.values(), key=lambda d: (d['date'], d['market']), reverse=True)
+
+
 def auto_run(market, action):
     """One automatic action; returns (ok, summary)."""
     if action == 'place':
@@ -87,6 +137,10 @@ def auto_run(market, action):
         if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
             return False, f'orders from {as_of or "?"} are too old: not placed'
         code, out = run_submit(['--market', market, '--orders', path, '--capital', str(CAPITAL)])
+        if code == 0:
+            placed(market, path, False)
+    elif action == 'report':
+        return report(market)
     else:
         code, out = run_submit(['--market', market, '--close'])
     return code == 0, out.splitlines()[-1] if out else ''
@@ -101,7 +155,7 @@ def scheduler():
             now = datetime.now(ZoneInfo(ZONE[m]))
             if now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS'):  # AUTO_WEEKENDS: for testing only
                 continue
-            for action, hhmm in zip(('place', 'close'), TIMES[m]):
+            for action, hhmm in zip(('place', 'close', 'report'), TIMES[m] + (REPORT[m],)):
                 h, mi = (int(x) for x in hhmm.split(':'))
                 due = now.replace(hour=h, minute=mi, second=0, microsecond=0)
                 mark = os.path.join(CACHE, f'done-{m}-{action}-{now.date().isoformat()}')
@@ -163,10 +217,12 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == '/status':  # no key needed: tells the page the bridge is there
             return self.reply(200, {'bridge': True, 'gateway': gateway_up(), 'port': IB_PORT, 'capital': CAPITAL, 'keyed': bool(KEY),
-                                    'auto': {m: {'place': TIMES[m][0], 'close': TIMES[m][1], 'zone': ZONE[m]} for m in AUTO},
+                                    'auto': {m: {'place': TIMES[m][0], 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m]} for m in AUTO},
                                     'last': [{'when': w, 'market': mk, 'action': a, 'ok': ok, 'summary': sm} for w, mk, a, ok, sm in LAST]})
         if not self.allowed():
             return
+        if u.path == '/history':
+            return self.reply(200, {'days': history()})
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:
@@ -199,7 +255,12 @@ class Handler(BaseHTTPRequestHandler):
                 code, out = run_submit(['--market', m, '--orders', fetch_orders(m), '--capital', str(CAPITAL)] + (['--dry-run'] if body.get('dryRun') else []))
             except Exception as e:  # noqa: BLE001
                 return self.reply(502, {'error': str(e)})
+            if code == 0:
+                placed(m, fetch_orders(m) if not os.environ.get(f'ORDERS_FILE_{m}') else os.environ[f'ORDERS_FILE_{m}'], bool(body.get('dryRun')))
             return self.reply(200 if code == 0 else 500, {'ok': code == 0, 'log': out})
+        if path == '/report':
+            ok, summary = report(m)
+            return self.reply(200 if ok else 500, {'ok': ok, 'log': summary})
         if path == '/close':
             code, out = run_submit(['--market', m, '--close'])
             return self.reply(200 if code == 0 else 500, {'ok': code == 0, 'log': out})

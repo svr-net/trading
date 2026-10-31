@@ -187,10 +187,13 @@ services:
       EOD_READ_TOKEN: \${EOD_READ_TOKEN}
       CAPITAL: \${CAPITAL}
       AUTO_MARKETS: \${AUTO_MARKETS:-}
+      HISTORY_DIR: /data/history
       IB_HOST: ib-gateway
       IB_PORT: "${IB_API_PORT:-$([ "$TRADING_MODE" = live ] && echo 4003 || echo 4004)}"
       BIND: 0.0.0.0
       ALLOWED_ORIGIN: https://svr-net.github.io
+    volumes:
+      - ./history:/data/history   # the orders placed and the fills, kept across updates
   caddy:
     image: caddy:2.8
     restart: always
