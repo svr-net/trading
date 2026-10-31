@@ -123,7 +123,7 @@ jobs:
           set -o pipefail
           mkdir -p report
           ORDERS=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then mkdir -p data/eoddata/orders; ORDERS=(--orders "data/eoddata/orders/$MARKET.json"); fi
-          ./build/ofm_research --csv data/stocks.csv --lag 1 --costs "$MARKET" --capital 5000 "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 5000 "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already

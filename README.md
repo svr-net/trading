@@ -32,7 +32,7 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   in 10, of those days; the stop blended with its parabolic SAR); after a fill during the day the
   take-profit is not credited (the high may have come first); `--exit close` sells every trade
   at the close instead. Every lattice point's daily trades are one fused kernel
-  (kernels/v2/trades.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
+  (kernels/v2/levels.wgsl and records.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
   traded shares), the ranking (from the prediction in volatilities to the expected return), the
   limit's depth d (pool, ranking and limit for return), the levels (for return per unit of
   downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only

@@ -33,6 +33,7 @@ int main(int argc, char** argv) {
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   bool closeOnly = false;
+  bool scanOnly = false;  // --scan: only the page's model (no comparison models), for the daily job
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/trades.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying.
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
@@ -43,11 +44,14 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
+    if (std::string(argv[k]) == "--scan") scanOnly = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close";
     if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : 0;
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
   }
+  for (int k = 1; k < argc; ++k)
+    if (std::string(argv[k]) == "--scan") scanOnly = true;
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
   // Impossible bars (a low above the open or the close, a high below them, a price not above zero)
   // are dropped as missing.
@@ -229,26 +233,18 @@ int main(int argc, char** argv) {
     ofm::v2::gen::Gram<double> kg;
     kg.P = Q, kg.feat = const_cast<double*>(ft.data()), kg.zs = zs.data(), kg.out = gram.data();
     ofm::detail::dispatch(kg, ofm::detail::groups(std::uint32_t(T * E), 64));
-    std::vector<double> acc(E, 0.0);
-    for (std::size_t t = 0; t < T; ++t) {
-      for (std::size_t k = 0; k < 4; ++k) {
-        std::vector<double> M(acc.begin(), acc.begin() + std::ptrdiff_t(D * D)), v(D);
-        for (std::size_t q = 0; q < D; ++q) v[q] = acc[D * D + k * D + q];
-        double tr = 0;
-        for (std::size_t q = 0; q < D; ++q) tr += M[q * D + q];
-        if (!(tr > 0)) continue;
-        for (std::size_t q = 0; q < D; ++q) M[q * D + q] += ridgeK * tr;
-        for (std::size_t c = 0; c < D; ++c)
-          for (std::size_t r = 0; r < D; ++r)
-            if (r != c) {
-              const double q2 = M[r * D + c] / M[c * D + c];
-              for (std::size_t q = 0; q < D; ++q) M[r * D + q] -= q2 * M[c * D + q];
-              v[r] -= q2 * v[c];
-            }
-        for (std::size_t q = 0; q < D; ++q) beta[(t * 4 + k) * D + q] = v[q] / M[q * D + q];
-      }
-      if (t > 0)
-        for (std::size_t e = 0; e < E; ++e) acc[e] = forget * acc[e] + gram[(t - 1) * E + e];
+    // The sums of the days before each day (exponentially forgotten with --half), then every day's and
+    // target's coefficients at once (kernels/v2/solve.wgsl).
+    std::vector<double> acc(T * E, 0.0), rk = {ridgeK};
+    for (std::size_t t = 2; t < T; ++t)
+      for (std::size_t e = 0; e < E; ++e) acc[t * E + e] = forget * acc[(t - 1) * E + e] + gram[(t - 2) * E + e];
+    if (D > 64) { std::fprintf(stderr, "too many inputs for the solve kernel (%zu > 63)\n", D - 1); std::exit(1); }
+    {
+      ofm::v2::gen::V2Header<double> S = Q;
+      S.T = std::uint32_t(T), S.u0 = std::uint32_t(D), S.u1 = std::uint32_t(E);
+      ofm::v2::gen::Solve<double> ks;
+      ks.P = S, ks.acc = acc.data(), ks.rk = rk.data(), ks.beta = beta.data();
+      ofm::detail::dispatch(ks, ofm::detail::groups(std::uint32_t(T * 4), 64));
     }
     ofm::v2::gen::Predict<double> kp;
     kp.P = Q, kp.feat = const_cast<double*>(ft.data()), kp.zs = zs.data(), kp.beta = beta.data(), kp.out = pred.data();
@@ -282,6 +278,7 @@ int main(int argc, char** argv) {
     };
     const std::size_t dims[nD] = {nC, nB, nE, nP, nP, nA};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);
+    std::vector<double> scv(nV, 0.0), sov(nV, 0.0);  // each setting's scores for the next day (kernels/v2/records.wgsl)
     std::vector<double> dvals(nE), avals(nA), costs = {costKind, capital, stamp};  // the lattice's limit depths and SAR weights, the costs, for the kernel
     for (std::size_t q = 0; q < nE; ++q) dvals[q] = axis(2, double(q));
     for (std::size_t q = 0; q < nA; ++q) avals[q] = axis(5, double(q));  // sums of the results, their squares, the losses' squares
@@ -295,12 +292,10 @@ int main(int argc, char** argv) {
       tradeLog = std::fopen(std::getenv("X_TRADELOG"), "w");
       std::fprintf(tradeLog, "date,ticker,rank,pred,sigma,liq_rank,spread,low,high,close,stop,take,market,exit,ret,gap,limit,filled\n");
     }
-    const auto score = [&](std::size_t g) {
-      if (nDays < 2) return 0.0;
-      const double mu = s1v[g] / nDays, var = std::max(0.0, s2v[g] / nDays - mu * mu);
-      return mu != 0 ? mu * std::max(0.0, 1.0 - var / nDays / (mu * mu)) : 0.0;
-    };
-    const auto ddScore = [&](std::size_t g) { return nDays < 2 || !(dnv[g] > 0) ? 0.0 : s1v[g] / nDays / std::sqrt(dnv[g] / nDays); };
+    // The record's scores, written by records.wgsl with each day: its mean shrunk by its t-statistic,
+    // and its mean over its downside deviation (Sortino); 0 before 2 days.
+    const auto score = [&](std::size_t g) { return scv[g]; };
+    const auto ddScore = [&](std::size_t g) { return sov[g]; };
     const auto index = [&](const std::size_t* c) { return ((((c[0] * nB + c[1]) * nE + c[2]) * nP + c[3]) * nP + c[4]) * nA + c[5]; };
     const auto coords = [&](std::size_t g, std::size_t* c) {
       c[5] = g % nA, g /= nA, c[4] = g % nP, g /= nP, c[3] = g % nP, g /= nP, c[2] = g % nE, g /= nE, c[1] = g % nB, c[0] = g / nB;
@@ -464,8 +459,10 @@ int main(int argc, char** argv) {
                        pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], m.low(t + 1, i) / o - 1, m.high(t + 1, i) / o - 1,
                        m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
       }
-      // Every lattice point's record takes today (kernels/v2/trades.wgsl): the day's candidates in
-      // slots, each with its prices, sigma, half-spread, SAR and level quantiles at the lattice's tails.
+      // Every lattice point's record takes today, in two fused kernels: levels.wgsl trades each of the
+      // day's candidates (a slot: its prices, sigma, half-spread, SAR and level quantiles at the
+      // lattice's tails) once under every entry and exit setting; records.wgsl adds each setting's
+      // day (its ranking's candidates) to its record and scores it for the next day.
       {
         std::vector<double> cand(nR * nPick, -1.0), st;
         std::vector<long> slotOf(N, -1);
@@ -483,12 +480,19 @@ int main(int argc, char** argv) {
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
+        const std::size_t nLe = nE * nLv;  // entry and exit settings per share
+        std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nV), H.N = std::uint32_t(ns), H.K = std::uint32_t(9 + 2 * nP), H.NT = std::uint32_t(nPick);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(9 + 2 * nP);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
-        ofm::v2::gen::Trades<double> kt;
-        kt.P = H, kt.cand = cand.data(), kt.st = st.data(), kt.dv = dvals.data(), kt.av = avals.data(), kt.s1 = s1v.data(), kt.s2 = s2v.data(), kt.dn = dnv.data(), kt.cost = costs.data();
-        ofm::detail::dispatch(kt, ofm::detail::groups(std::uint32_t(nV), 64));
+        ofm::v2::gen::Levels<double> kl;
+        kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.cost = costs.data(), kl.ret = ret.data();
+        ofm::detail::dispatch(kl, ofm::detail::groups(std::uint32_t(ns * nLe), 64));
+        ofm::v2::gen::V2Header<double> R{};
+        R.T = std::uint32_t(nV), R.u0 = std::uint32_t(nLe), R.NT = std::uint32_t(nPick), R.t0 = std::uint32_t(nDays + 1);
+        ofm::v2::gen::Records<double> kr;
+        kr.P = R, kr.cand = cand.data(), kr.ret = ret.data(), kr.s1 = s1v.data(), kr.s2 = s2v.data(), kr.dn = dnv.data(), kr.sc = scv.data(), kr.so = sov.data();
+        ofm::detail::dispatch(kr, ofm::detail::groups(std::uint32_t(nV), 64));
       }
       nDays += 1;
     }
@@ -597,7 +601,7 @@ int main(int argc, char** argv) {
       for (std::size_t f = 0; f < 5; ++f) o[FI + f] = a[F + f];
     }
   }
-  model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
+  if (!scanOnly) model(feat, F, K, F, "Walk-forward model on the stocks' own OHLCV");
   const auto linPred = model(ftI, FI, KI, FI, "Walk-forward model with liquidity and volatility interactions");
   // The page's scan (--json): the model above (lagged by --lag), its trades for the next open, its
   // backtest against the market, the chart laid out here and the last 20 days. Results only.
@@ -694,7 +698,7 @@ int main(int argc, char** argv) {
   // fused kernels of src/net): each day it predicts every stock's next open-to-close from
   // the day's standardised features, then learns from that day's outcomes once they are known
   // (shuffled mini-batches of 32, one pass), so every prediction is out of sample.
-  {
+  if (!scanOnly) {
     std::vector<double> zs(T * F * 2, 0.0);
     ofm::v2::gen::Zscore<double> kz;
     kz.P = P, kz.feat = feat.data(), kz.zs = zs.data();
