@@ -106,3 +106,6 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 .broker-log { white-space: pre-wrap; font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 10px; border: 1px solid var(--line, #ccc); border-radius: 6px; min-height: 2.5em; overflow-x: auto; }
 .broker-key label { min-width: 3.5em; }
 .broker-open { margin-top: 24px; font-size: 13px; }
+#broker-checks { width: 100%; table-layout: fixed; }
+#broker-checks th:nth-child(1) { width: 32%; } #broker-checks th:nth-child(2) { width: 20%; }
+#broker-checks td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }

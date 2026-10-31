@@ -8,6 +8,7 @@ and buttons that place them or close the positions through IB Gateway (tools/ibk
   GET  /orders?market=UK           the day's orders, with each trade's quantity for --capital
   POST /place  {"market": "UK"}    place them (submit.py)
   POST /close  {"market": "UK"}    cancel the unfilled ones and sell at the close (submit.py --close)
+  GET  /diag                       checks: the token, the orders, IB Gateway, the account, the data, the schedule
   POST /bars   {"market": "UK"}    fetch the pool's daily bars from IBKR into the private store (background)
 
 Only the page's origin may call it (CORS, with Chrome's private-network permission), and every call
@@ -72,6 +73,7 @@ REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get(
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
 AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24')} if os.environ.get('AUCTION', '1') != '0' else {}
+STARTED = datetime.now().astimezone()
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -202,6 +204,78 @@ def fetch_bars(market):
         BARS_RUNNING.discard(market)
 
 
+def diag():
+    """The checks behind GET /diag, each {check, ok (true, false, or null: a warning), detail}."""
+    out = []
+    add = lambda check, ok, detail: out.append({'check': check, 'ok': ok, 'detail': detail})  # noqa: E731
+    add('Bridge', True, f'running since {STARTED:%Y-%m-%d %H:%M %Z}; automatic: {",".join(AUTO) or "off"}; capital {CAPITAL:g} a trade')
+    # The token: read the store, and whether it may write (the auctions and bars go there).
+    if not TOKEN:
+        add('EOD_TOKEN', False, 'not set in .env')
+    else:
+        try:
+            req = urllib.request.Request('https://api.github.com/repos/svr-net/eod', headers={'Authorization': f'Bearer {TOKEN}', 'User-Agent': 'ofm-bridge'})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                push = (json.load(r).get('permissions') or {}).get('push')
+            add('EOD_TOKEN', True if push else None, 'reads svr-net/eod' + ('' if push else '; may not write (recordings stay on the NAS)'))
+        except urllib.error.HTTPError as e:
+            add('EOD_TOKEN', False, 'rejected (expired or revoked)' if e.code == 401 else 'no access to svr-net/eod' if e.code == 404 else f'HTTP {e.code}')
+        except Exception as e:  # noqa: BLE001
+            add('EOD_TOKEN', False, f'GitHub not reachable ({e})')
+    for m in AUTO or ['UK']:
+        try:
+            book = json.load(open(fetch_orders(m)))
+            age = (date.today() - date.fromisoformat(book.get('asOf', '1970-01-01'))).days
+            add(f'{m} orders', age <= 4 or None, f"after the close of {book.get('asOf')} ({age} day{'s' if age != 1 else ''} ago): {len(book.get('orders', []))} orders, "
+                f"{len(book.get('candidates', []))} candidates, pool {len(book.get('pool', []))}")
+        except Exception as e:  # noqa: BLE001
+            add(f'{m} orders', False, str(e))
+    add('IB Gateway port', gateway_up(), f'{IB_HOST}:{IB_PORT}')
+    m = (AUTO or ['UK'])[0]
+    try:
+        code, text = run_submit(['--market', m, '--diag'], timeout=90)
+        line = next((l for l in reversed(text.splitlines()) if l.startswith('{')), '')
+        d = json.loads(line) if line else {'api': False, 'error': text.splitlines()[-1] if text else 'no answer'}
+    except Exception as e:  # noqa: BLE001
+        d = {'api': False, 'error': str(e)}
+    if not d.get('api'):
+        add('IB Gateway API', False, d.get('error', 'no answer'))
+    else:
+        add('IB Gateway API', True, f"logged in, {'paper' if d.get('paper') else 'LIVE'} account; IBKR time {d.get('serverTime', '?')}")
+        live = d.get('dataType') == 1 and not any(e.startswith(('354', '10089', '10168')) for e in d.get('errors', []))
+        quote = ', '.join(f'{k} {d[k]}' for k in ('bid', 'ask', 'last', 'close') if d.get(k))
+        add(f'{m} real-time data', live or None, f"{d.get('probe', '?')}: " + (quote or 'no prices (outside hours, or no subscription)') +
+            ('' if live else '; the auction recording needs the exchange\'s real-time subscription'))
+        add(f'{m} historical data', bool(d.get('historyBars')), f"{d.get('historyBars', 0)} daily bars" + (f" ({d['historyError']})" if d.get('historyError') else ''))
+        if d.get('errors'):
+            add('IBKR messages', None, ' | '.join(d['errors']))
+    plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
+    add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
+    failed = [x for x in LAST if not x[3]]
+    add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:4]) or 'none yet')
+    adir = os.path.join(HISTORY, 'auction')
+    files = sorted(os.listdir(adir)) if os.path.isdir(adir) else []
+    if files:
+        rec = json.load(open(os.path.join(adir, files[-1])))
+        n = sum(1 for r in rec['shares'] if any(x.get('price') for x in r['samples']))
+        add('Auction recordings', n > 0 or None, f"{len(files)} day{'s' if len(files) != 1 else ''}, latest {files[-1][:-5]}: an indicative price for {n} of {len(rec['shares'])} shares")
+    else:
+        add('Auction recordings', None, 'none yet')
+    for m in AUTO or ['UK']:
+        f = os.path.join(HISTORY, f'ibkr-{m}.csv')
+        if m in BARS_RUNNING:
+            add(f'{m} IBKR bars', None, 'fetching now')
+        elif os.path.exists(f):
+            with open(f) as fh:
+                rows = sum(1 for _ in fh) - 1
+            add(f'{m} IBKR bars', rows > 0 or None, f'{rows} bars, fetched {datetime.fromtimestamp(os.path.getmtime(f)):%Y-%m-%d %H:%M}')
+        else:
+            add(f'{m} IBKR bars', None, 'not fetched yet')
+    days = history()
+    add('History', True, f'{len(days)} market-days recorded' + (f", latest {days[0]['date']} {days[0]['market']}" if days else ''))
+    return out
+
+
 def history():
     """The history by day and market: the orders placed and what was traded."""
     f = os.path.join(HISTORY, 'history.jsonl')
@@ -320,6 +394,8 @@ class Handler(BaseHTTPRequestHandler):
                                     'last': [{'when': w, 'market': mk, 'action': a, 'ok': ok, 'summary': sm} for w, mk, a, ok, sm in LAST]})
         if not self.allowed():
             return
+        if u.path == '/diag':
+            return self.reply(200, {'checks': diag()})
         if u.path == '/history':
             return self.reply(200, {'days': history()})
         if u.path == '/orders':

@@ -180,6 +180,18 @@ $('broker-save').addEventListener('click', () => {
 $('broker-open').addEventListener('click', (e) => { e.preventDefault(); brokerProbe(true); $('broker').scrollIntoView({ behavior: 'smooth' }); });
 $('broker-dry').addEventListener('click', () => brokerAct('/place', { market: brokerMarket(), dryRun: true }));
 $('broker-place').addEventListener('click', () => brokerAct('/place', { market: brokerMarket() }, `Place the ${brokerMarket()} orders with Interactive Brokers?`));
+// The bridge's checks (GET /diag): the token, the orders, IB Gateway, the account, the data, the
+// schedule, the recordings; each passed, failed or a warning.
+$('broker-diag').addEventListener('click', () => {
+  brokerLog('Checking… (IB Gateway is asked too: up to a minute)');
+  $('broker-checks').replaceChildren();
+  bridge('/diag').then((r) => {
+    const mark = (ok) => (ok === true ? ['passed', 'pos'] : ok === false ? ['failed', 'neg'] : ['warning', '']);
+    table($('broker-checks'), [['Check'], ['Result'], ['Detail']], r.checks.map((c) => [[c.check], mark(c.ok), [c.detail]]));
+    const bad = r.checks.filter((c) => c.ok === false).length, warn = r.checks.filter((c) => c.ok == null).length;
+    brokerLog(bad ? `${bad} failed, ${warn} warnings.` : warn ? `All passed, ${warn} warnings.` : 'All passed.');
+  }).catch((e) => brokerLog(`Diagnostics failed: ${e.message} (an older bridge has none: redeploy it)`));
+});
 // The history kept by the bridge: each day's orders placed and what was traded (fills from IBKR).
 function brokerHistory() {
   if (!bridgeKey()) return;
