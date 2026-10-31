@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   bool closeOnly = false;
   bool scanOnly = false;  // --scan: only the page's model (no comparison models), for the daily job
-  // --costs UK|US: the broker's costs on every filled trade (kernels/v2/trades.wgsl), --capital the
+  // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying.
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
@@ -382,7 +382,7 @@ int main(int argc, char** argv) {
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
     };
-    // A filled trade's costs as a share of its value (as kernels/v2/trades.wgsl's costOf).
+    // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf).
     const auto costOf = [&](double entry, double r) {
       if (costKind == 1) {
         const double sell = capital * (1 + r);
