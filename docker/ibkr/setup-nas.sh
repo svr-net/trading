@@ -55,7 +55,7 @@ else die "Docker Compose is missing (docker compose or docker-compose)."; fi
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "curl or wget is needed."
 case "$(uname -m)" in x86_64|amd64|aarch64|arm64) ;; *) die "this processor ($(uname -m)) is not supported by the IB Gateway image (x86-64 or 64-bit ARM needed)." ;; esac
 
-mkdir -p "$DIR"
+mkdir -p "$DIR" "$DIR/history"   # history: the bind mount must exist before the bridge starts
 cd "$DIR"
 say "Setting up in $DIR"
 if [ -n "${REPO_DIR:-}" ]; then
