@@ -3,7 +3,7 @@
 // number comes from the model (apps/ofm_research), the chart laid out there too.
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 1) => (x == null ? '–' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(d)}%`);
-const SERIES = [['daily trades', '--daybook'], ['market (bought and held)', '--market']];
+const SERIES = [['daily trades', '--daybook']];
 
 function cell(tag, text, cls) {
   const c = document.createElement(tag);
@@ -51,12 +51,11 @@ function render(r, source) {
       if (levels) row.push([level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']);
       return row;
     }) : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
-  const B = r.backtest, M = r.market;
+  const B = r.backtest;
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>
-    <div class="tile"><span class="k">Market, bought and held</span><span class="v">${pct(M.annualReturn)}</span><span class="s">a year · Sharpe ${M.sharpe.toFixed(2)} · max drawdown ${pct(M.maxDrawdown, 0).slice(1)}</span></div>`;
-  table($('recent'), [['Day'], ['Daily trades', 'num'], ['Market', 'num']],
-    r.recent.slice().reverse().map((d) => [[d.date], signed(d.day), signed(d.market)]));
+    <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>`;
+  table($('recent'), [['Day'], ['Daily trades', 'num']],
+    r.recent.slice().reverse().map((d) => [[d.date], signed(d.day)]));
   drawChart(r);
 }
 
@@ -87,7 +86,7 @@ function drawChart(r) {
   C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
   C.series.forEach((s) => {
     ctx.strokeStyle = color[s.name] || ctx.strokeStyle;
-    ctx.lineWidth = s.name.startsWith('market') ? 1.5 : 2;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     s.y.forEach((y, i) => (i ? ctx.lineTo(X(i / (s.y.length - 1)), Y(y)) : ctx.moveTo(X(0), Y(y))));
     ctx.stroke();

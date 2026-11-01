@@ -648,7 +648,7 @@ int main(int argc, char** argv) {
       const double n = double(x.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
       return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
     };
-    const auto a1 = stats(always), a2 = stats(gated), a3 = stats(mkt);
+    const auto a1 = stats(always), a2 = stats(gated);
     std::size_t traded = 0;
     for (double y : gated) traded += y != 0.0;
     std::printf("\n%s (%s .. %s), the 10 highest predicted, open to close:\n", label, sd.front().c_str(), sd.back().c_str());
@@ -682,7 +682,6 @@ int main(int argc, char** argv) {
                   100 * qt(2, 0.1), 100 * qt(2, 0.9), 100 * tk / std::max(fl, 1.0));
     }
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
-    std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
     // The next open's trades: the 10 highest predictions lag closes before the last close, among
     // the stocks with a bar at the last close (their targets are not known yet), from the pool and
     // ranked and with the levels by the settings learnt over the whole backtest. Expected open-to-close: the prediction
@@ -810,7 +809,7 @@ int main(int argc, char** argv) {
       const double n = double(x.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
       return std::array<double, 3>{std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0, dd};
     };
-    const auto ms = metr(R.ret), mm = metr(R.mkt);
+    const auto ms = metr(R.ret);
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
@@ -819,7 +818,6 @@ int main(int argc, char** argv) {
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;
-    std::snprintf(b, sizeof b, ",\"market\":{\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", mm[0], mm[1], mm[2]);
     o << b << ",\"orders\":[";
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
@@ -830,16 +828,16 @@ int main(int argc, char** argv) {
     }
     o << "],\"recent\":[";
     for (std::size_t q = R.ret.size() > 20 ? R.ret.size() - 20 : 0, f = q; q < R.ret.size(); ++q) {
-      std::snprintf(b, sizeof b, "%s{\"date\":\"%s\",\"day\":%.6g,\"market\":%.6g}", q == f ? "" : ",", R.dates[q].c_str(), R.ret[q], R.mkt[q]);
+      std::snprintf(b, sizeof b, "%s{\"date\":\"%s\",\"day\":%.6g}", q == f ? "" : ",", R.dates[q].c_str(), R.ret[q]);
       o << b;
     }
-    // The chart: both growth curves on a log scale, heights and positions as shares of the chart.
+    // The chart: the daily trades' growth on a log scale, heights and positions as shares of the chart.
     const std::size_t n = R.ret.size(), step = std::max<std::size_t>(1, n / 600);
-    std::vector<double> lv[2];
+    std::vector<double> lv[1];
     double lo = 0, hi = 0;
-    for (int k = 0; k < 2; ++k) {
+    for (int k = 0; k < 1; ++k) {
       double w = 0;
-      const auto& x = k == 0 ? R.ret : R.mkt;
+      const auto& x = R.ret;
       for (std::size_t q = 0; q < n; ++q) {
         w += std::log1p(x[q]);
         if (q % step == 0) lv[k].push_back(w), lo = std::min(lo, w), hi = std::max(hi, w);
@@ -847,10 +845,10 @@ int main(int argc, char** argv) {
     }
     const double span = std::max(hi - lo, 1e-9);
     o << "],\"chart\":{\"series\":[";
-    const char* nm[2] = {"daily trades", "market (bought and held)"};
-    for (int k = 0; k < 2; ++k) {
+    const char* nm[1] = {"daily trades"};
+    for (int k = 0; k < 1; ++k) {
       double w = 0;
-      for (double y : k == 0 ? R.ret : R.mkt) w += std::log1p(y);
+      for (double y : R.ret) w += std::log1p(y);
       std::snprintf(b, sizeof b, "%s{\"name\":\"%s\",\"final\":\"%.2f×\",\"y\":[", k ? "," : "", nm[k], std::exp(w));
       o << b;
       for (std::size_t q = 0; q < lv[k].size(); ++q) std::snprintf(b, sizeof b, "%s%.4f", q ? "," : "", (lv[k][q] - lo) / span), o << b;
@@ -994,13 +992,12 @@ int main(int argc, char** argv) {
       const double n = double(v.size()), mu = s1 / n, sdv = std::sqrt(std::max(0.0, s2 / n - mu * mu));
       return std::make_pair(std::expm1(w * 252.0 / n), sdv > 0 ? mu / sdv * std::sqrt(252.0) : 0.0);
     };
-    const auto a1 = stats(always), a2 = stats(ens), a3 = stats(mkt), a4 = stats(adaptive), a0 = stats(linOnly);
+    const auto a1 = stats(always), a2 = stats(ens), a4 = stats(adaptive), a0 = stats(linOnly);
     std::printf("\nNeural network on the stocks' own OHLCV (%s .. %s), the 10 highest predicted, open to close:\n", sd.front().c_str(), sd.back().c_str());
     std::printf("  every day                        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a1.first, a1.second);
     std::printf("  ensemble with the linear model   %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a2.first, a2.second);
     std::printf("  linear model alone               %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a0.first, a0.second);
     std::printf("  self-adaptive choice             %+7.1f%% a year (Sharpe %5.2f); days linear %zu, network %zu, ensemble %zu\n", 100 * a4.first, a4.second, used[0], used[1], used[2]);
-    std::printf("  market (all stocks, held)        %+7.1f%% a year (Sharpe %5.2f)\n", 100 * a3.first, a3.second);
   }
   // With the market-wide series (futures and indices) as further inputs.
   if (!seriesCsv.empty()) {
