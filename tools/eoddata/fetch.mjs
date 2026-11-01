@@ -91,7 +91,8 @@ const quotes = asList(await get(`/Quote/List/${exchange}`, {}, `quotes-${stamp}.
 console.log(`  fields: exchange [${Object.keys(exchangeInfo)}]; symbol [${Object.keys(symbols[0] || {})}]; quote [${Object.keys(quotes[0] || {})}]`);
 console.log(`  symbol types: ${[...new Set([...typeOf.values()])].slice(0, 20).join(', ')}`);
 const isShare = (code) => {
-  if (exchange === 'ASX' ? !/^[A-Z0-9]{3}$/.test(code) : !/^[A-Z]{1,5}(\.[A-Z])?$/.test(code)) return false;  // ASX: ordinary shares have 3-character codes (A2M, BHP)  // letters only: no warrants (YX58), alternative lines (RR-) or IOB codes (0O87)
+  const codeOk = exchange === 'ASX' ? /^[A-Z0-9]{3}$/ : exchange === 'SGX' ? /^[A-Z0-9]{3,4}$/ : /^[A-Z]{1,5}(\.[A-Z])?$/;  // ASX: 3-character codes (A2M, BHP); SGX: D05, C6L
+  if (!codeOk.test(code)) return false;  // letters only: no warrants (YX58), alternative lines (RR-) or IOB codes (0O87)
   if (currency && currencyOf.get(code) && currencyOf.get(code).toUpperCase() !== currency.toUpperCase()) return false;
   const t = (typeOf.get(code) || '').toLowerCase();
   if (t && !/(share|stock|equity|ord|common)/.test(t)) return false;  // funds, ETFs, warrants, bonds
@@ -99,6 +100,7 @@ const isShare = (code) => {
   if (/\b(etf|etc|etn|fund|trust plc|investment trust|ucits|tracker|swap|s&p|msci|ftse|warrant|bond|gilt|pref)\b/.test(n)) return false;
   const company = /\b(plc|ltd|limited|s\.a\.|sa|ag|n\.v\.|nv|se|inc|corp|group|holdings|ord)\b/.test(n);  // a company's name, not a product's
   if (exchange === 'LSE') return company;
+  if (exchange === 'FRA') return /\b(ag|se|kgaa)\b/.test(n) && !/\b(inc|corp|plc|ltd|limited|n\.v\.|nv|s\.a\.)\b/.test(n);  // Frankfurt: German companies only (it lists the world's shares too)
   // US: many companies' names carry no such word (JP Morgan Chase & Company, Alphabet Cl A); a fund's
   // does not either, but it names a fund family or a product.
   return company || !FUND_FAMILY.test(n);

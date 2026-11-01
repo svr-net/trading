@@ -16,8 +16,9 @@
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
+      <button type="button" role="tab" id="mk-eu" data-market="eu" aria-selected="false" title="Paris, Amsterdam, Brussels, Lisbon, Madrid, Frankfurt, Oslo">EU</button>
       <button type="button" role="tab" id="mk-us" data-market="us" aria-selected="false">US</button>
-      <button type="button" role="tab" id="mk-apac" data-market="apac" aria-selected="false" title="Australia (ASX)">APAC</button>
+      <button type="button" role="tab" id="mk-apac" data-market="apac" aria-selected="false" title="Australia (ASX), Singapore (SGX)">APAC</button>
     </div>
     <p class="lede" id="lede">Up to 10 day trades for the next open: the shares a walk-forward model, learnt from every share's daily prices and volumes, expects to rise most from the open to the close. Each is a buy limit at a learnt distance from the last close: bought at the open when it opens at or below the limit, during the day if it trades down to it, otherwise not traded. Sold at the take-profit, the stop-loss or the close (the levels learnt from each share's own moves on its typical days over the last 100).</p>
   </header>

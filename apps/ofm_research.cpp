@@ -5,6 +5,7 @@
 // kernels/v2).
 #include <algorithm>
 #include <array>
+#include <map>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -38,7 +39,7 @@ int main(int argc, char** argv) {
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
   // from it (AIM shares, one ticker a line).
-  std::string stampFree;
+  std::string stampFree, venuesFile, costMarket;  // --venues: each exchange's costs (see fee below)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
@@ -49,10 +50,14 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
-    if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : std::string(argv[k + 1]) == "APAC" ? 3 : 0;
+    if (std::string(argv[k]) == "--costs") {
+      costMarket = argv[k + 1];
+      costKind = costMarket == "UK" ? 1 : costMarket == "US" ? 2 : costMarket == "APAC" ? 3 : 4;  // 4: by --venues only
+    }
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
+    if (std::string(argv[k]) == "--venues") venuesFile = argv[k + 1];
   }
   for (int k = 1; k < argc; ++k)
     if (std::string(argv[k]) == "--scan") scanOnly = true;
@@ -79,6 +84,40 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < N; ++i)
       if (free.count(m.tickers[i])) stampOf[i] = 0, ++nf;
     std::printf("stamp duty: %zu of %zu stocks exempt (%s)\n", nf, N, stampFree.c_str());
+  }
+  // Each stock's costs (7 fields, as kernels/v2/levels.wgsl's costOf): kind (1 a rate with a minimum
+  // an order, 2 the US's commission a share), the amount a trade, the commission's rate and minimum,
+  // a fee's rate, the tax on buying, the tax on both sides. By --costs; with --venues, a stock whose
+  // ticker is EXCHANGE:CODE takes its exchange's line (EXCHANGE amount rate minimum fee buy-tax
+  // both-tax, the amount in the exchange's currency).
+  std::vector<double> fee(N * 7, 0.0);
+  for (std::size_t i = 0; i < N; ++i) {
+    double* f = &fee[i * 7];
+    if (costKind == 1) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 1, f[4] = 0.00005, f[5] = stampOf[i];  // UK: 0.05%, at least GBP 1, + 0.005%; stamp duty
+    if (costKind == 2) f[0] = 2, f[1] = capital;                                                            // US: a share
+    if (costKind == 3) f[0] = 1, f[1] = capital, f[2] = 0.0008, f[3] = 6;                                    // ASX: 0.08%, at least AUD 6
+  }
+  if (!venuesFile.empty()) {
+    std::istringstream in(readFile(venuesFile));
+    std::map<std::string, std::array<double, 6>> venue;
+    for (std::string line; std::getline(in, line);) {
+      if (line.empty() || line[0] == '#') continue;
+      std::istringstream ls(line);
+      std::string ex;
+      std::array<double, 6> v{};
+      if (ls >> ex >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5]) venue[ex] = v;
+    }
+    std::size_t hit = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+      const auto c = m.tickers[i].find(':');
+      const auto it = c == std::string::npos ? venue.end() : venue.find(m.tickers[i].substr(0, c));
+      if (it == venue.end()) continue;
+      double* f = &fee[i * 7];
+      f[0] = 1;
+      for (std::size_t k = 0; k < 6; ++k) f[1 + k] = it->second[k];
+      ++hit;
+    }
+    std::printf("venues: %zu of %zu stocks priced by their exchange's line (%s)\n", hit, N, venuesFile.c_str());
   }
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
@@ -304,7 +343,7 @@ int main(int argc, char** argv) {
     const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);
     std::vector<double> scv(nV, 0.0), sov(nV, 0.0);  // each setting's scores for the next day (kernels/v2/records.wgsl)
-    std::vector<double> dvals(nE), avals(nA), costs = {costKind, capital, stamp};  // the lattice's limit depths and SAR weights, the costs, for the kernel
+    std::vector<double> dvals(nE), avals(nA);  // the lattice's limit depths and SAR weights, for the kernel
     for (std::size_t q = 0; q < nE; ++q) dvals[q] = axis(3, double(q));
     for (std::size_t q = 0; q < nA; ++q) avals[q] = axis(6, double(q));  // sums of the results, their squares, the losses' squares
     double nDays = 0;
@@ -403,20 +442,18 @@ int main(int argc, char** argv) {
       std::sort(l.begin(), l.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       for (std::size_t r = 0; r < l.size(); ++r) liqRank[l[r].second] = double(r);
     };
-    // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf).
-    const auto costOf = [&](double entry, double r, double stp) {
-      if (costKind == 1) {
-        const double sell = capital * (1 + r);
-        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stp;
+    // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf), stock i's.
+    const auto costOf = [&](double entry, double r, std::size_t i) {
+      const double* f = &fee[i * 7];
+      const double cap = f[1];
+      if (f[0] == 1) {
+        const double sell = cap * (1 + r);
+        return (std::max(f[3], f[2] * cap) + f[4] * cap + std::max(f[3], f[2] * sell) + f[4] * sell) / cap + f[5] + f[6] * (2 + r);
       }
-      if (costKind == 2) {
-        const double n = std::max(1.0, std::floor(capital / entry)), v = n * entry, sell = v * (1 + r);
+      if (f[0] == 2) {
+        const double n = std::max(1.0, std::floor(cap / entry)), v = n * entry, sell = v * (1 + r);
         const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
         return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
-      }
-      if (costKind == 3) {  // ASX (IBKR fixed): AUD 6 or 0.08% an order, whichever is more; no stamp duty
-        const double sell = capital * (1 + r);
-        return (std::max(6.0, 0.0008 * capital) + std::max(6.0, 0.0008 * sell)) / capital + stp;
       }
       return 0.0;
     };
@@ -427,7 +464,7 @@ int main(int argc, char** argv) {
     const bool netRank = !std::getenv("X_GROSSRANK");
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
-      const double ls = ft[src * Km + 20], c = netRank && costKind > 0 ? costOf(m.close(t, i), 0.0, stampOf[i]) : 0.0;
+      const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
     // The day's 10 trades: among the pool most traded, ranked with beta, at most cap of them AIM shares.
@@ -506,7 +543,7 @@ int main(int argc, char** argv) {
       if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = take, r.exit = 2;
       r.ret = px / r.entry - 1;
-      r.ret -= costOf(r.entry, r.ret, stampOf[i]);
+      r.ret -= costOf(r.entry, r.ret, i);
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
@@ -561,7 +598,8 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0, stampOf[i]});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0});
+              st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
             }
@@ -570,10 +608,10 @@ int main(int argc, char** argv) {
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(10 + 2 * nP);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
         ofm::v2::gen::Levels<double> kl;
-        kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.cost = costs.data(), kl.ret = ret.data();
+        kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
         ofm::detail::dispatch(kl, ofm::detail::groups(std::uint32_t(ns * nLe), 64));
         ofm::v2::gen::V2Header<double> R{};
         R.T = std::uint32_t(nV), R.u0 = std::uint32_t(nLe), R.NT = std::uint32_t(nPick), R.t0 = std::uint32_t(nDays + 1);
@@ -656,7 +694,7 @@ int main(int argc, char** argv) {
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
-        const double cost = costKind > 0 ? costOf(m.close(t, i), 0.0, stampOf[i]) : 0.0;  // the expected return shown net of its costs, as ranked
+        const double cost = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;  // the expected return shown net of its costs, as ranked
         if (picks[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
       }
     }
@@ -718,8 +756,8 @@ int main(int argc, char** argv) {
       const auto& pk = lastRun.picks[q];
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g}", q ? "," : "",
-                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected);
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g}", q ? "," : "",
+                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital);
       o << b;
     }
     o << "],\"candidates\":[";
@@ -747,8 +785,8 @@ int main(int argc, char** argv) {
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
-    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : costKind == 2 ? "US" : "APAC") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
-                      << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << "}";
+    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << costMarket << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
+                      << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << ",\"venues\":" << (venuesFile.empty() ? "false" : "true") << "}";
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);
     o << b;

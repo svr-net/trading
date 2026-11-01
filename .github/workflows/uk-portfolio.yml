@@ -3,24 +3,25 @@
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in that private repository and are never published.
-name: Daily trades (UK, US and APAC)
+name: Daily trades (UK, EU, US and APAC)
 
 on:
   # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
   # York close): download the day, scan, publish the proposals and email the daily report.
-  # APAC (ASX) at 08:00 UTC, after the Sydney close.
+  # APAC (ASX, SGX) at 10:00 UTC, after the Singapore close; EU at 18:30 UTC, after the European close.
   schedule:
     - cron: '0 19 * * 1-5'
     - cron: '30 22 * * 1-5'
-    - cron: '0 8 * * 1-5'
+    - cron: '0 10 * * 1-5'
+    - cron: '30 18 * * 1-5'
   workflow_dispatch:
     inputs:
-      market: { description: 'Market', type: choice, options: [all, UK, US, APAC], default: all }
+      market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC], default: all }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
-      pool: { description: 'The most traded shares kept per exchange (default: 500 UK and APAC, 2000 US)', default: '' }
+      pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US, 300 each EU exchange, 500 ASX and SGX)', default: '' }
       us_exchanges: { description: 'US exchanges (comma separated)', default: 'NYSE,NASDAQ' }
 
 permissions:
@@ -34,10 +35,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 8 * * 1-5' && '["APAC"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || '["UK","US","APAC"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX' || 'LSE' }}
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA,OSL' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,14 +83,15 @@ jobs:
           mkdir -p data
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
-            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"; [ "$EX" = "ASX" ] && CUR="AUD"
-            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
+            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || matrix.market == 'EU' && '300' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             else
               node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
             fi
-            tail -n +2 "data/$EX.csv" >> data/stocks.csv
+            # Markets of several exchanges: tickers as EXCHANGE:CODE (each exchange's costs, IBKR's venue).
+            case "$MARKET" in EU|APAC) tail -n +2 "data/$EX.csv" | awk -F, -v OFS=, -v ex="$EX" '{$2=ex":"$2; print}' >> data/stocks.csv;; *) tail -n +2 "data/$EX.csv" >> data/stocks.csv;; esac
           done
       # EODData serves only today's fundamentals: each day's, for the model's shares, are kept in the
       # store (fundamentals/<EXCHANGE>/<date>.csv.gz) so that a history builds up; with the latest
@@ -138,7 +140,9 @@ jobs:
           # US: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit; else
           # sold at the close): US shares stopped during the day mostly recover by the close.
           if [ "$MARKET" = US ]; then STAMP=(--exit safety); fi
-          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 5000 "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
+          # EU and APAC: each exchange's costs and taxes (tools/venues.txt). 1,000 a trade.
+          case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 1000 "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already

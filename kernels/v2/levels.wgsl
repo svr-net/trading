@@ -6,37 +6,37 @@
 // u1), N the slots, K a slot's stride, t0 the limit depths, u0 the tail fractions, u1 the SAR
 // weights, u2 1 to sell at the close (no levels). A setting decodes as (limit, stop tail, take tail,
 // SAR weight), the last fastest. st [N][K] per slot: open, high, low, close of the trading day, the
-// previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, the
-// stamp duty on buying it (UK; 0 for AIM shares), then
-// the falls at the u0 tail fractions and the rises at them (logs from the open over the last 100
-// days). dv [t0] the limit depths (sigmas below the previous close), av [u1] the SAR weights, cost [3]
-// the broker's costs (as in costOf; cost[2] unused, the stamp duty is the slot's). ret [N][T]: the trade's return (0 when the limit is not reached,
+// previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, its
+// seven cost fields (see costOf), then the falls at the u0 tail fractions and the rises at them
+// (logs from the open over the last 100 days). dv [t0] the limit depths (sigmas below the previous
+// close), av [u1] the SAR weights. ret [N][T]: the trade's return (0 when the limit is not reached,
 // or when the stop-loss sits within a spread of the entry: a trade stopped as it fills is skipped).
 @group(0) @binding(1) var<storage, read> st : array<f32>;
 @group(0) @binding(2) var<storage, read> dv : array<f32>;
 @group(0) @binding(3) var<storage, read> av : array<f32>;
-@group(0) @binding(4) var<storage, read> cost : array<f32>;
-@group(0) @binding(5) var<storage, read_write> ret : array<f32>;
+@group(0) @binding(4) var<storage, read_write> ret : array<f32>;
 
-// A filled trade's costs, a share of its value: bought at entry (a share's price in the account's
-// currency for the US) and sold r higher.
-fn costOf(entry : f32, r : f32, stamp : f32) -> f32 {
-  let cap : f32 = cost[1];
-  if (cost[0] == 1.0) {
+// A filled trade's costs, a share of its value, from the slot's cost fields (b + 9: kind, the
+// amount a trade, the commission's rate, its minimum, a fee's rate, the tax on buying and the tax on
+// both sides; kind 1 a rate with a minimum an order, 2 the US's commission a share): bought at entry
+// (a share's price in the trade's currency) and sold r higher.
+fn costOf(entry : f32, r : f32, b : u32) -> f32 {
+  let kind : f32 = st[b + 9u];
+  let cap : f32 = st[b + 10u];
+  if (kind == 1.0) {
     let sell : f32 = cap * (1.0 + r);
-    return (max(1.0, 0.0005 * cap) + 0.00005 * cap + max(1.0, 0.0005 * sell) + 0.00005 * sell) / cap + stamp;
+    let pct : f32 = st[b + 11u];
+    let lo : f32 = st[b + 12u];
+    let fee : f32 = st[b + 13u];
+    return (max(lo, pct * cap) + fee * cap + max(lo, pct * sell) + fee * sell) / cap + st[b + 14u] + st[b + 15u] * (2.0 + r);
   }
-  if (cost[0] == 2.0) {
+  if (kind == 2.0) {
     let n : f32 = max(1.0, floor(cap / entry));
     let v : f32 = n * entry;
     let sell : f32 = v * (1.0 + r);
     let cb : f32 = min(max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n;
     let cs : f32 = min(max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
     return (cb + cs + 0.0000278 * sell + min(0.000166 * n, 8.3)) / v;
-  }
-  if (cost[0] == 3.0) {  // ASX: AUD 6 or 0.08% an order, whichever is more
-    let sell : f32 = cap * (1.0 + r);
-    return (max(6.0, 0.0008 * cap) + max(6.0, 0.0008 * sell)) / cap + stamp;
   }
   return 0.0;
 }
@@ -69,17 +69,17 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       var stop : f32 = 0.0;
       var take : f32 = 1.0e30;
       if (P.u2 == 0u && st[b + 8u] > 0.5) {
-        var ls : f32 = st[b + 10u + cs];
+        var ls : f32 = st[b + 16u + cs];
         if (sar > 0.0) { ls = (1.0 - av[ca]) * ls + av[ca] * log(min(1.0, sar / entry)); }
         stop = entry * exp(ls);
-        take = entry * exp(st[b + 10u + P.u0 + ct]);
+        take = entry * exp(st[b + 16u + P.u0 + ct]);
       }
       // A stop within a spread of the entry would sell as the trade fills: no trade (cash).
       if (stop * half * half <= entry) {
         var px : f32 = c;
         if (l <= stop) { px = stop / half; } else if (!intra && h >= take * half) { px = take; }
         let gross : f32 = px / entry - 1.0;
-        y = gross - costOf(entry, gross, st[b + 9u]);
+        y = gross - costOf(entry, gross, b);
       }
     }
     ret[i] = y;

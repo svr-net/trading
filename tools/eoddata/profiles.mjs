@@ -28,7 +28,7 @@ const filled = (items, name) => items.filter((x) => { const v = field(x, name); 
 
 const out = opt('out');
 const fundDir = opt('fundamentals');
-const universe = opt('universe') ? new Set(fs.readFileSync(opt('universe'), 'utf8').split('\n').slice(1).map((l) => l.split(',')[1]).filter(Boolean)) : null;
+const universe = opt('universe') ? new Set(fs.readFileSync(opt('universe'), 'utf8').split('\n').slice(1).map((l) => (l.split(',')[1] || '').replace(/^[A-Z]+:/, '')).filter(Boolean)) : null;  // EXCHANGE:CODE in multi-exchange markets
 const FUND = ['marketCapitalization', 'ebitda', 'peg', 'bookValue', 'dividendPerShare', 'dividendYield', 'earningsPerShare', 'revenuePerShare', 'priceToSales',
   'priceToBook', 'sharesOutstanding', 'grossMargin', 'profitMargin', 'operatingMargin', 'returnOnAssets', 'returnOnEquity', 'revenue', 'grossProfit', 'trailingPE',
   'forwardPE', 'totalCash', 'totalCashPerShare', 'totalDebt', 'bookValuePerShare'];
