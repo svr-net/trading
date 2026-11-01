@@ -197,7 +197,7 @@ What it places for each trade, as in the backtest:
 - a **limit buy at the model's buy limit**, valid for the day: it takes part in the opening auction
   (filled at the open when the share opens at or below the limit) and then rests (filled during the
   day if the price comes down to it);
-- attached to it, the **stop-loss** (a stop sell; in the UK and the US a safety stop, at a fall the
+- attached to it, the **stop-loss** (a stop sell; in every market a safety stop, at a fall the
   share makes only on a rare day) and, when the model sets one, the **take-profit** (a limit sell),
   one cancelling the other, active only once the buy has filled;
 - with `--close`, the day's unfilled orders are cancelled and whatever is still held is **sold at

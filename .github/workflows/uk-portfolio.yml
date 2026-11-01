@@ -141,12 +141,12 @@ jobs:
           ORDERS=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then mkdir -p data/eoddata/orders; ORDERS=(--orders "data/eoddata/orders/$MARKET.json"); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
           STAMP=(); if [ "$MARKET" = UK ]; then node tools/eoddata/aim.mjs tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
-          # UK and US: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
-          # else sold at the close): shares stopped in the opening volatility mostly recover by the close
-          # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).
-          case "$MARKET" in UK|US) STAMP+=(--exit safety);; esac
           # EU and APAC: each exchange's costs and taxes (tools/venues.txt). 1,000 a trade.
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
+          # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
+          # else sold at the close): shares stopped in the opening volatility mostly recover by the close
+          # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).
+          STAMP+=(--exit safety)
           # X_VERIFY: every day's kernel trades are checked against the trade path that makes the orders;
           # any difference stops the run before anything is published.
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
