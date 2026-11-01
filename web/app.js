@@ -49,7 +49,7 @@ function render(r, source) {
   $('summary').className = `summary ${isLive ? 'live' : 'research'}`;
   $('summary').innerHTML = isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; anything bought is sold by the close.`
-    : `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here; the orders below are what it would place.`;
+    : `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`;
   $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`;
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
   const head = [['Share'], ['Buy at', 'num']];
@@ -59,7 +59,7 @@ function render(r, source) {
     n ? r.orders.map((o) => {
       const row = [[o.ticker], [o.limit == null ? 'open' : pct(o.limit, 1), 'num']];
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1), o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
-      row.push(signed(o.expected, 2));
+      row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // a tiny expectation keeps a digit more
       return row;
     }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
   const B = r.backtest;
