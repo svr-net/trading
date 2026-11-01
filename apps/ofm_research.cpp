@@ -301,7 +301,6 @@ int main(int argc, char** argv) {
   Run lastRun;
   const std::size_t nPick = std::getenv("X_NPICK") ? std::size_t(std::atol(std::getenv("X_NPICK"))) : 10;
   const double ridgeK = std::getenv("X_RIDGE") ? std::atof(std::getenv("X_RIDGE")) : 1e-6;
-  const double forget = std::getenv("X_HALF") ? std::exp2(-1.0 / std::atof(std::getenv("X_HALF"))) : 1.0;
   auto model = [&](const std::vector<double>& ft, std::size_t Fm, std::size_t Km, std::size_t nOwn, const char* label) {
     ofm::v2::gen::V2Header<double> Q = P;
     Q.K = std::uint32_t(Km), Q.NT = std::uint32_t(Fm);
@@ -318,19 +317,87 @@ int main(int argc, char** argv) {
     ofm::detail::dispatch(kg, std::uint32_t(T));  // one workgroup per day (kernels/v2/gram.wgsl)
     // The sums of the days before each day (exponentially forgotten with --half), then every day's and
     // target's coefficients at once (kernels/v2/solve.wgsl).
-    std::vector<double> acc(T * E, 0.0), rk = {ridgeK};
-    for (std::size_t t = 2; t < T; ++t)
-      for (std::size_t e = 0; e < E; ++e) acc[t * E + e] = forget * acc[(t - 1) * E + e] + gram[(t - 2) * E + e];
-    {
-      ofm::v2::gen::V2Header<double> S = Q;
-      S.T = std::uint32_t(T), S.u0 = std::uint32_t(D), S.u1 = std::uint32_t(E);
-      ofm::v2::gen::Solve<double> ks;
-      ks.P = S, ks.acc = acc.data(), ks.rk = rk.data(), ks.beta = beta.data();
-      ofm::detail::dispatch(ks, ofm::detail::groups(std::uint32_t(T * 4), 64));
+    // The ridge and the memory, learnt: the model is fitted under every pair of a ridge (a share of the
+    // trace) and a forgetting half-life (days; none), and each day's forecast is the one of the pair
+    // whose highest forecasts have done best so far (the mean open-to-close of its nPick highest each
+    // day, over every day whose outcome is known at that close; before any, the first pair).
+    // X_RIDGE / X_HALF (research) fix one pair instead.
+    std::vector<double> ridges = {1e-6, 1e-4, 1e-3, 1e-2, 1e-1}, halves = {0, 750, 250};
+    if (std::getenv("X_RIDGE")) ridges = {ridgeK};
+    if (std::getenv("X_HALF")) halves = {std::atof(std::getenv("X_HALF"))};
+    const std::size_t nVar = ridges.size() * halves.size();
+    std::vector<float> predV(nVar * T * N, 0.0f);  // each pair's open-to-close forecasts
+    std::vector<double> acc(T * E, 0.0), rk(1);
+    for (std::size_t h = 0; h < halves.size(); ++h) {
+      const double fg = halves[h] > 0 ? std::exp2(-1.0 / halves[h]) : 1.0;
+      for (std::size_t t = 2; t < T; ++t)
+        for (std::size_t e = 0; e < E; ++e) acc[t * E + e] = fg * acc[(t - 1) * E + e] + gram[(t - 2) * E + e];
+      for (std::size_t r = 0; r < ridges.size(); ++r) {
+        rk[0] = ridges[r];
+        ofm::v2::gen::V2Header<double> S = Q;
+        S.T = std::uint32_t(T), S.u0 = std::uint32_t(D), S.u1 = std::uint32_t(E);
+        ofm::v2::gen::Solve<double> ks;
+        ks.P = S, ks.acc = acc.data(), ks.rk = rk.data(), ks.beta = beta.data();
+        ofm::detail::dispatch(ks, ofm::detail::groups(std::uint32_t(T * 4), 64));
+        ofm::v2::gen::Predict<double> kp;
+        kp.P = Q, kp.feat = const_cast<double*>(ft.data()), kp.zs = zs.data(), kp.beta = beta.data(), kp.out = pred.data();
+        ofm::detail::dispatch(kp, ofm::detail::groups(std::uint32_t(T * N), 64));
+        const std::size_t v = h * ridges.size() + r;
+        for (std::size_t q = 0; q < T * N; ++q) predV[v * T * N + q] = float(pred[q * 4]);
+      }
     }
-    ofm::v2::gen::Predict<double> kp;
-    kp.P = Q, kp.feat = const_cast<double*>(ft.data()), kp.zs = zs.data(), kp.beta = beta.data(), kp.out = pred.data();
-    ofm::detail::dispatch(kp, ofm::detail::groups(std::uint32_t(T * N), 64));
+    // Each pair's daily result: the forecast at the close s (made lag closes before the
+    // decision at t = s + lag) against the open-to-close of the day t + 1.
+    std::vector<double> icSum(nVar, 0.0);
+    std::vector<std::size_t> pick(T, 0), icDays(nVar, 0);
+    {
+      std::vector<double> ic(nVar * T, NAN);
+      for (std::size_t t = lag; t + 1 < T; ++t) {
+        const std::size_t s = t - lag;
+        std::vector<std::size_t> ok;
+        std::vector<double> y;
+        for (std::size_t i = 0; i < N; ++i) {
+          const double o = m.open(t + 1, i), c = m.close(t + 1, i);
+          if (o > 0 && c > 0 && std::isfinite(o) && std::isfinite(c) && ft[(s * N + i) * Km + Km - 1] > 0) ok.push_back(i), y.push_back(std::log(c / o));
+        }
+        if (ok.size() < 30) continue;
+        for (std::size_t v = 0; v < nVar; ++v) {  // what the trades hold: the mean open-to-close of its nPick highest forecasts
+          std::vector<std::pair<double, double>> x(ok.size());
+          for (std::size_t k = 0; k < ok.size(); ++k) x[k] = {predV[v * T * N + s * N + ok[k]], y[k]};
+          const std::size_t top = std::min(nPick, x.size());
+          std::partial_sort(x.begin(), x.begin() + std::ptrdiff_t(top), x.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+          double sm = 0;
+          for (std::size_t k = 0; k < top; ++k) sm += x[k].second;
+          ic[v * T + t] = sm / double(top);
+        }
+      }
+      // The pair for the decision at t: the best mean over the days whose outcome is known at the close
+      // t (outcome days up to t: decisions up to t - 1).
+      std::fill(icSum.begin(), icSum.end(), 0.0);
+      for (std::size_t t = 0; t < T; ++t) {
+        std::size_t best = 0;
+        for (std::size_t v = 1; v < nVar; ++v)
+          if (icDays[v] > 0 && icSum[v] / double(icDays[v]) > icSum[best] / double(std::max<std::size_t>(icDays[best], 1))) best = v;
+        pick[t] = best;
+        for (std::size_t v = 0; v < nVar; ++v)  // the decision at t's outcome is known at t + 1: it counts from the next decision
+          if (std::isfinite(ic[v * T + t])) icSum[v] += ic[v * T + t], icDays[v] += 1;
+      }
+    }
+    // The forecasts as traded: the row s holds the forecast of the pair learnt by the decision at s + lag.
+    for (std::size_t s = 0; s < T; ++s) {
+      const std::size_t v = pick[std::min(T - 1, s + lag)];
+      for (std::size_t i = 0; i < N; ++i) pred[(s * N + i) * 4] = predV[v * T * N + s * N + i];
+    }
+    {
+      std::vector<std::size_t> used(nVar, 0);
+      for (std::size_t t = 0; t < T; ++t) used[pick[t]] += 1;
+      std::printf("ridge and memory, learnt (days chosen, its top %zu's mean open-to-close):", nPick);
+      for (std::size_t v = 0; v < nVar; ++v)
+        std::printf(" [%g, %s] %zu %+.3f%%;", ridges[v % ridges.size()], halves[v / ridges.size()] > 0 ? (std::to_string(int(halves[v / ridges.size()])) + "d").c_str() : "none",
+                    used[v], icDays[v] ? 100 * icSum[v] / double(icDays[v]) : 0.0);
+      std::printf("\n  next open: ridge %g, half-life %s\n", ridges[pick[T - 1] % ridges.size()],
+                  halves[pick[T - 1] / ridges.size()] > 0 ? (std::to_string(int(halves[pick[T - 1] / ridges.size()])) + " days").c_str() : "none");
+    }
     const std::size_t warm = 250;
     std::vector<double> always, gated, mkt;
     // The trades' settings, learnt continuously: the pool (the 250 * 2^c most traded by traded value,
@@ -515,33 +582,49 @@ int main(int argc, char** argv) {
       const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
-    // The expected return, calibrated walk-forward: the model's raw expectation (its open-to-close
-    // forecast less the share's costs) ranks well but is shrunk towards zero, so a pick's calibrated
-    // expectation is what the backtest's earlier picks with a similar raw expectation (bands of 0.2%,
-    // widened to at least 100 picks) actually returned net of costs, an unfilled one as 0. Only picks
-    // whose day is over enter (calAdd after the day's decisions); before any, the raw expectation.
-    constexpr int calBins = 41;
-    constexpr double calW = 0.002;
-    std::vector<double> calN(calBins, 0.0), calS(calBins, 0.0), calF(calBins, 0.0);  // picks, their net returns' sum, those filled
+    // The expected return, calibrated walk-forward without settings: the model's raw expectation (its
+    // open-to-close forecast less the share's costs) ranks well but its scale is the model's, so a
+    // pick's calibrated expectation is an isotonic regression (pool adjacent violators: the
+    // non-decreasing curve closest to the outcomes) of what the earlier picks actually returned net of
+    // costs on their raw expectations: over every pick (an unfilled one 0; the gate's), or over the
+    // picks that bought (the gain from the buy price, what the page shows). Only picks whose day is
+    // over enter (calAdd after the day's decisions); before any, the raw expectation.
+    struct Iso {
+      std::vector<std::pair<double, double>> pts;  // (raw expectation, outcome)
+      std::vector<double> hi, val;                 // the fit: each block's largest raw expectation and its mean
+      bool dirty = false;
+      void fit() {
+        std::sort(pts.begin(), pts.end());
+        std::vector<double> sm, n, top;
+        for (const auto& [e, r] : pts) {
+          sm.push_back(r), n.push_back(1), top.push_back(e);
+          while (sm.size() > 1 && sm[sm.size() - 2] / n[n.size() - 2] > sm.back() / n.back()) {  // a violation: pool the two blocks
+            sm[sm.size() - 2] += sm.back(), n[n.size() - 2] += n.back(), top[top.size() - 2] = top.back();
+            sm.pop_back(), n.pop_back(), top.pop_back();
+          }
+        }
+        hi = top, val.resize(sm.size());
+        for (std::size_t k = 0; k < sm.size(); ++k) val[k] = sm[k] / n[k];
+        dirty = false;
+      }
+      double at(double e) {
+        if (pts.empty()) return e;
+        if (dirty) fit();
+        const auto k = std::size_t(std::lower_bound(hi.begin(), hi.end(), e) - hi.begin());
+        return val[std::min(k, val.size() - 1)];
+      }
+    };
+    Iso calPick, calFill;
     const auto rawExpected = [&](std::size_t t, std::size_t i) {
       const std::size_t src = (t - lag) * N + i;
       const double c = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
       return std::expm1(pred[src * 4] * std::exp(ft[src * Km + 20])) - c;
     };
-    const auto calBin = [&](double e) { return int(std::min<double>(calBins - 1, std::max(0.0, std::floor(e / calW + 0.5) + calBins / 2))); };
-    // filled: the mean over the picks that bought (the gain from the buy price, what the page shows);
-    // else over every pick (an unfilled one 0; the gate's). The same bands, so the same sign.
-    const auto calibrated = [&](double e, bool filled = false) {
-      const int b = calBin(e);
-      double n = calN[b], sm = calS[b], nf = calF[b];
-      for (int w = 1; n < 100 && w < calBins; ++w) {
-        if (b - w >= 0) n += calN[b - w], sm += calS[b - w], nf += calF[b - w];
-        if (b + w < calBins) n += calN[b + w], sm += calS[b + w], nf += calF[b + w];
-      }
-      if (filled) return nf > 0 ? sm / nf : e;
-      return n > 0 ? sm / n : e;
+    const auto calibrated = [&](double e, bool filled = false) { return filled ? calFill.at(e) : calPick.at(e); };
+    const auto calAdd = [&](double e, double ret, bool filled) {
+      calPick.pts.emplace_back(e, ret), calPick.dirty = true;
+      if (filled) calFill.pts.emplace_back(e, ret), calFill.dirty = true;
     };
-    const auto calAdd = [&](double e, double ret, bool filled) { calN[calBin(e)] += 1, calS[calBin(e)] += ret, calF[calBin(e)] += filled; };
     // The day's trades: up to 10 among the pool most traded, ranked with beta, at most cap of them AIM
     // shares; gated: only those whose calibrated expectation is a gain.
     const auto capTo = [&](std::size_t t, std::vector<std::pair<double, std::size_t>>& v, double cap, bool gate) {
@@ -791,10 +874,18 @@ int main(int argc, char** argv) {
       nDays += 1;
     }
     if (tradeLog) std::fclose(tradeLog);
-    std::printf("calibration (raw expectation band: picks, mean net return a pick (unfilled as 0), filled, mean net return a filled trade):");
-    for (int b = 0; b < calBins; ++b)
-      if (calN[b] >= 100) std::printf(" %+.1f%%: %.0f, %+.3f%%, %.0f, %+.3f%%;", 100 * (b - calBins / 2) * calW, calN[b], 100 * calS[b] / calN[b], calF[b], calF[b] > 0 ? 100 * calS[b] / calF[b] : 0.0);
-    std::printf("\n");
+    // The calibration at the raw expectation's deciles (isotonic: what a filled trade returned net of costs).
+    {
+      std::vector<double> es;
+      for (const auto& p : calFill.pts) es.push_back(p.first);
+      std::sort(es.begin(), es.end());
+      std::printf("calibration (%zu picks, %zu filled; raw expectation decile: a filled trade's calibrated net return):", calPick.pts.size(), calFill.pts.size());
+      for (int q = 1; q < 10 && !es.empty(); ++q) {
+        const double e = es[es.size() * std::size_t(q) / 10];
+        std::printf(" %+.2f%%: %+.3f%%;", 100 * e, 100 * calFill.at(e));
+      }
+      std::printf("\n");
+    }
     if (verify) std::printf("verify: %zu kernel trades against the trade path, %zu differ\n", verifyN, verifyBad);
     if (verifyBad > 0) {  // nothing is published from a backtest whose two implementations disagree
       std::fprintf(stderr, "verify failed: the fused kernel and the trade path disagree on %zu trades\n", verifyBad);
