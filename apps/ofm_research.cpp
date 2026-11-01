@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
   std::string csv, seriesCsv, jsonOut, ordersOut;
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
-  bool closeOnly = false;
+  bool closeOnly = false, safetyOnly = false;  // --exit close: sold at the close; --exit safety: a safety stop only (see levelsAt)
   bool scanOnly = false;  // --scan: only the page's model (no comparison models), for the daily job
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
-    if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close";
+    if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
     if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : 0;
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
@@ -297,7 +297,8 @@ int main(int argc, char** argv) {
       if (d == 1) return x / double(nB - 1);
       if (d == 2) return aimCap ? 2.0 * x : double(nPick);  // the most AIM shares a day
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
-      if (d == 6) return x / double(nA - 1);
+      if (d == 6) return safetyOnly ? 0.0 : x / double(nA - 1);  // the SAR's weight (none for a safety stop)
+      if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
     const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA};
@@ -471,6 +472,7 @@ int main(int argc, char** argv) {
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
       if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
+      if (safetyOnly) return std::make_pair(std::exp(quantile(falls[i], ps)), 1e300);  // a rare day's fall; no take-profit, else sold at the close
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -557,7 +559,7 @@ int main(int argc, char** argv) {
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
                                    std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0, stampOf[i]});
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
-              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(rises[i], 1 - axis(5, double(q))) : 0.0);
+              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
@@ -644,9 +646,11 @@ int main(int argc, char** argv) {
       for (std::size_t q = 0; q < picks.size(); ++q) {
         const std::size_t i = picks[q].second, src = (t - lag) * N + i;
         const double sig = std::exp(ft[src * Km + 20]);
-        // The limit from the last close; the levels from the limit (the entry at worst).
+        // The limit from the last close.
         const double limit = std::exp(-fx[3] * std::exp(ft[(t * N + i) * Km + 20]));
-        const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * limit, fx[4], fx[5], fx[6]);
+        // The levels from the expected entry: the limit, or the last close when the limit is above it
+        // (a limit above the close buys at about the open, not at the limit).
+        const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
         const double cost = costKind > 0 ? costOf(m.close(t, i), 0.0, stampOf[i]) : 0.0;  // the expected return shown net of its costs, as ranked
         if (picks[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
@@ -699,7 +703,7 @@ int main(int argc, char** argv) {
   // backtest against the market, the chart laid out here and the last 20 days. Results only.
   // The next open's orders in prices (--orders; prices come from EODData's data, so the file goes to
   // the private store, never the page): each trade's last close, its buy limit and its stop-loss and
-  // take-profit from the limit (the entry at worst), for tools/ibkr/submit.py; and the 60 highest
+  // take-profit from the lower of the limit and the last close, for tools/ibkr/submit.py; and the 60 highest
   // ranked of the pool with their last closes, whose opening auctions the bridge records (--auction),
   // and the pool's tickers, whose daily bars the bridge fetches from IBKR (--bars).
   if (!ordersOut.empty()) {
@@ -708,8 +712,8 @@ int main(int argc, char** argv) {
     char b[512];
     for (std::size_t q = 0; q < lastRun.picks.size(); ++q) {
       const auto& pk = lastRun.picks[q];
-      const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit);
-      auto px = [&](double x) { return std::isfinite(x) ? std::to_string(lim * (1 + x)) : std::string("null"); };
+      const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
+      auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
       std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g}", q ? "," : "",
                     m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected);
       o << b;
