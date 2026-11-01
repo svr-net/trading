@@ -272,6 +272,9 @@ int main(int argc, char** argv) {
   struct Run {
     std::vector<double> ret, mkt;
     std::vector<std::string> dates;
+    // The backtest's trades in the page's terms: the orders, those that bought, their net returns' sum
+    // (from the buy price, after costs) and how many gained.
+    double orders = 0, filled = 0, filledSum = 0, gained = 0;
     struct Pick {
       std::size_t stock;
       double expected, stop, take;  // the calibrated expected gain from the buy price if the order buys, net of its costs; the stop and take-profit from the entry (NaN: none)
@@ -379,6 +382,7 @@ int main(int argc, char** argv) {
     std::vector<std::array<double, 5>> paths;  // per candidate trade: filled, the stop and the take-profit from the entry, stopped, took profit
     std::vector<std::string> sd;
     std::vector<Run::Check> check;  // the latest day's trades (Run::check)
+    double tradeOrders = 0, tradeFilled = 0, tradeSum = 0, tradeGained = 0;  // Run's trade counts
     std::string checkDate;
     std::FILE* tradeLog = nullptr;
     if (std::getenv("X_TRADELOG") && std::string(label).find("interactions") != std::string::npos) {
@@ -654,7 +658,9 @@ int main(int argc, char** argv) {
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
         const Trade tr = trade(t, i, x[3], x[4], x[5], x[6]);
-        calAdd(rawExpected(t, i), tr.ret, tr.filled > 0);  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
+        calAdd(rawExpected(t, i), tr.ret, tr.filled > 0);
+        tradeOrders += 1;
+        if (tr.filled > 0) tradeFilled += 1, tradeSum += tr.ret, tradeGained += tr.ret > 0;  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
         if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
           if (k == 0) check.clear(), checkDate = m.dates[t + 1];
           check.push_back({i, m.close(t, i) * (1 + tr.limit), tr.filled, tr.entry, tr.exit, tr.exitPx, tr.ret});
@@ -778,6 +784,7 @@ int main(int argc, char** argv) {
     // open is not known yet).
     lastRun = Run{adaptiveLevels, mkt, sd, {}};
     lastRun.check = check, lastRun.checkDate = checkDate;
+    lastRun.orders = tradeOrders, lastRun.filled = tradeFilled, lastRun.filledSum = tradeSum, lastRun.gained = tradeGained;
     {
       const std::size_t t = T - 1;
       std::vector<std::pair<double, std::size_t>> v;
@@ -902,8 +909,9 @@ int main(int argc, char** argv) {
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
     if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << costMarket << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
                       << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << ",\"venues\":" << (venuesFile.empty() ? "false" : "true") << "}";
-    std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
-                  R.dates.back().c_str(), ms[0], ms[1], ms[2]);
+    std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g,"
+                  "\"orders\":%.0f,\"trades\":%.0f,\"avgTrade\":%.6g,\"winRate\":%.6g}", R.dates.front().c_str(), R.dates.back().c_str(), ms[0], ms[1], ms[2],
+                  R.orders, R.filled, R.filled > 0 ? R.filledSum / R.filled : 0.0, R.filled > 0 ? R.gained / R.filled : 0.0);
     o << b;
     o << b << ",\"orders\":[";
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
