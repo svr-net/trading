@@ -37,8 +37,9 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   take-profit is not credited (the high may have come first); `--exit close` sells every trade
   at the close instead. Every lattice point's daily trades are one fused kernel
   (kernels/v2/levels.wgsl and records.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
-  traded shares), the ranking (from the prediction in volatilities to the expected return), the
-  limit's depth d (pool, ranking and limit for return), the levels (for return per unit of
+  traded shares), the ranking (the expected return net of each share's own costs, from in volatilities
+  to as a return), the limit's depth d (pool, ranking and limit for return, each by its record
+  averaged over the level settings), the levels (for return per unit of
   downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only
   when the high clears it by half a spread. Net of costs: every filled trade pays Interactive Brokers' commissions (UK 0.05% an
   order, at least GBP 1; US USD 0.0035 a share, at least 0.35; plus exchange, clearing and US
