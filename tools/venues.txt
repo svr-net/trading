@@ -1,15 +1,15 @@
 # Each exchange's costs for ofm_research --venues (a ticker EXCHANGE:CODE takes its exchange's line):
 # exchange, the amount a trade (the exchange's currency), IBKR's commission (fixed pricing: a rate,
 # at least a minimum an order), a further fee's rate an order, the tax on buying, the tax on both
-# sides. About 1,000 a trade (NOK 10,000 in Oslo). Taxes: the French FTT (0.4% on buying shares of
+# sides. Europe EUR 5,000 a trade (NOK 58,000 in Oslo, about EUR 5,000); Asia-Pacific about 1,000. Taxes: the French FTT (0.4% on buying shares of
 # companies worth over EUR 1bn: charged on all, the pool being mostly those), the Spanish FTT (0.2%,
 # the same), the Belgian TOB (0.35% each side), the Portuguese FTT (0.3% on buying, approximate).
-PAR 1000 0.0005 3 0 0.004 0
-AMS 1000 0.0005 3 0 0 0
-BRU 1000 0.0005 3 0 0 0.0035
-LIS 1000 0.0005 3 0 0.003 0
-MSE 1000 0.0005 3 0 0.002 0
-FRA 1000 0.0005 3 0 0 0
-OSL 10000 0.0005 30 0 0 0
+PAR 5000 0.0005 3 0 0.004 0
+AMS 5000 0.0005 3 0 0 0
+BRU 5000 0.0005 3 0 0 0.0035
+LIS 5000 0.0005 3 0 0.003 0
+MSE 5000 0.0005 3 0 0.002 0
+FRA 5000 0.0005 3 0 0 0
+OSL 58000 0.0005 30 0 0 0
 ASX 1000 0.0008 6 0 0 0
 SGX 1000 0.0008 2.5 0.0004 0 0

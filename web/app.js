@@ -29,7 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.capital.toLocaleString('en-GB')} a trade in its currency)`;
+  if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade, its value in NOK in Oslo` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
 };
