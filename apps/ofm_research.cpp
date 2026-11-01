@@ -585,19 +585,25 @@ int main(int argc, char** argv) {
     for (std::size_t q = warm; q < days.size(); ++q) {
       const std::size_t t = days[q];
       if (t + 1 >= T || t < lag) continue;
-      double ms = 0, mn = 0;
-      for (std::size_t i = 0; i < N; ++i)
-        if (ft[(t * N + i) * Km + Km - 1] > 0 && tradable[t * N + i] && ft[((t - lag) * N + i) * Km + Km - 1] > 0) ms += m.close(t + 1, i) / m.close(t, i) - 1, mn += 1;
-      if (mn < 30) continue;
-      rankLiquidity(t, true);
+      // Only what is known at the close t decides: the stocks with a close and a prediction (whether a
+      // stock trades tomorrow is not known; one that does not stays unfilled, in cash).
+      double ms = 0, mn = 0, known = 0;
+      for (std::size_t i = 0; i < N; ++i) {
+        if (!(tradable[t * N + i] && std::isfinite(m.close(t, i)) && m.close(t, i) > 0 && ft[((t - lag) * N + i) * Km + Km - 1] > 0)) continue;
+        known += 1;
+        if (std::isfinite(m.close(t + 1, i)) && m.close(t + 1, i) > 0) ms += m.close(t + 1, i) / m.close(t, i) - 1, mn += 1;  // the market's day (a diagnostic)
+      }
+      if (known < 30) continue;
+      rankLiquidity(t, false);
       std::vector<std::vector<std::pair<double, std::size_t>>> v(nR);
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / (nB * nK))), axis(1, double(k / nK % nB)), axis(2, double(k % nK)));
       const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2];  // no AIM cap, no gate
       double r = 0, pm = 0;
-      for (const auto& e : all0) r += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / double(all0.size()), pm += e.first / double(all0.size());
-      always.push_back(r), gated.push_back(pm > 0 ? r : 0.0), mkt.push_back(ms / mn), sd.push_back(m.dates[t + 1]);
+      const auto oc = [&](std::size_t i) { const double x = m.close(t + 1, i) / m.open(t + 1, i) - 1; return std::isfinite(x) ? x : 0.0; };  // no bar: cash
+      for (const auto& e : all0) r += oc(e.second) / double(all0.size()), pm += e.first / double(all0.size());
+      always.push_back(r), gated.push_back(pm > 0 ? r : 0.0), mkt.push_back(mn > 0 ? ms / mn : 0.0), sd.push_back(m.dates[t + 1]);
       double rk = 0;
-      for (const auto& e : all1) rk += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / double(all1.size());
+      for (const auto& e : all1) rk += oc(e.second) / double(all1.size());
       byRank[1].push_back(rk);
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();

@@ -124,12 +124,16 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research
+          cmake --build build --target ofm_research ofm_tests
       # The predictive model (apps/ofm_research, fused kernels in kernels/v2): every share's
       # features from its daily OHLCV, a walk-forward linear model with liquidity and volatility
       # interactions, traded on the prediction one close older (so bid-ask bounce between the
       # last close and the next open is not learnt); the next open's 10 highest, bought at the open
       # and sold at the close. Results only.
+      # Before anything is published: the model's tests and its no-look-ahead checks (a generated
+      # market: later data changed, a day's bars removed, the kernel against the trade path).
+      - name: Tests and no-look-ahead checks
+        run: ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research
       - name: The model and the daily trades (results only)
         run: |
           set -o pipefail
