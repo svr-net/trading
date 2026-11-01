@@ -27,7 +27,7 @@
     <h2 id="trades-title">Trades for the next open</h2>
     <p class="muted" id="asof">Loading the latest scan…</p>
     <div class="table-scroll"><table id="plan"></table></div>
-    <p class="hint">Each trade's buy limit from the last close, its expected return from the open to the close, and its stop-loss and take-profit from the entry. One unit in every trade, an unfilled one stays in cash; the backtest's daily result is the average of the day's trades, every prediction made only from earlier days. The backtest is after Interactive Brokers' commissions (1,000 a trade in each market's currency) and transaction taxes (in the UK 0.5% stamp duty on buying, none on AIM shares; in Europe the French, Spanish and Portuguese taxes and the Belgian one); the model learns its limits and levels net of them. Prices are not published under the data licence.</p>
+    <p class="hint">Each trade's buy limit from the last close, its expected return (what the backtest's earlier picks with a similar forecast actually returned after costs, an unfilled order counted as cash), and its stop-loss and take-profit. One unit in every trade, an unfilled one stays in cash; the backtest's daily result is the average of the day's trades, every prediction made only from earlier days. The backtest is after Interactive Brokers' commissions (1,000 a trade in each market's currency) and transaction taxes (in the UK 0.5% stamp duty on buying, none on AIM shares; in Europe the French, Spanish and Portuguese taxes and the Belgian one); the model learns its limits and levels net of them. Prices are not published under the data licence.</p>
 
     <h2>Backtest</h2>
     <div class="verdict" id="verdict"></div>
