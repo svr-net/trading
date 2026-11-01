@@ -178,6 +178,12 @@ auction samples stay empty and the bars are refused.
   bars with the exchange's data, else its free delayed quote); an order whose units cannot be
   confirmed is skipped, never sent.
 
+- **The day's paths (research):** from the auction's time to 20 minutes after the close, the bridge
+  records the day's candidates' prices every 30 seconds from IBKR's free delayed data and writes them
+  to the private store (`paths/<MARKET>/<date>.csv`; `PATHS=0` turns it off). Daily bars cannot tell
+  whether a day's high came before or after its low; these paths settle, on the market's own shares,
+  whether buying back after a stop pays (`build/ofm_paths paths/UK/*.csv`).
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |

@@ -8,6 +8,7 @@
 #include <map>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <set>
@@ -498,6 +499,16 @@ int main(int argc, char** argv) {
     const bool netRank = !std::getenv("X_GROSSRANK");
     const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;  // research: an open fill pays the limit, not the open
     const bool verify = std::getenv("X_VERIFY") != nullptr;
+    double rebuyF = 0;
+    int rebuyMode = 0;
+    double rebuyW = 1;  // X_REBUY=f,mode[,w]: mode 0 worst, 1 an unclear day at weight w, 2 certain only
+    if (const char* e = std::getenv("X_REBUY")) {
+      rebuyF = std::atof(e);
+      if (const char* c1 = std::strchr(e, ',')) {
+        rebuyMode = std::atoi(c1 + 1);
+        if (const char* c2 = std::strchr(c1 + 1, ',')) rebuyW = std::atof(c2 + 1);
+      }
+    }
     std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
@@ -632,6 +643,7 @@ int main(int argc, char** argv) {
       double limit, entry;
       int filled, exit;
       double ret, stop, take, exitPx;
+      int rebought;
     };
     const auto trade = [&](std::size_t t, std::size_t i, double d, double ps, double pt, double al) {
       Trade r{};
@@ -647,7 +659,7 @@ int main(int argc, char** argv) {
       // the limit or the previous close when the limit is above it.
       const double anchor = std::min(L, pc);
       const auto [fs, fk] = levelsAt(t, i, anchor, ps, pt, al);
-      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0};  // a stop within a spread of the anchor: no order (cash)
+      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0};  // a stop within a spread of the anchor: no order (cash)
       const double stop = anchor * fs, take = anchor * fk;
       r.stop = stop / r.entry - 1, r.take = fk < 1e300 ? take / r.entry - 1 : 0.0;
       double px = c;
@@ -656,6 +668,16 @@ int main(int argc, char** argv) {
       else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
       r.ret = px / r.entry - 1, r.exitPx = px;
       r.ret -= costOf(r.entry, r.ret, i);
+      // X_REBUY=f[,2] (research, as kernels/v2/levels.wgsl): a buy-back after the stop.
+      if (rebuyF > 0 && lo <= stop) {
+        const double rb = stop + rebuyF * (r.entry - stop);
+        if ((rebuyMode == 2 ? c : hi) >= rb * half) {
+          const double buy = rb * half, tgt = r.entry * (1 + costOf(r.entry, 0.0, i));
+          const double px2 = c >= tgt * half ? tgt : c, g2 = px2 / buy - 1;
+          const double w = rebuyMode == 1 && c < rb * half ? rebuyW : 1.0;  // mode 1: an unclear day at weight w
+          r.ret += w * (g2 - costOf(buy, g2, i)), r.rebought = 1;
+        }
+      }
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
@@ -732,13 +754,14 @@ int main(int argc, char** argv) {
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
+              st.insert(st.end(), {rebuyF, double(rebuyMode), rebuyW});  // the buy-back (research; 0: none)
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + 3);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();

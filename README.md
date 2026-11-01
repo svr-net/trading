@@ -59,6 +59,10 @@ the private store, by the daily job), and `tools/ibkr/submit.py` places them thr
 `ofm_research --csv stocks.csv [--series futures.csv] [--lag 1] [--top N] [--json scan.json]`
 prints each feature's day-by-day predictive power and the backtests, and writes the page's scan.
 
+`ofm_paths paths/UK/*.csv` (or `--bars` 5-minute bars): a buy-back after a stop replayed on intraday
+paths, against the bounds daily bars allow (research; `X_REBUY=f,mode[,w]` puts it in `ofm_research`'s
+backtest: mode 0 the worst case, 2 only days the close settles, 1 an unclear day at weight w; off by default).
+
 ## Data
 
 EODData's daily bars (key in the `EODDATA_API_KEY` secret) are kept in the private repository

@@ -18,6 +18,12 @@ prices). This script runs next to a logged-in IB Gateway:
                     the pool's daily bars over --years (2) from IBKR, paced at one request every 10.5
                     seconds (IBKR allows 60 in 10 minutes), as date,ticker,open,high,low,close,volume.
 
+  the day's paths:  python tools/ibkr/submit.py --market UK --orders UK.json --paths --out paths.csv
+                    records (places nothing) the candidates' prices through the trading day, every 30
+                    seconds from the open to 20 minutes after the close, from IBKR's free delayed data
+                    (15 minutes late; real time where subscribed), as time,ticker,last,bid,ask,type: the
+                    intraday paths the research needs to test a buy-back after a stop exactly.
+
 --capital is the amount per trade (the account's currency); --port 4002 is IB Gateway's paper
 account (4001 live, 7497/7496 TWS). --dry-run prints the orders without connecting. Every order
 carries orderRef ofm-<market>-<date>, so --close touches only this model's orders.
@@ -122,7 +128,8 @@ def main():
     a.add_argument('--dry-run', action='store_true', help='print the orders; do not connect')
     a.add_argument('--auction', action='store_true', help="record the candidates' opening auction (places nothing)")
     a.add_argument('--bars', action='store_true', help="fetch the pool's daily bars from IBKR into --out")
-    a.add_argument('--out', help='the CSV file for --bars')
+    a.add_argument('--out', help='the CSV file for --bars or --paths')
+    a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     args = a.parse_args()
@@ -134,6 +141,8 @@ def main():
         return auction(args)
     if args.bars:
         return daily_bars(args)
+    if args.paths:
+        return paths(args)
     if not args.close and not args.report:
         if not args.orders:
             sys.exit('--orders is required (or --close)')
@@ -299,6 +308,60 @@ def auction(args):
     filled = sum(1 for r in rows.values() if any(s['price'] for s in r['samples']))
     sys.stderr.write(f'{args.market} auction: {len(rows)} shares, an indicative price for {filled}\n')
     print(json.dumps({'date': opens.date().isoformat(), 'market': args.market, 'asOf': book.get('asOf'), 'shares': list(rows.values())}))
+
+
+CLOSE = {'UK': ('Europe/London', 16, 35), 'EU': ('Europe/Paris', 17, 35), 'US': ('America/New_York', 16, 0), 'APAC': ('Australia/Sydney', 16, 10)}
+
+
+def paths(args):
+    """The candidates' prices through the day (places nothing): every 30 seconds from the open to 20
+    minutes after the close, IBKR's delayed data (type 3: real time where the account is subscribed,
+    else 15 minutes late, free), as time,ticker,last,bid,ask,type in --out (the time this script's,
+    the exchange's zone; a delayed row's prices are about 15 minutes older)."""
+    import csv
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from ib_async import IB
+
+    if not args.out:
+        sys.exit('--out is required with --paths')
+    book = json.load(open(args.orders))
+    cands = book.get('candidates') or book['orders']
+    zone, h, mi = OPEN[args.market]
+    tz = ZoneInfo(zone)
+    now = datetime.now(tz)
+    opens = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+    _, ch, cm = CLOSE[args.market]
+    ends = now.replace(hour=ch, minute=cm, second=0, microsecond=0) + timedelta(minutes=20)
+    if now > ends:
+        sys.exit(f'{args.market} closed at {ch:02d}:{cm:02d}: too late to record its day')
+    ib = IB()
+    ib.connect(args.host, args.port, clientId=args.client_id + 4)  # beside the orders', the auction's and the bars' clients
+    ib.reqMarketDataType(3)  # delayed where not subscribed
+    num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > 0 else ''  # noqa: E731
+    tickers = {}
+    for c in cands:
+        contract = contract_of(c['ticker'], args.market)
+        if ib.qualifyContracts(contract):
+            tickers[c['ticker']] = ib.reqMktData(contract, '', False, False)
+    rows = 0
+    with open(args.out, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['time', 'ticker', 'last', 'bid', 'ask', 'type'])
+        while datetime.now(tz) < opens:
+            ib.sleep(max(0.5, min(30.0, (opens - datetime.now(tz)).total_seconds())))
+        while datetime.now(tz) < ends:
+            at = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+            for t, k in tickers.items():
+                if num(k.last) or num(k.bid):
+                    w.writerow([at, t, num(k.last), num(k.bid), num(k.ask), k.marketDataType])
+                    rows += 1
+            f.flush()
+            ib.sleep(30)
+    for k in tickers.values():
+        ib.cancelMktData(k.contract)
+    ib.disconnect()
+    print(f'{args.market} paths: {len(tickers)} shares, {rows} prices')
 
 
 def diag(args):

@@ -10,6 +10,7 @@ and buttons that place them or close the positions through IB Gateway (tools/ibk
   POST /close  {"market": "UK"}    cancel the unfilled ones and sell at the close (submit.py --close)
   GET  /diag                       checks: the token, the orders, IB Gateway, the account, the data, the schedule
   POST /bars   {"market": "UK"}    fetch the pool's daily bars from IBKR into the private store (background)
+  POST /paths  {"market": "UK"}    record today's candidates' prices through the day (background)
 
 Only the page's origin may call it (CORS, with Chrome's private-network permission), and every call
 must carry the key (header X-Bridge-Key) that you set in BRIDGE_KEY and enter once on the page; a
@@ -29,6 +30,12 @@ HISTORY_DIR/auction and written to the private store as auction/<MARKET>/<date>.
 research reads it. On Saturdays at AUTO_BARS (06:00; empty: off), and on POST /bars, it fetches
 IBKR's daily bars for the pool into the private store (ibkr/<MARKET>/daily.csv): IBKR's opens are the
 opening auctions', to check the opens the model learns from.
+
+The day's paths (PATHS=1, the default; 0 off): on the same days, at the auction's time (or, without
+it, the place time), the bridge records in the background the day's candidates' prices every 30
+seconds until 20 minutes after the close, from IBKR's free delayed data (submit.py --paths), and
+writes them to the private store as paths/<MARKET>/<date>.csv: the intraday paths the research needs
+to test a buy-back after a stop exactly (daily bars cannot tell whether the high came first).
 
 History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, the model's
 own result for each day's orders arrives with the next orders file (the backtest's fill, entry, exit
@@ -78,6 +85,7 @@ REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get(
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
 AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
+PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
@@ -207,6 +215,40 @@ def record_auction(market):
 
 
 BARS_RUNNING = set()
+PATHS_RUNNING = set()
+
+
+def record_paths(market):
+    """Today's candidates' prices through the day (submit.py --paths), written to the private store
+    as paths/<MARKET>/<date>.csv; returns (ok, summary). Runs for the whole session: in a thread."""
+    if market in PATHS_RUNNING:
+        return False, 'already running'
+    PATHS_RUNNING.add(market)
+    try:
+        day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+        out_file = os.path.join(HISTORY, f'paths-{market}-{day}.csv')
+        os.makedirs(HISTORY, exist_ok=True)
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--paths', '--out', out_file], timeout=12 * 3600)
+        summary = out.splitlines()[-1] if out else ''
+        if code != 0 or not os.path.exists(out_file):
+            return False, summary or 'failed'
+        with open(out_file, 'rb') as f:
+            store_put(f'paths/{market}/{day}.csv', f.read(), f'{market} intraday paths {day}')
+        return True, summary
+    finally:
+        PATHS_RUNNING.discard(market)
+
+
+def in_background(market, action, job):
+    def run():
+        try:
+            ok, summary = job(market)
+        except Exception as e:  # noqa: BLE001
+            ok, summary = False, str(e)
+        LAST.insert(0, (datetime.now(ZoneInfo(ZONE[market])).strftime('%Y-%m-%d %H:%M %Z'), market, action, ok, summary))
+        del LAST[10:]
+        sys.stderr.write(f'bridge: {action} {market}: {"ok" if ok else "FAILED"} {summary}\n')
+    threading.Thread(target=run, daemon=True).start()
 
 
 def fetch_bars(market):
@@ -273,7 +315,7 @@ def diag():
         add(f'{m} historical data', bool(d.get('historyBars')), f"{d.get('historyBars', 0)} daily bars" + (f" ({d['historyError']})" if d.get('historyError') else ''))
         if d.get('errors'):
             add('IBKR messages', None, ' | '.join(d['errors']))
-    plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
+    plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     failed = [x for x in LAST if not x[3]]
     add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:4]) or 'none yet')
@@ -336,6 +378,9 @@ def auto_run(market, action):
         return record_auction(market)
     elif action == 'bars':
         return fetch_bars(market)
+    elif action == 'paths':  # the whole session: in the background, logged when it ends
+        in_background(market, 'paths', record_paths)
+        return True, 'recording the day\'s paths until after the close'
     else:
         code, out = run_submit(['--market', market, '--close'])
     return code == 0, out.splitlines()[-1] if out else ''
@@ -351,7 +396,9 @@ def scheduler():
             weekend = now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS')  # AUTO_WEEKENDS: for testing only
             plan = [('bars', BARS_AT)] if now.weekday() == 5 and BARS_AT else []  # Saturdays: IBKR's daily bars
             if not weekend:
-                plan += [('place', TIMES[m][0]), ('auction', AUCTION.get(m)), ('close', TIMES[m][1]), ('report', REPORT[m])]
+                # The paths before the auction: they start at once (a thread), the auction then takes ten minutes.
+                plan += [('place', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
+                         ('close', TIMES[m][1]), ('report', REPORT[m])]
             if not plan:
                 continue
             for action, hhmm in ((a, t) for a, t in plan if t):
@@ -469,6 +516,11 @@ class Handler(BaseHTTPRequestHandler):
                 del LAST[10:]
             threading.Thread(target=run, daemon=True).start()
             return self.reply(202, {'ok': True, 'log': f'{m}: fetching the pool\'s daily bars from IBKR (about an hour); the status shows when done'})
+        if path == '/paths':
+            if m in PATHS_RUNNING:
+                return self.reply(409, {'ok': False, 'log': f'{m} paths: already recording'})
+            in_background(m, 'paths', record_paths)
+            return self.reply(202, {'ok': True, 'log': f'{m}: recording the candidates\' prices until 20 minutes after the close'})
         if path == '/report':
             ok, summary = report(m)
             return self.reply(200 if ok else 500, {'ok': ok, 'log': summary})

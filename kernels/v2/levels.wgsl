@@ -87,6 +87,29 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
         else if (!intra && h >= take * half) { px = max(take, o); }  // a take-profit below the open fills at the open
         let gross : f32 = px / entry - 1.0;
         y = gross - costOf(entry, gross, b);
+        // A buy-back after the stop (research; st[b + 16 + 2 u0] the fraction f > 0, then its mode): a
+        // buy-stop f of the way from the stop back to the entry, bought at it and a half-spread; sold at
+        // the entry and a round trip's costs once the close is at it, else at the close. Mode 0 buys
+        // whenever the high reached it (the high may have come first: a worst case), 2 only when the
+        // close is above it (the rise came after the stop: certain), 1 as 0 with an unclear day (the high above it,
+        // the close below) at the weight st[b + 18 + 2 u0] (the share of its worst case the intraday paths show).
+        let rb0 : u32 = b + 16u + 2u * P.u0;
+        let rf : f32 = st[rb0];
+        if (rf > 0.0 && l <= stop) {
+          let rb : f32 = stop + rf * (entry - stop);
+          var up : f32 = h;
+          if (st[rb0 + 1u] > 1.5) { up = c; }
+          if (up >= rb * half) {
+            let buy : f32 = rb * half;
+            let tgt : f32 = entry * (1.0 + costOf(entry, 0.0, b));
+            var px2 : f32 = c;
+            if (c >= tgt * half) { px2 = tgt; }
+            let g2 : f32 = px2 / buy - 1.0;
+            var w : f32 = 1.0;
+            if (st[rb0 + 1u] > 0.5 && st[rb0 + 1u] < 1.5 && c < rb * half) { w = st[rb0 + 2u]; }  // mode 1: an unclear day at weight w
+            y = y + w * (g2 - costOf(buy, g2, b));
+          }
+        }
       }
     }
     ret[i] = y;
