@@ -63,8 +63,14 @@ function render(r, source) {
       return row;
     }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
   const B = r.backtest;
+  // The same trades in the expected gain's terms: per trade that bought, from its buy price.
+  const perTrade = B.trades ? `
+    <div class="tile"><span class="k">Per trade that bought</span><span class="v">${pct(B.avgTrade, 2)}</span><span class="s">average from the buy price · ${Math.round(100 * B.trades / B.orders)}% of orders bought · ${Math.round(100 * B.winRate)}% of trades gained</span></div>` : '';
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>`;
+    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>${perTrade}`;
+  $('odds').textContent = B.trades
+    ? `In the backtest ${Math.round(100 * B.trades / B.orders)}% of orders bought (the rest stayed in cash), their average was ${pct(B.avgTrade, 2)} and ${Math.round(100 * B.winRate)}% of them gained.`
+    : '';
   table($('recent'), [['Day'], ['Simulated result', 'num']],
     r.recent.slice().reverse().map((d) => [[d.date], signed(d.day)]));
   drawChart(r);
