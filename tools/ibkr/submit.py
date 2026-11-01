@@ -24,6 +24,13 @@ prices). This script runs next to a logged-in IB Gateway:
                     (15 minutes late; real time where subscribed), as time,ticker,last,bid,ask,type: the
                     intraday paths the research needs to test a buy-back after a stop exactly.
 
+  the buy-back:     python tools/ibkr/submit.py --market UK --orders UK.json --rebuy --until 16:20 --out state.txt
+                    watches the day's fills until --until (the exchange's clock): when one of the
+                    model's stops has sold, places the order's buy-back (its "rebuy" fraction of the way
+                    from the stop back up to the price paid: a buy-stop there for the shares sold) with
+                    its sale at the price paid and a round trip's costs (a limit sell attached), as the
+                    backtest trades it; whatever is left is sold at the close as before (--close).
+
 --capital is the amount per trade (the account's currency); --port 4002 is IB Gateway's paper
 account (4001 live, 7497/7496 TWS). --dry-run prints the orders without connecting. Every order
 carries orderRef ofm-<market>-<date>, so --close touches only this model's orders.
@@ -31,6 +38,7 @@ carries orderRef ofm-<market>-<date>, so --close touches only this model's order
 Requires: pip install ib_async
 """
 import argparse
+import os
 import json
 import math
 import sys
@@ -129,6 +137,8 @@ def main():
     a.add_argument('--auction', action='store_true', help="record the candidates' opening auction (places nothing)")
     a.add_argument('--bars', action='store_true', help="fetch the pool's daily bars from IBKR into --out")
     a.add_argument('--out', help='the CSV file for --bars or --paths')
+    a.add_argument('--rebuy', action='store_true', help="watch the day's stops and place their buy-backs")
+    a.add_argument('--until', help='HH:MM, the exchange clock: --rebuy stops watching then')
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
@@ -143,6 +153,8 @@ def main():
         return daily_bars(args)
     if args.paths:
         return paths(args)
+    if args.rebuy:
+        return rebuy(args, ref)
     if not args.close and not args.report:
         if not args.orders:
             sys.exit('--orders is required (or --close)')
@@ -151,7 +163,8 @@ def main():
         if args.dry_run:
             for o in book['orders']:
                 q = math.floor(capital_of(o, args) / per_share(o, args.market)) if o['limit'] > 0 else 0
-                print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}")
+                print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}"
+                      + (f"  buy-back {100 * o['rebuy']:.0f}% back after a stop" if (o.get('rebuy') or 0) > 0 else ''))
             return
 
     from ib_async import IB, Stock, LimitOrder, StopOrder, MarketOrder  # imported here so --dry-run needs no install
@@ -362,6 +375,66 @@ def paths(args):
         ib.cancelMktData(k.contract)
     ib.disconnect()
     print(f'{args.market} paths: {len(tickers)} shares, {rows} prices')
+
+
+def rebuy(args, ref):
+    """The buy-backs after the day's stops (places them; see the module's help). Each stop is handled
+    once (the handled shares kept in --out, so a restart does not buy back twice)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from ib_async import IB, LimitOrder, StopOrder
+
+    book = json.load(open(args.orders))
+    plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
+    if not plan:
+        print(f'{args.market} buy-back: none in the orders')
+        return
+    zone = OPEN[args.market][0]
+    tz = ZoneInfo(zone)
+    h, mi = (int(x) for x in (args.until or '16:20').split(':'))
+    until = datetime.now(tz).replace(hour=h, minute=mi, second=0, microsecond=0)
+    state = args.out or f'/tmp/rebuy-{ref}.txt'
+    handled = set(open(state).read().split()) if os.path.exists(state) else set()
+    ib = IB()
+    ib.connect(args.host, args.port, clientId=args.client_id + 5)
+    placed = 0
+    while datetime.now(tz) < until:
+        fills = ib.reqExecutions()
+        for tr in ib.reqCompletedOrders(True):
+            o, c = tr.order, tr.contract
+            if o.orderRef != ref or o.action != 'SELL' or o.orderType != 'STP' or not tr.orderStatus.filled:
+                continue
+            key = str(c.conId)
+            if key in handled or c.symbol not in plan:
+                continue
+            handled.add(key)
+            with open(state, 'a') as f:
+                f.write(key + '\n')
+            p = plan[c.symbol]
+            buys = [x for x in fills if x.contract.conId == c.conId and x.execution.side == 'BOT' and x.execution.orderRef == ref]
+            n = sum(x.execution.shares for x in buys)
+            if not n:
+                continue
+            paid = sum(x.execution.shares * x.execution.price for x in buys) / n
+            level = float(o.auxPrice)
+            back, out = level + p['rebuy'] * (paid - level), paid * (1 + (p.get('rebuyCost') or 0))
+            contract = ib.qualifyContracts(c)[0] if ib.qualifyContracts(c) else c
+            details = ib.reqContractDetails(contract)[0]
+            rule = tick_rule(ib, details, contract.exchange)
+            back = round_to(back, tick_at(rule, details.minTick, back), 'up')
+            out = round_to(out, tick_at(rule, details.minTick, out), 'up')
+            qty = int(tr.orderStatus.filled)
+            if not (level < back < out) or qty < 1:
+                print(f'  {c.symbol}: buy-back levels out of order (stop {level}, back {back}, sale {out}); none')
+                continue
+            parent = StopOrder('BUY', qty, back, orderRef=ref, tif='DAY', transmit=False)
+            ib.placeOrder(contract, parent)
+            ib.placeOrder(contract, LimitOrder('SELL', qty, out, orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=True))
+            placed += 1
+            print(f'  {c.symbol}: stopped at {level} (paid {paid:.4f}): buy-back {qty} at {back}, sale at {out}')
+        ib.sleep(20)
+    ib.disconnect()
+    print(f'{args.market} buy-back: {placed} placed, {len(handled)} stops seen')
 
 
 def diag(args):

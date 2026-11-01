@@ -206,6 +206,10 @@ What it places for each trade, as in the backtest:
 - attached to it, the **stop-loss** (a stop sell; in every market a safety stop, at a fall the
   share makes only on a rare day) and, when the model sets one, the **take-profit** (a limit sell),
   one cancelling the other, active only once the buy has filled;
+- when the model sets one (a learnt choice, shown on the page as Buy-back), the **buy-back**: the
+  bridge watches the day's fills, and when a stop has sold it places a buy-stop for the same shares
+  part of the way back up to the price paid, with a limit sale at the price paid and a round trip's
+  costs attached (`submit.py --rebuy`);
 - with `--close`, the day's unfilled orders are cancelled and whatever is still held is **sold at
   the close** (market-on-close).
 
