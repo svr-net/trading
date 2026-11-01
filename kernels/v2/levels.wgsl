@@ -34,6 +34,10 @@ fn costOf(entry : f32, r : f32, stamp : f32) -> f32 {
     let cs : f32 = min(max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
     return (cb + cs + 0.0000278 * sell + min(0.000166 * n, 8.3)) / v;
   }
+  if (cost[0] == 3.0) {  // ASX: AUD 6 or 0.08% an order, whichever is more
+    let sell : f32 = cap * (1.0 + r);
+    return (max(6.0, 0.0008 * cap) + max(6.0, 0.0008 * sell)) / cap + stamp;
+  }
   return 0.0;
 }
 

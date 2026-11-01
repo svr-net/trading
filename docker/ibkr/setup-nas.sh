@@ -87,7 +87,7 @@ say "GitHub: the EOD_TOKEN (the daily job's token: repository svr-net/eod, Conte
 [ -n "${EOD_TOKEN:-}" ] || EOD_TOKEN=${EOD_READ_TOKEN:-}
 ask_secret EOD_TOKEN "  token (not shown)"
 ask CAPITAL "Amount a trade (account currency)" "5000"
-ask AUTO_MARKETS "Place and close automatically each weekday (UK, US, UK,US, or none)" "UK"
+ask AUTO_MARKETS "Place and close automatically each weekday (UK, US, APAC, comma separated, or none)" "UK"
 true
 ask TZ "Time zone" "Europe/London"
 if [ -z "${BRIDGE_KEY:-}" ]; then

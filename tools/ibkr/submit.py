@@ -31,6 +31,10 @@ import sys
 from datetime import date
 
 
+# Each market's exchange and currency at IBKR (US shares routed SMART).
+VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD')}
+
+
 def ib_symbol(ticker, market):
     # EODData's class shares (BRK.B) are "BRK B" at IBKR in the US; LSE keeps the dot (BT.A).
     return ticker.replace('.', ' ') if market == 'US' else ticker
@@ -49,7 +53,7 @@ def round_to(x, tick, how):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument('--market', choices=['UK', 'US'], required=True)
+    a.add_argument('--market', choices=['UK', 'US', 'APAC'], required=True)
     a.add_argument('--orders', help='the orders file (orders/<MARKET>.json from svr-net/eod)')
     a.add_argument('--capital', type=float, default=1000.0, help='amount per trade, in the account currency')
     a.add_argument('--host', default='127.0.0.1')
@@ -87,7 +91,7 @@ def main():
 
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id)
-    exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+    exch, cur = VENUE[args.market]
 
     if args.report:
         # Today's fills of this model's orders, a share at a time: bought, sold, average prices, the
@@ -183,7 +187,7 @@ def main():
     ib.disconnect()
 
 
-OPEN = {'UK': ('Europe/London', 8, 0), 'US': ('America/New_York', 9, 30)}
+OPEN = {'UK': ('Europe/London', 8, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
 
 
 def auction(args):
@@ -205,7 +209,7 @@ def auction(args):
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id + 1)  # beside the orders' client
     ib.reqMarketDataType(1)  # real time
-    exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+    exch, cur = VENUE[args.market]
     num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > -1e300 else None  # noqa: E731
     tickers = {}
     for c in cands:
@@ -250,7 +254,7 @@ def diag(args):
     accounts = ib.managedAccounts()
     out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
                serverTime=ib.reqCurrentTime().isoformat())
-    contract = Stock('VOD', 'LSE', 'GBP') if args.market == 'UK' else Stock('AAPL', 'SMART', 'USD')
+    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP'}[args.market], *VENUE[args.market])
     if ib.qualifyContracts(contract):
         ib.reqMarketDataType(1)
         k = ib.reqMktData(contract, '', False, False)
@@ -280,7 +284,7 @@ def daily_bars(args):
     pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id + 2)
-    exch, cur = ('LSE', 'GBP') if args.market == 'UK' else ('SMART', 'USD')
+    exch, cur = VENUE[args.market]
     got = missing = 0
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)

@@ -3,22 +3,24 @@
 # (dates, symbols, rows) and backtests the model on it; 'refresh' downloads every history again
 # (results only). EODData's licence does not allow redistributing the raw data, so the prices
 # stay in that private repository and are never published.
-name: Daily trades (UK and US)
+name: Daily trades (UK, US and APAC)
 
 on:
   # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
   # York close): download the day, scan, publish the proposals and email the daily report.
+  # APAC (ASX) at 08:00 UTC, after the Sydney close.
   schedule:
     - cron: '0 19 * * 1-5'
     - cron: '30 22 * * 1-5'
+    - cron: '0 8 * * 1-5'
   workflow_dispatch:
     inputs:
-      market: { description: 'Market', type: choice, options: [both, UK, US], default: both }
+      market: { description: 'Market', type: choice, options: [all, UK, US, APAC], default: all }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
-      pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US)', default: '' }
+      pool: { description: 'The most traded shares kept per exchange (default: 500 UK and APAC, 2000 US)', default: '' }
       us_exchanges: { description: 'US exchanges (comma separated)', default: 'NYSE,NASDAQ' }
 
 permissions:
@@ -32,10 +34,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || '["UK","US"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 8 * * 1-5' && '["APAC"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || '["UK","US","APAC"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || 'LSE' }}
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,7 +82,7 @@ jobs:
           mkdir -p data
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
-            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"
+            CUR=""; [ "$EX" = "LSE" ] && CUR="GBP"; [ "$EX" = "ASX" ] && CUR="AUD"
             ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
