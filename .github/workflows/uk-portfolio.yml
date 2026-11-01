@@ -142,7 +142,9 @@ jobs:
           if [ "$MARKET" = US ]; then STAMP=(--exit safety); fi
           # EU and APAC: each exchange's costs and taxes (tools/venues.txt). 1,000 a trade.
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
-          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 1000 "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
+          # X_VERIFY: every day's kernel trades are checked against the trade path that makes the orders;
+          # any difference stops the run before anything is published.
+          X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 1000 "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already

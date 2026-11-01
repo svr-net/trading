@@ -46,6 +46,48 @@ def contract_of(ticker, market):
     return Stock(ib_symbol(ticker, market), *VENUE[market])
 
 
+def reference_close(ib, contract):
+    """IBKR's last close for the share: its daily bars (the exchange's data subscription), else its
+    delayed quote (free; the close, else the last); None when neither answers."""
+    try:
+        bars = ib.reqHistoricalData(contract, '', '2 D', '1 day', 'TRADES', useRTH=True, timeout=20)
+        if bars and bars[-1].close > 0:
+            return float(bars[-1].close)
+    except Exception:  # noqa: BLE001
+        pass
+    ib.reqMarketDataType(4)  # delayed, frozen when the market is shut
+    k = ib.reqMktData(contract, '', False, False)
+    for _ in range(16):
+        ib.sleep(0.5)
+        for x in (k.close, k.last):
+            if isinstance(x, (int, float)) and math.isfinite(x) and x > 0:
+                ib.cancelMktData(contract)
+                return float(x)
+    ib.cancelMktData(contract)
+    return None
+
+
+def tick_rule(ib, details, exchange):
+    """The share's price increments by price band (IBKR's market rule for its exchange; the LSE's
+    depend on the price), as [(low edge, increment)], or None."""
+    ids = [x for x in (details.marketRuleIds or '').split(',') if x]
+    exs = (details.validExchanges or '').split(',')
+    rid = ids[exs.index(exchange)] if exchange in exs and len(ids) == len(exs) else (ids[0] if ids else None)
+    try:
+        rules = ib.reqMarketRule(int(rid)) if rid else None
+    except Exception:  # noqa: BLE001
+        rules = None
+    return sorted(((r.lowEdge, r.increment) for r in rules), key=lambda r: r[0]) if rules else None
+
+
+def tick_at(rule, min_tick, price):
+    inc = min_tick
+    for low, step in rule or ():
+        if price >= low - 1e-12:
+            inc = step
+    return inc or 0.01
+
+
 def capital_of(o, args):
     # The order's own amount (the model's, in its exchange's currency), else --capital.
     return float(o.get('capital') or args.capital)
@@ -165,17 +207,25 @@ def main():
             print(f'  {sym}: not found at IBKR, skipped')
             continue
         details = ib.reqContractDetails(contract)[0]
-        tick = details.minTick or 0.01
-        # The price scale: IBKR's last close against ours (LSE prices can be in pence or pounds).
-        bars = ib.reqHistoricalData(contract, '', '2 D', '1 day', 'TRADES', useRTH=True)
-        scale = 1.0
-        if bars:
-            r = bars[-1].close / o['close']
-            scale = next((s for s in (1.0, 0.01, 100.0) if abs(math.log(r / s)) < 0.05), None)
-            if scale is None:
-                print(f"  {sym}: IBKR's close {bars[-1].close} does not match ours {o['close']}; skipped")
-                continue
-        lim = round_to(o['limit'] * scale, tick, 'down')
+        rule = tick_rule(ib, details, contract.exchange)
+        tick = lambda px: tick_at(rule, details.minTick, px)  # noqa: E731 - the increment at a price
+        # The price scale: IBKR's last close against ours (LSE prices can be in pence or pounds). Never
+        # assumed: without IBKR's close the order is skipped, as a wrong scale would buy without a limit
+        # and stop at once.
+        ibkr_close = reference_close(ib, contract)
+        if ibkr_close is None:
+            print(f"  {sym}: no IBKR price to check the price scale against; skipped")
+            continue
+        r = ibkr_close / o['close']
+        scale = next((s for s in (1.0, 0.01, 100.0) if abs(math.log(r / s)) < 0.05), None)
+        if scale is None:
+            print(f"  {sym}: IBKR's close {ibkr_close} does not match ours {o['close']}; skipped")
+            continue
+        # The levels must sit around the limit: the stop below it, the take-profit above it.
+        if (o.get('stop') and not o['stop'] < o['limit']) or (o.get('take') and not o['take'] > min(o['limit'], o['close'])):
+            print(f"  {sym}: levels out of order (limit {o['limit']}, stop {o.get('stop')}, take {o.get('take')}); skipped")
+            continue
+        lim = round_to(o['limit'] * scale, tick(o['limit'] * scale), 'down')
         qty = math.floor(capital_of(o, args) / per_share(o, args.market)) if lim > 0 else 0
         if qty < 1:
             print(f'  {sym}: capital {capital_of(o, args)} buys no share at {per_share(o, args.market)}; skipped')
@@ -184,9 +234,9 @@ def main():
         ib.placeOrder(contract, parent)
         children = []
         if o.get('take'):
-            children.append(LimitOrder('SELL', qty, round_to(o['take'] * scale, tick, 'up'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
+            children.append(LimitOrder('SELL', qty, round_to(o['take'] * scale, tick(o['take'] * scale), 'up'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
         if o.get('stop'):
-            children.append(StopOrder('SELL', qty, round_to(o['stop'] * scale, tick, 'down'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
+            children.append(StopOrder('SELL', qty, round_to(o['stop'] * scale, tick(o['stop'] * scale), 'down'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
         if children:
             oca = f'{ref}-{sym}'
             for c in children:

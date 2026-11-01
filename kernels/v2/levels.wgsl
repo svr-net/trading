@@ -66,18 +66,24 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var y : f32 = 0.0;
     if (o <= lim) { entry = o; if (st[b + 8u] > 1.5) { entry = lim; } } else if (l <= lim / half) { entry = lim; intra = true; }
     if (entry > 0.0) {
-      var stop : f32 = 0.0;
+      // The levels as the orders set them before the open: from the anchor, the limit or the previous
+      // close when the limit is above it (the fill's price is not known when they are placed).
+      let anchor : f32 = min(lim, st[b + 4u]);
+      var fs : f32 = 0.0;
       var take : f32 = 1.0e30;
       if (P.u2 == 0u && st[b + 8u] > 0.5) {
         var ls : f32 = st[b + 16u + cs];
-        if (sar > 0.0) { ls = (1.0 - av[ca]) * ls + av[ca] * log(min(1.0, sar / entry)); }
-        stop = entry * exp(ls);
-        take = entry * exp(st[b + 16u + P.u0 + ct]);
+        if (sar > 0.0) { ls = (1.0 - av[ca]) * ls + av[ca] * log(min(1.0, sar / anchor)); }
+        fs = exp(ls);
+        take = anchor * exp(st[b + 16u + P.u0 + ct]);
       }
-      // A stop within a spread of the entry would sell as the trade fills: no trade (cash).
-      if (stop * half * half <= entry) {
+      let stop : f32 = anchor * fs;
+      // A stop within a spread of the anchor: no order placed (cash), as the orders skip it.
+      if (fs * half * half <= 1.0) {
         var px : f32 = c;
-        if (l <= stop) { px = stop / half; } else if (!intra && h >= take * half) { px = take; }
+        if (!intra && o <= stop) { px = o / half; }          // opened through the stop: sold at the open
+        else if (l <= stop) { px = stop / half; }
+        else if (!intra && h >= take * half) { px = max(take, o); }  // a take-profit below the open fills at the open
         let gross : f32 = px / entry - 1.0;
         y = gross - costOf(entry, gross, b);
       }
