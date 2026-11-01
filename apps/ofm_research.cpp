@@ -366,7 +366,7 @@ int main(int argc, char** argv) {
       if (d == 1) return x / double(nB - 1);
       if (d == 2) return x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
-      if (d == 6) return safetyOnly ? 0.0 : x / double(nA - 1);  // the SAR's weight (none for a safety stop)
+      if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
@@ -584,7 +584,7 @@ int main(int argc, char** argv) {
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
       if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
-      if (safetyOnly) return std::make_pair(std::exp(quantile(falls[i], ps)), 1e300);  // a rare day's fall; no take-profit, else sold at the close
+      if (safetyOnly) return std::make_pair(std::exp(std::max(quantile(falls[i], ps), -al * std::exp(ft[(t * N + i) * Km + 20]))), 1e300);  // a rare day's fall; no take-profit, else sold at the close
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -697,7 +697,7 @@ int main(int argc, char** argv) {
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
         H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP);
-        H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : 0u;
+        H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
         ofm::detail::dispatch(kl, ofm::detail::groups(std::uint32_t(ns * nLe), 64));
@@ -755,10 +755,10 @@ int main(int argc, char** argv) {
         for (std::size_t d = 0; d < nD; ++d) mx[d] += x[d] / double(used.size());
       double gated = 0;
       for (const auto& x : used) gated += gateOf(x[2]) / double(used.size());
-      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], mx[6]);
-      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n", fx[0], fx[1],
-                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], fx[6]);
+      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n",
+                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6]);
+      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n", fx[0], fx[1],
+                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         std::vector<double> z;
