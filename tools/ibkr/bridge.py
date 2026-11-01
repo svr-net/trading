@@ -256,7 +256,10 @@ def watch_rebuy(market):
         day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
         state = os.path.join(HISTORY, f'rebuy-{market}-{day}.txt')
         os.makedirs(HISTORY, exist_ok=True)
-        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--rebuy', '--until', TIMES[market][1], '--out', state], timeout=12 * 3600)
+        # Until two minutes before the close's time: the close then runs as the same client (one connection at a time).
+        h, mi = (int(x) for x in TIMES[market][1].split(':'))
+        until = (datetime(2000, 1, 1, h, mi) - timedelta(minutes=2)).strftime('%H:%M')
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--rebuy', '--until', until, '--out', state], timeout=12 * 3600)
         return code == 0, (out.splitlines()[-1] if out else '')
     finally:
         REBUY_RUNNING.discard(market)
