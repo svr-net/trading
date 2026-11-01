@@ -89,6 +89,14 @@ jobs:
             fi
             tail -n +2 "data/$EX.csv" >> data/stocks.csv
           done
+      # EODData serves only today's fundamentals: each day's, for the model's shares, are kept in the
+      # store (fundamentals/<EXCHANGE>/<date>.csv.gz) so that a history builds up; with the latest
+      # profiles (sectors, industries). A failure here does not stop the scan.
+      - name: Keep the day's fundamentals and the profiles (svr-net/eod)
+        continue-on-error: true
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Update futures, index and currency series (only the days missing)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
