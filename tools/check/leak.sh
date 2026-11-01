@@ -10,7 +10,8 @@ set -eu
 BIN=${1:-build/ofm_research}
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
-# 1,100 weekdays from 2018 (GNU date), 300 shares: random walks with gaps, ranges and volumes.
+# 1,100 weekdays from 2018 (GNU date), 300 shares: random walks with gaps, ranges and volumes, the
+# open-to-close moves a little persistent (a pattern the model can learn, so the gate lets trades through).
 i=0; n=0
 : > "$W/days"
 while [ "$n" -lt 1100 ]; do
@@ -21,14 +22,14 @@ awk 'BEGIN { srand(42); print "date,ticker,open,high,low,close,volume" }
   { day[NR] = $1 } END {
     for (s = 1; s <= 300; s++) { p = 20 + 80 * rand(); v = 1e5 * (1 + 20 * rand()); vol = 0.01 + 0.03 * rand()
       for (k = 1; k <= NR; k++) {
-        o = p * exp(vol * (rand() - 0.5)); c = o * exp(2 * vol * (rand() - 0.5))
+        o = p * exp(vol * (rand() - 0.5)); r = 2 * vol * (rand() - 0.5) + 0.5 * (k > 1 ? r : 0); c = o * exp(r)
         h = (o > c ? o : c) * (1 + vol * rand()); l = (o < c ? o : c) / (1 + vol * rand())
         printf "%s,S%03d,%.4f,%.4f,%.4f,%.4f,%d\n", day[k], s, o, h, l, c, v * (0.5 + rand()); p = c } } }' "$W/days" > "$W/base.csv"
 CUT=$(sed -n 800p "$W/days"); HALT=$(sed -n 700p "$W/days")
 awk -F, -v OFS=, -v cut="$CUT" 'BEGIN { srand(7) } NR > 1 && $1 >= cut { f = exp((rand() - 0.5) * 0.2); $3 *= f; $6 *= f; $4 = ($3 > $6 ? $3 : $6) * 1.02; $5 = ($3 < $6 ? $3 : $6) / 1.02; $7 = int($7 * (0.5 + rand())) } { print }' "$W/base.csv" > "$W/noise.csv"
 awk -F, -v halt="$HALT" 'BEGIN { srand(11) } NR > 1 && $1 == halt && rand() < 0.1 { next } { print }' "$W/base.csv" > "$W/halt.csv"
 for v in base noise halt; do
-  X_VERIFY=1 X_TRADELOG="$W/$v.log" "$BIN" --csv "$W/$v.csv" --lag 1 --scan --costs UK --capital 1000 > "$W/$v.out"
+  X_VERIFY=1 X_TRADELOG="$W/$v.log" "$BIN" --csv "$W/$v.csv" --lag 1 --scan --costs UK --capital 5000 > "$W/$v.out"
   grep -q "verify: [0-9]* kernel trades against the trade path, 0 differ" "$W/$v.out" || { echo "FAIL: kernel and trade path differ ($v)"; grep verify "$W/$v.out"; exit 1; }
 done
 pre() { awk -F, -v d="$2" 'NR > 1 && $1 < d' "$1"; }

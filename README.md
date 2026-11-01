@@ -36,7 +36,7 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   in 10, of those days; the stop blended with its parabolic SAR); after a fill during the day the
   take-profit is not credited (the high may have come first); `--exit close` sells every trade
   at the close instead; `--exit safety` (every market) keeps only a safety stop, at the fall the share
-  reached on a learnt 1 in 20 to 1 in 100 of its days, no deeper than its recovery stop (from its own last 60 to 500 days, a learnt window or none: the stop that would have paid the most, each day sold at it once the low reached it, else at the close; a depth past which the share went on falling rather than recovered), and sells at the close otherwise (US shares
+  reached on a learnt 1 in 20 to 1 in 100 of its days, at most a learnt 1.5 to 6 of its own daily sigmas below the buy price, and sells at the close otherwise (US shares
   stopped during the day mostly recover by the close: +1% a year with learnt stops and
   take-profits against +10% with the safety stop, after costs; the UK +55% a year, Sharpe 4.94, against +79%, 4.98: the stop no longer sells into the opening volatility). Every lattice point's daily trades are one fused kernel
   (kernels/v2/levels.wgsl and records.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
@@ -44,7 +44,8 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   to as a return), the limit's depth d (pool, ranking and limit for return, each by its record
   averaged over the level settings), the UK's daily cap on AIM shares (0 to 10, for return per
   unit of downside), the levels (for return per unit of
-  downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only
+  downside, Sortino). Only trades expected to gain after costs are taken or published (the
+  expectation calibrated on the past days' top 10 before this filter, so it keeps learning). A stop sells half a spread below its level, and a take-profit fills only
   when the high clears it by half a spread. Net of costs: every filled trade pays Interactive Brokers' commissions (UK 0.05% an
   order, at least GBP 1; US USD 0.0035 a share, at least 0.35; plus exchange, clearing and US
   regulatory fees) on GBP/USD 5,000 a trade, and UK buys 0.5% stamp duty, except AIM shares, exempt since 2014 (`--costs UK|US
