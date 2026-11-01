@@ -30,12 +30,12 @@ fn costOf(entry : f32, r : f32, b : u32) -> f32 {
     let fee : f32 = st[b + 13u];
     return (max(lo, pct * cap) + fee * cap + max(lo, pct * sell) + fee * sell) / cap + st[b + 14u] + st[b + 15u] * (2.0 + r);
   }
-  if (kind == 2.0) {
+  if (kind == 2.0) {  // a rate a share (b + 11), at least a minimum (b + 12), at most 1%, + a fee a share (b + 13)
     let n : f32 = max(1.0, floor(cap / entry));
     let v : f32 = n * entry;
     let sell : f32 = v * (1.0 + r);
-    let cb : f32 = min(max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n;
-    let cs : f32 = min(max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
+    let cb : f32 = min(max(st[b + 12u], st[b + 11u] * n), 0.01 * v) + st[b + 13u] * n;
+    let cs : f32 = min(max(st[b + 12u], st[b + 11u] * n), 0.01 * sell) + st[b + 13u] * n;
     return (cb + cs + 0.0000278 * sell + min(0.000166 * n, 8.3)) / v;
   }
   return 0.0;
