@@ -1,0 +1,11 @@
+{
+ "about": "Live record, one entry per day: ret the model portfolio, day the daily trades (results only).",
+ "days": [
+  {
+   "date": "2026-10-30",
+   "ret": 0,
+   "market": -0.00456365,
+   "day": 0
+  }
+ ]
+}
