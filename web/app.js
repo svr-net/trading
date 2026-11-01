@@ -61,7 +61,8 @@ function render(r, source) {
     n ? r.orders.map((o) => {
       const row = [[o.ticker], [o.limit == null ? 'open' : pct(o.limit, 1), 'num']];
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1), o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
-      if (rebuys) row.push([o.rebuy > 0 ? `${Math.round(100 * o.rebuy)}% back` : 'none', 'num']);
+      // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
+      if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // a tiny expectation keeps a digit more
       return row;
     }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
