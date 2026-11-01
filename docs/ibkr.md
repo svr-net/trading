@@ -165,10 +165,10 @@ auction samples stay empty and the bars are refused.
 
 ## 2h. Before the first live day: settings the model assumes
 
-- **Tiered pricing.** The backtest charges IBKR's tiered commissions (UK: 0.05%, at least GBP 1, plus
-  the LSE's and the clearing fees). In Client Portal: Settings, Account Settings, Configuration,
-  Pricing Structure: **Tiered**. On Fixed (GBP 3 an order up to GBP 6,000) a GBP 1,000 trade costs
-  about 0.4% more a round trip, most of the UK model's edge.
+- **Fixed pricing.** The backtest charges IBKR's fixed commissions, the account's (UK: GBP 3 an
+  order up to GBP 6,000, 0.05% above, the exchange's and clearing fees included; US: USD 0.005 a
+  share, at least USD 1). At GBP 5,000 a UK trade that is 0.06% each way. An account on tiered
+  pricing runs the model with `--pricing tiered`.
 - **The orders as the backtest trades them:** each a day limit buy, its stop-loss and take-profit set
   before the open from the limit (or the last close when the limit is above it), one cancelling the
   other; unfilled orders cancelled and what is held sold in the closing auction. One known

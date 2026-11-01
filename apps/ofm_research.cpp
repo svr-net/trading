@@ -39,7 +39,8 @@ int main(int argc, char** argv) {
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
   // from it (AIM shares, one ticker a line).
-  std::string stampFree, venuesFile, costMarket;  // --venues: each exchange's costs (see fee below)
+  std::string stampFree, venuesFile, costMarket;
+  bool fixedPricing = true;  // --pricing fixed (the default: IBKR's fixed commissions) or tiered  // --venues: each exchange's costs (see fee below)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
+    if (std::string(argv[k]) == "--pricing") fixedPricing = std::string(argv[k + 1]) != "tiered";
     if (std::string(argv[k]) == "--venues") venuesFile = argv[k + 1];
   }
   for (int k = 1; k < argc; ++k)
@@ -93,10 +95,15 @@ int main(int argc, char** argv) {
   std::vector<double> fee(N * 7, 0.0);
   for (std::size_t i = 0; i < N; ++i) {
     double* f = &fee[i * 7];
-    // UK (IBKR tiered): 0.05%, at least GBP 1; the LSE's fee 0.0045%, at least GBP 0.10, and clearing
-    // GBP 0.06 an order (as a rate at the trade's amount); stamp duty.
-    if (costKind == 1) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 1, f[4] = std::max(0.000045, 0.10 / capital) + 0.06 / capital, f[5] = stampOf[i];
-    if (costKind == 2) f[0] = 2, f[1] = capital;                                                            // US: a share
+    // IBKR's pricing (--pricing fixed, the default, or tiered). UK fixed: GBP 3 an order up to GBP
+    // 6,000, 0.05% above, the exchange's and clearing fees included; tiered: 0.05%, at least GBP 1,
+    // the LSE's fee 0.0045% (at least GBP 0.10) and clearing GBP 0.06 an order. Stamp duty either way.
+    if (costKind == 1 && fixedPricing) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 3, f[4] = 0, f[5] = stampOf[i];
+    if (costKind == 1 && !fixedPricing) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 1, f[4] = std::max(0.000045, 0.10 / capital) + 0.06 / capital, f[5] = stampOf[i];
+    // US, a share: fixed USD 0.005, at least USD 1 an order (fees included); tiered USD 0.0035, at
+    // least USD 0.35, + USD 0.0005 a share of fees; at most 1% of the value; the SEC's and FINRA's
+    // fees on selling either way.
+    if (costKind == 2) f[0] = 2, f[1] = capital, f[2] = fixedPricing ? 0.005 : 0.0035, f[3] = fixedPricing ? 1.0 : 0.35, f[4] = fixedPricing ? 0.0 : 0.0005;
     if (costKind == 3) f[0] = 1, f[1] = capital, f[2] = 0.0008, f[3] = 6;                                    // ASX: 0.08%, at least AUD 6
   }
   if (!venuesFile.empty()) {
@@ -474,7 +481,7 @@ int main(int argc, char** argv) {
       }
       if (f[0] == 2) {
         const double n = std::max(1.0, std::floor(cap / entry)), v = n * entry, sell = v * (1 + r);
-        const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
+        const double cb = std::min(std::max(f[3], f[2] * n), 0.01 * v) + f[4] * n, cs = std::min(std::max(f[3], f[2] * n), 0.01 * sell) + f[4] * n;
         return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
       }
       return 0.0;

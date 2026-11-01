@@ -148,7 +148,10 @@ jobs:
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
           # X_VERIFY: every day's kernel trades are checked against the trade path that makes the orders;
           # any difference stops the run before anything is published.
-          X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --capital 1000 "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
+          # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
+          # to GBP 6,000), 1,000 elsewhere in each exchange's currency.
+          CAPITAL=1000; [ "$MARKET" = UK ] && CAPITAL=5000
+          X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already
