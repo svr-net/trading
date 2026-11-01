@@ -343,11 +343,16 @@ int main(int argc, char** argv) {
     // against concentrating in small companies).
     const bool aimCap = costKind == 1 && !stampFree.empty();
     constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nLv = nP * nP * nA, nD = 7;
-    const std::size_t nK = aimCap ? 6 : 1, nR = nC * nB * nK, nV = nR * nE * nLv;
+    // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none) and the gate
+    // k % 2 (1: only trades expected to gain after their costs; 0: the top 10 whatever their
+    // expectation, as the forecasts understate the gains of some), learnt like the rest.
+    const std::size_t nK = (aimCap ? 6 : 1) * 2, nR = nC * nB * nK, nV = nR * nE * nLv;
+    const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
+    const auto gateOf = [&](double k) { return std::size_t(std::floor(k + 0.5)) % 2 == 1; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
-      if (d == 2) return aimCap ? 2.0 * x : double(nPick);  // the most AIM shares a day
+      if (d == 2) return x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 0.0 : x / double(nA - 1);  // the SAR's weight (none for a safety stop)
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
@@ -433,7 +438,7 @@ int main(int argc, char** argv) {
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
-        if (at[d] > 0 && at[d] + 1 < dims[d]) {
+        if (d != 2 && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code is discrete
           std::size_t lo[nD], hi[nD];
           for (std::size_t e = 0; e < nD; ++e) lo[e] = hi[e] = at[e];
           --lo[d], ++hi[d];
@@ -483,27 +488,28 @@ int main(int argc, char** argv) {
       const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
-    // The day's 10 trades: among the pool most traded, ranked with beta, at most cap of them AIM shares.
-    const auto capTo = [&](std::vector<std::pair<double, std::size_t>>& v, double cap) {
+    // The day's trades: up to 10 among the pool most traded, ranked with beta, expected to gain after
+    // their costs, at most cap of them AIM shares.
+    const auto capTo = [&](std::vector<std::pair<double, std::size_t>>& v, double cap, bool gate) {
       std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       const std::size_t most = std::size_t(std::floor(cap + 0.5));
       std::vector<std::pair<double, std::size_t>> w;
       std::size_t aim = 0;
       for (const auto& e : v) {
-        if (w.size() >= nPick) break;
+        if (w.size() >= nPick || (gate && !(e.first > 0))) break;  // gated: only trades expected to gain after their costs
         const bool isAim = aimCap && stampOf[e.second] == 0;
         if (isAim && aim >= most) continue;
         aim += isAim, w.push_back(e);
       }
       return w;
     };
-    const auto ranked = [&](std::size_t t, double pool, double b, double cap) {
+    const auto ranked = [&](std::size_t t, double pool, double b, double code) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i]) continue;
         v.emplace_back(rankScore(t, i, b), i);
       }
-      return capTo(v, cap);
+      return capTo(v, capOf(code), gateOf(code));
     };
     // A stock's moves from the open over its last 100 days to the close t, sorted: the falls to the
     // low and the rises to the high (logs), kept for the day.
@@ -565,8 +571,8 @@ int main(int argc, char** argv) {
     // The day's result: every trade one unit, a trade not filled stays in cash.
     const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al) {
       double rg = 0;
-      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al).ret / double(w.size());
-      return w.empty() ? 0.0 : rg;
+      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al).ret / double(nPick);  // a tenth each: a missing trade stays in cash
+      return rg;
     };
     for (std::size_t q = warm; q < days.size(); ++q) {
       const std::size_t t = days[q];
@@ -578,7 +584,7 @@ int main(int argc, char** argv) {
       rankLiquidity(t, true);
       std::vector<std::vector<std::pair<double, std::size_t>>> v(nR);
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / (nB * nK))), axis(1, double(k / nK % nB)), axis(2, double(k % nK)));
-      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 1], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 1];  // no AIM cap
+      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2];  // no AIM cap, no gate
       double r = 0, pm = 0;
       for (const auto& e : all0) r += (m.close(t + 1, e.second) / m.open(t + 1, e.second) - 1) / double(all0.size()), pm += e.first / double(all0.size());
       always.push_back(r), gated.push_back(pm > 0 ? r : 0.0), mkt.push_back(ms / mn), sd.push_back(m.dates[t + 1]);
@@ -660,10 +666,12 @@ int main(int argc, char** argv) {
       double mx[nD] = {};
       for (const auto& x : used)
         for (std::size_t d = 0; d < nD; ++d) mx[d] += x[d] / double(used.size());
-      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, AIM cap %.1f, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], mx[2], mx[3], 1 / mx[4], 1 / mx[5], mx[6]);
-      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.1f, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n", fx[0], fx[1], fx[2],
-                  fx[3], 1 / fx[4], 1 / fx[5], fx[6]);
+      double gated = 0;
+      for (const auto& x : used) gated += gateOf(x[2]) / double(used.size());
+      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n",
+                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], mx[6]);
+      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, SAR weight %.2f\n", fx[0], fx[1],
+                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], fx[6]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         std::vector<double> z;
@@ -704,7 +712,7 @@ int main(int argc, char** argv) {
       std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(std::max(nPick, nCand), v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       for (std::size_t q = 0; q < std::min<std::size_t>(nCand, v.size()); ++q) lastRun.candidates.emplace_back(v[q].second, v[q].first);
       for (const auto& e : v) lastRun.pool.push_back(e.second);
-      const auto picks = capTo(v, fx[2]);  // at most the learnt number of AIM shares
+      const auto picks = capTo(v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
       for (std::size_t q = 0; q < picks.size(); ++q) {
         const std::size_t i = picks[q].second, src = (t - lag) * N + i;
         const double sig = std::exp(ft[src * Km + 20]);
@@ -715,7 +723,7 @@ int main(int argc, char** argv) {
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
         const double cost = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;  // the expected return shown net of its costs, as ranked
-        if (picks[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
+        lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
       }
     }
     return pred;
