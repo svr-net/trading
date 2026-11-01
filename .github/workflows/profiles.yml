@@ -1,0 +1,40 @@
+# Each share's sector and industry from EODData's profiles into the private store (svr-net/eod,
+# profiles/<EXCHANGE>.json), for the model's industry groups; prints only counts. With probe, also
+# whether the key reaches the fundamentals (counts only).
+name: Profiles (sectors and industries)
+on:
+  workflow_dispatch:
+    inputs:
+      exchanges: { description: 'Exchanges', default: 'LSE,NYSE,NASDAQ' }
+      probe: { description: 'Also probe the fundamentals (counts only)', type: boolean, default: true }
+permissions:
+  contents: read
+jobs:
+  profiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
+        with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
+          path: data/eoddata
+          fetch-depth: 1
+      - name: Profiles
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: node tools/eoddata/profiles.mjs --exchanges "${{ inputs.exchanges }}" --out data/eoddata/profiles ${{ inputs.probe && '--probe' || '' }} | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Store them (svr-net/eod)
+        run: |
+          cd data/eoddata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A profiles 2>/dev/null || true
+          if git diff --cached --quiet; then echo "nothing to store"; exit 0; fi
+          git commit -q -m "Profiles $(date -u +%Y-%m-%d)"
+          for k in 1 2 3 4 5; do git pull -q --rebase origin main && git push -q origin HEAD:main && exit 0; sleep $((k * 5)); done
+          exit 1
