@@ -163,6 +163,21 @@ Both need the exchange's real-time data on the account (for the UK: the LSE leve
 a few pounds a month; a paper account shares the live account's subscriptions). Without it the
 auction samples stay empty and the bars are refused.
 
+## 2h. Before the first live day: settings the model assumes
+
+- **Tiered pricing.** The backtest charges IBKR's tiered commissions (UK: 0.05%, at least GBP 1, plus
+  the LSE's and the clearing fees). In Client Portal: Settings, Account Settings, Configuration,
+  Pricing Structure: **Tiered**. On Fixed (GBP 3 an order up to GBP 6,000) a GBP 1,000 trade costs
+  about 0.4% more a round trip, most of the UK model's edge.
+- **The orders as the backtest trades them:** each a day limit buy, its stop-loss and take-profit set
+  before the open from the limit (or the last close when the limit is above it), one cancelling the
+  other; unfilled orders cancelled and what is held sold in the closing auction. One known
+  difference: the bridge closes at 16:20 London, so a limit that would fill in the last ten minutes
+  of trading does not (the backtest, on daily bars, cannot tell the time of a fill).
+- **Price units:** before placing, each order's prices are checked against IBKR's close (its daily
+  bars with the exchange's data, else its free delayed quote); an order whose units cannot be
+  confirmed is skipped, never sent.
+
 ## 3. Each trading day
 
 | | UK (London time) | US (New York time) |
