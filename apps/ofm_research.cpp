@@ -497,6 +497,7 @@ int main(int argc, char** argv) {
     const bool netRank = !std::getenv("X_GROSSRANK");
     const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;  // research: an open fill pays the limit, not the open
     const bool verify = std::getenv("X_VERIFY") != nullptr;
+    const double stopCap = std::getenv("X_STOPCAP") ? std::atof(std::getenv("X_STOPCAP")) : 0.999;  // research: the safety stop at most this far below the anchor
     std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
@@ -584,7 +585,7 @@ int main(int argc, char** argv) {
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
       if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
-      if (safetyOnly) return std::make_pair(std::exp(quantile(falls[i], ps)), 1e300);  // a rare day's fall; no take-profit, else sold at the close
+      if (safetyOnly) return std::make_pair(std::max(std::exp(quantile(falls[i], ps)), 1 - stopCap), 1e300);  // a rare day's fall; no take-profit, else sold at the close
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -688,7 +689,7 @@ int main(int argc, char** argv) {
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
                                    std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
-              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
+              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? std::max(quantile(falls[i], axis(4, double(q))), std::log(1 - stopCap)) : quantile(falls[i], axis(4, double(q)))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
             }
             cand[k * nPick + j] = double(slotOf[i]);
