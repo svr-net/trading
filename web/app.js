@@ -84,14 +84,15 @@ function drawChart(r) {
   });
   let lastX = -Infinity;
   C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
-  C.series.forEach((s) => {
+  const series = C.series.filter((s) => color[s.name]);  // the daily trades only (an older scan also carries the market)
+  series.forEach((s) => {
     ctx.strokeStyle = color[s.name] || ctx.strokeStyle;
     ctx.lineWidth = 2;
     ctx.beginPath();
     s.y.forEach((y, i) => (i ? ctx.lineTo(X(i / (s.y.length - 1)), Y(y)) : ctx.moveTo(X(0), Y(y))));
     ctx.stroke();
   });
-  legend.innerHTML = C.series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
+  legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
 }
 window.addEventListener('resize', () => { if (shown) drawChart(shown); });
 
