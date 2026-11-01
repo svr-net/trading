@@ -322,9 +322,10 @@ int main(int argc, char** argv) {
     // whose highest forecasts have done best so far (the mean open-to-close of its nPick highest each
     // day, over every day whose outcome is known at that close; before any, the first pair).
     // X_RIDGE / X_HALF (research) fix one pair instead.
-    std::vector<double> ridges = {1e-6, 1e-4, 1e-3, 1e-2, 1e-1}, halves = {0, 750, 250};
-    if (std::getenv("X_RIDGE")) ridges = {ridgeK};
-    if (std::getenv("X_HALF")) halves = {std::atof(std::getenv("X_HALF"))};
+    // X_LEARN_RIDGE=1 (research): learnt over the grid below; by default the one pair (on the data to
+    // 30 Oct 2026 the learnt choice did worse: it chased the pairs' noise, UK Sharpe 3.77 against 4.99).
+    std::vector<double> ridges = {ridgeK}, halves = {std::getenv("X_HALF") ? std::atof(std::getenv("X_HALF")) : 0.0};
+    if (std::getenv("X_LEARN_RIDGE")) ridges = {1e-6, 1e-4, 1e-3, 1e-2, 1e-1}, halves = {0, 750, 250};
     const std::size_t nVar = ridges.size() * halves.size();
     std::vector<float> predV(nVar * T * N, 0.0f);  // each pair's open-to-close forecasts
     std::vector<double> acc(T * E, 0.0), rk(1);
