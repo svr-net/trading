@@ -124,3 +124,4 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 #broker-history { width: 100%; font-size: 13px; }
 #broker-history td { white-space: normal; }
 #broker-history td:first-child, #broker-history td:nth-child(2) { white-space: nowrap; }
+tr.gap td { white-space: normal; }
