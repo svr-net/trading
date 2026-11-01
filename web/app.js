@@ -34,27 +34,38 @@ const costs = (r) => {
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
 };
 
-// The next open's trades (a buy limit from the last close; sold at the stop-loss, the take-profit or the
-// close), and the backtest.
+// The markets traded automatically (the bridge's AUTO_MARKETS once it answers; the UK until then);
+// the others are research only.
+let live = new Set(['UK']);
+const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')}${c.venues ? ' (each exchange\'s currency)' : ''}` : '');
+
+// The plan in plain words, the orders, and the backtest (folded away).
 function render(r, source) {
   shown = r;
-  const where = { UK: 'UK (London Stock Exchange)', US: 'US (NYSE and NASDAQ)' }[source] || source;
-  const n = r.orders.length;
-  $('asof').textContent = `${where}, ${r.stocks} most traded shares · close of ${r.asOf} · ${n} trade${n === 1 ? '' : 's'} for the next open · ${costs(r)}`;
-  const level = (x) => (x == null ? 'none' : pct(x, 2));
+  const where = { UK: 'London Stock Exchange', US: 'New York (NYSE and NASDAQ)', EU: 'Paris, Amsterdam, Brussels, Lisbon, Madrid, Frankfurt and Oslo', APAC: 'Australia (ASX) and Singapore (SGX)' }[source] || source;
+  const n = r.orders.length, c = r.costs;
+  const isLive = live.has(source);
+  const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  $('summary').className = `summary ${isLive ? 'live' : 'research'}`;
+  $('summary').innerHTML = isLive
+    ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; anything bought is sold by the close.`
+    : `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here; the orders below are what it would place.`;
+  $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`;
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
-  const head = [['Share'], ['Buy limit (vs last close)', 'num'], ['Expected return', 'num']];
-  if (levels) head.push(['Stop-loss', 'num'], ['Take-profit', 'num']);
+  const head = [['Share'], ['Buy at', 'num']];
+  if (levels) head.push(['Stop', 'num'], ['Target', 'num']);
+  head.push(['Expected gain', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
-      const row = [[o.ticker], [o.limit == null ? 'at the open' : pct(o.limit, 2), 'num'], signed(o.expected, 3)];
-      if (levels) row.push([level(o.stop), o.stop == null ? 'num' : 'num neg'], [level(o.take), o.take == null ? 'num' : 'num pos']);
+      const row = [[o.ticker], [o.limit == null ? 'open' : pct(o.limit, 1), 'num']];
+      if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1), o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
+      row.push(signed(o.expected, 2));
       return row;
-    }) : [{ gap: 'no trades: none is expected to gain; stay in cash' }]);
+    }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
   const B = r.backtest;
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Daily trades, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · max drawdown ${pct(B.maxDrawdown, 0).slice(1)}</span></div>`;
-  table($('recent'), [['Day'], ['Daily trades', 'num']],
+    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>`;
+  table($('recent'), [['Day'], ['Simulated result', 'num']],
     r.recent.slice().reverse().map((d) => [[d.date], signed(d.day)]));
   drawChart(r);
 }
@@ -95,6 +106,7 @@ function drawChart(r) {
   legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
 }
 window.addEventListener('resize', () => { if (shown) drawChart(shown); });
+$('past').addEventListener('toggle', () => { if (shown && $('past').open) drawChart(shown); });
 
 const MARKETS = { uk: 'UK', eu: 'EU', us: 'US', apac: 'APAC' };
 let market = 'uk';
@@ -161,10 +173,13 @@ function brokerProbe(opened) {
   setTimeout(() => ctl.abort(), 3000);
   fetch(`${bridgeUrl()}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
     $('broker').hidden = false;
-    const auto = Object.entries(s.auto || {}).map(([m, a]) => `${m} places ${a.place}${a.auction ? `, records the auction ${a.auction}` : ''}, closes ${a.close}`).join('; ');
+    const auto = Object.entries(s.auto || {}).map(([m, a]) => `${m}: orders at ${a.place}, sold at ${a.close}`).join('; ');
     const last = (s.last || [])[0];
-    $('broker-status').textContent = `Bridge at ${bridgeUrl()} · IB Gateway ${s.gateway ? `answering on port ${s.port}` : 'not answering (start it and log in)'} · ${s.capital} a trade`
-      + ` · automatic: ${auto || 'off'}` + (last ? ` · last: ${last.market} ${last.action} ${last.when} ${last.ok ? 'ok' : 'FAILED'}` : '');
+    $('broker-status').textContent = `${s.gateway ? 'Connected to Interactive Brokers' : 'IB Gateway is not answering: start it and log in'} · automatic ${auto || 'off'}`
+      + (last ? ` · last action: ${last.market} ${last.action} ${last.when}, ${last.ok ? 'ok' : 'FAILED'}` : '');
+    // The markets the bridge trades are the live ones; the others are research.
+    const auto2 = new Set(Object.keys(s.auto || {}));
+    if (auto2.size && [...auto2].join() !== [...live].join()) { live = auto2; if (shown) render(shown, MARKETS[market]); }
     brokerOrders();
   }).catch(() => {
     if (!opened) return;  // no bridge: the panel stays hidden unless opened
@@ -202,7 +217,7 @@ function brokerHistory() {
     // A broker's price against the model's (EODData's): LSE prices may be in pence on one side and pounds on the other.
     const ratio = (a, b) => { const r = a / b; const s = [1, 0.01, 100].reduce((p, x) => (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / p)) ? x : p), 1); return r / s; };
     let n = 0, wins = 0, pnl = {}, placedN = 0, checked = 0, agree = 0, gapN = 0, gapS = 0, retN = 0, retA = 0, retM = 0;
-    for (const d of h.days) {
+    for (const d of h.days.filter((x) => x.market === brokerMarket())) {
       const traded = Object.fromEntries(d.trades.map((t) => [code(t.ticker), t]));
       const model = Object.fromEntries((d.model || []).map((t) => [code(t.ticker), t]));
       const reported = d.trades.length > 0 || (d.model || []).length > 0;
@@ -227,27 +242,24 @@ function brokerHistory() {
             if (t.ret != null) retN += 1, retA += t.ret, retM += mo.ret;
           }
         }
-        const modelFill = mo ? (mo.filled === 1 ? `open @ ${mo.entry.toFixed(2)}` : mo.filled === 2 ? `in the day @ ${mo.entry.toFixed(2)}` : 'not filled') : '';
-        rows.push([[d.date], [d.market], [name], [o.limit != null ? o.limit.toFixed(2) : '', 'num'], [modelFill, 'num'],
-          [filled ? `${t.bought} @ ${t.buy.toFixed(2)}` : (reported ? 'not filled' : 'open'), 'num'],
+        const modelSays = mo ? (mo.filled > 0 ? pct(mo.ret, 2) : 'no buy') : '';
+        const yours = filled && t.ret != null ? pct(t.ret, 2) : (filled ? 'open' : (reported ? 'no buy' : 'waiting'));
+        rows.push([[d.date.slice(5)], [name],
+          [`${yours}${modelSays ? ` (model ${modelSays})` : ''}`, `num ${filled && t.ret != null ? (t.ret >= 0 ? 'pos' : 'neg') : ''}`],
           gap != null ? [pct(gap, 2), `num ${gap <= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
-          [filled && t.sell != null ? `${t.sold} @ ${t.sell.toFixed(2)}` : '', 'num'],
-          filled && t.ret != null ? signed(t.ret, 2) : ['', 'num'],
-          mo && mo.filled > 0 ? signed(mo.ret, 2) : ['', 'num'],
-          filled ? [`${t.pnl.toFixed(2)} ${t.currency}`, `num ${t.pnl >= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
-          filled ? [`${t.commission.toFixed(2)}`, 'num'] : ['', 'num']]);
+          filled ? [`${t.pnl.toFixed(2)} (fees ${t.commission.toFixed(2)})`, `num ${t.pnl >= 0 ? 'pos' : 'neg'}`] : ['', 'num']]);
       }
     }
-    table($('broker-history'), [['Day'], ['Market'], ['Share'], ['Limit', 'num'], ['Model fill', 'num'], ['Bought', 'num'], ['Fill vs model', 'num'], ['Sold', 'num'],
-      ['Return', 'num'], ['Model return', 'num'], ['P&L (IBKR, after costs)', 'num'], ['Commission', 'num']],
-      rows.length ? rows : [{ gap: 'nothing yet: the history starts with the first orders placed' }]);
+    table($('broker-history'), [['Day'], ['Share'], ['Return (model)', 'num'], ['Paid vs model', 'num'], ['Profit (fees)', 'num']],
+      rows.length ? rows : [{ gap: 'Nothing yet: your results appear after the first trading day.' }]);
     const money = Object.entries(pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
     const vs = checked
       ? ` · against the model: fills agree on ${agree} of ${checked}` + (gapN ? `, entry ${pct(gapS / gapN, 2)} vs the model's on average` : '')
         + (retN ? `, return ${pct(retA / retN, 2)} vs the model's ${pct(retM / retN, 2)} a trade` : '')
       : '';
-    $('broker-summary').textContent = h.days.length
-      ? `${h.days.length} day${h.days.length === 1 ? '' : 's'} · ${placedN} orders placed · ${n} filled (${placedN ? Math.round(100 * n / placedN) : 0}%) · ${n ? Math.round(100 * wins / n) : 0}% of them won · total ${money || '0'}${vs}`
+    const days = new Set(h.days.filter((x) => x.market === brokerMarket()).map((x) => x.date)).size;
+    $('broker-summary').textContent = days
+      ? `${days} day${days === 1 ? '' : 's'} · ${placedN} orders · ${n} bought (${placedN ? Math.round(100 * n / placedN) : 0}%) · ${n ? Math.round(100 * wins / n) : 0}% of them gained · total ${money || '0'}${vs}`
       : '';
   }).catch(() => { /* an older bridge without history */ });
 }

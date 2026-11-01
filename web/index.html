@@ -7,12 +7,12 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=51">
+<link rel="stylesheet" href="style.css?v=52">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Walk-forward model of daily OHLCV · C++ · fused kernels</div>
+    <div class="eyebrow">Automatic day trades with Interactive Brokers</div>
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
@@ -20,46 +20,55 @@
       <button type="button" role="tab" id="mk-us" data-market="us" aria-selected="false">US</button>
       <button type="button" role="tab" id="mk-apac" data-market="apac" aria-selected="false" title="Australia (ASX), Singapore (SGX)">APAC</button>
     </div>
-    <p class="lede" id="lede">Up to 10 day trades for the next open: the shares a walk-forward model, learnt from every share's daily prices and volumes, expects to rise most from the open to the close. Each is a buy limit at a learnt distance from the last close: bought at the open when it opens at or below the limit, during the day if it trades down to it, otherwise not traded. Sold at the take-profit, the stop-loss or the close (the levels learnt from each share's own moves on its typical days over the last 100).</p>
   </header>
 
   <section aria-labelledby="trades-title">
-    <h2 id="trades-title">Trades for the next open</h2>
-    <p class="muted" id="asof">Loading the latest scan…</p>
+    <div class="summary" id="summary"></div>
+    <h2 id="trades-title">Orders for the next trading day</h2>
+    <p class="muted" id="asof">Loading…</p>
     <div class="table-scroll"><table id="plan"></table></div>
-    <p class="hint">Each trade's buy limit from the last close, its expected return (what the backtest's earlier picks with a similar forecast actually returned after costs, an unfilled order counted as cash), and its stop-loss and take-profit. One unit in every trade, an unfilled one stays in cash; the backtest's daily result is the average of the day's trades, every prediction made only from earlier days. The backtest is after Interactive Brokers' fixed commissions (£5,000 a trade in the UK, 1,000 elsewhere in each market's currency) and transaction taxes (in the UK 0.5% stamp duty on buying, none on AIM shares; in Europe the French, Spanish and Portuguese taxes and the Belgian one); the model learns its limits and levels net of them. Prices are not published under the data licence.</p>
+    <p class="hint"><b>Buy at</b>: below the last close; the order buys only if the share dips that far. <b>Stop</b> and <b>Target</b>: from the buy price; the share is sold if it falls to the stop or rises to the target, otherwise at the close, so nothing is held overnight. <b>Expected gain</b>: what similar past orders actually made after all costs, counting those that never filled as zero; about half of single trades lose.</p>
+  </section>
 
-    <h2>Backtest</h2>
+  <section id="broker" hidden aria-labelledby="broker-title">
+    <h2 id="broker-title">Your results</h2>
+    <p class="muted" id="broker-status"></p>
+    <p class="muted" id="broker-summary"></p>
+    <div class="table-scroll"><table id="broker-history"></table></div>
+    <details class="fold" id="broker-more">
+      <summary>Broker controls</summary>
+      <div class="table-scroll"><table id="broker-orders"></table></div>
+      <div class="broker-actions">
+        <button type="button" id="broker-dry">Check (dry run)</button>
+        <button type="button" id="broker-place">Place orders</button>
+        <button type="button" id="broker-close">Close at the close</button>
+        <button type="button" id="broker-report">Record results</button>
+        <button type="button" id="broker-diag">Diagnostics</button>
+      </div>
+      <pre id="broker-log" class="broker-log"></pre>
+      <div class="table-scroll"><table id="broker-checks"></table></div>
+      <div class="broker-key"><label for="broker-url">Bridge</label> <input id="broker-url" type="url" autocomplete="off" placeholder="https://your-bridge:8765"></div>
+      <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
+    </details>
+  </section>
+
+  <details class="fold" id="past">
+    <summary>How the model did in the past (backtest)</summary>
     <div class="verdict" id="verdict"></div>
     <div class="chart"><canvas id="chart" height="300" aria-label="Growth of 1 for the daily trades"></canvas><div class="legend" id="legend"></div></div>
     <h3>Last 20 days</h3>
     <div class="table-scroll"><table id="recent"></table></div>
-  </section>
+    <p class="hint">A simulation of the same orders over the past years, every decision made only from what was known at the time, after Interactive Brokers' commissions and taxes. It is likely optimistic: the share lists are today's (companies that failed are missing) and small shares' opening prices may be better than an order could get. Your own results above are what counts.</p>
+  </details>
 
-  <section id="broker" hidden aria-labelledby="broker-title">
-    <h2 id="broker-title">Your broker</h2>
-    <p class="muted" id="broker-status"></p>
-    <div class="broker-key"><label for="broker-url">Bridge</label> <input id="broker-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:8765 or https://your-server"></div>
-    <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
-    <div class="table-scroll"><table id="broker-orders"></table></div>
-    <div class="broker-actions">
-      <button type="button" id="broker-dry">Check (dry run)</button>
-      <button type="button" id="broker-place">Place orders</button>
-      <button type="button" id="broker-close">Close at the close</button>
-      <button type="button" id="broker-report">Record results</button>
-      <button type="button" id="broker-diag">Diagnostics</button>
-    </div>
-    <pre id="broker-log" class="broker-log"></pre>
-    <div class="table-scroll"><table id="broker-checks"></table></div>
-    <h3>History (your paper or live fills)</h3>
-    <p class="muted" id="broker-summary"></p>
-    <div class="table-scroll"><table id="broker-history"></table></div>
-    <p class="hint">For your own bridge (docker/ibkr: on this computer, or on a server behind HTTPS) next to IB Gateway: the orders and their prices come from it, not from this page; the bridge's address and key stay in this browser. Place before the open (UK by 07:50 London, US by 09:25 New York); close shortly before the close (UK 16:20, US 15:40).</p>
-  </section>
+  <details class="fold">
+    <summary>How it works</summary>
+    <p class="hint">Every evening a model learnt from each share's daily prices and volumes ranks the most traded shares by how much they are likely to rise during the next day, and picks up to 10. For each it sets a buy price a little below the last close, a stop below and a target above, all learnt from that share's own typical daily moves. The bridge on your NAS places the orders before the open, sells what is left at the close and records the fills; the History compares them with what the model expected. Costs: Interactive Brokers' fixed commissions (£5,000 a trade in the UK, 1,000 elsewhere in each market's currency), UK stamp duty (none on AIM shares) and the European transaction taxes. Prices are not published under the data licence.</p>
+  </details>
 
   <p class="muted broker-open"><a href="#broker" id="broker-open">Broker bridge…</a></p>
-  <footer>Research tool, not investment advice. Backtest: a buy limit from the last close, sold at the stop-loss, the take-profit or the close, one unit in each of the day's trades, after Interactive Brokers' commissions and UK stamp duty; every prediction is made only from earlier days, and the shares are today's most traded (survivorship), prices without dividends.</footer>
+  <footer>Research tool, not investment advice.</footer>
 </div>
-<script type="module" src="app.js?v=51"></script>
+<script type="module" src="app.js?v=52"></script>
 </body>
 </html>
