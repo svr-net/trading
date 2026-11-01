@@ -378,61 +378,75 @@ def paths(args):
 
 
 def rebuy(args, ref):
-    """The buy-backs after the day's stops (places them; see the module's help). Each stop is handled
-    once (the handled shares kept in --out, so a restart does not buy back twice)."""
+    """The buy-backs after the day's stops (places them; see the module's help). It runs as the
+    orders' own client (--client-id, the one that placed them and closes them), so it sees their fills
+    and its orders are the ones --close cancels; it stops at --until (set before the close's time) and
+    then cancels its own buy-backs still open, so nothing it placed outlives the day. Each stop is
+    handled once (the handled shares kept in --out, so a restart does not buy back twice)."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    from ib_async import IB, LimitOrder, StopOrder
+    from ib_async import IB, LimitOrder, StopLimitOrder
 
     book = json.load(open(args.orders))
     plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
     if not plan:
         print(f'{args.market} buy-back: none in the orders')
         return
-    zone = OPEN[args.market][0]
-    tz = ZoneInfo(zone)
-    h, mi = (int(x) for x in (args.until or '16:20').split(':'))
+    tz = ZoneInfo(OPEN[args.market][0])
+    h, mi = (int(x) for x in (args.until or '16:15').split(':'))
     until = datetime.now(tz).replace(hour=h, minute=mi, second=0, microsecond=0)
     state = args.out or f'/tmp/rebuy-{ref}.txt'
     handled = set(open(state).read().split()) if os.path.exists(state) else set()
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id + 5)
-    placed = 0
+    ib.connect(args.host, args.port, clientId=args.client_id)
+    placed, mine = 0, []
     while datetime.now(tz) < until:
         fills = ib.reqExecutions()
         for tr in ib.reqCompletedOrders(True):
             o, c = tr.order, tr.contract
-            if o.orderRef != ref or o.action != 'SELL' or o.orderType != 'STP' or not tr.orderStatus.filled:
+            # A completed order's status is all IBKR sends with it: its quantity comes from its fills.
+            if o.orderRef != ref or o.action != 'SELL' or o.orderType != 'STP' or tr.orderStatus.status != 'Filled':
                 continue
-            key = str(c.conId)
+            key = str(o.permId)
             if key in handled or c.symbol not in plan:
                 continue
+            sold = sum(x.execution.shares for x in fills if x.execution.permId == o.permId)
+            buys = [x for x in fills if x.contract.conId == c.conId and x.execution.side == 'BOT' and x.execution.orderRef == ref]
+            n = sum(x.execution.shares for x in buys)
+            if not sold or not n:
+                continue  # the fills not in yet: the next round
             handled.add(key)
             with open(state, 'a') as f:
                 f.write(key + '\n')
             p = plan[c.symbol]
-            buys = [x for x in fills if x.contract.conId == c.conId and x.execution.side == 'BOT' and x.execution.orderRef == ref]
-            n = sum(x.execution.shares for x in buys)
-            if not n:
-                continue
             paid = sum(x.execution.shares * x.execution.price for x in buys) / n
             level = float(o.auxPrice)
             back, out = level + p['rebuy'] * (paid - level), paid * (1 + (p.get('rebuyCost') or 0))
-            contract = ib.qualifyContracts(c)[0] if ib.qualifyContracts(c) else c
+            q = ib.qualifyContracts(c)
+            contract = q[0] if q else c
             details = ib.reqContractDetails(contract)[0]
             rule = tick_rule(ib, details, contract.exchange)
+            spread = math.exp(p.get('spread') or 0.0)  # the share's estimated spread (a factor): the most the buy may pay above its trigger
             back = round_to(back, tick_at(rule, details.minTick, back), 'up')
+            cap = round_to(back * spread, tick_at(rule, details.minTick, back * spread), 'up')
             out = round_to(out, tick_at(rule, details.minTick, out), 'up')
-            qty = int(tr.orderStatus.filled)
+            qty = int(sold)
             if not (level < back < out) or qty < 1:
                 print(f'  {c.symbol}: buy-back levels out of order (stop {level}, back {back}, sale {out}); none')
                 continue
-            parent = StopOrder('BUY', qty, back, orderRef=ref, tif='DAY', transmit=False)
+            # A stop-limit: triggered when the price climbs back to its level, it buys at most a spread
+            # above it (a plain stop would buy at any price in a thin market); unfilled, no buy-back.
+            parent = StopLimitOrder('BUY', qty, cap, back, orderRef=ref, tif='DAY', transmit=False)
             ib.placeOrder(contract, parent)
             ib.placeOrder(contract, LimitOrder('SELL', qty, out, orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=True))
+            mine.append(parent)
             placed += 1
-            print(f'  {c.symbol}: stopped at {level} (paid {paid:.4f}): buy-back {qty} at {back}, sale at {out}')
+            print(f'  {c.symbol}: stopped at {level} (paid {paid:.4f}): buy-back {qty} from {back} (at most {cap}), sale at {out}')
         ib.sleep(20)
+    for t in ib.openTrades():  # its buy-backs not triggered: cancelled before the close
+        if t.order.orderRef == ref and any(t.order.orderId == p.orderId for p in mine):
+            ib.cancelOrder(t.order)
+    ib.sleep(2)
     ib.disconnect()
     print(f'{args.market} buy-back: {placed} placed, {len(handled)} stops seen')
 

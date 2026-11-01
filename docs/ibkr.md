@@ -209,7 +209,11 @@ What it places for each trade, as in the backtest:
 - when the model sets one (a learnt choice, shown on the page as Buy-back), the **buy-back**: the
   bridge watches the day's fills, and when a stop has sold it places a buy-stop for the same shares
   part of the way back up to the price paid, with a limit sale at the price paid and a round trip's
-  costs attached (`submit.py --rebuy`);
+  costs attached (`submit.py --rebuy`). The buy is a stop-limit: triggered at its level, it pays
+  at most one estimated spread above it (unfilled: no buy-back). The watcher runs as the orders' own
+  API client (the one that placed them and closes them), stops two minutes before the close's time
+  and cancels its buy-backs still open; while it runs, the page's Place and Close buttons for that
+  market wait for it (IBKR allows one connection per client);
 - with `--close`, the day's unfilled orders are cancelled and whatever is still held is **sold at
   the close** (market-on-close).
 

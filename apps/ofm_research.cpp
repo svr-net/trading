@@ -1073,8 +1073,9 @@ int main(int argc, char** argv) {
       const auto& pk = lastRun.picks[q];
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g}", q ? "," : "",
-                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost);
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g}", q ? "," : "",
+                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost,
+                    spread[(T - 1) * N + pk.stock]);
       o << b;
     }
     o << "],\"candidates\":[";
