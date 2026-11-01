@@ -226,7 +226,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> dates;
     struct Pick {
       std::size_t stock;
-      double expected, stop, take;  // expected open-to-close; the stop and take-profit from the entry (NaN: none)
+      double expected, stop, take;  // expected open-to-close net of its costs; the stop and take-profit from the entry (NaN: none)
       double limit;                 // the buy limit from the last close
     };
     std::vector<Pick> picks;
@@ -269,8 +269,8 @@ int main(int argc, char** argv) {
     const std::size_t warm = 250;
     std::vector<double> always, gated, mkt;
     // The trades' settings, learnt continuously: the pool (the 250 * 2^c most traded by traded value,
-    // c 0 to 3), the ranking (the prediction times the volatility to the power beta: 0 ranks by the
-    // prediction in volatilities, 1 by the expected return), the entry (a limit buy d standard
+    // c 0 to 3), the ranking (the expected return net of the share's own costs, over its volatility to
+    // the power 1 - beta: 0 ranks in volatilities, 1 by the expected net return), the entry (a limit buy d standard
     // deviations below the previous close, d -2 to 2: filled at the open when the stock opens at or
     // below it, else during the day when its low trades half a spread through it, else not traded;
     // after a fill during the day the take-profit is not credited, its high may have come first), and
@@ -281,8 +281,9 @@ int main(int argc, char** argv) {
     // a fraction p_t of them (p 1/2 to 1/10: levels the stock reaches on its typical days, so they are
     // hit). The stop first when the day's bar touched both; a stop
     // sells half a spread below its level, a take-profit fills only when the high clears it by half a
-    // spread; otherwise sold at the close. Every setting on a lattice keeps a record; each day the pool
-    // and ranking with the best record (mean shrunk by its t-statistic) and, at them, the levels with
+    // spread; otherwise sold at the close. Every setting on a lattice keeps a record; each day the pool,
+    // ranking and entry with the best record (mean shrunk by its t-statistic, averaged over the level
+    // settings) and, at them, the levels with
     // the best mean over downside deviation (Sortino) so far are refined to a continuous optimum by a
     // parabola through their neighbours along each axis, and today's trades use them.
     constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nR = nC * nB, nLv = nP * nP * nA, nV = nR * nE * nLv, nD = 6;
@@ -318,10 +319,25 @@ int main(int argc, char** argv) {
       c[5] = g % nA, g /= nA, c[4] = g % nP, g /= nP, c[3] = g % nP, g /= nP, c[2] = g % nE, g /= nE, c[1] = g % nB, c[0] = g / nB;
     };
     // The continuous settings {pool, beta, d, p_s, p_t, alpha} from the records so far.
+    // The pool, ranking and entry by their records' mean over every level setting, as the levels are
+    // chosen after them (the single best of 44,100 settings is mostly luck); X_SINGLEBEST=1
+    // (research): by the single best setting's record, as before.
+    const bool robust = std::getenv("X_SINGLEBEST") == nullptr;
+    std::vector<double> entryScore(nR * nE, 0.0);
     const auto learnt = [&] {
       std::size_t best = 0;
-      for (std::size_t g = 1; g < nV; ++g)
-        if (score(g) > score(best)) best = g;
+      if (robust) {
+        for (std::size_t r = 0; r < nR * nE; ++r) {
+          double sm = 0;
+          for (std::size_t g = r * nLv; g < (r + 1) * nLv; ++g) sm += score(g);
+          entryScore[r] = sm / double(nLv);
+        }
+        for (std::size_t r = 1; r < nR * nE; ++r)
+          if (entryScore[r] > entryScore[best / nLv]) best = r * nLv;
+      } else {
+        for (std::size_t g = 1; g < nV; ++g)
+          if (score(g) > score(best)) best = g;
+      }
       const std::size_t r0 = best / nLv;
       std::size_t lv = r0 * nLv;
       for (std::size_t g = lv + 1; g < (r0 + 1) * nLv; ++g)
@@ -331,7 +347,7 @@ int main(int argc, char** argv) {
       std::array<double, nD> x{};
       for (std::size_t d = 0; d < nD; ++d) {
         const bool pick = d < 3;  // the pool, ranking and entry by return; the levels by Sortino
-        const auto f = [&](std::size_t g) { return pick ? score(g) : ddScore(g); };
+        const auto f = [&](std::size_t g) { return pick ? (robust ? entryScore[g / nLv] : score(g)) : ddScore(g); };
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
@@ -359,13 +375,35 @@ int main(int argc, char** argv) {
       std::sort(l.begin(), l.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       for (std::size_t r = 0; r < l.size(); ++r) liqRank[l[r].second] = double(r);
     };
+    // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf).
+    const auto costOf = [&](double entry, double r, double stp) {
+      if (costKind == 1) {
+        const double sell = capital * (1 + r);
+        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stp;
+      }
+      if (costKind == 2) {
+        const double n = std::max(1.0, std::floor(capital / entry)), v = n * entry, sell = v * (1 + r);
+        const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
+        return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
+      }
+      return 0.0;
+    };
+    // The ranking's score: the expected open-to-close net of the share's own costs (at its last close;
+    // the commissions per share make cheap shares dearer in the US, the stamp duty non-AIM shares in
+    // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
+    // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
+    const bool netRank = !std::getenv("X_GROSSRANK");
+    const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
+      const std::size_t src = (t - lag) * N + i;
+      const double ls = ft[src * Km + 20], c = netRank && costKind > 0 ? costOf(m.close(t, i), 0.0, stampOf[i]) : 0.0;
+      return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
+    };
     // The day's 10 trades: among the pool most traded, ranked with beta.
     const auto ranked = [&](std::size_t t, double pool, double b) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i]) continue;
-        const std::size_t src = (t - lag) * N + i;
-        v.emplace_back(pred[src * 4] * std::exp(b * ft[src * Km + 20]), i);
+        v.emplace_back(rankScore(t, i, b), i);
       }
       std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(nPick, v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       v.resize(std::min<std::size_t>(nPick, v.size()));
@@ -398,19 +436,6 @@ int main(int argc, char** argv) {
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
-    };
-    // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf).
-    const auto costOf = [&](double entry, double r, double stp) {
-      if (costKind == 1) {
-        const double sell = capital * (1 + r);
-        return (std::max(1.0, 0.0005 * capital) + 0.00005 * capital + std::max(1.0, 0.0005 * sell) + 0.00005 * sell) / capital + stp;
-      }
-      if (costKind == 2) {
-        const double n = std::max(1.0, std::floor(capital / entry)), v = n * entry, sell = v * (1 + r);
-        const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
-        return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
-      }
-      return 0.0;
     };
     // One trade: the limit (a fraction of the previous close), whether it filled and where, its exit
     // (0 close, 1 stop, 2 take-profit) and its return from the entry.
@@ -568,10 +593,9 @@ int main(int argc, char** argv) {
       if (t >= lag) {
         rankLiquidity(t, false);
         for (std::size_t i = 0; i < N; ++i) {
-          const double* a = &ft[((t - lag) * N + i) * Km];
           if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0)) continue;
           if (!tradable[t * N + i]) continue;
-          v.emplace_back(pred[((t - lag) * N + i) * 4] * std::exp(fx[1] * a[20]), i);
+          v.emplace_back(rankScore(t, i, fx[1]), i);
         }
       }
       constexpr std::size_t nCand = 60;
@@ -585,7 +609,8 @@ int main(int argc, char** argv) {
         const double limit = std::exp(-fx[2] * std::exp(ft[(t * N + i) * Km + 20]));
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * limit, fx[3], fx[4], fx[5]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
-        if (v[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
+        const double cost = costKind > 0 ? costOf(m.close(t, i), 0.0, stampOf[i]) : 0.0;  // the expected return shown net of its costs, as ranked
+        if (v[q].first > 0) lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
       }
     }
     return pred;
