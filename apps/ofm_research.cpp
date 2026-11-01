@@ -565,7 +565,8 @@ int main(int argc, char** argv) {
     // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
     // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
     const bool netRank = !std::getenv("X_GROSSRANK");
-    const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;  // research: an open fill pays the limit, not the open
+    const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;
+    const bool fullSpread = std::getenv("X_FULLSPREAD") != nullptr;  // research: an open fill pays the limit, not the open
     const bool verify = std::getenv("X_VERIFY") != nullptr;
     double rebuyF = 0;
     int rebuyMode = 0;
@@ -736,7 +737,7 @@ int main(int argc, char** argv) {
       const double L = pc * std::exp(-d * sig);
       r.limit = L / pc - 1;
       bool intraday = false;
-      if (o <= L) r.entry = fillAtLimit ? L : o, r.filled = 1;
+      if (o <= L) r.entry = fillAtLimit ? L : fullSpread ? std::min(o * half, L) : o, r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       // The levels as the orders set them before the open (as kernels/v2/levels.wgsl): from the anchor,
@@ -746,7 +747,7 @@ int main(int argc, char** argv) {
       if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0};  // a stop within a spread of the anchor: no order (cash)
       const double stop = anchor * fs, take = anchor * fk;
       r.stop = stop / r.entry - 1, r.take = fk < 1e300 ? take / r.entry - 1 : 0.0;
-      double px = c;
+      double px = fullSpread ? c / half : c;  // X_FULLSPREAD (research): the open's buy at the ask, the close's sale at the bid
       if (!intraday && o <= stop) px = o / half, r.exit = 1;  // opened through the stop: sold at the open
       else if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
@@ -834,7 +835,7 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : 1.0) : 0.0});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : fullSpread ? 3.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
