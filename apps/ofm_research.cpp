@@ -368,6 +368,7 @@ int main(int argc, char** argv) {
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
+      if (d == 5 && safetyOnly) return std::array<double, nP>{0, 40, 60, 120, 250, 500, 750}[std::min(nP - 1, std::size_t(x + 0.5))];  // the days its fading take-profit learns from (0: none; see fadeTake)
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
     const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA};
@@ -451,7 +452,7 @@ int main(int argc, char** argv) {
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
-        if (d != 2 && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code is discrete
+        if (d != 2 && !(d == 5 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the take-profit's window are discrete
           std::size_t lo[nD], hi[nD];
           for (std::size_t e = 0; e < nD; ++e) lo[e] = hi[e] = at[e];
           --lo[d], ++hi[d];
@@ -575,6 +576,42 @@ int main(int argc, char** argv) {
       }
       return falls[i].size() >= 20;
     };
+    // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
+    // the close t, known when the orders are made), the take-profit that would have paid the most on
+    // average: each day sold at it once the high cleared it by a half-spread, else at the close (on
+    // daily bars exact: a limit sell fills at its first touch, whatever came later). A rise that went
+    // on to the close gets no take-profit; one that faded does. 50 (none) when none beats the close,
+    // with fewer than w/2 days, or w 0. Kept for the day.
+    std::vector<double> fadeMemo(N * nP, 0.0);
+    std::vector<std::size_t> fadeDay(N * nP, std::size_t(-1));
+    const auto fadeTake = [&](std::size_t t, std::size_t i, double w) {
+      const std::size_t wi = w <= 0 ? 0 : w <= 40 ? 1 : w <= 60 ? 2 : w <= 120 ? 3 : w <= 250 ? 4 : w <= 500 ? 5 : 6, key = i * nP + wi;
+      if (fadeDay[key] == t) return fadeMemo[key];
+      double best = 50;
+      if (wi > 0) {
+        std::vector<std::pair<double, double>> d;  // (high, close) from the open
+        for (std::size_t u = t + 1 >= std::size_t(w) ? t + 1 - std::size_t(w) : 0; u <= t; ++u) {
+          const double o = m.open(u, i), h = m.high(u, i), c = m.close(u, i);
+          if (o > 0 && h >= o && c > 0) d.emplace_back(std::log(h / o), std::log(c / o));
+        }
+        if (d.size() >= std::size_t(w) / 2) {
+          std::sort(d.begin(), d.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+          const double hs = 0.5 * spread[t * N + i];
+          double rest = 0;
+          for (const auto& e : d) rest += e.second;
+          double top = rest;  // no take-profit: every day at the close
+          for (std::size_t k = 0; k < d.size(); ++k) {  // a take-profit a half-spread under day k's high: days 0..k sold at it
+            rest -= d[k].second;
+            const double x = d[k].first - hs;
+            if (x <= 0) break;
+            const double v = double(k + 1) * x + rest;
+            if (v > top) top = v, best = x;
+          }
+        }
+      }
+      fadeDay[key] = t, fadeMemo[key] = best;
+      return best;
+    };
     const auto quantile = [](const std::vector<double>& z, double q) {
       const double x = q * double(z.size() - 1);
       const std::size_t k = std::min(z.size() - 2, std::size_t(x));
@@ -584,7 +621,7 @@ int main(int argc, char** argv) {
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
       if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
-      if (safetyOnly) return std::make_pair(std::exp(std::max(quantile(falls[i], ps), -al * std::exp(ft[(t * N + i) * Km + 20]))), 1e300);  // a rare day's fall; no take-profit, else sold at the close
+      if (safetyOnly) { const double ft5 = fadeTake(t, i, pt); return std::make_pair(std::exp(std::max(quantile(falls[i], ps), -al * std::exp(ft[(t * N + i) * Km + 20]))), ft5 < 50 ? std::exp(ft5) : 1e300); }  // a rare day's fall; no take-profit, else sold at the close
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -694,7 +731,7 @@ int main(int argc, char** argv) {
                                    std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
-              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
+              for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
@@ -760,10 +797,10 @@ int main(int argc, char** argv) {
         for (std::size_t d = 0; d < nD; ++d) mx[d] += x[d] / double(used.size());
       double gated = 0;
       for (const auto& x : used) gated += gateOf(x[2]) / double(used.size());
-      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6]);
-      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n", fx[0], fx[1],
-                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
+      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f\n",
+                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? mx[5] : 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6]);
+      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f\n", fx[0], fx[1],
+                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? fx[5] : 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         if (paths.empty()) return 0.0;  // no trade (every day gated)
