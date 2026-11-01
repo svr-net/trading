@@ -462,7 +462,7 @@ int main(int argc, char** argv) {
     // only: AIM shares pay no stamp duty, so the net ranking favours them, and the cap weighs that
     // against concentrating in small companies).
     const bool aimCap = costKind == 1 && !stampFree.empty();
-    constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nRb = 3, nLv = nP * nP * nA * nRb, nD = 8;
+    constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nRb = 11, nLv = nP * nP * nA * nRb, nD = 8;
     // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
     // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
     // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
@@ -477,7 +477,7 @@ int main(int argc, char** argv) {
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       if (d == 5 && safetyOnly) return std::array<double, nP>{0, 40, 60, 120, 250, 500, 750}[std::min(nP - 1, std::size_t(x + 0.5))];  // the days its fading take-profit learns from (0: none; see fadeTake)
-      if (d == 7) return std::array<double, nRb>{0.0, 0.15, 0.25}[std::min(nRb - 1, std::size_t(x + 0.5))];  // the buy-back after a stop: none, or this far back up to the entry
+      if (d == 7) return 0.05 * x;  // the buy-back after a stop: none (0), or 5% to 50% of the way back up to the entry
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
     const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA, nRb};
@@ -563,7 +563,7 @@ int main(int argc, char** argv) {
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
-        if (d != 2 && d != 7 && !(d == 5 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the take-profit's window are discrete
+        if (d != 2 && !(d == 5 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the take-profit's window are discrete
           std::size_t lo[nD], hi[nD];
           for (std::size_t e = 0; e < nD; ++e) lo[e] = hi[e] = at[e];
           --lo[d], ++hi[d];
