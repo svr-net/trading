@@ -44,7 +44,8 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   to as a return), the limit's depth d (pool, ranking and limit for return, each by its record
   averaged over the level settings), the UK's daily cap on AIM shares (0 to 10, for return per
   unit of downside), the levels (for return per unit of
-  downside, Sortino). A stop sells half a spread below its level, and a take-profit fills only
+  downside, Sortino). Only trades expected to gain after costs are taken or published (the
+  expectation calibrated on the past days' top 10 before this filter, so it keeps learning). A stop sells half a spread below its level, and a take-profit fills only
   when the high clears it by half a spread. Net of costs: every filled trade pays Interactive Brokers' commissions (UK 0.05% an
   order, at least GBP 1; US USD 0.0035 a share, at least 0.35; plus exchange, clearing and US
   regulatory fees) on GBP/USD 5,000 a trade, and UK buys 0.5% stamp duty, except AIM shares, exempt since 2014 (`--costs UK|US

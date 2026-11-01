@@ -355,12 +355,12 @@ int main(int argc, char** argv) {
     // against concentrating in small companies).
     const bool aimCap = costKind == 1 && !stampFree.empty();
     constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nLv = nP * nP * nA, nD = 7;
-    // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none) and the gate
-    // k % 2 (1: only trades expected to gain after their costs; 0: the top 10 whatever their
-    // expectation, as the forecasts understate the gains of some), learnt like the rest.
+    // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
+    // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
+    // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
     const std::size_t nK = (aimCap ? 6 : 1) * 2, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
-    const auto gateOf = [&](double k) { return std::size_t(std::floor(k + 0.5)) % 2 == 1; };
+    const auto gateOf = [&](double) { return true; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
@@ -552,13 +552,13 @@ int main(int argc, char** argv) {
       const double px = m.close(t, i) * (costKind == 1 ? 0.01 : 1.0), cap = fee[i * 7] > 0 ? fee[i * 7 + 1] : capital;
       return px > 0 && std::floor(cap / px) >= 1;
     };
-    const auto ranked = [&](std::size_t t, double pool, double b, double code) {
+    const auto ranked = [&](std::size_t t, double pool, double b, double code, bool gate = true) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i] || !affordable(t, i)) continue;
         v.emplace_back(rankScore(t, i, b), i);
       }
-      return capTo(t, v, capOf(code), gateOf(code));
+      return capTo(t, v, capOf(code), gate && gateOf(code));
     };
     // A stock's moves from the open over its last 100 days to the close t, sorted: the falls to the
     // low and the rises to the high (logs), kept for the day.
@@ -654,11 +654,16 @@ int main(int argc, char** argv) {
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1], x[2]);
       adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6])), used.push_back(x);
+      // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
+      // results are known now and used from the next day's decisions), so the gate never starves it.
+      for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
+        const Trade tr = trade(t, e.second, x[3], x[4], x[5], x[6]);
+        calAdd(rawExpected(t, e.second), tr.ret, tr.filled > 0);
+      }
       for (std::size_t k = 0; k < today.size(); ++k) {  // the trades, for the diagnostics and the log
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
         const Trade tr = trade(t, i, x[3], x[4], x[5], x[6]);
-        calAdd(rawExpected(t, i), tr.ret, tr.filled > 0);
         tradeOrders += 1;
         if (tr.filled > 0) tradeFilled += 1, tradeSum += tr.ret, tradeGained += tr.ret > 0;  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
         if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
@@ -761,6 +766,7 @@ int main(int argc, char** argv) {
                   capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
+        if (paths.empty()) return 0.0;  // no trade (every day gated)
         std::vector<double> z;
         for (const auto& x : paths) z.push_back(x[d]);
         std::nth_element(z.begin(), z.begin() + std::ptrdiff_t(p * double(z.size() - 1)), z.end());
