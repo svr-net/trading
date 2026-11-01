@@ -1,6 +1,6 @@
 // Browser test of the page in headless Chromium (Playwright): node web/tests/e2e.mjs
-// Serves web/ and checks that each market's published scan renders: the next open's trades (at
-// most 10), the backtest tiles, the chart and the last days, without page errors.
+// Serves web/ and checks that each market's published scan renders: the summary, the next open's
+// trades (at most 10), and, opened, the backtest tile, the chart and the last days, without page errors.
 // Environment: PLAYWRIGHT_MODULE (path to playwright's index.mjs), CHROMIUM_PATH.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -30,6 +30,10 @@ for (const m of ['uk', 'us']) {
   try {
     await page.goto(`${base}/index.html?market=${m}`);
     await page.waitForFunction(() => /close of/.test(document.getElementById('asof').textContent), null, { timeout: 30000 });
+    const summary = await page.$eval('#summary', (e) => e.textContent.trim());
+    if (!summary) throw new Error('no summary');
+    await page.click('#past > summary');  // the backtest is folded away; open it to draw the chart
+    await page.waitForTimeout(200);
     const trades = await page.$$eval('#plan tbody tr:not(.gap)', (rows) => rows.length);
     const annual = await page.$eval('#verdict .tile .v', (e) => parseFloat(e.textContent) / 100);
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
