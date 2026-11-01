@@ -462,6 +462,7 @@ int main(int argc, char** argv) {
     // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
     // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
     const bool netRank = !std::getenv("X_GROSSRANK");
+    const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;  // research: an open fill pays the limit, not the open
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
       const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
@@ -532,7 +533,7 @@ int main(int argc, char** argv) {
       const double L = pc * std::exp(-d * sig);
       r.limit = L / pc - 1;
       bool intraday = false;
-      if (o <= L) r.entry = o, r.filled = 1;
+      if (o <= L) r.entry = fillAtLimit ? L : o, r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       const auto [fs, fk] = levelsAt(t, i, r.entry, ps, pt, al);
@@ -598,7 +599,7 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? 1.0 : 0.0});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit

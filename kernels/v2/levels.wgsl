@@ -64,7 +64,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var entry : f32 = 0.0;
     var intra : bool = false;
     var y : f32 = 0.0;
-    if (o <= lim) { entry = o; } else if (l <= lim / half) { entry = lim; intra = true; }
+    if (o <= lim) { entry = o; if (st[b + 8u] > 1.5) { entry = lim; } } else if (l <= lim / half) { entry = lim; intra = true; }
     if (entry > 0.0) {
       var stop : f32 = 0.0;
       var take : f32 = 1.0e30;
