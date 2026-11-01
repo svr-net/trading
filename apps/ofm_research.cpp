@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
-    if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : 0;
+    if (std::string(argv[k]) == "--costs") costKind = std::string(argv[k + 1]) == "UK" ? 1 : std::string(argv[k + 1]) == "US" ? 2 : std::string(argv[k + 1]) == "APAC" ? 3 : 0;
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
@@ -414,6 +414,10 @@ int main(int argc, char** argv) {
         const double cb = std::min(std::max(0.35, 0.0035 * n), 0.01 * v) + 0.0005 * n, cs = std::min(std::max(0.35, 0.0035 * n), 0.01 * sell) + 0.0005 * n;
         return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
       }
+      if (costKind == 3) {  // ASX (IBKR fixed): AUD 6 or 0.08% an order, whichever is more; no stamp duty
+        const double sell = capital * (1 + r);
+        return (std::max(6.0, 0.0008 * capital) + std::max(6.0, 0.0008 * sell)) / capital + stp;
+      }
       return 0.0;
     };
     // The ranking's score: the expected open-to-close net of the share's own costs (at its last close;
@@ -743,7 +747,7 @@ int main(int argc, char** argv) {
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
-    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : "US") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
+    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << (costKind == 1 ? "UK" : costKind == 2 ? "US" : "APAC") << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
                       << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << "}";
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g}", R.dates.front().c_str(),
                   R.dates.back().c_str(), ms[0], ms[1], ms[2]);

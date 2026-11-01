@@ -29,7 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  const cur = c.market === 'UK' ? '£' : '$';
+  const cur = { UK: '£', US: '$', APAC: 'A$' }[c.market] || '';
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
 };
 
@@ -95,7 +95,7 @@ function drawChart(r) {
 }
 window.addEventListener('resize', () => { if (shown) drawChart(shown); });
 
-const MARKETS = { uk: 'UK', us: 'US' };
+const MARKETS = { uk: 'UK', us: 'US', apac: 'APAC' };
 let market = 'uk';
 try { market = new URLSearchParams(location.search).get('market') || localStorage.getItem('market') || 'uk'; } catch { /* no storage */ }
 if (!MARKETS[market]) market = 'uk';
