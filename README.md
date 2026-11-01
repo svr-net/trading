@@ -36,7 +36,7 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   in 10, of those days; the stop blended with its parabolic SAR); after a fill during the day the
   take-profit is not credited (the high may have come first); `--exit close` sells every trade
   at the close instead; `--exit safety` (every market) keeps only a safety stop, at the fall the share
-  reached on a learnt 1 in 20 to 1 in 100 of its days, and sells at the close otherwise (US shares
+  reached on a learnt 1 in 20 to 1 in 100 of its days, at most a learnt 1.5 to 6 of its own daily sigmas below the buy price, and sells at the close otherwise (US shares
   stopped during the day mostly recover by the close: +1% a year with learnt stops and
   take-profits against +10% with the safety stop, after costs; the UK +55% a year, Sharpe 4.94, against +79%, 4.98: the stop no longer sells into the opening volatility). Every lattice point's daily trades are one fused kernel
   (kernels/v2/levels.wgsl and records.wgsl). Learnt continuously each day from the records so far: the pool (how many of the most
