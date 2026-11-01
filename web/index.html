@@ -34,7 +34,7 @@
     <h2 id="trades-title">Orders for the next trading day</h2>
     <p class="muted" id="asof">Loading…</p>
     <div class="table-scroll"><table id="plan"></table></div>
-    <p class="hint"><b>Buy at</b>: below the last close; the order buys only if the share dips that far. <b>Stop</b>: a safety stop from the buy price, at a fall the share makes only on a rare day; the share is sold if it falls that far, otherwise at the close, so nothing is held overnight (<b>Target</b>, when shown: sold early if it rises that far). <b>Buy-back</b>, when shown: after a stop, bought again if the price climbs that share of the way back to the buy price, and sold at the buy price plus costs (else at the close). <b>Expected gain</b>: from the buy price, what similar past orders that bought actually made on average after all costs. <span id="odds"></span></p>
+    <p class="hint"><b>Buy at</b>: below the last close; the order buys only if the share dips that far. <b>Stop</b>: a safety stop from the buy price, at a fall the share makes only on a rare day; the share is sold if it falls that far, otherwise at the close, so nothing is held overnight (<b>Target</b>, when shown: sold early if it rises that far). <b>Buy-back</b>, when shown: after a stop, bought again if the price climbs back to this level (from the buy price; the share of the way back is learnt), then sold at the buy price plus costs, else at the close. <b>Expected gain</b>: from the buy price, what similar past orders that bought actually made on average after all costs. <span id="odds"></span></p>
   </section>
 
   <section class="view" id="view-results" hidden aria-labelledby="results-title">
