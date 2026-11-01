@@ -267,7 +267,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> dates;
     struct Pick {
       std::size_t stock;
-      double expected, stop, take;  // expected open-to-close net of its costs; the stop and take-profit from the entry (NaN: none)
+      double expected, stop, take;  // the calibrated expected return net of its costs (an unfilled order as 0); the stop and take-profit from the entry (NaN: none)
       double limit;                 // the buy limit from the last close
     };
     std::vector<Pick> picks;
@@ -492,15 +492,40 @@ int main(int argc, char** argv) {
       const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
-    // The day's trades: up to 10 among the pool most traded, ranked with beta, expected to gain after
-    // their costs, at most cap of them AIM shares.
-    const auto capTo = [&](std::vector<std::pair<double, std::size_t>>& v, double cap, bool gate) {
+    // The expected return, calibrated walk-forward: the model's raw expectation (its open-to-close
+    // forecast less the share's costs) ranks well but is shrunk towards zero, so a pick's calibrated
+    // expectation is what the backtest's earlier picks with a similar raw expectation (bands of 0.2%,
+    // widened to at least 100 picks) actually returned net of costs, an unfilled one as 0. Only picks
+    // whose day is over enter (calAdd after the day's decisions); before any, the raw expectation.
+    constexpr int calBins = 41;
+    constexpr double calW = 0.002;
+    std::vector<double> calN(calBins, 0.0), calS(calBins, 0.0);
+    const auto rawExpected = [&](std::size_t t, std::size_t i) {
+      const std::size_t src = (t - lag) * N + i;
+      const double c = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
+      return std::expm1(pred[src * 4] * std::exp(ft[src * Km + 20])) - c;
+    };
+    const auto calBin = [&](double e) { return int(std::min<double>(calBins - 1, std::max(0.0, std::floor(e / calW + 0.5) + calBins / 2))); };
+    const auto calibrated = [&](double e) {
+      const int b = calBin(e);
+      double n = calN[b], sm = calS[b];
+      for (int w = 1; n < 100 && w < calBins; ++w) {
+        if (b - w >= 0) n += calN[b - w], sm += calS[b - w];
+        if (b + w < calBins) n += calN[b + w], sm += calS[b + w];
+      }
+      return n > 0 ? sm / n : e;
+    };
+    const auto calAdd = [&](double e, double ret) { calN[calBin(e)] += 1, calS[calBin(e)] += ret; };
+    // The day's trades: up to 10 among the pool most traded, ranked with beta, at most cap of them AIM
+    // shares; gated: only those whose calibrated expectation is a gain.
+    const auto capTo = [&](std::size_t t, std::vector<std::pair<double, std::size_t>>& v, double cap, bool gate) {
       std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       const std::size_t most = std::size_t(std::floor(cap + 0.5));
       std::vector<std::pair<double, std::size_t>> w;
       std::size_t aim = 0;
       for (const auto& e : v) {
-        if (w.size() >= nPick || (gate && !(e.first > 0))) break;  // gated: only trades expected to gain after their costs
+        if (w.size() >= nPick) break;
+        if (gate && !(calibrated(rawExpected(t, e.second)) > 0)) continue;  // gated: only trades expected to gain after their costs
         const bool isAim = aimCap && stampOf[e.second] == 0;
         if (isAim && aim >= most) continue;
         aim += isAim, w.push_back(e);
@@ -513,7 +538,7 @@ int main(int argc, char** argv) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i]) continue;
         v.emplace_back(rankScore(t, i, b), i);
       }
-      return capTo(v, capOf(code), gateOf(code));
+      return capTo(t, v, capOf(code), gateOf(code));
     };
     // A stock's moves from the open over its last 100 days to the close t, sorted: the falls to the
     // low and the rises to the high (logs), kept for the day.
@@ -613,6 +638,7 @@ int main(int argc, char** argv) {
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
         const Trade tr = trade(t, i, x[3], x[4], x[5], x[6]);
+        calAdd(rawExpected(t, i), tr.ret);  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
         if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
           if (k == 0) check.clear(), checkDate = m.dates[t + 1];
           check.push_back({i, m.close(t, i) * (1 + tr.limit), tr.filled, tr.entry, tr.exit, tr.exitPx, tr.ret});
@@ -678,6 +704,10 @@ int main(int argc, char** argv) {
       nDays += 1;
     }
     if (tradeLog) std::fclose(tradeLog);
+    std::printf("calibration (raw expectation band: picks, their mean net return, unfilled as 0):");
+    for (int b = 0; b < calBins; ++b)
+      if (calN[b] >= 100) std::printf(" %+.1f%%: %.0f, %+.3f%%;", 100 * (b - calBins / 2) * calW, calN[b], 100 * calS[b] / calN[b]);
+    std::printf("\n");
     if (verify) std::printf("verify: %zu kernel trades against the trade path, %zu differ\n", verifyN, verifyBad);
     if (verifyBad > 0) {  // nothing is published from a backtest whose two implementations disagree
       std::fprintf(stderr, "verify failed: the fused kernel and the trade path disagree on %zu trades\n", verifyBad);
@@ -747,18 +777,16 @@ int main(int argc, char** argv) {
       std::partial_sort(v.begin(), v.begin() + std::ptrdiff_t(std::min<std::size_t>(std::max(nPick, nCand), v.size())), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
       for (std::size_t q = 0; q < std::min<std::size_t>(nCand, v.size()); ++q) lastRun.candidates.emplace_back(v[q].second, v[q].first);
       for (const auto& e : v) lastRun.pool.push_back(e.second);
-      const auto picks = capTo(v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
+      const auto picks = capTo(t, v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
       for (std::size_t q = 0; q < picks.size(); ++q) {
-        const std::size_t i = picks[q].second, src = (t - lag) * N + i;
-        const double sig = std::exp(ft[src * Km + 20]);
+        const std::size_t i = picks[q].second;
         // The limit from the last close.
         const double limit = std::exp(-fx[3] * std::exp(ft[(t * N + i) * Km + 20]));
         // The levels from the expected entry: the limit, or the last close when the limit is above it
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
-        const double cost = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;  // the expected return shown net of its costs, as ranked
-        lastRun.picks.push_back({i, std::expm1(pred[src * 4] * sig) - cost, fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});
+        lastRun.picks.push_back({i, calibrated(rawExpected(t, i)), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});  // calibrated, net of costs
       }
     }
     return pred;
