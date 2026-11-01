@@ -93,7 +93,9 @@ int main(int argc, char** argv) {
   std::vector<double> fee(N * 7, 0.0);
   for (std::size_t i = 0; i < N; ++i) {
     double* f = &fee[i * 7];
-    if (costKind == 1) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 1, f[4] = 0.00005, f[5] = stampOf[i];  // UK: 0.05%, at least GBP 1, + 0.005%; stamp duty
+    // UK (IBKR tiered): 0.05%, at least GBP 1; the LSE's fee 0.0045%, at least GBP 0.10, and clearing
+    // GBP 0.06 an order (as a rate at the trade's amount); stamp duty.
+    if (costKind == 1) f[0] = 1, f[1] = capital, f[2] = 0.0005, f[3] = 1, f[4] = std::max(0.000045, 0.10 / capital) + 0.06 / capital, f[5] = stampOf[i];
     if (costKind == 2) f[0] = 2, f[1] = capital;                                                            // US: a share
     if (costKind == 3) f[0] = 1, f[1] = capital, f[2] = 0.0008, f[3] = 6;                                    // ASX: 0.08%, at least AUD 6
   }
@@ -483,6 +485,8 @@ int main(int argc, char** argv) {
     // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
     const bool netRank = !std::getenv("X_GROSSRANK");
     const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;  // research: an open fill pays the limit, not the open
+    const bool verify = std::getenv("X_VERIFY") != nullptr;
+    std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
       const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
@@ -557,13 +561,17 @@ int main(int argc, char** argv) {
       if (o <= L) r.entry = fillAtLimit ? L : o, r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
-      const auto [fs, fk] = levelsAt(t, i, r.entry, ps, pt, al);
-      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0};  // a stop within a spread of the entry: skipped (cash)
-      const double stop = r.entry * fs, take = r.entry * fk;
-      r.stop = fs - 1, r.take = fk < 1e300 ? fk - 1 : 0.0;
+      // The levels as the orders set them before the open (as kernels/v2/levels.wgsl): from the anchor,
+      // the limit or the previous close when the limit is above it.
+      const double anchor = std::min(L, pc);
+      const auto [fs, fk] = levelsAt(t, i, anchor, ps, pt, al);
+      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0};  // a stop within a spread of the anchor: no order (cash)
+      const double stop = anchor * fs, take = anchor * fk;
+      r.stop = stop / r.entry - 1, r.take = fk < 1e300 ? take / r.entry - 1 : 0.0;
       double px = c;
-      if (lo <= stop) px = stop / half, r.exit = 1;
-      else if (!intraday && hi >= take * half) px = take, r.exit = 2;
+      if (!intraday && o <= stop) px = o / half, r.exit = 1;  // opened through the stop: sold at the open
+      else if (lo <= stop) px = stop / half, r.exit = 1;
+      else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
       r.ret = px / r.entry - 1, r.exitPx = px;
       r.ret -= costOf(r.entry, r.ret, i);
       return r;
@@ -639,6 +647,22 @@ int main(int argc, char** argv) {
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
         ofm::detail::dispatch(kl, ofm::detail::groups(std::uint32_t(ns * nLe), 64));
+        // X_VERIFY (a check): every slot under a spread of settings, the kernel's return against the
+        // trade path's (trade(), the one the published trades and the check use); they must agree.
+        if (verify) {
+          std::vector<std::size_t> slotStock(ns);
+          for (std::size_t i = 0; i < N; ++i)
+            if (slotOf[i] >= 0) slotStock[std::size_t(slotOf[i])] = i;
+          for (std::size_t sl = 0; sl < ns; ++sl)
+            for (std::size_t le = sl % 97; le < nLe; le += 97) {
+              const std::size_t ca = le % nA, ct = le / nA % nP, cs = le / (nA * nP) % nP, ce = le / (nA * nP * nP);
+              const double want = trade(t, slotStock[sl], dvals[ce], axis(4, double(cs)), axis(5, double(ct)), avals[ca]).ret, got = ret[sl * nLe + le];
+              ++verifyN;
+              if (std::fabs(want - got) > 1e-9) {
+                if (++verifyBad <= 5) std::printf("  verify: %s %s setting %zu: kernel %+.6f, trade %+.6f\n", m.dates[t + 1].c_str(), m.tickers[slotStock[sl]].c_str(), le, got, want);
+              }
+            }
+        }
         ofm::v2::gen::V2Header<double> R{};
         R.T = std::uint32_t(nV), R.u0 = std::uint32_t(nLe), R.NT = std::uint32_t(nPick), R.t0 = std::uint32_t(nDays + 1);
         ofm::v2::gen::Records<double> kr;
@@ -648,6 +672,11 @@ int main(int argc, char** argv) {
       nDays += 1;
     }
     if (tradeLog) std::fclose(tradeLog);
+    if (verify) std::printf("verify: %zu kernel trades against the trade path, %zu differ\n", verifyN, verifyBad);
+    if (verifyBad > 0) {  // nothing is published from a backtest whose two implementations disagree
+      std::fprintf(stderr, "verify failed: the fused kernel and the trade path disagree on %zu trades\n", verifyBad);
+      std::exit(3);
+    }
     auto stats = [](const std::vector<double>& x) {
       double w = 0, s1 = 0, s2 = 0;
       for (double y : x) w += std::log1p(y), s1 += y, s2 += y * y;
