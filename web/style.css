@@ -125,3 +125,11 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 #broker-history td { white-space: normal; }
 #broker-history td:first-child, #broker-history td:nth-child(2) { white-space: nowrap; }
 tr.gap td { white-space: normal; }
+/* The section menu: one section at a time. */
+.views { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--rule); }
+.views button { font: 600 14px var(--sans, inherit); padding: 8px 10px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
+.views button[aria-current] { color: var(--ink); border-bottom-color: var(--accent); }
+.views button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.view footer { margin-top: 18px; }
+.views { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
+.views button { padding: 8px 7px; white-space: nowrap; flex: 0 0 auto; }
