@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
   // from it (AIM shares, one ticker a line).
-  std::string stampFree, venuesFile, costMarket;
+  std::string stampFree, venuesFile, costMarket, segmentsFile;
   double rebuyWeight = 0.35;  // how a day daily bars cannot settle counts in a buy-back (--rebuy-weight; measured by ofm_paths)
   bool fixedPricing = true;  // --pricing fixed (the default: IBKR's fixed commissions) or tiered  // --venues: each exchange's costs (see fee below)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
+    if (std::string(argv[k]) == "--segments") segmentsFile = argv[k + 1];
     if (std::string(argv[k]) == "--rebuy-weight") rebuyWeight = std::atof(argv[k + 1]);  // measured by ofm_paths
     if (std::string(argv[k]) == "--pricing") fixedPricing = std::string(argv[k + 1]) != "tiered";
     if (std::string(argv[k]) == "--venues") venuesFile = argv[k + 1];
@@ -89,6 +90,28 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < N; ++i)
       if (free.count(m.tickers[i])) stampOf[i] = 0, ++nf;
     std::printf("stamp duty: %zu of %zu stocks exempt (%s)\n", nf, N, stampFree.c_str());
+  }
+  // Which shares trade through the exchange's opening and closing auctions (--segments: the London
+  // Stock Exchange's instrument list, ticker,segment: the SETS order book's segments, SET*, STMM and
+  // AMSM, uncross at the open and the close at one price; the others, SETSqx and quote-driven, trade
+  // with market makers at their quotes). A share without auctions buys at the open's offer and sells
+  // at the close's bid: a half-spread each way (as a stop or a take-profit already pays), in the
+  // backtest, the ranking and the expectation alike. Without --segments, every share has auctions.
+  std::vector<char> quoted(N, 0);
+  if (!segmentsFile.empty()) {
+    std::istringstream in(readFile(segmentsFile));
+    std::map<std::string, std::string> seg;
+    for (std::string line; std::getline(in, line);) {
+      const auto c1 = line.find(','), c2 = line.find(',', c1 + 1);
+      if (c1 != std::string::npos) seg[line.substr(0, c1)] = line.substr(c1 + 1, c2 == std::string::npos ? std::string::npos : c2 - c1 - 1);
+    }
+    std::size_t nq = 0, nu = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+      const auto it = seg.find(m.tickers[i]);
+      const bool auction = it != seg.end() && (it->second.rfind("SET", 0) == 0 || it->second == "STMM" || it->second == "AMSM");
+      quoted[i] = !auction, nq += !auction, nu += it == seg.end();
+    }
+    std::printf("auctions: %zu of %zu stocks trade without (quotes: a half-spread each way); %zu not in %s, taken as quoted\n", nq, N, nu, segmentsFile.c_str());
   }
   // Each stock's costs (7 fields, as kernels/v2/levels.wgsl's costOf): kind (1 a rate with a minimum
   // an order, 2 the US's commission a share), the amount a trade, the commission's rate and minimum,
@@ -178,6 +201,19 @@ int main(int argc, char** argv) {
       spread[t * N + i] = w > 0 ? std::sqrt(std::max(0.0, e / w)) : 0.0;
     }
   }
+  // Where the estimator has no answer (its covariance not negative: noise, not a free share), the
+  // share takes that day's median estimate among the shares that trade as it does (with or without
+  // auctions): a zero would make the costliest shares look free, and the ranking pick them for it.
+  for (std::size_t t = 1; t < T; ++t)
+    for (int g = 0; g < 2; ++g) {
+      std::vector<double> v;
+      for (std::size_t i = 0; i < N; ++i)
+        if (quoted[i] == g && spread[t * N + i] > 0) v.push_back(spread[t * N + i]);
+      if (v.empty()) continue;
+      std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(v.size() / 2), v.end());
+      for (std::size_t i = 0; i < N; ++i)
+        if (quoted[i] == g && !(spread[t * N + i] > 0) && m.close(t, i) > 0) spread[t * N + i] = v[v.size() / 2];
+    }
   // Each stock's parabolic SAR for the next day as known at each close (Wilder: acceleration 0.02,
   // rising by 0.02 to 0.2 with each new extreme), while it trails below the price; NaN in a
   // downtrend.
@@ -583,7 +619,7 @@ int main(int argc, char** argv) {
     std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
-      const double ls = ft[src * Km + 20], c = netRank && fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
+      const double ls = ft[src * Km + 20], c = netRank ? (fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
     // The expected return, calibrated walk-forward without settings: the model's raw expectation (its
@@ -621,7 +657,7 @@ int main(int argc, char** argv) {
     Iso calPick, calFill;
     const auto rawExpected = [&](std::size_t t, std::size_t i) {
       const std::size_t src = (t - lag) * N + i;
-      const double c = fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0;
+      const double c = (fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0);
       return std::expm1(pred[src * 4] * std::exp(ft[src * Km + 20])) - c;
     };
     const auto calibrated = [&](double e, bool filled = false) { return filled ? calFill.at(e) : calPick.at(e); };
@@ -739,7 +775,8 @@ int main(int argc, char** argv) {
       const double L = pc * std::exp(-d * sig);
       r.limit = L / pc - 1;
       bool intraday = false;
-      if (o <= L) r.entry = fillAtLimit ? L : fullSpread ? std::min(o * half, L) : o, r.filled = 1;
+      const bool noAuction = fullSpread || quoted[i];
+      if (o <= L) r.entry = fillAtLimit ? L : noAuction ? std::min(o * half, L) : o, r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       // The levels as the orders set them before the open (as kernels/v2/levels.wgsl): from the anchor,
@@ -749,7 +786,7 @@ int main(int argc, char** argv) {
       if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0};  // a stop within a spread of the anchor: no order (cash)
       const double stop = anchor * fs, take = anchor * fk;
       r.stop = stop / r.entry - 1, r.take = fk < 1e300 ? take / r.entry - 1 : 0.0;
-      double px = fullSpread ? c / half : c;  // X_FULLSPREAD (research): the open's buy at the ask, the close's sale at the bid
+      double px = noAuction ? c / half : c;  // without auctions (or X_FULLSPREAD): the open's buy at the offer, the close's sale at the bid
       if (!intraday && o <= stop) px = o / half, r.exit = 1;  // opened through the stop: sold at the open
       else if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
@@ -839,7 +876,7 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : fullSpread ? 3.0 : 1.0) : 0.0});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : fullSpread || quoted[i] ? 3.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit

@@ -141,6 +141,9 @@ jobs:
           ORDERS=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then mkdir -p data/eoddata/orders; ORDERS=(--orders "data/eoddata/orders/$MARKET.json"); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
           STAMP=(); if [ "$MARKET" = UK ]; then node tools/eoddata/aim.mjs tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
+          # UK: which shares trade through the opening and closing auctions (the exchange's monthly
+          # instrument list; the committed one if that fails): the others pay a half-spread each way.
+          if [ "$MARKET" = UK ]; then node tools/eoddata/lse_segments.mjs tools/eoddata/lse_segments.csv || true; STAMP+=(--segments tools/eoddata/lse_segments.csv); fi
           # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, 1,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
           # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
