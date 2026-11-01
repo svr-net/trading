@@ -1,6 +1,6 @@
 // #include header.wgsl
 // The day's trades, fused, second half: each setting's day (its ranking's candidates' returns under
-// its entry and exit setting, from levels.wgsl, averaged over the candidates; one unit each, an
+// its entry and exit setting, from levels.wgsl, a share each of NT; one unit each, a missing or an
 // unfilled one in cash), added to its record, and its scores for the next day. The fields of P: T
 // the settings (rankings x u0), u0 the entry and exit settings per share, NT the trades a ranking
 // holds, t0 the days in the records after today's. A setting g = ranking * u0 + its entry and exit
@@ -29,7 +29,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       n = n + 1.0;
       y = y + ret[u32(s) * P.u0 + li];
     }
-    if (n > 0.0) { y = y / n; }
+    if (n > 0.0) { y = y / f32(P.NT); }  // a share each of NT: a ranking's missing trades stay in cash
     s1[g] = s1[g] + y;
     s2[g] = s2[g] + y * y;
     let loss : f32 = min(y, 0.0);
