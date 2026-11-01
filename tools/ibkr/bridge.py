@@ -17,7 +17,8 @@ wrong key costs a second. On a server it sits behind HTTPS (docker/ibkr/docker-c
 
 Automatic trading (AUTO_MARKETS, e.g. UK or UK,US; empty: off): on weekdays the bridge places each
 market's orders before its open and closes what is left before its close, by the exchange's clock
-(UK 07:45 and 16:20 London, US 09:20 and 15:40 New York, APAC 09:45 and 15:50 Sydney; AUTO_UK_PLACE, AUTO_UK_CLOSE, AUTO_US_PLACE,
+(UK 07:45 and 16:20 London, EU 08:45 and 17:20 Paris, US 09:20 and 15:40 New York, APAC 09:45 and
+15:50 Sydney; AUTO_UK_PLACE, AUTO_UK_CLOSE, AUTO_US_PLACE,
 AUTO_US_CLOSE change them), each once a day, and skips an orders file more than 4 days old.
 
 Opening auctions (AUCTION=1, the default; 0 off): on the same days, at UK 07:52 London and US 09:24
@@ -62,18 +63,19 @@ IB_PORT = int(os.environ.get('IB_PORT', '4002'))
 CAPITAL = float(os.environ.get('CAPITAL', '5000'))
 ORIGIN = os.environ.get('ALLOWED_ORIGIN', 'https://svr-net.github.io')
 CACHE = os.environ.get('ORDERS_DIR', '/tmp/ofm-orders')
-MARKETS = ('UK', 'US', 'APAC')
+MARKETS = ('UK', 'EU', 'US', 'APAC')
 AUTO = [m.strip().upper() for m in os.environ.get('AUTO_MARKETS', '').split(',') if m.strip().upper() in MARKETS]
-ZONE = {'UK': 'Europe/London', 'US': 'America/New_York', 'APAC': 'Australia/Sydney'}
+ZONE = {'UK': 'Europe/London', 'EU': 'Europe/Paris', 'US': 'America/New_York', 'APAC': 'Australia/Sydney'}
 TIMES = {'UK': (os.environ.get('AUTO_UK_PLACE', '07:45'), os.environ.get('AUTO_UK_CLOSE', '16:20')),
          'US': (os.environ.get('AUTO_US_PLACE', '09:20'), os.environ.get('AUTO_US_CLOSE', '15:40')),
+         'EU': (os.environ.get('AUTO_EU_PLACE', '08:45'), os.environ.get('AUTO_EU_CLOSE', '17:20')),
          'APAC': (os.environ.get('AUTO_APAC_PLACE', '09:45'), os.environ.get('AUTO_APAC_CLOSE', '15:50'))}
 HISTORY = os.environ.get('HISTORY_DIR', os.environ.get('ORDERS_DIR', '/tmp/ofm-orders'))
-REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10'), 'APAC': os.environ.get('AUTO_APAC_REPORT', '16:30')}
+REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10'), 'APAC': os.environ.get('AUTO_APAC_REPORT', '16:30'), 'EU': os.environ.get('AUTO_EU_REPORT', '17:50')}
 # The opening auction's recording (submit.py --auction; places nothing), after the orders are in: the
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
-AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52')} if os.environ.get('AUCTION', '1') != '0' else {}
+AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
 STARTED = datetime.now().astimezone()
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
@@ -383,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
     def market(self, value):
         m = (value or '').upper()
         if m not in MARKETS:
-            self.reply(400, {'error': 'market must be UK, US or APAC'})
+            self.reply(400, {'error': 'market must be UK, EU, US or APAC'})
             return None
         return m
 
@@ -409,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(502, {'error': f'orders not available: {e}'})
             for o in book['orders']:
                 share = o['limit'] / 100.0 if m == 'UK' else o['limit']  # LSE prices are in pence
-                o['quantity'] = math.floor(CAPITAL / share) if share > 0 else 0
+                o['quantity'] = math.floor(float(o.get('capital') or CAPITAL) / share) if share > 0 else 0  # the order's own amount (the model's)
             book.update(market=m, capital=CAPITAL)
             return self.reply(200, book)
         self.reply(404, {'error': 'not found'})

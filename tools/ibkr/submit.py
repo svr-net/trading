@@ -31,8 +31,24 @@ import sys
 from datetime import date
 
 
-# Each market's exchange and currency at IBKR (US shares routed SMART).
-VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD')}
+# Each market's exchange and currency at IBKR (US shares routed SMART); in markets of several
+# exchanges (EU, APAC) a ticker is EXCHANGE:CODE, EODData's exchange, and takes that exchange's.
+VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD'), 'EU': ('SBF', 'EUR')}
+EXCHANGE = {'PAR': ('SBF', 'EUR'), 'AMS': ('AEB', 'EUR'), 'BRU': ('ENEXT.BE', 'EUR'), 'LIS': ('BVL', 'EUR'), 'MSE': ('BM', 'EUR'),
+            'FRA': ('IBIS', 'EUR'), 'OSL': ('OSE', 'NOK'), 'ASX': ('ASX', 'AUD'), 'SGX': ('SGX', 'SGD')}
+
+
+def contract_of(ticker, market):
+    from ib_async import Stock
+    if ':' in ticker:
+        ex, code = ticker.split(':', 1)
+        return Stock(code, *EXCHANGE[ex])
+    return Stock(ib_symbol(ticker, market), *VENUE[market])
+
+
+def capital_of(o, args):
+    # The order's own amount (the model's, in its exchange's currency), else --capital.
+    return float(o.get('capital') or args.capital)
 
 
 def ib_symbol(ticker, market):
@@ -53,7 +69,7 @@ def round_to(x, tick, how):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument('--market', choices=['UK', 'US', 'APAC'], required=True)
+    a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC'], required=True)
     a.add_argument('--orders', help='the orders file (orders/<MARKET>.json from svr-net/eod)')
     a.add_argument('--capital', type=float, default=1000.0, help='amount per trade, in the account currency')
     a.add_argument('--host', default='127.0.0.1')
@@ -83,7 +99,7 @@ def main():
         print(f'{args.market}: {len(book["orders"])} orders for the open after the close of {book["asOf"]}')
         if args.dry_run:
             for o in book['orders']:
-                q = math.floor(args.capital / per_share(o, args.market)) if o['limit'] > 0 else 0
+                q = math.floor(capital_of(o, args) / per_share(o, args.market)) if o['limit'] > 0 else 0
                 print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}")
             return
 
@@ -91,7 +107,6 @@ def main():
 
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id)
-    exch, cur = VENUE[args.market]
 
     if args.report:
         # Today's fills of this model's orders, a share at a time: bought, sold, average prices, the
@@ -144,8 +159,8 @@ def main():
         return
 
     for o in book['orders']:
-        sym = ib_symbol(o['ticker'], args.market)
-        contract = Stock(sym, exch, cur)
+        contract = contract_of(o['ticker'], args.market)
+        sym = o['ticker']
         if not ib.qualifyContracts(contract):
             print(f'  {sym}: not found at IBKR, skipped')
             continue
@@ -161,9 +176,9 @@ def main():
                 print(f"  {sym}: IBKR's close {bars[-1].close} does not match ours {o['close']}; skipped")
                 continue
         lim = round_to(o['limit'] * scale, tick, 'down')
-        qty = math.floor(args.capital / per_share(o, args.market)) if lim > 0 else 0
+        qty = math.floor(capital_of(o, args) / per_share(o, args.market)) if lim > 0 else 0
         if qty < 1:
-            print(f'  {sym}: capital {args.capital} buys no share at {per_share(o, args.market)}; skipped')
+            print(f'  {sym}: capital {capital_of(o, args)} buys no share at {per_share(o, args.market)}; skipped')
             continue
         parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY', transmit=False)
         ib.placeOrder(contract, parent)
@@ -187,7 +202,7 @@ def main():
     ib.disconnect()
 
 
-OPEN = {'UK': ('Europe/London', 8, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
+OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
 
 
 def auction(args):
@@ -209,11 +224,10 @@ def auction(args):
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id + 1)  # beside the orders' client
     ib.reqMarketDataType(1)  # real time
-    exch, cur = VENUE[args.market]
     num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > -1e300 else None  # noqa: E731
     tickers = {}
     for c in cands:
-        contract = Stock(ib_symbol(c['ticker'], args.market), exch, cur)
+        contract = contract_of(c['ticker'], args.market)
         if ib.qualifyContracts(contract):
             tickers[c['ticker']] = ib.reqMktData(contract, '225', False, False)
     rows = {t: {'ticker': t, 'close': c['close'], 'score': c.get('score'), 'samples': []} for t, c in ((c['ticker'], c) for c in cands) if t in tickers}
@@ -254,7 +268,7 @@ def diag(args):
     accounts = ib.managedAccounts()
     out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
                serverTime=ib.reqCurrentTime().isoformat())
-    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP'}[args.market], *VENUE[args.market])
+    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR'}[args.market], *VENUE[args.market])
     if ib.qualifyContracts(contract):
         ib.reqMarketDataType(1)
         k = ib.reqMktData(contract, '', False, False)
@@ -284,14 +298,13 @@ def daily_bars(args):
     pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
     ib = IB()
     ib.connect(args.host, args.port, clientId=args.client_id + 2)
-    exch, cur = VENUE[args.market]
     got = missing = 0
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['date', 'ticker', 'open', 'high', 'low', 'close', 'volume'])
         for k, t in enumerate(pool):
             start = time.monotonic()
-            contract = Stock(ib_symbol(t, args.market), exch, cur)
+            contract = contract_of(t, args.market)
             bars = []
             if ib.qualifyContracts(contract):
                 try:
