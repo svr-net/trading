@@ -271,6 +271,19 @@ int main(int argc, char** argv) {
     std::vector<Pick> picks;
     std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
     std::vector<std::size_t> pool;                           // the learnt pool for the next open (IBKR's daily bars are fetched for it)
+    // The model's own result for the latest day's trades (the orders placed that morning, as the
+    // backtest trades them), to compare with the broker's fills: stock, limit, filled (0 no, 1 at the
+    // open, 2 during the day), entry, exit (0 close, 1 stop, 2 take-profit), exit price, net return.
+    struct Check {
+      std::size_t stock;
+      double limit;
+      int filled;
+      double entry;
+      int exit;
+      double exitPx, ret;
+    };
+    std::string checkDate;
+    std::vector<Check> check;
   };
   Run lastRun;
   const std::size_t nPick = std::getenv("X_NPICK") ? std::size_t(std::atol(std::getenv("X_NPICK"))) : 10;
@@ -351,6 +364,8 @@ int main(int argc, char** argv) {
     std::vector<std::array<double, nD>> used;
     std::vector<std::array<double, 5>> paths;  // per candidate trade: filled, the stop and the take-profit from the entry, stopped, took profit
     std::vector<std::string> sd;
+    std::vector<Run::Check> check;  // the latest day's trades (Run::check)
+    std::string checkDate;
     std::FILE* tradeLog = nullptr;
     if (std::getenv("X_TRADELOG") && std::string(label).find("interactions") != std::string::npos) {
       tradeLog = std::fopen(std::getenv("X_TRADELOG"), "w");
@@ -524,7 +539,7 @@ int main(int argc, char** argv) {
     struct Trade {
       double limit, entry;
       int filled, exit;
-      double ret, stop, take;
+      double ret, stop, take, exitPx;
     };
     const auto trade = [&](std::size_t t, std::size_t i, double d, double ps, double pt, double al) {
       Trade r{};
@@ -537,13 +552,13 @@ int main(int argc, char** argv) {
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       const auto [fs, fk] = levelsAt(t, i, r.entry, ps, pt, al);
-      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0};  // a stop within a spread of the entry: skipped (cash)
+      if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0};  // a stop within a spread of the entry: skipped (cash)
       const double stop = r.entry * fs, take = r.entry * fk;
       r.stop = fs - 1, r.take = fk < 1e300 ? fk - 1 : 0.0;
       double px = c;
       if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = take, r.exit = 2;
-      r.ret = px / r.entry - 1;
+      r.ret = px / r.entry - 1, r.exitPx = px;
       r.ret -= costOf(r.entry, r.ret, i);
       return r;
     };
@@ -578,6 +593,10 @@ int main(int argc, char** argv) {
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
         const Trade tr = trade(t, i, x[3], x[4], x[5], x[6]);
+        if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
+          if (k == 0) check.clear(), checkDate = m.dates[t + 1];
+          check.push_back({i, m.close(t, i) * (1 + tr.limit), tr.filled, tr.entry, tr.exit, tr.exitPx, tr.ret});
+        }
         paths.push_back({double(tr.filled > 0), tr.stop, tr.take, double(tr.exit == 1), double(tr.exit == 2)});
         if (tradeLog)  // one line per trade, for the single-trade analysis (X_TRADELOG; local, not published)
           std::fprintf(tradeLog, "%s,%s,%zu,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%.6g,%.6g,%d\n", m.dates[t + 1].c_str(), m.tickers[i].c_str(), k,
@@ -670,6 +689,7 @@ int main(int argc, char** argv) {
     // times the stock's volatility (feature 20, its log). The SAR stop is from the last close (the
     // open is not known yet).
     lastRun = Run{adaptiveLevels, mkt, sd, {}};
+    lastRun.check = check, lastRun.checkDate = checkDate;
     {
       const std::size_t t = T - 1;
       std::vector<std::pair<double, std::size_t>> v;
@@ -748,7 +768,8 @@ int main(int argc, char** argv) {
   // the private store, never the page): each trade's last close, its buy limit and its stop-loss and
   // take-profit from the lower of the limit and the last close, for tools/ibkr/submit.py; and the 60 highest
   // ranked of the pool with their last closes, whose opening auctions the bridge records (--auction),
-  // and the pool's tickers, whose daily bars the bridge fetches from IBKR (--bars).
+  // and the pool's tickers, whose daily bars the bridge fetches from IBKR (--bars); and the model's own
+  // result for the latest day's orders (check), which the bridge sets beside the broker's fills.
   if (!ordersOut.empty()) {
     std::ofstream o(ordersOut);
     o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"orders\":[";
@@ -767,7 +788,14 @@ int main(int argc, char** argv) {
       std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"score\":%.6g}", q ? "," : "", m.tickers[i].c_str(), m.close(T - 1, i), sc);
       o << b;
     }
-    o << "],\"pool\":[";
+    o << "],\"check\":{\"date\":\"" << lastRun.checkDate << "\",\"trades\":[";
+    for (std::size_t q = 0; q < lastRun.check.size(); ++q) {
+      const auto& c = lastRun.check[q];
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"limit\":%.6g,\"filled\":%d,\"entry\":%.6g,\"exit\":%d,\"exitPrice\":%.6g,\"ret\":%.6g}", q ? "," : "",
+                    m.tickers[c.stock].c_str(), c.limit, c.filled, c.entry, c.exit, c.exitPx, c.ret);
+      o << b;
+    }
+    o << "]},\"pool\":[";
     for (std::size_t q = 0; q < lastRun.pool.size(); ++q) o << (q ? ",\"" : "\"") << m.tickers[lastRun.pool[q]] << '"';
     o << "]}\n";
   }

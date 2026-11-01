@@ -30,7 +30,9 @@ research reads it. On Saturdays at AUTO_BARS (06:00; empty: off), and on POST /b
 IBKR's daily bars for the pool into the private store (ibkr/<MARKET>/daily.csv): IBKR's opens are the
 opening auctions', to check the opens the model learns from.
 
-History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, and after
+History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, the model's
+own result for each day's orders arrives with the next orders file (the backtest's fill, entry, exit
+and return, to set beside the broker's), and after
 each close (automatically at UK 16:45 London, US 16:10 New York, or with POST /report) the day's
 fills from IBKR (submit.py --report); GET /history returns them by day for the page's History.
 
@@ -111,7 +113,26 @@ def fetch_orders(market):
             raise
         with open(path, 'wb') as f:
             f.write(body)
+        record_check(market, path)
     return path
+
+
+def record_check(market, path):
+    """The model's own result for the latest day's orders (the orders file's check: filled or not,
+    the entry, the exit and the net return, as the backtest trades them), kept once a day in the
+    history beside the broker's fills."""
+    try:
+        check = json.load(open(path)).get('check') or {}
+    except ValueError:
+        return
+    if not check.get('date') or not check.get('trades'):
+        return
+    os.makedirs(HISTORY, exist_ok=True)
+    mark = os.path.join(HISTORY, f"model-{market}-{check['date']}")
+    if os.path.exists(mark):
+        return
+    history_add({'kind': 'model', 'date': check['date'], 'market': market, 'trades': check['trades']})
+    open(mark, 'w').close()
 
 
 def run_submit(args, timeout=300):
@@ -289,11 +310,13 @@ def history():
                 r = json.loads(line)
             except ValueError:
                 continue
-            d = days.setdefault((r['date'], r['market']), {'date': r['date'], 'market': r['market'], 'orders': [], 'trades': []})
+            d = days.setdefault((r['date'], r['market']), {'date': r['date'], 'market': r['market'], 'orders': [], 'trades': [], 'model': []})
             if r['kind'] == 'placed':
                 d['orders'] = r['orders']
             elif r['kind'] == 'result':
                 d['trades'] = r['trades']  # the latest report of the day wins
+            elif r['kind'] == 'model':
+                d['model'] = r['trades']  # the model's own result for the day (record_check)
     return sorted(days.values(), key=lambda d: (d['date'], d['market']), reverse=True)
 
 

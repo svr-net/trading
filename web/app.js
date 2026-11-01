@@ -198,33 +198,56 @@ function brokerHistory() {
   if (!bridgeKey()) return;
   bridge('/history').then((h) => {
     const rows = [];
-    let n = 0, wins = 0, pnl = {}, placedN = 0;
+    const code = (x) => x.split(':').pop().replace(' ', '.');  // EXCHANGE:CODE in multi-exchange markets; IBKR's "BT A"
+    // A broker's price against the model's (EODData's): LSE prices may be in pence on one side and pounds on the other.
+    const ratio = (a, b) => { const r = a / b; const s = [1, 0.01, 100].reduce((p, x) => (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / p)) ? x : p), 1); return r / s; };
+    let n = 0, wins = 0, pnl = {}, placedN = 0, checked = 0, agree = 0, gapN = 0, gapS = 0, retN = 0, retA = 0, retM = 0;
     for (const d of h.days) {
-      const traded = Object.fromEntries(d.trades.map((t) => [t.ticker.replace(' ', '.'), t]));
+      const traded = Object.fromEntries(d.trades.map((t) => [code(t.ticker), t]));
+      const model = Object.fromEntries((d.model || []).map((t) => [code(t.ticker), t]));
+      const reported = d.trades.length > 0 || (d.model || []).length > 0;
       placedN += d.orders.length;
-      const names = new Set([...d.orders.map((o) => o.ticker), ...Object.keys(traded)]);
+      const names = new Set([...d.orders.map((o) => code(o.ticker)), ...Object.keys(traded)]);
       for (const name of names) {
-        const o = d.orders.find((x) => x.ticker === name) || {};
-        const t = traded[name];
+        const o = d.orders.find((x) => code(x.ticker) === name) || {};
+        const t = traded[name], mo = model[name];
         const filled = t && t.bought > 0;
         if (filled) {
           n += 1;
           if (t.ret > 0) wins += 1;
           pnl[t.currency] = (pnl[t.currency] || 0) + t.pnl;  // IBKR's realised P&L, after its commissions
         }
-        rows.push([[d.date], [d.market], [name], [o.limit != null ? o.limit.toFixed(2) : '', 'num'],
-          [filled ? `${t.bought} @ ${t.buy.toFixed(2)}` : (d.trades.length ? 'not filled' : 'open'), 'num'],
+        // The comparison: did both fill, the entry's gap (positive: paid more than the model assumed), the returns.
+        let gap = null;
+        if (mo && d.trades.length) {
+          checked += 1;
+          if ((mo.filled > 0) === Boolean(filled)) agree += 1;
+          if (filled && mo.filled > 0) {
+            gap = ratio(t.buy, mo.entry) - 1, gapN += 1, gapS += gap;
+            if (t.ret != null) retN += 1, retA += t.ret, retM += mo.ret;
+          }
+        }
+        const modelFill = mo ? (mo.filled === 1 ? `open @ ${mo.entry.toFixed(2)}` : mo.filled === 2 ? `in the day @ ${mo.entry.toFixed(2)}` : 'not filled') : '';
+        rows.push([[d.date], [d.market], [name], [o.limit != null ? o.limit.toFixed(2) : '', 'num'], [modelFill, 'num'],
+          [filled ? `${t.bought} @ ${t.buy.toFixed(2)}` : (reported ? 'not filled' : 'open'), 'num'],
+          gap != null ? [pct(gap, 2), `num ${gap <= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
           [filled && t.sell != null ? `${t.sold} @ ${t.sell.toFixed(2)}` : '', 'num'],
           filled && t.ret != null ? signed(t.ret, 2) : ['', 'num'],
+          mo && mo.filled > 0 ? signed(mo.ret, 2) : ['', 'num'],
           filled ? [`${t.pnl.toFixed(2)} ${t.currency}`, `num ${t.pnl >= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
           filled ? [`${t.commission.toFixed(2)}`, 'num'] : ['', 'num']]);
       }
     }
-    table($('broker-history'), [['Day'], ['Market'], ['Share'], ['Limit', 'num'], ['Bought', 'num'], ['Sold', 'num'], ['Return', 'num'], ['P&L (IBKR, after costs)', 'num'], ['Commission', 'num']],
+    table($('broker-history'), [['Day'], ['Market'], ['Share'], ['Limit', 'num'], ['Model fill', 'num'], ['Bought', 'num'], ['Fill vs model', 'num'], ['Sold', 'num'],
+      ['Return', 'num'], ['Model return', 'num'], ['P&L (IBKR, after costs)', 'num'], ['Commission', 'num']],
       rows.length ? rows : [{ gap: 'nothing yet: the history starts with the first orders placed' }]);
     const money = Object.entries(pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
+    const vs = checked
+      ? ` · against the model: fills agree on ${agree} of ${checked}` + (gapN ? `, entry ${pct(gapS / gapN, 2)} vs the model's on average` : '')
+        + (retN ? `, return ${pct(retA / retN, 2)} vs the model's ${pct(retM / retN, 2)} a trade` : '')
+      : '';
     $('broker-summary').textContent = h.days.length
-      ? `${h.days.length} day${h.days.length === 1 ? '' : 's'} · ${placedN} orders placed · ${n} filled (${placedN ? Math.round(100 * n / placedN) : 0}%) · ${n ? Math.round(100 * wins / n) : 0}% of them won · total ${money || '0'}`
+      ? `${h.days.length} day${h.days.length === 1 ? '' : 's'} · ${placedN} orders placed · ${n} filled (${placedN ? Math.round(100 * n / placedN) : 0}%) · ${n ? Math.round(100 * wins / n) : 0}% of them won · total ${money || '0'}${vs}`
       : '';
   }).catch(() => { /* an older bridge without history */ });
 }
