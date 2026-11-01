@@ -106,7 +106,20 @@ function drawChart(r) {
   legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
 }
 window.addEventListener('resize', () => { if (shown) drawChart(shown); });
-$('past').addEventListener('toggle', () => { if (shown && $('past').open) drawChart(shown); });
+// The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
+const VIEWS = ['orders', 'results', 'backtest', 'broker', 'about'];
+let bridgeOk = false;
+function showView(v) {
+  if (!VIEWS.includes(v)) v = 'orders';
+  for (const w of VIEWS) $(`view-${w}`).hidden = w !== v;
+  for (const b of document.querySelectorAll('.views button')) b.toggleAttribute('aria-current', b.dataset.view === v);
+  try { localStorage.setItem('view', v); } catch { /* no storage */ }
+  if (location.hash !== `#${v}`) history.replaceState(null, '', `${location.pathname}${location.search}#${v}`);
+  if (v === 'backtest' && shown) drawChart(shown);  // a hidden canvas has no width
+  if ((v === 'results' || v === 'broker') && !bridgeOk) brokerProbe(true);
+}
+for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => showView(b.dataset.view));
+document.addEventListener('click', (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); showView(a.dataset.go); } });
 
 const MARKETS = { uk: 'UK', eu: 'EU', us: 'US', apac: 'APAC' };
 let market = 'uk';
@@ -172,7 +185,8 @@ function brokerProbe(opened) {
   const ctl = new AbortController();
   setTimeout(() => ctl.abort(), 3000);
   fetch(`${bridgeUrl()}/status`, { signal: ctl.signal }).then((r) => r.json()).then((s) => {
-    $('broker').hidden = false;
+    bridgeOk = true;
+    $('results-empty').hidden = true;
     const auto = Object.entries(s.auto || {}).map(([m, a]) => `${m}: orders at ${a.place}, sold at ${a.close}`).join('; ');
     const last = (s.last || [])[0];
     $('broker-status').textContent = `${s.gateway ? 'Connected to Interactive Brokers' : 'IB Gateway is not answering: start it and log in'} · automatic ${auto || 'off'}`
@@ -182,9 +196,10 @@ function brokerProbe(opened) {
     if (auto2.size && [...auto2].join() !== [...live].join()) { live = auto2; if (shown) render(shown, MARKETS[market]); }
     brokerOrders();
   }).catch(() => {
-    if (!opened) return;  // no bridge: the panel stays hidden unless opened
-    $('broker').hidden = false;
-    $('broker-status').textContent = `No bridge answered at ${bridgeUrl()}. Set its address and key, then Save.`;
+    bridgeOk = false;
+    $('results-empty').hidden = false;
+    if (!opened) return;
+    $('broker-status').textContent = `No bridge answered at ${bridgeUrl()}. Set its address and key below, then Save.`;
     $('broker-orders').innerHTML = '';
   });
 }
@@ -193,7 +208,6 @@ $('broker-save').addEventListener('click', () => {
   store('bridgeKey', $('broker-key').value.trim());
   brokerProbe(true);
 });
-$('broker-open').addEventListener('click', (e) => { e.preventDefault(); brokerProbe(true); $('broker').scrollIntoView({ behavior: 'smooth' }); });
 $('broker-dry').addEventListener('click', () => brokerAct('/place', { market: brokerMarket(), dryRun: true }));
 $('broker-place').addEventListener('click', () => brokerAct('/place', { market: brokerMarket() }, `Place the ${brokerMarket()} orders with Interactive Brokers?`));
 // The bridge's checks (GET /diag): the token, the orders, IB Gateway, the account, the data, the
@@ -265,6 +279,9 @@ function brokerHistory() {
 }
 $('broker-report').addEventListener('click', () => brokerAct('/report', { market: brokerMarket() }));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
-for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (!$('broker').hidden) brokerOrders(); });
+for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) brokerOrders(); });
 brokerProbe();
+let firstView = location.hash.slice(1);
+try { firstView = firstView || localStorage.getItem('view') || 'orders'; } catch { /* no storage */ }
+showView(firstView);
 
