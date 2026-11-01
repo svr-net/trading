@@ -366,7 +366,7 @@ int main(int argc, char** argv) {
       if (d == 1) return x / double(nB - 1);
       if (d == 2) return x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
-      if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
+      if (d == 6) return safetyOnly ? std::array<double, nA>{0, 60, 120, 250, 500}[std::min(nA - 1, std::size_t(x + 0.5))] : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
@@ -451,7 +451,7 @@ int main(int argc, char** argv) {
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
-        if (d != 2 && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code is discrete
+        if (d != 2 && !(d == 6 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the recovery stop's window are discrete
           std::size_t lo[nD], hi[nD];
           for (std::size_t e = 0; e < nD; ++e) lo[e] = hi[e] = at[e];
           --lo[d], ++hi[d];
@@ -575,6 +575,41 @@ int main(int argc, char** argv) {
       }
       return falls[i].size() >= 20;
     };
+    // A share's recovery stop (a safety stop's limit; log from the open): over its last w days (to the
+    // close t, known when the orders are made), the stop that would have paid the most on average:
+    // each day sold at the stop (less a half-spread) once its low reached it, else at the close (on
+    // daily bars exact: a stop sells at its first touch, whatever came later). A depth past which the
+    // shares went on falling is a stop; one from which they recovered by the close is not. -50 (none)
+    // when no stop beats the close, with fewer than w/2 days, or w 0. Kept for the day.
+    std::vector<double> recMemo(N * nA, 0.0);
+    std::vector<std::size_t> recDay(N * nA, std::size_t(-1));
+    const auto recoveryStop = [&](std::size_t t, std::size_t i, double w) {
+      const std::size_t wi = w <= 0 ? 0 : w <= 60 ? 1 : w <= 120 ? 2 : w <= 250 ? 3 : 4, key = i * nA + wi;
+      if (recDay[key] == t) return recMemo[key];
+      double best = -50;
+      if (wi > 0) {
+        std::vector<std::pair<double, double>> d;  // (low, close) from the open
+        for (std::size_t u = t + 1 >= std::size_t(w) ? t + 1 - std::size_t(w) : 0; u <= t; ++u) {
+          const double o = m.open(u, i), l = m.low(u, i), c = m.close(u, i);
+          if (o > 0 && l > 0 && l <= o && c > 0) d.emplace_back(std::log(l / o), std::log(c / o));
+        }
+        if (d.size() >= std::size_t(w) / 2) {
+          std::sort(d.begin(), d.end());
+          const double hs = 0.5 * spread[t * N + i];
+          double rest = 0;
+          for (const auto& e : d) rest += e.second;
+          double top = rest;  // no stop: every day at the close
+          for (std::size_t k = 0; k < d.size(); ++k) {  // a stop at day k's low: days 0..k sold at it
+            rest -= d[k].second;
+            if (d[k].first >= 0) break;
+            const double v = double(k + 1) * (d[k].first - hs) + rest;
+            if (v > top) top = v, best = d[k].first;
+          }
+        }
+      }
+      recDay[key] = t, recMemo[key] = best;
+      return best;
+    };
     const auto quantile = [](const std::vector<double>& z, double q) {
       const double x = q * double(z.size() - 1);
       const std::size_t k = std::min(z.size() - 2, std::size_t(x));
@@ -584,7 +619,7 @@ int main(int argc, char** argv) {
     // the next open's orders); none (0 and infinity) without 20 days of history.
     const auto levelsAt = [&](std::size_t t, std::size_t i, double ref, double ps, double pt, double al) {
       if (closeOnly || !tails(t, i)) return std::make_pair(0.0, 1e300);
-      if (safetyOnly) return std::make_pair(std::exp(std::max(quantile(falls[i], ps), -al * std::exp(ft[(t * N + i) * Km + 20]))), 1e300);  // a rare day's fall; no take-profit, else sold at the close
+      if (safetyOnly) return std::make_pair(std::exp(std::max(quantile(falls[i], ps), recoveryStop(t, i, al))), 1e300);  // a rare day's fall; no take-profit, else sold at the close
       double st = quantile(falls[i], ps);
       if (std::isfinite(sar[t * N + i])) st = (1 - al) * st + al * std::log(std::min(1.0, sar[t * N + i] / ref));  // a SAR above the open: stopped at the open
       return std::make_pair(std::exp(st), std::exp(quantile(rises[i], 1 - pt)));
@@ -690,13 +725,14 @@ int main(int argc, char** argv) {
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? 50.0 : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
+              for (std::size_t q = 0; q < nA; ++q) st.push_back(ok && safetyOnly ? recoveryStop(t, i, avals[q]) : -50.0);  // the recovery stops
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + nA);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
@@ -756,9 +792,9 @@ int main(int argc, char** argv) {
       double gated = 0;
       for (const auto& x : used) gated += gateOf(x[2]) / double(used.size());
       std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6]);
+                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], 1 / mx[5], safetyOnly ? "recovery stop days" : "SAR weight", mx[6]);
       std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, take 1 day in %.1f, %s %.2f\n", fx[0], fx[1],
-                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
+                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], 1 / fx[5], safetyOnly ? "recovery stop days" : "SAR weight", fx[6]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         std::vector<double> z;

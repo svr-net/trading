@@ -4,11 +4,11 @@
 // stop-loss, take-profit or the close, net of costs; once per share, however many rankings hold it
 // (records.wgsl then adds each setting's day). The fields of P: T the settings per share (t0 u0 u0
 // u1), N the slots, K a slot's stride, t0 the limit depths, u0 the tail fractions, u1 the SAR
-// weights, u2 1 to sell at the close (no levels), 2 a safety stop (no take-profit; u1 then the stop's limit in sigmas, not SAR weights). A setting decodes as (limit, stop tail, take tail,
+// weights, u2 1 to sell at the close (no levels), 2 a safety stop (no take-profit; u1 then its recovery stops' windows, not SAR weights). A setting decodes as (limit, stop tail, take tail,
 // SAR weight), the last fastest. st [N][K] per slot: open, high, low, close of the trading day, the
 // previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, its
 // seven cost fields (see costOf), then the falls at the u0 tail fractions and the rises at them
-// (logs from the open over the last 100 days). dv [t0] the limit depths (sigmas below the previous
+// (logs from the open over the last 100 days), then a safety stop's u1 recovery stops (logs; -50 none). dv [t0] the limit depths (sigmas below the previous
 // close), av [u1] the SAR weights. ret [N][T]: the trade's return (0 when the limit is not reached,
 // or when the stop-loss sits within a spread of the entry: a trade stopped as it fills is skipped).
 @group(0) @binding(1) var<storage, read> st : array<f32>;
@@ -73,7 +73,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       var take : f32 = 1.0e30;
       if (P.u2 != 1u && st[b + 8u] > 0.5) {
         var ls : f32 = st[b + 16u + cs];
-        if (P.u2 == 2u) { ls = max(ls, -av[ca] * st[b + 5u]); }  // a safety stop: at most av sigmas below the anchor
+        if (P.u2 == 2u) { ls = max(ls, st[b + 16u + 2u * P.u0 + ca]); }  // a safety stop: no deeper than the share's recovery stop
         else if (sar > 0.0) { ls = (1.0 - av[ca]) * ls + av[ca] * log(min(1.0, sar / anchor)); }
         fs = exp(ls);
         take = anchor * exp(st[b + 16u + P.u0 + ct]);
