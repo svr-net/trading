@@ -24,6 +24,8 @@ jobs:
           cmake -S . -B build -G Ninja
           cmake --build build
           ./build/ofm_tests
+      - name: No look-ahead (the model on a generated market, tools/check/leak.sh)
+        run: sh tools/check/leak.sh build/ofm_research
 
   site:
     runs-on: ubuntu-24.04
