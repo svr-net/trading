@@ -539,10 +539,16 @@ int main(int argc, char** argv) {
       }
       return w;
     };
+    // A share the trade's amount buys at least one of (at its last close; LSE prices in pence): a
+    // dearer one (BRK.A at USD 1,000) cannot be ordered, so it is not picked, live or in the backtest.
+    const auto affordable = [&](std::size_t t, std::size_t i) {
+      const double px = m.close(t, i) * (costKind == 1 ? 0.01 : 1.0), cap = fee[i * 7] > 0 ? fee[i * 7 + 1] : capital;
+      return px > 0 && std::floor(cap / px) >= 1;
+    };
     const auto ranked = [&](std::size_t t, double pool, double b, double code) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
-        if (!(liqRank[i] < pool) || !tradable[t * N + i]) continue;
+        if (!(liqRank[i] < pool) || !tradable[t * N + i] || !affordable(t, i)) continue;
         v.emplace_back(rankScore(t, i, b), i);
       }
       return capTo(t, v, capOf(code), gateOf(code));
@@ -775,7 +781,7 @@ int main(int argc, char** argv) {
       if (t >= lag) {
         rankLiquidity(t, false);
         for (std::size_t i = 0; i < N; ++i) {
-          if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0)) continue;
+          if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0) || !affordable(t, i)) continue;
           if (!tradable[t * N + i]) continue;
           v.emplace_back(rankScore(t, i, fx[1]), i);
         }
