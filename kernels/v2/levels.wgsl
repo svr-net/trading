@@ -1,14 +1,15 @@
 // #include header.wgsl
 // The day's trades, fused, first half: every candidate share (a slot) under every entry and exit
-// setting (limit depth, stop tail, take tail, SAR weight) bought with its limit and sold at its
+// setting (limit depth, stop tail, take tail, SAR weight, buy-back) bought with its limit and sold at its
 // stop-loss, take-profit or the close, net of costs; once per share, however many rankings hold it
 // (records.wgsl then adds each setting's day). The fields of P: T the settings per share (t0 u0 u0
-// u1), N the slots, K a slot's stride, t0 the limit depths, u0 the tail fractions, u1 the SAR
-// weights, u2 1 to sell at the close (no levels), 2 a safety stop (no take-profit; u1 then the stop's limit in sigmas, not SAR weights). A setting decodes as (limit, stop tail, take tail,
-// SAR weight), the last fastest. st [N][K] per slot: open, high, low, close of the trading day, the
+// u1 NT), N the slots, K a slot's stride, t0 the limit depths, u0 the tail fractions, u1 the SAR
+// weights, u2 1 to sell at the close (no levels), 2 a safety stop (u1 then the stop's limit in sigmas, not SAR weights), NT the buy-back fractions. A setting decodes as (limit, stop tail, take tail,
+// SAR weight, buy-back), the last fastest. st [N][K] per slot: open, high, low, close of the trading day, the
 // previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, its
 // seven cost fields (see costOf), then the falls at the u0 tail fractions and the rises at them
-// (logs from the open over the last 100 days). dv [t0] the limit depths (sigmas below the previous
+// (logs from the open over the last 100 days), then the NT buy-back fractions, the unclear days' mode
+// and their weight. dv [t0] the limit depths (sigmas below the previous
 // close), av [u1] the SAR weights. ret [N][T]: the trade's return (0 when the limit is not reached,
 // or when the stop-loss sits within a spread of the entry: a trade stopped as it fills is skipped).
 @group(0) @binding(1) var<storage, read> st : array<f32>;
@@ -47,8 +48,10 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
   if (i < P.N * P.T) {
     let slot : u32 = i / P.T;
     let li : u32 = i % P.T;
-    let ca : u32 = li % P.u1;
-    var r : u32 = li / P.u1;
+    let cr : u32 = li % P.NT;
+    var r : u32 = li / P.NT;
+    let ca : u32 = r % P.u1;
+    r = r / P.u1;
     let ct : u32 = r % P.u0;
     r = r / P.u0;
     let cs : u32 = r % P.u0;
@@ -88,26 +91,28 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
         else if (!intra && h >= take * half) { px = max(take, o); }  // a take-profit below the open fills at the open
         let gross : f32 = px / entry - 1.0;
         y = gross - costOf(entry, gross, b);
-        // A buy-back after the stop (research; st[b + 16 + 2 u0] the fraction f > 0, then its mode): a
-        // buy-stop f of the way from the stop back to the entry, bought at it and a half-spread; sold at
-        // the entry and a round trip's costs once the close is at it, else at the close. Mode 0 buys
-        // whenever the high reached it (the high may have come first: a worst case), 2 only when the
-        // close is above it (the rise came after the stop: certain), 1 as 0 with an unclear day (the high above it,
-        // the close below) at the weight st[b + 18 + 2 u0] (the share of its worst case the intraday paths show).
+        // The buy-back after the stop (a learnt setting: st[b + 16 + 2 u0 + cr] its fraction, 0 none; then
+        // how an unclear day counts, then its weight): a buy-stop that far from the stop back up to the
+        // entry, bought at it and a half-spread; sold at the entry and a round trip's costs once the close
+        // is at it, else at the close. A day whose close is below the buy-stop but whose high reached it
+        // is unclear (the high may have come before the stop): mode 1 counts it at the weight the
+        // intraday paths measure, 0 in full (the worst case), 2 not at all.
         let rb0 : u32 = b + 16u + 2u * P.u0;
-        let rf : f32 = st[rb0];
+        let rf : f32 = st[rb0 + cr];
+        let mode : f32 = st[rb0 + P.NT];
         if (rf > 0.0 && l <= stop) {
           let rb : f32 = stop + rf * (entry - stop);
-          var up : f32 = h;
-          if (st[rb0 + 1u] > 1.5) { up = c; }
-          if (up >= rb * half) {
+          if (h >= rb * half) {
             let buy : f32 = rb * half;
             let tgt : f32 = entry * (1.0 + costOf(entry, 0.0, b));
             var px2 : f32 = c;
             if (c >= tgt * half) { px2 = tgt; }
             let g2 : f32 = px2 / buy - 1.0;
             var w : f32 = 1.0;
-            if (st[rb0 + 1u] > 0.5 && st[rb0 + 1u] < 1.5 && c < rb * half) { w = st[rb0 + 2u]; }  // mode 1: an unclear day at weight w
+            if (c < rb * half) {  // an unclear day (the high may have come before the stop): at the measured weight
+              if (mode > 0.5 && mode < 1.5) { w = st[rb0 + P.NT + 1u]; }
+              if (mode > 1.5) { w = 0.0; }
+            }
             y = y + w * (g2 - costOf(buy, g2, b));
           }
         }

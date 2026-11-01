@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
   // from it (AIM shares, one ticker a line).
   std::string stampFree, venuesFile, costMarket;
+  double rebuyWeight = 0.35;  // how a day daily bars cannot settle counts in a buy-back (--rebuy-weight; measured by ofm_paths)
   bool fixedPricing = true;  // --pricing fixed (the default: IBKR's fixed commissions) or tiered  // --venues: each exchange's costs (see fee below)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
@@ -59,6 +60,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--capital") capital = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp") stamp = std::atof(argv[k + 1]);
     if (std::string(argv[k]) == "--stamp-free") stampFree = argv[k + 1];
+    if (std::string(argv[k]) == "--rebuy-weight") rebuyWeight = std::atof(argv[k + 1]);  // measured by ofm_paths
     if (std::string(argv[k]) == "--pricing") fixedPricing = std::string(argv[k + 1]) != "tiered";
     if (std::string(argv[k]) == "--venues") venuesFile = argv[k + 1];
   }
@@ -280,6 +282,7 @@ int main(int argc, char** argv) {
       std::size_t stock;
       double expected, stop, take;  // the calibrated expected gain from the buy price if the order buys, net of its costs; the stop and take-profit from the entry (NaN: none)
       double limit;                 // the buy limit from the last close
+      double rebuy, rebuyCost;      // the buy-back after a stop (its fraction back up to the entry; 0 none) and a round trip's costs (its sale at the entry and these)
     };
     std::vector<Pick> picks;
     std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
@@ -423,7 +426,7 @@ int main(int argc, char** argv) {
     // only: AIM shares pay no stamp duty, so the net ranking favours them, and the cap weighs that
     // against concentrating in small companies).
     const bool aimCap = costKind == 1 && !stampFree.empty();
-    constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nLv = nP * nP * nA, nD = 7;
+    constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nRb = 3, nLv = nP * nP * nA * nRb, nD = 8;
     // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
     // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
     // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
@@ -438,14 +441,17 @@ int main(int argc, char** argv) {
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       if (d == 5 && safetyOnly) return std::array<double, nP>{0, 40, 60, 120, 250, 500, 750}[std::min(nP - 1, std::size_t(x + 0.5))];  // the days its fading take-profit learns from (0: none; see fadeTake)
+      if (d == 7) return std::array<double, nRb>{0.0, 0.15, 0.25}[std::min(nRb - 1, std::size_t(x + 0.5))];  // the buy-back after a stop: none, or this far back up to the entry
       return 0.5 * std::pow(0.2, x / double(nP - 1));  // the tail fraction p, 1/2 .. 1/10
     };
-    const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA};
+    const std::size_t dims[nD] = {nC, nB, nK, nE, nP, nP, nA, nRb};
     std::vector<double> s1v(nV, 0.0), s2v(nV, 0.0), dnv(nV, 0.0);
     std::vector<double> scv(nV, 0.0), sov(nV, 0.0);  // each setting's scores for the next day (kernels/v2/records.wgsl)
     std::vector<double> dvals(nE), avals(nA);  // the lattice's limit depths and SAR weights, for the kernel
     for (std::size_t q = 0; q < nE; ++q) dvals[q] = axis(3, double(q));
     for (std::size_t q = 0; q < nA; ++q) avals[q] = axis(6, double(q));  // sums of the results, their squares, the losses' squares
+    std::vector<double> rbvals(nRb);
+    for (std::size_t q = 0; q < nRb; ++q) rbvals[q] = axis(7, double(q));
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
     std::vector<std::array<double, nD>> used;
@@ -463,9 +469,9 @@ int main(int argc, char** argv) {
     // and its mean over its downside deviation (Sortino); 0 before 2 days.
     const auto score = [&](std::size_t g) { return scv[g]; };
     const auto ddScore = [&](std::size_t g) { return sov[g]; };
-    const auto index = [&](const std::size_t* c) { return (((((c[0] * nB + c[1]) * nK + c[2]) * nE + c[3]) * nP + c[4]) * nP + c[5]) * nA + c[6]; };
+    const auto index = [&](const std::size_t* c) { return ((((((c[0] * nB + c[1]) * nK + c[2]) * nE + c[3]) * nP + c[4]) * nP + c[5]) * nA + c[6]) * nRb + c[7]; };
     const auto coords = [&](std::size_t g, std::size_t* c) {
-      c[6] = g % nA, g /= nA, c[5] = g % nP, g /= nP, c[4] = g % nP, g /= nP, c[3] = g % nE, g /= nE, c[2] = g % nK, g /= nK, c[1] = g % nB, c[0] = g / nB;
+      c[7] = g % nRb, g /= nRb, c[6] = g % nA, g /= nA, c[5] = g % nP, g /= nP, c[4] = g % nP, g /= nP, c[3] = g % nE, g /= nE, c[2] = g % nK, g /= nK, c[1] = g % nB, c[0] = g / nB;
     };
     // The continuous settings {pool, beta, AIM cap, d, p_s, p_t, alpha} from the records so far.
     // The pool, ranking and entry by their records' mean over every level setting, as the levels are
@@ -521,7 +527,7 @@ int main(int argc, char** argv) {
         std::size_t at[nD];
         for (std::size_t e = 0; e < nD; ++e) at[e] = pick ? bc[e] : lc[e];
         double off = 0;
-        if (d != 2 && !(d == 5 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the take-profit's window are discrete
+        if (d != 2 && d != 7 && !(d == 5 && safetyOnly) && at[d] > 0 && at[d] + 1 < dims[d]) {  // the selection's code and the take-profit's window are discrete
           std::size_t lo[nD], hi[nD];
           for (std::size_t e = 0; e < nD; ++e) lo[e] = hi[e] = at[e];
           --lo[d], ++hi[d];
@@ -568,16 +574,12 @@ int main(int argc, char** argv) {
     const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;
     const bool fullSpread = std::getenv("X_FULLSPREAD") != nullptr;  // research: an open fill pays the limit, not the open
     const bool verify = std::getenv("X_VERIFY") != nullptr;
-    double rebuyF = 0;
-    int rebuyMode = 0;
-    double rebuyW = 1;  // X_REBUY=f,mode[,w]: mode 0 worst, 1 an unclear day at weight w, 2 certain only
-    if (const char* e = std::getenv("X_REBUY")) {
-      rebuyF = std::atof(e);
-      if (const char* c1 = std::strchr(e, ',')) {
-        rebuyMode = std::atoi(c1 + 1);
-        if (const char* c2 = std::strchr(c1 + 1, ',')) rebuyW = std::atof(c2 + 1);
-      }
-    }
+    // The buy-back after a stop (a learnt setting, axis 7): daily bars cannot tell whether the high
+    // came after the stop, so a day whose high reached the buy-back's level but whose close is below
+    // it counts at the weight the intraday paths measure (--rebuy-weight; ofm_paths: 0.35 on US
+    // 5-minute bars until London's recordings replace it). X_REBUY_MODE (research): 0 every such day
+    // in full (the worst case), 2 none of them (only days the close settles).
+    const int rebuyMode = std::getenv("X_REBUY_MODE") ? std::atoi(std::getenv("X_REBUY_MODE")) : 1;
     std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
@@ -730,7 +732,7 @@ int main(int argc, char** argv) {
       double ret, stop, take, exitPx;
       int rebought;
     };
-    const auto trade = [&](std::size_t t, std::size_t i, double d, double ps, double pt, double al) {
+    const auto trade = [&](std::size_t t, std::size_t i, double d, double ps, double pt, double al, double rf) {
       Trade r{};
       const double pc = m.close(t, i), sig = std::exp(ft[(t * N + i) * Km + 20]);
       const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i), half = std::exp(0.5 * spread[t * N + i]);
@@ -753,22 +755,24 @@ int main(int argc, char** argv) {
       else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
       r.ret = px / r.entry - 1, r.exitPx = px;
       r.ret -= costOf(r.entry, r.ret, i);
-      // X_REBUY=f[,2] (research, as kernels/v2/levels.wgsl): a buy-back after the stop.
-      if (rebuyF > 0 && lo <= stop) {
-        const double rb = stop + rebuyF * (r.entry - stop);
-        if ((rebuyMode == 2 ? c : hi) >= rb * half) {
+      // The buy-back after the stop (as kernels/v2/levels.wgsl): a buy-stop rf of the way from the stop
+      // back up to the entry, bought at it and a half-spread; sold at the entry and a round trip's costs
+      // once the close is at it, else at the close.
+      if (rf > 0 && lo <= stop) {
+        const double rb = stop + rf * (r.entry - stop);
+        if (hi >= rb * half) {
           const double buy = rb * half, tgt = r.entry * (1 + costOf(r.entry, 0.0, i));
           const double px2 = c >= tgt * half ? tgt : c, g2 = px2 / buy - 1;
-          const double w = rebuyMode == 1 && c < rb * half ? rebuyW : 1.0;  // mode 1: an unclear day at weight w
+          const double w = rebuyMode == 1 && c < rb * half ? rebuyWeight : rebuyMode == 2 && c < rb * half ? 0.0 : 1.0;  // an unclear day at the measured weight
           r.ret += w * (g2 - costOf(buy, g2, i)), r.rebought = 1;
         }
       }
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
-    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al) {
+    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0;
-      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al).ret / double(nPick);  // a tenth each: a missing trade stays in cash
+      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al, rf).ret / double(nPick);  // a tenth each: a missing trade stays in cash
       return rg;
     };
     for (std::size_t q = warm; q < days.size(); ++q) {
@@ -797,17 +801,17 @@ int main(int argc, char** argv) {
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1], x[2]);
-      adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6])), used.push_back(x);
+      adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
-        const Trade tr = trade(t, e.second, x[3], x[4], x[5], x[6]);
+        const Trade tr = trade(t, e.second, x[3], x[4], x[5], x[6], x[7]);
         calAdd(rawExpected(t, e.second), tr.ret, tr.filled > 0);
       }
       for (std::size_t k = 0; k < today.size(); ++k) {  // the trades, for the diagnostics and the log
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
-        const Trade tr = trade(t, i, x[3], x[4], x[5], x[6]);
+        const Trade tr = trade(t, i, x[3], x[4], x[5], x[6], x[7]);
         tradeOrders += 1;
         if (tr.filled > 0) tradeFilled += 1, tradeSum += tr.ret, tradeGained += tr.ret > 0;  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
         if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
@@ -839,15 +843,16 @@ int main(int argc, char** argv) {
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
-              st.insert(st.end(), {rebuyF, double(rebuyMode), rebuyW});  // the buy-back (research; 0: none)
+              st.insert(st.end(), rbvals.begin(), rbvals.end());  // the buy-back's fractions, then how an unclear day counts
+              st.insert(st.end(), {double(rebuyMode), rebuyWeight});
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + 3);
-        H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + nRb + 2);
+        H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.NT = std::uint32_t(nRb), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
         ofm::detail::dispatch(kl, ofm::detail::groups(std::uint32_t(ns * nLe), 64));
@@ -859,8 +864,8 @@ int main(int argc, char** argv) {
             if (slotOf[i] >= 0) slotStock[std::size_t(slotOf[i])] = i;
           for (std::size_t sl = 0; sl < ns; ++sl)
             for (std::size_t le = sl % 97; le < nLe; le += 97) {
-              const std::size_t ca = le % nA, ct = le / nA % nP, cs = le / (nA * nP) % nP, ce = le / (nA * nP * nP);
-              const double want = trade(t, slotStock[sl], dvals[ce], axis(4, double(cs)), axis(5, double(ct)), avals[ca]).ret, got = ret[sl * nLe + le];
+              const std::size_t cr = le % nRb, ca = le / nRb % nA, ct = le / (nRb * nA) % nP, cs = le / (nRb * nA * nP) % nP, ce = le / (nRb * nA * nP * nP);
+              const double want = trade(t, slotStock[sl], dvals[ce], axis(4, double(cs)), axis(5, double(ct)), avals[ca], rbvals[cr]).ret, got = ret[sl * nLe + le];
               ++verifyN;
               if (std::fabs(want - got) > 1e-9) {
                 if (++verifyBad <= 5) std::printf("  verify: %s %s setting %zu: kernel %+.6f, trade %+.6f\n", m.dates[t + 1].c_str(), m.tickers[slotStock[sl]].c_str(), le, got, want);
@@ -913,10 +918,10 @@ int main(int argc, char** argv) {
         for (std::size_t d = 0; d < nD; ++d) mx[d] += x[d] / double(used.size());
       double gated = 0;
       for (const auto& x : used) gated += gateOf(x[2]) / double(used.size());
-      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f\n",
-                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? mx[5] : 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6]);
-      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f\n", fx[0], fx[1],
-                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? fx[5] : 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6]);
+      std::printf("  self-adaptive pool, ranking, levels %+6.1f%% a year (Sharpe %5.2f); mean pool %.0f, beta %.2f, gated on %.0f%% of days, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f, buy-back %.2f\n",
+                  100 * a.first, a.second, mx[0], mx[1], 100 * gated, mx[3], 1 / mx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? mx[5] : 1 / mx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", mx[6], mx[7]);
+      std::printf("  learnt for the next open: pool %.0f, beta %.2f, AIM cap %.0f, gate %s, limit %.2f sd, stop 1 day in %.1f, %s %.1f, %s %.2f, buy-back %.2f\n", fx[0], fx[1],
+                  capOf(fx[2]), gateOf(fx[2]) ? "on" : "off", fx[3], 1 / fx[4], safetyOnly ? "take-profit days" : "take 1 day in", safetyOnly ? fx[5] : 1 / fx[5], safetyOnly ? "stop at most (sd)" : "SAR weight", fx[6], fx[7]);
       // The trades' levels from the open and how often they were touched.
       auto qt = [&](std::size_t d, double p) {
         if (paths.empty()) return 0.0;  // no trade (every day gated)
@@ -968,7 +973,8 @@ int main(int argc, char** argv) {
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
-        lastRun.picks.push_back({i, calibrated(rawExpected(t, i), true), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1});  // calibrated: the gain from the buy price if it buys, net of costs
+        lastRun.picks.push_back({i, calibrated(rawExpected(t, i), true), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1, fs > 0 ? fx[7] : 0.0,
+                                 fee[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0});  // calibrated: the gain from the buy price if it buys, net of costs
       }
     }
     return pred;
@@ -1030,8 +1036,8 @@ int main(int argc, char** argv) {
       const auto& pk = lastRun.picks[q];
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g}", q ? "," : "",
-                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital);
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g}", q ? "," : "",
+                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost);
       o << b;
     }
     o << "],\"candidates\":[";
@@ -1076,8 +1082,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
       auto lvl = [](double x) { return std::isfinite(x) ? std::to_string(x) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
-                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str());
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g}", q ? "," : "", m.tickers[pk.stock].c_str(),
+                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy);
       o << b;
     }
     o << "],\"recent\":[";

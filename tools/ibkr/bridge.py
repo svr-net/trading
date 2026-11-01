@@ -37,6 +37,11 @@ seconds until 20 minutes after the close, from IBKR's free delayed data (submit.
 writes them to the private store as paths/<MARKET>/<date>.csv: the intraday paths the research needs
 to test a buy-back after a stop exactly (daily bars cannot tell whether the high came first).
 
+Buy-backs: on the same days, right after placing, the bridge watches the day's fills until the
+close's time (submit.py --rebuy, in the background): when one of the model's stops has sold, it
+places that order's buy-back (a buy-stop part of the way back up to the price paid, with a limit
+sale at the price paid and a round trip's costs), as the backtest trades it.
+
 History (HISTORY_DIR, default the orders cache): every placing writes the orders placed, the model's
 own result for each day's orders arrives with the next orders file (the backtest's fill, entry, exit
 and return, to set beside the broker's), and after
@@ -239,6 +244,24 @@ def record_paths(market):
         PATHS_RUNNING.discard(market)
 
 
+REBUY_RUNNING = set()
+
+
+def watch_rebuy(market):
+    """The day's buy-backs after stops (submit.py --rebuy) until the close's time; returns (ok, summary)."""
+    if market in REBUY_RUNNING:
+        return False, 'already watching'
+    REBUY_RUNNING.add(market)
+    try:
+        day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+        state = os.path.join(HISTORY, f'rebuy-{market}-{day}.txt')
+        os.makedirs(HISTORY, exist_ok=True)
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--rebuy', '--until', TIMES[market][1], '--out', state], timeout=12 * 3600)
+        return code == 0, (out.splitlines()[-1] if out else '')
+    finally:
+        REBUY_RUNNING.discard(market)
+
+
 def in_background(market, action, job):
     def run():
         try:
@@ -315,7 +338,7 @@ def diag():
         add(f'{m} historical data', bool(d.get('historyBars')), f"{d.get('historyBars', 0)} daily bars" + (f" ({d['historyError']})" if d.get('historyError') else ''))
         if d.get('errors'):
             add('IBKR messages', None, ' | '.join(d['errors']))
-    plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
+    plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     failed = [x for x in LAST if not x[3]]
     add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:4]) or 'none yet')
@@ -378,6 +401,9 @@ def auto_run(market, action):
         return record_auction(market)
     elif action == 'bars':
         return fetch_bars(market)
+    elif action == 'rebuy':  # until the close: in the background, logged when it ends
+        in_background(market, 'rebuy', watch_rebuy)
+        return True, 'watching the stops for buy-backs until the close'
     elif action == 'paths':  # the whole session: in the background, logged when it ends
         in_background(market, 'paths', record_paths)
         return True, 'recording the day\'s paths until after the close'
@@ -397,7 +423,7 @@ def scheduler():
             plan = [('bars', BARS_AT)] if now.weekday() == 5 and BARS_AT else []  # Saturdays: IBKR's daily bars
             if not weekend:
                 # The paths before the auction: they start at once (a thread), the auction then takes ten minutes.
-                plan += [('place', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
+                plan += [('place', TIMES[m][0]), ('rebuy', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
                          ('close', TIMES[m][1]), ('report', REPORT[m])]
             if not plan:
                 continue
