@@ -233,6 +233,27 @@ def main():
     # today's reference (from any client) is skipped, so an interrupted placing is never doubled.
     have = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.orderRef == ref}
     have |= {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
+    resent = set()
+
+    def bracket(contract, sym, qty, lim, take, stop):
+        """A day limit buy with its take-profit (limit sell) and stop-loss (stop sell) attached, one
+        cancelling the other, active once the buy fills."""
+        parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY', transmit=False)
+        ib.placeOrder(contract, parent)
+        children = []
+        if take:
+            children.append(LimitOrder('SELL', qty, take, orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
+        if stop:
+            children.append(StopOrder('SELL', qty, stop, orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
+        for c in children:
+            c.ocaGroup, c.ocaType = f'{ref}-{sym}', 1
+        for k, c in enumerate(children):
+            c.transmit = k == len(children) - 1
+            ib.placeOrder(contract, c)
+        if not children:
+            parent.transmit = True
+            ib.placeOrder(contract, parent)
+        print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
     for o in book['orders']:
         contract = contract_of(o['ticker'], args.market)
         sym = o['ticker']
@@ -268,30 +289,36 @@ def main():
         if qty < 1:
             print(f'  {sym}: capital {capital_of(o, args)} buys no share at {per_share(o, args.market)}; skipped')
             continue
-        parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY', transmit=False)
-        ib.placeOrder(contract, parent)
-        children = []
-        if o.get('take'):
-            children.append(LimitOrder('SELL', qty, round_to(o['take'] * scale, tick(o['take'] * scale), 'up'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
-        if o.get('stop'):
-            children.append(StopOrder('SELL', qty, round_to(o['stop'] * scale, tick(o['stop'] * scale), 'down'), orderRef=ref, tif='DAY', parentId=parent.orderId, transmit=False))
-        if children:
-            oca = f'{ref}-{sym}'
-            for c in children:
-                c.ocaGroup, c.ocaType = oca, 1
-        for k, c in enumerate(children):
-            c.transmit = k == len(children) - 1
-            ib.placeOrder(contract, c)
-        if not children:
-            parent.transmit = True
-            ib.placeOrder(contract, parent)
-        print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
-    # IBKR's answer to each order (a rejection comes after placeOrder returns): what it accepted.
+        take = round_to(o['take'] * scale, tick(o['take'] * scale), 'up') if o.get('take') else None
+        stop = round_to(o['stop'] * scale, tick(o['stop'] * scale), 'down') if o.get('stop') else None
+        bracket(contract, sym, qty, lim, take, stop)
+    # IBKR's answer to each order (a rejection comes after placeOrder returns). An order refused only
+    # for being routed directly to the exchange (10311: the gateway's API precautions; BYPASS_WARNING
+    # in the NAS's settings lifts it) goes again through IBKR's SMART routing, its exchange as the
+    # primary: it then trades on that exchange or its alternatives, not necessarily in its auctions.
     ib.sleep(5)
+    for t in list(ib.trades()):
+        o2 = t.order
+        if o2.orderRef != ref or o2.parentId or o2.action != 'BUY' or t.orderStatus.status not in ('Cancelled', 'ApiCancelled', 'Inactive'):
+            continue
+        if not any(e.startswith('10311') for e in errors.get(o2.orderId, [])) or t.contract.exchange == 'SMART' or t.contract.conId in resent:
+            continue
+        resent.add(t.contract.conId)
+        smart = Stock(t.contract.symbol, 'SMART', t.contract.currency, primaryExchange=t.contract.exchange)
+        if not ib.qualifyContracts(smart):
+            continue
+        kids = [x.order for x in ib.trades() if x.order.parentId == o2.orderId]
+        take = next((k.lmtPrice for k in kids if k.orderType == 'LMT'), None)
+        stop = next((k.auxPrice for k in kids if k.orderType == 'STP'), None)
+        bracket(smart, f'{t.contract.symbol} (SMART)', int(o2.totalQuantity), o2.lmtPrice, take, stop)
+    if resent:
+        ib.sleep(5)
     accepted = rejected = 0
     for t in ib.openTrades() + [t for t in ib.trades() if t.orderStatus.status in ('Cancelled', 'ApiCancelled', 'Inactive')]:
         if t.order.orderRef != ref or t.order.parentId:
             continue
+        if t.contract.conId in resent and t.contract.exchange != 'SMART' and t.orderStatus.status in ('Cancelled', 'ApiCancelled', 'Inactive'):
+            continue  # its SMART resend is the one that counts
         st = t.orderStatus.status
         why = '; '.join(errors.get(t.order.orderId, [])) or ' '.join(x.message for x in t.log if x.message)
         if st in ('Cancelled', 'ApiCancelled', 'Inactive'):
