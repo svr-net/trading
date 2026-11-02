@@ -175,6 +175,8 @@ def main():
     from ib_async import IB, Stock, LimitOrder, StopOrder, MarketOrder  # imported here so --dry-run needs no install
 
     ib = IB()
+    errors = {}  # IBKR's errors by order id (a rejection arrives after placeOrder returns)
+    ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
     ib.connect(args.host, args.port, clientId=args.client_id)
 
     if args.report:
@@ -284,8 +286,24 @@ def main():
             parent.transmit = True
             ib.placeOrder(contract, parent)
         print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
-    ib.sleep(2)
+    # IBKR's answer to each order (a rejection comes after placeOrder returns): what it accepted.
+    ib.sleep(5)
+    accepted = rejected = 0
+    for t in ib.openTrades() + [t for t in ib.trades() if t.orderStatus.status in ('Cancelled', 'ApiCancelled', 'Inactive')]:
+        if t.order.orderRef != ref or t.order.parentId:
+            continue
+        st = t.orderStatus.status
+        why = '; '.join(errors.get(t.order.orderId, [])) or ' '.join(x.message for x in t.log if x.message)
+        if st in ('Cancelled', 'ApiCancelled', 'Inactive'):
+            rejected += 1
+            print(f'  {t.contract.symbol}: REJECTED ({st}) {why}'.strip())
+        else:
+            accepted += 1
+            print(f'  {t.contract.symbol}: accepted ({st})')
+    print(f'{args.market}: {accepted} accepted by IBKR, {rejected} rejected')
     ib.disconnect()
+    if rejected and not accepted:
+        sys.exit(3)
 
 
 OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
