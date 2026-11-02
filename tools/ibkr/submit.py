@@ -247,10 +247,12 @@ def main():
         # assumed: without IBKR's close the order is skipped, as a wrong scale would buy without a limit
         # and stop at once.
         ibkr_close = reference_close(ib, contract)
-        if ibkr_close is None:
+        if ibkr_close is None and args.market == 'UK':
             print(f"  {sym}: no IBKR price to check the price scale against; skipped")
             continue
-        r = ibkr_close / o['close']
+        # Only the LSE quotes in pence at EODData and in pounds or pence at IBKR; elsewhere both quote in
+        # the exchange's currency, so without IBKR's price (no market data) the scale is 1.
+        r = ibkr_close / o['close'] if ibkr_close is not None else 1.0
         scale = next((s for s in (1.0, 0.01, 100.0) if abs(math.log(r / s)) < 0.05), None)
         if scale is None:
             print(f"  {sym}: IBKR's close {ibkr_close} does not match ours {o['close']}; skipped")
@@ -281,7 +283,7 @@ def main():
         if not children:
             parent.transmit = True
             ib.placeOrder(contract, parent)
-        print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {getattr(c, "lmtPrice", None) or c.auxPrice}' for c in children))
+        print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
     ib.sleep(2)
     ib.disconnect()
 
