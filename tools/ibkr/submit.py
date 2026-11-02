@@ -227,11 +227,18 @@ def main():
         ib.disconnect()
         return
 
+    # A rerun the same day places only what is not there yet: a share with an order or a fill of
+    # today's reference (from any client) is skipped, so an interrupted placing is never doubled.
+    have = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.orderRef == ref}
+    have |= {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
     for o in book['orders']:
         contract = contract_of(o['ticker'], args.market)
         sym = o['ticker']
         if not ib.qualifyContracts(contract):
             print(f'  {sym}: not found at IBKR, skipped')
+            continue
+        if contract.conId in have:
+            print(f'  {sym}: already placed today, skipped')
             continue
         details = ib.reqContractDetails(contract)[0]
         rule = tick_rule(ib, details, contract.exchange)
