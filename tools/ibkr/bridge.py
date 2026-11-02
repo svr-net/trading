@@ -344,7 +344,7 @@ def diag():
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     failed = [x for x in LAST if not x[3]]
-    add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:4]) or 'none yet')
+    add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:8]) or 'none yet')
     adir = os.path.join(HISTORY, 'auction')
     files = sorted(os.listdir(adir)) if os.path.isdir(adir) else []
     if files:
@@ -400,8 +400,9 @@ def auto_run(market, action):
             placed(market, path, False)
     elif action == 'report':
         return report(market)
-    elif action == 'auction':
-        return record_auction(market)
+    elif action == 'auction':  # up to 25 minutes: in the background, so the schedule's other steps keep their times
+        in_background(market, 'auction', record_auction)
+        return True, 'recording the opening auction'
     elif action == 'bars':
         return fetch_bars(market)
     elif action == 'rebuy':  # until the close: in the background, logged when it ends

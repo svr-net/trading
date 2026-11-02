@@ -143,6 +143,11 @@ def main():
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     args = a.parse_args()
+    # Each market its own API clients (IBKR allows one connection per client id): the orders' client
+    # (place, buy-back watch, close, report) and its helpers (+1 auction, +2 bars, +3 diag, +4 paths)
+    # are 17.. for the UK, 27.. for the EU, 37.. for the US, 47.. for Asia-Pacific, so one market's
+    # all-day buy-back watch never blocks another market's orders.
+    args.client_id += 10 * ['UK', 'EU', 'US', 'APAC'].index(args.market)
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
     if args.diag:
