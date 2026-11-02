@@ -1,0 +1,25 @@
+# The bridge watched from outside: its state read from GitHub's runners (tools/ibkr/monitor.mjs) on
+# weekdays during the UK and EU sessions and on demand. No prices, keys or account numbers are
+# printed (this repository's logs are public). BRIDGE_URL defaults to the NAS's address; the
+# BRIDGE_KEY secret (optional) adds the diagnostics.
+name: Bridge monitor
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,37 7-16 * * 1-5'
+permissions:
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The bridge's state
+        env:
+          BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
+          BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+        run: node tools/ibkr/monitor.mjs | tee -a "$GITHUB_STEP_SUMMARY"
