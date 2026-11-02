@@ -241,6 +241,10 @@ services:
       TWS_PASSWORD: \${TWS_PASSWORD}
       TRADING_MODE: \${TRADING_MODE}
       READ_ONLY_API: "no"
+      # IBC: the API precautions ticked, so IB Gateway accepts the bridge's orders routed directly to
+      # the exchange (into its opening and closing auctions) instead of rejecting them (10311). The
+      # account owner's choice (2 Nov 2026); the bridge keeps its own checks on every order.
+      BYPASS_WARNING: "yes"
       TWOFA_TIMEOUT_ACTION: restart
       AUTO_RESTART_TIME: "11:59 PM"
       TZ: \${TZ}
