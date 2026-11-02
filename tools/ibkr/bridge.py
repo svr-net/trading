@@ -257,7 +257,9 @@ def place_and_watch(market):
         return False, f'orders from {as_of or "?"} are too old: not placed'
     code, out = run_submit(['--market', market, '--orders', path, '--capital', str(CAPITAL)], timeout=1800)
     lines = out.splitlines()
-    summary = '; '.join(x.strip() for x in lines if 'skipped' in x or 'buy ' in x)[-400:] or (lines[-1] if lines else '')
+    placed_n = sum(1 for x in lines if ': buy ' in x)
+    skipped = [x.strip() for x in lines if 'skipped' in x]
+    summary = f'{placed_n} placed' + (f'; {len(skipped)} skipped: ' + '; '.join(skipped) if skipped else '')
     if code != 0:
         return False, summary or 'failed'
     placed(market, path, False)
