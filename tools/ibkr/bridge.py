@@ -247,6 +247,24 @@ def record_paths(market):
 REBUY_RUNNING = set()
 
 
+def place_and_watch(market):
+    """The day's orders (submit.py; up to 30 minutes: each order's price checks), then the buy-back
+    watch until the close's time in the same thread, so the watch connects only after the placing
+    has let go of the market's client. Returns (ok, summary)."""
+    path = fetch_orders(market)
+    as_of = json.load(open(path)).get('asOf', '')
+    if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
+        return False, f'orders from {as_of or "?"} are too old: not placed'
+    code, out = run_submit(['--market', market, '--orders', path, '--capital', str(CAPITAL)], timeout=1800)
+    lines = out.splitlines()
+    summary = '; '.join(x.strip() for x in lines if 'skipped' in x or 'buy ' in x)[-400:] or (lines[-1] if lines else '')
+    if code != 0:
+        return False, summary or 'failed'
+    placed(market, path, False)
+    in_background(market, 'rebuy', watch_rebuy)
+    return True, summary
+
+
 def watch_rebuy(market):
     """The day's buy-backs after stops (submit.py --rebuy) until the close's time; returns (ok, summary)."""
     if market in REBUY_RUNNING:
@@ -390,14 +408,9 @@ def history():
 
 def auto_run(market, action):
     """One automatic action; returns (ok, summary)."""
-    if action == 'place':
-        path = fetch_orders(market)
-        as_of = json.load(open(path)).get('asOf', '')
-        if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
-            return False, f'orders from {as_of or "?"} are too old: not placed'
-        code, out = run_submit(['--market', market, '--orders', path, '--capital', str(CAPITAL)])
-        if code == 0:
-            placed(market, path, False)
+    if action == 'place':  # in the background: the placing (minutes: each order's price checks), then the buy-back watch
+        in_background(market, 'place', place_and_watch)
+        return True, 'placing the orders, then watching the stops for buy-backs'
     elif action == 'report':
         return report(market)
     elif action == 'auction':  # up to 25 minutes: in the background, so the schedule's other steps keep their times
@@ -427,7 +440,7 @@ def scheduler():
             plan = [('bars', BARS_AT)] if now.weekday() == 5 and BARS_AT else []  # Saturdays: IBKR's daily bars
             if not weekend:
                 # The paths before the auction: they start at once (a thread), the auction then takes ten minutes.
-                plan += [('place', TIMES[m][0]), ('rebuy', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
+                plan += [('place', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
                          ('close', TIMES[m][1]), ('report', REPORT[m])]
             if not plan:
                 continue
@@ -529,6 +542,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == '/place':
+            if not body.get('dryRun'):  # in the background (minutes), then the buy-back watch; the status shows it when done
+                in_background(m, 'place', place_and_watch)
+                return self.reply(202, {'ok': True, 'log': f'{m}: placing the orders (a few minutes; already placed shares are skipped), then watching the stops for buy-backs. Diagnostics shows the result.'})
             try:
                 code, out = run_submit(['--market', m, '--orders', fetch_orders(m), '--capital', str(CAPITAL)] + (['--dry-run'] if body.get('dryRun') else []))
             except Exception as e:  # noqa: BLE001
