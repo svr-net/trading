@@ -259,7 +259,9 @@ def place_and_watch(market):
     lines = out.splitlines()
     placed_n = sum(1 for x in lines if ': buy ' in x)
     skipped = [x.strip() for x in lines if 'skipped' in x]
-    summary = f'{placed_n} placed' + (f'; {len(skipped)} skipped: ' + '; '.join(skipped) if skipped else '')
+    verdict = next((x.strip() for x in reversed(lines) if 'accepted by IBKR' in x), '')
+    rejected = [x.strip() for x in lines if 'REJECTED' in x]
+    summary = f'{placed_n} sent; {verdict}' + (f'; rejected: ' + '; '.join(rejected) if rejected else '') + (f'; {len(skipped)} skipped: ' + '; '.join(skipped) if skipped else '')
     if code != 0:
         return False, summary or 'failed'
     placed(market, path, False)
