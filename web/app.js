@@ -127,6 +127,7 @@ function showView(v) {
   if (location.hash !== `#${v}`) history.replaceState(null, '', `${location.pathname}${location.search}#${v}`);
   if (v === 'backtest' && shown) drawChart(shown);  // a hidden canvas has no width
   if ((v === 'results' || v === 'broker') && !bridgeOk) brokerProbe(true);
+  if (typeof todayLoop === 'function') todayLoop(v === 'results' && bridgeOk);
 }
 for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => showView(b.dataset.view));
 document.addEventListener('click', (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); showView(a.dataset.go); } });
@@ -205,6 +206,8 @@ function brokerProbe(opened) {
     const auto2 = new Set(Object.keys(s.auto || {}));
     if (auto2.size && [...auto2].join() !== [...live].join()) { live = auto2; if (shown) render(shown, MARKETS[market]); }
     brokerOrders();
+    $('history-title').hidden = false;
+    if (!$('view-results').hidden) todayLoop(true);
   }).catch(() => {
     bridgeOk = false;
     $('results-empty').hidden = false;
@@ -232,6 +235,51 @@ $('broker-diag').addEventListener('click', () => {
     brokerLog(bad ? `${bad} failed, ${warn} warnings.` : warn ? `All passed, ${warn} warnings.` : 'All passed.');
   }).catch((e) => brokerLog(`Diagnostics failed: ${e.message} (an older bridge has none: redeploy it)`));
 });
+// Today at IBKR (GET /trades): every one of today's orders and every holding of the model's shares,
+// live, with what was bought and sold and the profit; refreshed every minute while Results is open.
+let todayTimer = null;
+function brokerToday() {
+  if (!bridgeKey()) return;
+  const m = brokerMarket();
+  $('today-box').hidden = false;
+  $('today-summary').textContent = 'Asking Interactive Brokers…';
+  bridge(`/trades?market=${m}`).then((t) => {
+    if (brokerMarket() !== m) return;
+    const px = (x) => (x == null ? '' : x >= 100 ? x.toFixed(1) : x.toFixed(x >= 10 ? 2 : 3));
+    const money = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
+    const cls = (x) => (x > 0 ? 'num pos' : x < 0 ? 'num neg' : 'num');
+    const main = (t.shares.find((r) => r.bought || r.held) || {}).currency || '';
+    const rows = t.shares.map((r) => {
+      const profit = (r.pnl || 0) + (r.open || 0);
+      const counted = r.bought || r.held;
+      const qty = r.bought || r.held;
+      const trade = counted
+        ? `${qty} at ${px(r.buy)}\n${r.held ? (r.price != null ? `now ${px(r.price)}` : 'held') : `sold at ${px(r.sell)}`}`
+        : r.limit != null ? `buy at ${px(r.limit)}` : '';
+      const tone = /refused|earlier/.test(r.state) ? 'neg' : /held/.test(r.state) ? 'warn' : '';
+      return [[`${r.ticker}\n${r.state}`, `share ${tone}`], [trade, 'num'],
+        counted ? [`${money(profit)}${r.currency !== main ? ` ${r.currency}` : ''}`, cls(profit)] : ['', 'num']];
+    });
+    table($('today'), [['Share'], ['Trade', 'num'], [`Profit${main ? ` (${main})` : ''}`, 'num']],
+      rows.length ? rows : [{ gap: 'No orders today and nothing held.' }]);
+    const n = (f) => t.shares.filter(f).length;
+    const tot = {};
+    for (const r of t.shares) if (r.bought || r.held) tot[r.currency] = (tot[r.currency] || 0) + (r.pnl || 0) + (r.open || 0);
+    const held = n((r) => r.held > 0), old = n((r) => r.held > 0 && !r.bought);
+    const parts = [`${n((r) => r.bought > 0)} bought`, `${held} held now${old ? ` (${old} from an earlier day)` : ''}`,
+      `${n((r) => /^sold/.test(r.state))} sold`, `${n((r) => r.state === 'waiting to buy')} waiting to buy`];
+    const bad = n((r) => r.state === 'refused by IBKR');
+    if (bad) parts.push(`${bad} refused`);
+    const totals = Object.entries(tot).map(([c, v]) => `${money(v)} ${c}`).join(', ');
+    $('today-summary').innerHTML = `<b>${parts.join(' · ')}</b>${totals ? ` · profit today ${totals}` : ''} · ${t.at.slice(11, 16)}`;
+  }).catch((e) => { if (brokerMarket() === m) $('today-summary').textContent = `Not available now: ${e.message}`; });
+}
+$('today-refresh').addEventListener('click', brokerToday);
+function todayLoop(on) {
+  clearInterval(todayTimer);
+  todayTimer = on ? setInterval(() => { if (!document.hidden) brokerToday(); }, 60000) : null;
+  if (on) brokerToday();
+}
 // The history kept by the bridge: each day's orders placed and what was traded (fills from IBKR).
 function brokerHistory() {
   if (!bridgeKey()) return;
@@ -289,7 +337,7 @@ function brokerHistory() {
 }
 $('broker-report').addEventListener('click', () => brokerAct('/report', { market: brokerMarket() }));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
-for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) brokerOrders(); });
+for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) { brokerOrders(); if (!$('view-results').hidden) brokerToday(); } });
 brokerProbe();
 let firstView = location.hash.slice(1);
 try { firstView = firstView || localStorage.getItem('view') || 'orders'; } catch { /* no storage */ }

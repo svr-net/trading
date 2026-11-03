@@ -98,6 +98,7 @@ AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.ge
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
 VERSION = os.environ.get('BRIDGE_VERSION', 'unknown')  # the commit it was built from
+TRADES = {}  # market -> (when, the live state): asked of IBKR at most every 30 seconds
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -739,6 +740,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'checks': diag()})
         if u.path == '/history':
             return self.reply(200, {'days': history()})
+        if u.path == '/trades':  # the live state of today's trades and the model's holdings, from IBKR
+            m = self.market(parse_qs(u.query).get('market', [''])[0])
+            if not m:
+                return
+            hit = TRADES.get(m)
+            if hit and time.monotonic() - hit[0] < 30:
+                return self.reply(200, hit[1])
+            code, out = run_submit(['--market', m, '--state', '--tickers', ','.join(model_tickers(m))], timeout=90)
+            line = next((x for x in reversed(out.splitlines()) if x.startswith('{')), '')
+            if code != 0 or not line:
+                return self.reply(502, {'error': (out.splitlines() or ['no answer from IBKR'])[-1]})
+            TRADES[m] = (time.monotonic(), json.loads(line))
+            return self.reply(200, TRADES[m][1])
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:

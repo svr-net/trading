@@ -133,3 +133,11 @@ tr.gap td { white-space: normal; }
 .view footer { margin-top: 18px; }
 .views { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
 .views button { padding: 8px 7px; white-space: nowrap; flex: 0 0 auto; }
+/* Today at Interactive Brokers: the live state of the day's trades. */
+#today-box h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+button.small { font-size: 12px; padding: 3px 10px; }
+.today-summary { margin: 4px 0 8px; font-size: 14px; }
+td.warn { color: var(--hedged); }
+#today td { white-space: pre-line; vertical-align: top; }
+#today td.share::first-line { font-weight: 700; color: var(--ink); }
+#today td.num { white-space: pre; }

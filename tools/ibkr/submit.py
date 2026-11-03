@@ -257,6 +257,87 @@ def leftovers(args):
     sys.exit(0 if ok_all else 1)
 
 
+def state(args):
+    """The live state of the market's trades at IBKR, as one JSON line (the page's "Today at IBKR"):
+    each of today's orders (waiting to buy, not bought, refused, bought and held, stopped, took its
+    profit, sold at the close) with what was bought and sold, and every holding of the model's shares
+    (--tickers) with IBKR's price and profit; read only, its own client (+6)."""
+    from ib_async import IB
+
+    ref = f'ofm-{args.market}-{date.today().isoformat()}'
+    mine = {ib_symbol(t.split(':')[-1], args.market) for t in (args.tickers or '').split(',') if t}
+    ib = IB()
+    connect(ib, args, args.client_id + 6, tries=2)
+    num = lambda x: float(x) if isinstance(x, (int, float)) and math.isfinite(x) and abs(x) < 1e300 else None  # noqa: E731
+    rows = {}
+
+    def row(c):
+        return rows.setdefault(c.symbol, {'ticker': c.symbol, 'currency': c.currency, 'state': '', 'limit': None, 'stop': None, 'take': None,
+                                          'bought': 0.0, 'buy': None, 'sold': 0.0, 'sell': None, 'soldBy': '', 'held': 0.0, 'price': None,
+                                          'pnl': 0.0, 'open': None, 'fees': 0.0, 'note': ''})
+    orders = {}
+    for t in list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(False)):
+        o = t.order
+        if not (o.orderRef or '').startswith(ref):
+            continue
+        orders[o.permId] = (t.contract, o, t.orderStatus.status)
+        r = row(t.contract)
+        if o.action == 'BUY' and not o.parentId and o.orderType == 'LMT':
+            r['limit'], r['buyStatus'] = num(o.lmtPrice), t.orderStatus.status
+        elif o.action == 'SELL' and o.orderType == 'STP':
+            r['stop'] = num(o.auxPrice)
+        elif o.action == 'SELL' and o.orderType == 'LMT' and o.parentId:
+            r['take'] = r['take'] or num(o.lmtPrice)
+    bv = {}
+    for f in ib.reqExecutions():
+        e = f.execution
+        if not (e.orderRef or '').startswith(ref):
+            continue
+        r = row(f.contract)
+        k = 'bought' if e.side == 'BOT' else 'sold'
+        r[k] += e.shares
+        bv[(r['ticker'], k)] = bv.get((r['ticker'], k), 0.0) + e.shares * e.price
+        if k == 'sold':
+            o = orders.get(e.permId, (None, None, None))[1]
+            by = 'close' if (e.orderRef or '').endswith('-close') else {'STP': 'stop', 'LMT': 'take-profit'}.get(getattr(o, 'orderType', ''), 'sale')
+            r['soldBy'] = ', '.join(sorted(set(filter(None, r['soldBy'].split(', '))) | {by}))
+        cr = f.commissionReport
+        if cr is not None:
+            r['fees'] += num(cr.commission) or 0.0
+            r['pnl'] += num(cr.realizedPNL) or 0.0
+    for (tk, k), v in bv.items():
+        r = rows[tk]
+        r['buy' if k == 'bought' else 'sell'] = v / r[k] if r[k] else None
+    for it in ib.portfolio():
+        c = it.contract
+        if it.position <= 0 or (c.symbol not in mine and c.symbol not in rows):
+            continue
+        r = row(c)
+        r['held'], r['price'], r['open'] = it.position, num(it.marketPrice), num(it.unrealizedPNL)
+        if not r['bought']:
+            r['buy'] = num(it.averageCost)
+    waiting = {t.contract.symbol for t in ib.reqAllOpenOrders() if t.order.action == 'SELL' and t.orderStatus.status not in DEAD}
+    for r in rows.values():
+        st = r.pop('buyStatus', '')
+        if r['held'] and not r['bought']:
+            r['state'] = 'held from an earlier day' + (', sale waiting' if r['ticker'] in waiting else '')
+        elif r['held']:
+            r['state'] = 'bought, held' + (', sale placed' if r['ticker'] in waiting else '')
+        elif r['bought'] and r['sold'] >= r['bought']:
+            r['state'] = f"sold ({r['soldBy'] or 'sale'})"
+        elif st in DEAD:
+            r['state'] = 'not bought (expired)' if st == 'Cancelled' else 'refused by IBKR'
+        elif st == 'Filled':
+            r['state'] = 'bought'
+        elif st:
+            r['state'] = 'waiting to buy'
+        else:
+            r['state'] = 'no order'
+    ib.disconnect()
+    print(json.dumps({'market': args.market, 'date': date.today().isoformat(), 'at': __import__('datetime').datetime.now().astimezone().isoformat(timespec='seconds'),
+                      'shares': sorted(rows.values(), key=lambda r: (not r['held'], not r['bought'], r['ticker']))}))
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC'], required=True)
@@ -278,6 +359,7 @@ def main():
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     a.add_argument('--leftovers', action='store_true', help="sell the model's shares still held from earlier days (--tickers)")
     a.add_argument('--tickers', help='with --leftovers: the shares the model placed lately, comma separated')
+    a.add_argument('--state', action='store_true', help="the live state of today's trades and the model's holdings (--tickers), as JSON")
     a.add_argument('--check', action='store_true', help='with --leftovers: only list them; exit 1 when there are any')
     a.add_argument('--ping', action='store_true', help="exit 0 when IB Gateway's API answers within 15 seconds, else 1")
     args = a.parse_args()
@@ -292,6 +374,8 @@ def main():
         return ping(args)
     if args.leftovers:
         return leftovers(args)
+    if args.state:
+        return state(args)
     if args.diag:
         return diag(args)
     if args.auction:
