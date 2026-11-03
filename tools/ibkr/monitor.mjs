@@ -33,7 +33,7 @@ try {
   if (/^[0-9a-f]{7,40}$/.test(v) && /^[0-9a-f]{7,40}$/.test(latest)) {
     try { execFileSync('git', ['merge-base', '--is-ancestor', latest, v], { stdio: 'ignore' }); current = true; } catch { current = false; }
   }
-  console.log(`bridge version ${v}${b.started ? `, running since ${b.started}` : ''}: ${current === true ? 'the latest' : current === false ? `OUT OF DATE (the latest is ${latest}): update the NAS` : 'not known'}`);
+  console.log(`bridge version ${v}${b.started ? `, running since ${b.started}` : ''}: ${current === true ? 'the latest' : current === false ? `OUT OF DATE (the latest is ${latest}): update the NAS with sudo sh /volume1/DEV/trading/docker/ibkr/deploy-nas.sh` : 'not known'}`);
   if (current === false) problems.push('the NAS runs an old bridge');
   for (const [m, a] of Object.entries(b.auto || {}))
   {

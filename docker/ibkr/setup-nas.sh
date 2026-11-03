@@ -15,7 +15,7 @@
 # Every answer can come from the environment instead (IBKR_DIR, TWS_USERID, TWS_PASSWORD,
 # TRADING_MODE, EOD_TOKEN, CAPITAL, TZ, BRIDGE_KEY, HTTPS_MODE=lan|public, LAN_HOST,
 # HTTPS_PORT, BRIDGE_DOMAIN, HTTP_PORT, REPO_REF), e.g. for a script without questions.
-# REPO_DIR: a clone of the repository to build from (deploy-nas.sh) instead of downloading the files;
+# REPO_DIR: the clone deploy-nas.sh keeps (only this script comes from it: the images are GitHub's);
 # SKIP_START=1 writes the files without starting anything.
 set -eu
 
@@ -58,41 +58,37 @@ case "$(uname -m)" in x86_64|amd64|aarch64|arm64) ;; *) die "this processor ($(u
 mkdir -p "$DIR" "$DIR/history"   # history: the bind mount must exist before the bridge starts
 cd "$DIR"
 say "Setting up in $DIR"
-if [ -n "${REPO_DIR:-}" ]; then
-  # Built from the clone: its docker/ibkr/Dockerfile.bridge and tools/ibkr.
-  [ -f "$REPO_DIR/docker/ibkr/Dockerfile.bridge" ] || die "no repository clone at $REPO_DIR"
-  BUILD_CONTEXT=$REPO_DIR; BUILD_FILE=docker/ibkr/Dockerfile.bridge
-else
-  BUILD_CONTEXT=.; BUILD_FILE=Dockerfile.bridge
-  mkdir -p tools/ibkr
-  for f in tools/ibkr/bridge.py tools/ibkr/submit.py tools/ibkr/restarter.py; do fetch "$RAW/$f" "$f"; done
-  cat > Dockerfile.bridge <<'EOF'
-FROM python:3.12-slim
-RUN pip install --no-cache-dir ib_async tzdata
-WORKDIR /app
-COPY tools/ibkr/ tools/ibkr/
-ARG VERSION=unknown
-ENV BRIDGE_VERSION=$VERSION
-EXPOSE 8765
-CMD ["python", "tools/ibkr/bridge.py"]
-EOF
-fi
-
-# The bridge's image: GitHub builds it on every change (ghcr.io/svr-net/trading-bridge, stamped with
-# its commit), so the NAS only pulls it: no build, no copy of the code needed. Only when it cannot be
-# pulled (BRIDGE_IMAGE=build forces this) is it built here, stamped with the clone's commit.
-BRIDGE_IMAGE=${BRIDGE_IMAGE:-ghcr.io/svr-net/trading-bridge:latest}
-if [ "$BRIDGE_IMAGE" != build ] && docker pull -q "$BRIDGE_IMAGE" >/dev/null 2>&1; then
-  say "Using the bridge image $BRIDGE_IMAGE (updates: docker compose pull && docker compose up -d)"
-  BRIDGE_SRC="    image: $BRIDGE_IMAGE"
-else
-  [ "$BRIDGE_IMAGE" = build ] || say "The bridge image $BRIDGE_IMAGE could not be pulled: building it here"
-  VERSION=$( (cd "$BUILD_CONTEXT" && git rev-parse --short=7 HEAD) 2>/dev/null || echo unknown)
-  BRIDGE_SRC="    build:
-      context: $BUILD_CONTEXT
-      dockerfile: $BUILD_FILE
-      args: { VERSION: \"$VERSION\" }"
-fi
+# The images are built by GitHub (.github/workflows/bridge-image.yml), never here: the bridge's
+# (ghcr.io/svr-net/trading-bridge, stamped with its commit) and, for the Synology setup, Caddy with
+# openssl (ghcr.io/svr-net/trading-caddy). Each is pulled from GitHub's registry (at most 3 minutes),
+# else downloaded as one file from the repository's "nas-images" release over IPv4 (a NAS whose
+# Docker cannot reach the registry, e.g. over IPv6) and loaded. Neither works: stop, build nothing.
+ARCH=$(uname -m); case "$ARCH" in x86_64|amd64) ARCH=amd64 ;; *) ARCH=arm64 ;; esac
+pull_image() {
+  if command -v timeout >/dev/null 2>&1; then timeout 180 docker pull -q "$1" >/dev/null 2>&1
+  else docker pull -q "$1" >/dev/null 2>&1 & p=$!; i=0
+    while kill -0 $p 2>/dev/null && [ $i -lt 180 ]; do sleep 1; i=$((i + 1)); done
+    if kill -0 $p 2>/dev/null; then kill $p 2>/dev/null; return 1; fi
+    wait $p
+  fi
+}
+get_image() {  # get_image NAME (trading-bridge or trading-caddy): ghcr.io/svr-net/NAME:latest here
+  img=ghcr.io/svr-net/$1:latest
+  say "Getting $img (at most 3 minutes from the registry)..."
+  if pull_image "$img"; then return; fi
+  url=https://github.com/svr-net/trading/releases/download/nas-images/$1-$ARCH.tar.gz
+  say "  the registry did not answer: downloading $url over IPv4"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4 -fsSL --retry 3 --connect-timeout 20 --max-time 900 "$url" -o "/tmp/$1.tar.gz" || die "could not download $url (nothing is built on the NAS)"
+  else
+    wget -4 -q -T 60 -O "/tmp/$1.tar.gz" "$url" || die "could not download $url (nothing is built on the NAS)"
+  fi
+  gunzip -c "/tmp/$1.tar.gz" | docker load -q >/dev/null || die "could not load $1 (nothing is built on the NAS)"
+  rm -f "/tmp/$1.tar.gz"
+  docker image inspect "$img" >/dev/null 2>&1 || die "$img is not there after loading"
+}
+get_image trading-bridge
+BRIDGE_SRC="    image: ghcr.io/svr-net/trading-bridge:latest"
 
 # --- The answers (kept in .env) -------------------------------------------------------------------
 if [ -f .env ]; then set -a; . ./.env; set +a; say "Using the answers in $DIR/.env"; fi
@@ -207,10 +203,6 @@ EOF
   # it sleeps until that certificate's end date, then loads DSM's renewed files (DSM renews a month
   # ahead); while the files hold no valid certificate yet, it retries hourly. A failed reload keeps
   # the running certificate. The image is Caddy's with openssl added (to read the end date).
-  cat > Dockerfile.caddy <<'EOF'
-FROM caddy:2.8
-RUN apk add --no-cache openssl
-EOF
   cat > caddy-watch.sh <<'EOF'
 #!/bin/sh
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
@@ -237,7 +229,8 @@ EOF
   CADDY_CERTS="      - $CERT_DIR:/certs:ro
       - ./caddy-watch.sh:/caddy-watch.sh:ro
     command: [\"sh\", \"/caddy-watch.sh\"]"
-  CADDY_IMAGE="    build: { context: ., dockerfile: Dockerfile.caddy }"
+  get_image trading-caddy
+  CADDY_IMAGE="    image: ghcr.io/svr-net/trading-caddy:latest"
 else
   cat > Caddyfile <<EOF
 $BRIDGE_DOMAIN {
@@ -309,7 +302,7 @@ EOF
 if [ "${SKIP_START:-}" = 1 ]; then say "Files written in $DIR (SKIP_START=1: nothing started)."; exit 0; fi
 say ""
 say "Starting (the first time downloads the images: a few minutes)..."
-$COMPOSE up -d --build
+$COMPOSE up -d
 
 # --- What to do next -----------------------------------------------------------------------------
 PAGE="https://svr-net.github.io/trading/?bridge=$SITE"
