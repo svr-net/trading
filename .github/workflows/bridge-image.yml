@@ -1,7 +1,9 @@
-# The broker bridge's image, built on every change to it and published as
-# ghcr.io/svr-net/trading-bridge (latest and the commit), stamped with its commit, for the NAS to pull
-# (docker compose pull && docker compose up -d): the NAS builds nothing. The image holds only
-# tools/ibkr and Python's packages; no keys or settings (they stay in the NAS's .env).
+# The NAS's images, built here and never on the NAS: the broker bridge (tools/ibkr, stamped with its
+# commit) and Caddy with openssl (the Synology setup). Each is published twice: in GitHub's registry
+# (ghcr.io/svr-net/trading-bridge and trading-caddy, latest and the commit), and as one file per
+# processor in the repository's "nas-images" release (<name>-amd64.tar.gz, -arm64), which a NAS whose
+# Docker cannot reach the registry downloads over IPv4 and loads (docker/ibkr/setup-nas.sh). The
+# images hold only the code and Python's packages: no keys or settings (they stay in the NAS's .env).
 name: Bridge image
 on:
   workflow_dispatch:
@@ -10,14 +12,18 @@ on:
     paths:
       - 'tools/ibkr/**'
       - 'docker/ibkr/Dockerfile.bridge'
+      - 'docker/ibkr/Dockerfile.caddy'
       - '.github/workflows/bridge-image.yml'
 permissions:
-  contents: read
+  contents: write   # the nas-images release
   packages: write
+concurrency:
+  group: nas-images
+  cancel-in-progress: false
 jobs:
   image:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -41,3 +47,35 @@ jobs:
           tags: |
             ghcr.io/svr-net/trading-bridge:latest
             ghcr.io/svr-net/trading-bridge:${{ steps.v.outputs.sha }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/ibkr
+          file: docker/ibkr/Dockerfile.caddy
+          platforms: linux/amd64,linux/arm64
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          push: true
+          tags: |
+            ghcr.io/svr-net/trading-caddy:latest
+            ghcr.io/svr-net/trading-caddy:${{ steps.v.outputs.sha }}
+      - name: One file per image and processor
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for name in trading-bridge trading-caddy; do
+            for arch in amd64 arm64; do
+              docker pull -q --platform "linux/$arch" "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}"
+              docker tag "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}" "ghcr.io/svr-net/$name:latest"
+              docker save "ghcr.io/svr-net/$name:latest" | gzip -6 > "out/$name-$arch.tar.gz"
+              docker image rm -f "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}" "ghcr.io/svr-net/$name:latest" >/dev/null
+            done
+          done
+          ls -l out
+      - name: The nas-images release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          note="The NAS's images, built from ${{ steps.v.outputs.sha }} (docker/ibkr/setup-nas.sh downloads them when the registry does not answer)."
+          gh release view nas-images >/dev/null 2>&1 || gh release create nas-images --title "NAS images" --notes "$note" --latest=false
+          gh release edit nas-images --notes "$note"
+          gh release upload nas-images out/*.tar.gz --clobber

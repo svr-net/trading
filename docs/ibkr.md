@@ -160,11 +160,13 @@ Nothing is held overnight, and that is checked rather than assumed:
   open, unless a sale is already waiting. Only shares the model's own orders placed in the last 10
   days count: anything else in the account is never touched.
 
-The bridge's image is built by GitHub on every change (`ghcr.io/svr-net/trading-bridge`, stamped
-with its commit), so updating the NAS is
-`cd /volume1/DEV/trading/docker/ibkr/nas && sudo docker compose pull && sudo docker compose up -d`.
-The monitor shows the version the NAS runs and fails when it is not the latest. If the image cannot
-be pulled, `deploy-nas.sh` builds it on the NAS as before.
+Nothing is ever built on the NAS. GitHub builds its images on every change (the bridge, stamped
+with its commit, and Caddy with openssl) and publishes them in its registry
+(`ghcr.io/svr-net/trading-bridge`, `trading-caddy`) and as one file each in the repository's
+`nas-images` release. The NAS takes the registry's (at most 3 minutes), else downloads the file over
+IPv4 and loads it; if neither works, the setup stops and says so. Updating the NAS is one command:
+`sudo sh /volume1/DEV/trading/docker/ibkr/deploy-nas.sh`. The monitor shows the version the NAS
+runs and fails when it is not the latest.
 
 ## 2f. History of orders and fills
 

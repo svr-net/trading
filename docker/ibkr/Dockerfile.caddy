@@ -1,0 +1,4 @@
+# Caddy with openssl (the Synology setup reads its certificate's end date with it); built by GitHub
+# (bridge-image.yml) as ghcr.io/svr-net/trading-caddy, never on the NAS.
+FROM caddy:2.8
+RUN apk add --no-cache openssl
