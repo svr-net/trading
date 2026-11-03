@@ -20,7 +20,12 @@ Automatic trading (AUTO_MARKETS, e.g. UK or UK,US; empty: off): on weekdays the 
 market's orders before its open and closes what is left before its close, by the exchange's clock
 (UK 07:45 and 16:20 London, EU 08:45 and 17:20 Paris, US 09:20 and 15:40 New York, APAC 09:45 and
 15:50 Sydney; AUTO_UK_PLACE, AUTO_UK_CLOSE, AUTO_US_PLACE,
-AUTO_US_CLOSE change them), each once a day, and skips an orders file more than 4 days old.
+AUTO_US_CLOSE change them), each once a day, and skips an orders file more than 4 days old. The
+times are when steps become due, not the only moments they can run: every 30 seconds the scheduler
+does whatever step of the day is due and not yet done (marked in HISTORY_DIR/state, which outlives
+restarts and redeploys), so a restart, a redeploy or a failed step is caught up, not lost. A
+watchdog asks IB Gateway's API for its clock every minute and, when its port is open but its API
+silent for 3 minutes (hung), has the restarter container (restarter.py) restart it.
 
 Opening auctions (AUCTION=1, the default; 0 off): on the same days, at UK 07:52 London and US 09:24
 New York (AUTO_UK_AUCTION, AUTO_US_AUCTION), the bridge records the opening auction of the day's 60
@@ -245,6 +250,7 @@ def record_paths(market):
 
 
 REBUY_RUNNING = set()
+START_LOCK = threading.Lock()
 
 
 def place_and_watch(market):
@@ -265,15 +271,17 @@ def place_and_watch(market):
     if code != 0:
         return False, summary or 'failed'
     placed(market, path, False)
+    mark_done(market, 'place')
     in_background(market, 'rebuy', watch_rebuy)
     return True, summary
 
 
 def watch_rebuy(market):
     """The day's buy-backs after stops (submit.py --rebuy) until the close's time; returns (ok, summary)."""
-    if market in REBUY_RUNNING:
-        return False, 'already watching'
-    REBUY_RUNNING.add(market)
+    with START_LOCK:  # the scheduler and a placing may both start it: one watch only
+        if market in REBUY_RUNNING:
+            return False, 'already watching'
+        REBUY_RUNNING.add(market)
     try:
         day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
         state = os.path.join(HISTORY, f'rebuy-{market}-{day}.txt')
@@ -365,6 +373,12 @@ def diag():
             add('IBKR messages', None, ' | '.join(d['errors']))
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
+    for m in AUTO:
+        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('place', 'paths', 'auction', 'close', 'report'))
+            + f"; running: {', '.join(sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])) or 'nothing'}")
+    g = GATEWAY
+    add('IB Gateway watchdog', g['ok'], ('not checked yet' if g['ok'] is None else 'API answers' if g['ok'] else 'API does not answer')
+        + f" (checked {g['checked']}); restarts {g['restarts']}" + (f", last {g['restarted']}: {g['note']}" if g['restarted'] else ''))
     failed = [x for x in LAST if not x[3]]
     add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:8]) or 'none yet')
     adir = os.path.join(HISTORY, 'auction')
@@ -433,37 +447,157 @@ def auto_run(market, action):
     return code == 0, out.splitlines()[-1] if out else ''
 
 
+def state_path(market, action, day):
+    return os.path.join(HISTORY, 'state', day, f'{market}-{action}')
+
+
+def is_done(market, action):
+    return os.path.exists(state_path(market, action, datetime.now(ZoneInfo(ZONE[market])).date().isoformat()))
+
+
+def mark_done(market, action):
+    """A step of today done, kept in the history folder (it outlives restarts and redeploys)."""
+    f = state_path(market, action, datetime.now(ZoneInfo(ZONE[market])).date().isoformat())
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    open(f, 'w').close()
+
+
+def seed_done():
+    """Today's steps already in the history (placed, reported) marked done at start, so a bridge
+    upgraded mid-day never places or reports a day twice."""
+    try:
+        lines = open(os.path.join(HISTORY, 'history.jsonl')).read().splitlines()
+    except OSError:
+        return
+    for line in lines[-200:]:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        m, step = r.get('market'), {'placed': 'place', 'result': 'report'}.get(r.get('kind'))
+        if m in ZONE and step and r.get('date') == datetime.now(ZoneInfo(ZONE[m])).date().isoformat() and not is_done(m, step):
+            mark_done(m, step)
+
+
+def at(now, hhmm, minutes=0):
+    h, mi = (int(x) for x in hhmm.split(':'))
+    return now.replace(hour=h, minute=mi, second=0, microsecond=0) + timedelta(minutes=minutes)
+
+
+RUNNING = set()     # (market, action) jobs in flight
+ATTEMPTS = {}       # (market, action, day) -> (tries, last try)
+GATEWAY = {'ok': None, 'fails': 0, 'checked': None, 'restarts': 0, 'restarted': None, 'note': ''}
+
+
+def job(market, action, fn, done_on_ok=True):
+    """Runs fn(market) in the background once at a time; marks the step done when it succeeds."""
+    if (market, action) in RUNNING:
+        return
+    day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+    tries, _ = ATTEMPTS.get((market, action, day), (0, None))
+    ATTEMPTS[(market, action, day)] = (tries + 1, time.monotonic())
+    RUNNING.add((market, action))
+
+    def wrapped(m):
+        try:
+            ok, summary = fn(m)
+            if ok and done_on_ok:
+                mark_done(m, action)
+            return ok, summary
+        finally:
+            RUNNING.discard((m, action))
+    in_background(market, action, wrapped)
+
+
+def may_try(market, action, every_min, most=None):
+    day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+    tries, last = ATTEMPTS.get((market, action, day), (0, None))
+    if most is not None and tries >= most:
+        return False
+    return last is None or time.monotonic() - last >= 60 * every_min
+
+
+def close_market(market):
+    code, out = run_submit(['--market', market, '--close'], timeout=600)
+    return code == 0, out.splitlines()[-1] if out else ''
+
+
 def scheduler():
-    """Places and closes each automatic market's orders at its times, weekdays, once a day each."""
-    done = set()
+    """Each automatic market's day as steps that should be done by now, checked every 30 seconds and
+    done when missing, so a restart, a redeploy or a failed step is caught up rather than lost: the
+    orders placed (retried every 5 minutes, at most 4 times, until 15 minutes before the close;
+    already placed shares are skipped), the buy-back watch running from then until the close, the
+    day's paths recorded, the opening auction recorded (only at its time), the close done (retried
+    every minute for 9 minutes after its time) and the report (retried every 10 minutes). Steps
+    that need IB Gateway wait while it does not answer."""
     os.makedirs(CACHE, exist_ok=True)
     while True:
         for m in AUTO:
-            now = datetime.now(ZoneInfo(ZONE[m]))
-            weekend = now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS')  # AUTO_WEEKENDS: for testing only
-            plan = [('bars', BARS_AT)] if now.weekday() == 5 and BARS_AT else []  # Saturdays: IBKR's daily bars
-            if not weekend:
-                # The paths before the auction: they start at once (a thread), the auction then takes ten minutes.
-                plan += [('place', TIMES[m][0]), ('paths', (AUCTION.get(m) or TIMES[m][0]) if PATHS else None), ('auction', AUCTION.get(m)),
-                         ('close', TIMES[m][1]), ('report', REPORT[m])]
-            if not plan:
-                continue
-            for action, hhmm in ((a, t) for a, t in plan if t):
-                h, mi = (int(x) for x in hhmm.split(':'))
-                due = now.replace(hour=h, minute=mi, second=0, microsecond=0)
-                mark = os.path.join(CACHE, f'done-{m}-{action}-{now.date().isoformat()}')
-                # Within 10 minutes after its time (a restart just after still catches it), once.
-                if due <= now < due + timedelta(minutes=10) and mark not in done and not os.path.exists(mark):
-                    done.add(mark)
-                    open(mark, 'w').close()
-                    try:
-                        ok, summary = auto_run(m, action)
-                    except Exception as e:  # noqa: BLE001
-                        ok, summary = False, str(e)
-                    LAST.insert(0, (now.strftime('%Y-%m-%d %H:%M %Z'), m, action, ok, summary))
-                    del LAST[10:]
-                    sys.stderr.write(f'bridge: automatic {action} {m}: {"ok" if ok else "FAILED"} {summary}\n')
-        time.sleep(20)
+            try:
+                now = datetime.now(ZoneInfo(ZONE[m]))
+                if now.weekday() == 5 and BARS_AT and at(now, BARS_AT) <= now < at(now, BARS_AT, 60) and not is_done(m, 'bars'):
+                    job(m, 'bars', fetch_bars)
+                if now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS'):
+                    continue
+                place, close = TIMES[m]
+                up = GATEWAY['ok'] is not False
+                if up and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
+                    job(m, 'place', place_and_watch, done_on_ok=False)  # place_and_watch marks it and starts the watch
+                if up and is_done(m, 'place') and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
+                        and may_try(m, 'rebuy', 5):
+                    job(m, 'rebuy', watch_rebuy, done_on_ok=False)
+                start = AUCTION.get(m) or place
+                if PATHS and up and at(now, start) <= now < at(now, close, 15) and m not in PATHS_RUNNING and not is_done(m, 'paths') \
+                        and may_try(m, 'paths', 5):
+                    job(m, 'paths', record_paths)
+                if AUCTION.get(m) and up and at(now, AUCTION[m]) <= now < at(now, AUCTION[m], 5) and not is_done(m, 'auction') \
+                        and may_try(m, 'auction', 10, 1):
+                    job(m, 'auction', record_auction)
+                if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
+                    job(m, 'close', close_market)
+                if at(now, REPORT[m]) <= now < at(now, REPORT[m], 180) and not is_done(m, 'report') and may_try(m, 'report', 10):
+                    job(m, 'report', report)
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(f'bridge: scheduler {m}: {e}\n')
+        time.sleep(30)
+
+
+def restart_gateway():
+    """Asks the restarter (tools/ibkr/restarter.py, the only container with Docker's socket) to restart
+    IB Gateway; returns a note."""
+    url = os.environ.get('GATEWAY_RESTARTER', 'http://restarter:8766') + '/restart'
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST'), timeout=150) as r:
+            return json.loads(r.read()).get('note', 'restarted')
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read() or b'{}').get('note', f'restarter answered {e.code}')
+    except Exception as e:  # noqa: BLE001
+        return f'no restarter ({type(e).__name__}): restart IB Gateway by hand'
+
+
+def watchdog():
+    """Every minute, whether IB Gateway's API answers (a connection and its clock, not only the port);
+    after 3 minutes in a row with its port open but its API silent (hung), IB Gateway is restarted,
+    then given 4 minutes to log in."""
+    while True:
+        try:
+            code, out = run_submit(['--market', 'UK', '--ping'], timeout=45)
+            ok = code == 0
+        except Exception:  # noqa: BLE001
+            ok = False
+        # A failure counts only while the gateway's port is open: a closed port is the gateway starting
+        # or restarting (its own nightly restart too), which Docker's restart policy already covers.
+        hung = not ok and gateway_up()
+        GATEWAY.update(ok=ok, checked=datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z'), fails=GATEWAY['fails'] + 1 if hung else 0)
+        if GATEWAY['fails'] >= 3:
+            note = restart_gateway()
+            GATEWAY.update(fails=0, restarts=GATEWAY['restarts'] + 1, restarted=GATEWAY['checked'], note=note)
+            LAST.insert(0, (GATEWAY['checked'], 'IB', 'gateway restart', 'restarted' in note, f'IB Gateway did not answer 3 times: {note}'))
+            del LAST[10:]
+            sys.stderr.write(f'bridge: IB Gateway did not answer 3 times: {note}\n')
+            time.sleep(240)
+            continue
+        time.sleep(60)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -510,7 +644,10 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == '/status':  # no key needed: tells the page the bridge is there
             return self.reply(200, {'bridge': True, 'gateway': gateway_up(), 'port': IB_PORT, 'capital': CAPITAL, 'keyed': bool(KEY),
-                                    'auto': {m: {'place': TIMES[m][0], 'auction': AUCTION.get(m), 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m]} for m in AUTO},
+                                    'auto': {m: {'place': TIMES[m][0], 'auction': AUCTION.get(m), 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m],
+                                                 'today': {a: is_done(m, a) for a in ('place', 'paths', 'auction', 'close', 'report')},
+                                                 'running': sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])} for m in AUTO},
+                                    'gatewayApi': GATEWAY,
                                     'last': [{'when': w, 'market': mk, 'action': a, 'ok': ok, 'summary': sm} for w, mk, a, ok, sm in LAST]})
         if not self.allowed():
             return
@@ -589,5 +726,7 @@ if __name__ == '__main__':
     bind, port = os.environ.get('BIND', '127.0.0.1'), int(os.environ.get('PORT', '8765'))
     print(f'bridge on http://{bind}:{port} for {ORIGIN}; IB Gateway at {IB_HOST}:{IB_PORT}; automatic: {",".join(AUTO) or "off"}')
     if AUTO:
+        seed_done()
         threading.Thread(target=scheduler, daemon=True).start()
+        threading.Thread(target=watchdog, daemon=True).start()
     ThreadingHTTPServer((bind, port), Handler).serve_forever()

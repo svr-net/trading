@@ -136,6 +136,17 @@ change them), each once a day; an orders file more than 4 days old is not placed
 broker* line shows the schedule and the last automatic action; `docker compose logs bridge` shows
 every one. IB Gateway must stay logged in (the container restarts it daily).
 
+The times are when each step becomes due, not the only moment it can run. Every 30 seconds the
+bridge does whichever of the day's steps is due and not yet done: the orders placed (retried every 5
+minutes, at most 4 times, until 15 minutes before the close; shares already placed are skipped), the
+buy-back watch kept running until the close, the day's prices recorded, the close (retried every
+minute) and the report (retried every 10 minutes). Done steps are marked in `history/state`, so a
+restart or a redeploy in the middle of the day catches up rather than losing or repeating a step.
+A watchdog asks IB Gateway's API for its clock every minute; when the gateway's port is open but its
+API has been silent for 3 minutes, the `restarter` container restarts IB Gateway. The restarter is
+the only container given Docker's socket: it publishes no port, holds no secrets and can do nothing
+but restart IB Gateway. `/status` and the diagnostics show today's steps and the watchdog.
+
 ## 2f. History of orders and fills
 
 The bridge keeps a history on the NAS (`docker/ibkr/nas/history/history.jsonl`, kept across updates):

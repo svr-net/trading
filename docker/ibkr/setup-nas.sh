@@ -65,7 +65,7 @@ if [ -n "${REPO_DIR:-}" ]; then
 else
   BUILD_CONTEXT=.; BUILD_FILE=Dockerfile.bridge
   mkdir -p tools/ibkr
-  for f in tools/ibkr/bridge.py tools/ibkr/submit.py; do fetch "$RAW/$f" "$f"; done
+  for f in tools/ibkr/bridge.py tools/ibkr/submit.py tools/ibkr/restarter.py; do fetch "$RAW/$f" "$f"; done
   cat > Dockerfile.bridge <<'EOF'
 FROM python:3.12-slim
 RUN pip install --no-cache-dir ib_async tzdata
@@ -266,6 +266,16 @@ services:
       ALLOWED_ORIGIN: https://svr-net.github.io
     volumes:
       - ./history:/data/history   # the orders placed and the fills, kept across updates
+  restarter:
+    # Restarts IB Gateway when the bridge finds its API hung (tools/ibkr/restarter.py). The only
+    # container with Docker's socket: no port, no secrets, and it does nothing but that one restart.
+    build:
+      context: $BUILD_CONTEXT
+      dockerfile: $BUILD_FILE
+    restart: always
+    command: ["python", "tools/ibkr/restarter.py"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
   caddy:
 ${CADDY_IMAGE:-    image: caddy:2.8}
     restart: always

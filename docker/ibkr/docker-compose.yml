@@ -44,3 +44,14 @@ services:
       - ./history:/data/history
     ports:
       - "127.0.0.1:8765:8765"
+
+  restarter:
+    # Restarts IB Gateway when the bridge finds its API hung (tools/ibkr/restarter.py). The only
+    # container with Docker's socket: no port, no secrets, and it does nothing but that one restart.
+    build:
+      context: ../..
+      dockerfile: docker/ibkr/Dockerfile.bridge
+    restart: always
+    command: ["python", "tools/ibkr/restarter.py"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
