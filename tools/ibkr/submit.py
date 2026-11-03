@@ -242,7 +242,8 @@ def main():
 
     # A rerun the same day places only what is not there yet: a share with an order or a fill of
     # today's reference (from any client) is skipped, so an interrupted placing is never doubled.
-    have = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.orderRef == ref}
+    dead = ('Cancelled', 'ApiCancelled', 'Inactive', 'PendingCancel')  # an order IBKR no longer works: placed again
+    have = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.orderStatus.status not in dead}
     have |= {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
     resent = set()
 
@@ -332,6 +333,8 @@ def main():
             continue  # its SMART resend is the one that counts
         st = t.orderStatus.status
         why = '; '.join(errors.get(t.order.orderId, [])) or ' '.join(x.message for x in t.log if x.message)
+        if not why:  # IBKR gave no message: what its log and status say
+            why = ' / '.join(f'{x.status} {x.message}'.strip() for x in t.log if x.status or x.message) or f'status {t.orderStatus.status}, no reason given by IBKR'
         if st in ('Cancelled', 'ApiCancelled', 'Inactive'):
             rejected += 1
             print(f'  {t.contract.symbol}: REJECTED ({st}) {why}'.strip())
