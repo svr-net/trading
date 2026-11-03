@@ -82,7 +82,17 @@ fi
 # its commit), so the NAS only pulls it: no build, no copy of the code needed. Only when it cannot be
 # pulled (BRIDGE_IMAGE=build forces this) is it built here, stamped with the clone's commit.
 BRIDGE_IMAGE=${BRIDGE_IMAGE:-ghcr.io/svr-net/trading-bridge:latest}
-if [ "$BRIDGE_IMAGE" != build ] && docker pull -q "$BRIDGE_IMAGE" >/dev/null 2>&1; then
+# The pull gets 3 minutes (a NAS that cannot reach ghcr.io, e.g. over IPv6, would wait for ever).
+pull_image() {
+  if command -v timeout >/dev/null 2>&1; then timeout 180 docker pull -q "$1" >/dev/null 2>&1
+  else docker pull -q "$1" >/dev/null 2>&1 & p=$!; i=0
+    while kill -0 $p 2>/dev/null && [ $i -lt 180 ]; do sleep 1; i=$((i + 1)); done
+    if kill -0 $p 2>/dev/null; then kill $p 2>/dev/null; return 1; fi
+    wait $p
+  fi
+}
+[ "$BRIDGE_IMAGE" = build ] || say "Pulling the bridge image $BRIDGE_IMAGE (at most 3 minutes)..."
+if [ "$BRIDGE_IMAGE" != build ] && pull_image "$BRIDGE_IMAGE"; then
   say "Using the bridge image $BRIDGE_IMAGE (updates: docker compose pull && docker compose up -d)"
   BRIDGE_SRC="    image: $BRIDGE_IMAGE"
 else
