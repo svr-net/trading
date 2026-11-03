@@ -71,9 +71,27 @@ FROM python:3.12-slim
 RUN pip install --no-cache-dir ib_async tzdata
 WORKDIR /app
 COPY tools/ibkr/ tools/ibkr/
+ARG VERSION=unknown
+ENV BRIDGE_VERSION=$VERSION
 EXPOSE 8765
 CMD ["python", "tools/ibkr/bridge.py"]
 EOF
+fi
+
+# The bridge's image: GitHub builds it on every change (ghcr.io/svr-net/trading-bridge, stamped with
+# its commit), so the NAS only pulls it: no build, no copy of the code needed. Only when it cannot be
+# pulled (BRIDGE_IMAGE=build forces this) is it built here, stamped with the clone's commit.
+BRIDGE_IMAGE=${BRIDGE_IMAGE:-ghcr.io/svr-net/trading-bridge:latest}
+if [ "$BRIDGE_IMAGE" != build ] && docker pull -q "$BRIDGE_IMAGE" >/dev/null 2>&1; then
+  say "Using the bridge image $BRIDGE_IMAGE (updates: docker compose pull && docker compose up -d)"
+  BRIDGE_SRC="    image: $BRIDGE_IMAGE"
+else
+  [ "$BRIDGE_IMAGE" = build ] || say "The bridge image $BRIDGE_IMAGE could not be pulled: building it here"
+  VERSION=$( (cd "$BUILD_CONTEXT" && git rev-parse --short=7 HEAD) 2>/dev/null || echo unknown)
+  BRIDGE_SRC="    build:
+      context: $BUILD_CONTEXT
+      dockerfile: $BUILD_FILE
+      args: { VERSION: \"$VERSION\" }"
 fi
 
 # --- The answers (kept in .env) -------------------------------------------------------------------
@@ -249,9 +267,7 @@ services:
       AUTO_RESTART_TIME: "11:59 PM"
       TZ: \${TZ}
   bridge:
-    build:
-      context: $BUILD_CONTEXT
-      dockerfile: $BUILD_FILE
+$BRIDGE_SRC
     restart: always
     depends_on: [ib-gateway]
     environment:
@@ -269,9 +285,7 @@ services:
   restarter:
     # Restarts IB Gateway when the bridge finds its API hung (tools/ibkr/restarter.py). The only
     # container with Docker's socket: no port, no secrets, and it does nothing but that one restart.
-    build:
-      context: $BUILD_CONTEXT
-      dockerfile: $BUILD_FILE
+$BRIDGE_SRC
     restart: always
     command: ["python", "tools/ibkr/restarter.py"]
     volumes:

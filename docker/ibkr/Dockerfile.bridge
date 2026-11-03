@@ -2,5 +2,8 @@ FROM python:3.12-slim
 RUN pip install --no-cache-dir ib_async tzdata
 WORKDIR /app
 COPY tools/ibkr/ tools/ibkr/
+# The commit it was built from: the monitor checks the NAS runs the latest.
+ARG VERSION=unknown
+ENV BRIDGE_VERSION=$VERSION
 EXPOSE 8765
 CMD ["python", "tools/ibkr/bridge.py"]

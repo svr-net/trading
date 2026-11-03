@@ -6,7 +6,7 @@ name: Bridge monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7,37 7-16 * * 1-5'
+    - cron: '7,37 7-17 * * 1-5'   # UTC: the UK and EU sessions, their closes and reports
 permissions:
   contents: read
 jobs:
@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the history: is the NAS's bridge the latest?
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -22,4 +24,9 @@ jobs:
         env:
           BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
           BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
-        run: node tools/ibkr/monitor.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+        # pipefail: a failure the monitor finds turns the run red (and GitHub emails); without it tee's
+        # success hid every one (3 Nov: the EU close failed, every run green).
+        shell: bash
+        run: |
+          set -o pipefail
+          LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr docker/ibkr/Dockerfile.bridge) node tools/ibkr/monitor.mjs | tee -a "$GITHUB_STEP_SUMMARY"

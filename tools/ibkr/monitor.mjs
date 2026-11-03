@@ -10,11 +10,31 @@ const get = async (path, keyed) => {
   const r = await fetch(base + path, { headers: { Origin: 'https://svr-net.github.io', ...(keyed ? { 'X-Bridge-Key': key } : {}) }, signal: AbortSignal.timeout(60000) });
   return { code: r.status, body: await r.json().catch(() => ({})) };
 };
+import { execFileSync } from 'node:child_process';
+
 let failed = false;
+const problems = [];
+// A failed action counts as new for 35 minutes (a little more than the runs' spacing), so one failure
+// turns one run red (one email from GitHub), not every run for the rest of the day.
+const OFFSET = { UTC: 0, GMT: 0, BST: 1, CET: 1, CEST: 2, EST: -5, EDT: -4, AEST: 10, AEDT: 11, SGT: 8 };
+const age = (when) => {
+  const m = /^(\d{4}-\d\d-\d\d) (\d\d):(\d\d) (\w+)$/.exec(when || '');
+  if (!m || !(m[4] in OFFSET)) return 0;
+  const t = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00Z`) - OFFSET[m[4]] * 3600e3;
+  return (Date.now() - t) / 60e3;
+};
 try {
   const s = await get('/status', false);
   const b = s.body;
   console.log(`bridge: HTTP ${s.code}; IB Gateway API ${b.gateway ? 'up' : 'DOWN'} (port ${b.port}); key set: ${b.keyed}`);
+  // Is the NAS running the latest bridge? LATEST: the last commit that changed it (the workflow's).
+  const v = String(b.version || 'unknown'), latest = process.env.LATEST || '';
+  let current = null;
+  if (/^[0-9a-f]{7,40}$/.test(v) && /^[0-9a-f]{7,40}$/.test(latest)) {
+    try { execFileSync('git', ['merge-base', '--is-ancestor', latest, v], { stdio: 'ignore' }); current = true; } catch { current = false; }
+  }
+  console.log(`bridge version ${v}${b.started ? `, running since ${b.started}` : ''}: ${current === true ? 'the latest' : current === false ? `OUT OF DATE (the latest is ${latest}): update the NAS` : 'not known'}`);
+  if (current === false) problems.push('the NAS runs an old bridge');
   for (const [m, a] of Object.entries(b.auto || {}))
   {
     console.log(`schedule ${m}: place ${a.place}, auction ${a.auction}, close ${a.close}, report ${a.report} (${a.zone})`);
@@ -23,14 +43,14 @@ try {
   const g = b.gatewayApi;
   if (g) {
     console.log(`IB Gateway API watchdog: ${g.ok === null ? 'not checked yet' : g.ok ? 'answers' : 'DOES NOT ANSWER'} (checked ${g.checked}); restarts ${g.restarts}${g.restarted ? `, last ${g.restarted}: ${g.note}` : ''}`);
-    if (g.ok === false) failed = true;
+    if (g.ok === false) problems.push('IB Gateway API does not answer');
   }
   console.log('latest automatic actions:');
   for (const x of b.last || []) {
     console.log(`  ${x.when} ${x.market} ${x.action}: ${x.ok ? 'ok' : 'FAILED'} ${String(x.summary || '').replace(/\d+\.\d{2,}/g, '#')}`);
-    if (!x.ok) failed = true;
+    if (!x.ok && age(x.when) < 35) problems.push(`${x.market} ${x.action} failed at ${x.when}`);
   }
-  if (!b.gateway) failed = true;
+  if (!b.gateway) problems.push('IB Gateway port closed');
 } catch (e) {
   console.log(`bridge not reachable: ${e.message}`);
   process.exit(1);
@@ -54,4 +74,5 @@ if (key) {
 } else {
   console.log('(BRIDGE_KEY secret not set: diagnostics skipped)');
 }
-process.exit(failed ? 2 : 0);
+if (problems.length) console.log(`\nNEEDS ATTENTION: ${problems.join('; ')}`);
+process.exit(failed || problems.length ? 2 : 0);
