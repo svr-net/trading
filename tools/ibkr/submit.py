@@ -153,6 +153,7 @@ def main():
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
+    a.add_argument('--ping', action='store_true', help="exit 0 when IB Gateway's API answers within 15 seconds, else 1")
     args = a.parse_args()
     # Each market its own API clients (IBKR allows one connection per client id): the orders' client
     # (place, buy-back watch, close, report) and its helpers (+1 auction, +2 bars, +3 diag, +4 paths)
@@ -161,6 +162,8 @@ def main():
     args.client_id += 10 * ['UK', 'EU', 'US', 'APAC'].index(args.market)
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
+    if args.ping:
+        return ping(args)
     if args.diag:
         return diag(args)
     if args.auction:
@@ -431,9 +434,11 @@ def paths(args):
         if qualified(ib, contract):
             tickers[c['ticker']] = ib.reqMktData(contract, '', False, False)
     rows = 0
-    with open(args.out, 'w', newline='') as f:
+    fresh = not os.path.exists(args.out) or os.path.getsize(args.out) == 0
+    with open(args.out, 'a', newline='') as f:  # appended: a restarted recording keeps the morning's rows
         w = csv.writer(f)
-        w.writerow(['time', 'ticker', 'last', 'bid', 'ask', 'type'])
+        if fresh:
+            w.writerow(['time', 'ticker', 'last', 'bid', 'ask', 'type'])
         while datetime.now(tz) < opens:
             ib.sleep(max(0.5, min(30.0, (opens - datetime.now(tz)).total_seconds())))
         while datetime.now(tz) < ends:
@@ -555,6 +560,24 @@ def diag(args):
     out['errors'] = errors[-5:]
     ib.disconnect()
     print(json.dumps(out))
+
+
+def ping(args):
+    """The bridge's watchdog: does IB Gateway's API answer? Its own client (9), so it never meets the
+    markets' clients."""
+    from ib_async import IB
+
+    ib = IB()
+    try:
+        ib.connect(args.host, args.port, clientId=9, timeout=15)
+        ok = ib.reqCurrentTime() is not None
+    except Exception as e:  # noqa: BLE001 - any failure means the API does not answer
+        print(f'no answer: {type(e).__name__}')
+        ok = False
+    finally:
+        ib.disconnect()
+    print('API answers' if ok else 'API does not answer')
+    sys.exit(0 if ok else 1)
 
 
 def daily_bars(args):

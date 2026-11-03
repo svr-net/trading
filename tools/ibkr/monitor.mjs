@@ -16,7 +16,15 @@ try {
   const b = s.body;
   console.log(`bridge: HTTP ${s.code}; IB Gateway API ${b.gateway ? 'up' : 'DOWN'} (port ${b.port}); key set: ${b.keyed}`);
   for (const [m, a] of Object.entries(b.auto || {}))
+  {
     console.log(`schedule ${m}: place ${a.place}, auction ${a.auction}, close ${a.close}, report ${a.report} (${a.zone})`);
+    if (a.today) console.log(`  today ${m}: ${Object.entries(a.today).map(([k, v]) => `${k} ${v ? 'done' : '-'}`).join(', ')}; running: ${(a.running || []).join(', ') || 'nothing'}`);
+  }
+  const g = b.gatewayApi;
+  if (g) {
+    console.log(`IB Gateway API watchdog: ${g.ok === null ? 'not checked yet' : g.ok ? 'answers' : 'DOES NOT ANSWER'} (checked ${g.checked}); restarts ${g.restarts}${g.restarted ? `, last ${g.restarted}: ${g.note}` : ''}`);
+    if (g.ok === false) failed = true;
+  }
   console.log('latest automatic actions:');
   for (const x of b.last || []) {
     console.log(`  ${x.when} ${x.market} ${x.action}: ${x.ok ? 'ok' : 'FAILED'} ${String(x.summary || '').replace(/\d+\.\d{2,}/g, '#')}`);
