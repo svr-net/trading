@@ -52,6 +52,17 @@ EXCHANGE = {'PAR': ('SBF', 'EUR'), 'AMS': ('AEB', 'EUR'), 'BRU': ('ENEXT.BE', 'E
             'FRA': ('IBIS', 'EUR'), 'OSL': ('OSE', 'NOK'), 'ASX': ('ASX', 'AUD'), 'SGX': ('SGX', 'SGD')}
 
 
+def qualified(ib, contract):
+    """Whether IBKR knows the share (and the contract now carries its conId). ib_async returns a list
+    with None for an unknown contract, so the list itself is not the answer: an unknown share used
+    later (as a key, or for market data) stopped the whole run (3 Nov: OSL:JAREN)."""
+    try:
+        r = ib.qualifyContracts(contract)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(r) and r[0] is not None and bool(getattr(contract, 'conId', 0))
+
+
 def contract_of(ticker, market):
     from ib_async import Stock
     if ':' in ticker:
@@ -257,7 +268,7 @@ def main():
     for o in book['orders']:
         contract = contract_of(o['ticker'], args.market)
         sym = o['ticker']
-        if not ib.qualifyContracts(contract):
+        if not qualified(ib, contract):
             print(f'  {sym}: not found at IBKR, skipped')
             continue
         if contract.conId in have:
@@ -305,7 +316,7 @@ def main():
             continue
         resent.add(t.contract.conId)
         smart = Stock(t.contract.symbol, 'SMART', t.contract.currency, primaryExchange=t.contract.exchange)
-        if not ib.qualifyContracts(smart):
+        if not qualified(ib, smart):
             continue
         kids = [x.order for x in ib.trades() if x.order.parentId == o2.orderId]
         take = next((k.lmtPrice for k in kids if k.orderType == 'LMT'), None)
@@ -359,7 +370,7 @@ def auction(args):
     tickers = {}
     for c in cands:
         contract = contract_of(c['ticker'], args.market)
-        if ib.qualifyContracts(contract):
+        if qualified(ib, contract):
             tickers[c['ticker']] = ib.reqMktData(contract, '225', False, False)
     rows = {t: {'ticker': t, 'close': c['close'], 'score': c.get('score'), 'samples': []} for t, c in ((c['ticker'], c) for c in cands) if t in tickers}
 
@@ -414,7 +425,7 @@ def paths(args):
     tickers = {}
     for c in cands:
         contract = contract_of(c['ticker'], args.market)
-        if ib.qualifyContracts(contract):
+        if qualified(ib, contract):
             tickers[c['ticker']] = ib.reqMktData(contract, '', False, False)
     rows = 0
     with open(args.out, 'w', newline='') as f:
@@ -481,8 +492,7 @@ def rebuy(args, ref):
             paid = sum(x.execution.shares * x.execution.price for x in buys) / n
             level = float(o.auxPrice)
             back, out = level + p['rebuy'] * (paid - level), paid * (1 + (p.get('rebuyCost') or 0))
-            q = ib.qualifyContracts(c)
-            contract = q[0] if q else c
+            contract = c if qualified(ib, c) else c
             details = ib.reqContractDetails(contract)[0]
             rule = tick_rule(ib, details, contract.exchange)
             spread = math.exp(p.get('spread') or 0.0)  # the share's estimated spread (a factor): the most the buy may pay above its trigger
@@ -528,7 +538,7 @@ def diag(args):
     out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
                serverTime=ib.reqCurrentTime().isoformat())
     contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR'}[args.market], *VENUE[args.market])
-    if ib.qualifyContracts(contract):
+    if qualified(ib, contract):
         ib.reqMarketDataType(1)
         k = ib.reqMktData(contract, '', False, False)
         ib.sleep(4)
@@ -565,7 +575,7 @@ def daily_bars(args):
             start = time.monotonic()
             contract = contract_of(t, args.market)
             bars = []
-            if ib.qualifyContracts(contract):
+            if qualified(ib, contract):
                 try:
                     bars = ib.reqHistoricalData(contract, '', f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
                 except Exception as e:  # noqa: BLE001
