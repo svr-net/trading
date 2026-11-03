@@ -97,6 +97,7 @@ BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's cloc
 AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
+VERSION = os.environ.get('BRIDGE_VERSION', 'unknown')  # the commit it was built from
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -175,6 +176,7 @@ def placed(market, path, dry):
 
 def report(market):
     """Today's fills from IBKR into the history; returns (ok, summary)."""
+    free_client(market)
     code, out = run_submit(['--market', market, '--report'])
     line = next((l for l in reversed(out.splitlines()) if l.startswith('{')), '')
     if code != 0 or not line:
@@ -330,7 +332,7 @@ def diag():
     """The checks behind GET /diag, each {check, ok (true, false, or null: a warning), detail}."""
     out = []
     add = lambda check, ok, detail: out.append({'check': check, 'ok': ok, 'detail': detail})  # noqa: E731
-    add('Bridge', True, f'running since {STARTED:%Y-%m-%d %H:%M %Z}; automatic: {",".join(AUTO) or "off"}; capital {CAPITAL:g} a trade')
+    add('Bridge', True, f'version {VERSION}, running since {STARTED:%Y-%m-%d %H:%M %Z}; automatic: {",".join(AUTO) or "off"}; capital {CAPITAL:g} a trade')
     # The token: read the store, and whether it may write (the auctions and bars go there).
     if not TOKEN:
         add('EOD_TOKEN', False, 'not set in .env')
@@ -374,7 +376,7 @@ def diag():
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     for m in AUTO:
-        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('place', 'paths', 'auction', 'close', 'report'))
+        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report'))
             + f"; running: {', '.join(sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])) or 'nothing'}")
     g = GATEWAY
     add('IB Gateway watchdog', g['ok'], ('not checked yet' if g['ok'] is None else 'API answers' if g['ok'] else 'API does not answer')
@@ -517,18 +519,94 @@ def may_try(market, action, every_min, most=None):
     return last is None or time.monotonic() - last >= 60 * every_min
 
 
+def free_client(market):
+    """Ends any of this container's submit.py runs still holding the market's orders' client (a
+    buy-back watch past its time, or one started by hand) before the close or the report needs it:
+    IBKR allows one connection per client id, and a held one made the close fail (3 Nov, EU)."""
+    import signal
+    ended = []
+    for pid in (x for x in os.listdir('/proc') if x.isdigit() and int(x) != os.getpid()):
+        try:
+            argv = open(f'/proc/{pid}/cmdline', 'rb').read().split(b'\0')
+        except OSError:
+            continue
+        a = [x.decode(errors='replace') for x in argv if x]
+        if not any(x.endswith('submit.py') for x in a) or market not in a or '--rebuy' not in a:
+            continue
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+            ended.append(int(pid))
+        except OSError:
+            pass
+    for _ in range(10):
+        if not any(os.path.exists(f'/proc/{p}') for p in ended):
+            break
+        time.sleep(1)
+    for p in ended:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
+    return len(ended)
+
+
 def close_market(market):
+    n = free_client(market)
     code, out = run_submit(['--market', market, '--close'], timeout=600)
+    last = out.splitlines()[-1] if out else ''
+    return code == 0, (f'ended {n} buy-back watch still connected; ' if n else '') + last
+
+
+def model_tickers(market, days=10):
+    """The shares the model placed in this market lately (the bridge's history): the only holdings
+    the leftovers step may sell."""
+    since = (date.today() - timedelta(days=days)).isoformat()
+    out = set()
+    try:
+        for line in open(os.path.join(HISTORY, 'history.jsonl')):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('kind') == 'placed' and r.get('market') == market and (r.get('date') or '') >= since:
+                out |= {o['ticker'] for o in r.get('orders', []) if o.get('ticker')}
+    except OSError:
+        pass
+    return sorted(out)
+
+
+def sell_leftovers(market):
+    """Before the day's placing: the model's shares still held from an earlier day sold at the open."""
+    tickers = model_tickers(market)
+    if not tickers:
+        return True, 'none placed lately'
+    code, out = run_submit(['--market', market, '--leftovers', '--tickers', ','.join(tickers)], timeout=600)
     return code == 0, out.splitlines()[-1] if out else ''
+
+
+def flat_check(market):
+    """After the close: is any of the model's shares still held? Held is a failure (the monitor turns
+    red and GitHub emails); the next morning's leftovers step sells it."""
+    tickers = model_tickers(market)
+    if not tickers:
+        mark_done(market, 'flat')
+        return True, 'none placed lately'
+    code, out = run_submit(['--market', market, '--leftovers', '--check', '--tickers', ','.join(tickers)], timeout=300)
+    last = out.splitlines()[-1] if out else ''
+    if code in (0, 1) and ('held' in last):
+        mark_done(market, 'flat')
+    return code == 0, last + (': sold at the next open' if code == 1 else '')
 
 
 def scheduler():
     """Each automatic market's day as steps that should be done by now, checked every 30 seconds and
     done when missing, so a restart, a redeploy or a failed step is caught up rather than lost: the
-    orders placed (retried every 5 minutes, at most 4 times, until 15 minutes before the close;
+    model's shares still held from an earlier day sold at the open (from 30 minutes before the
+    placing; the placing waits for it), the orders placed (retried every 5 minutes, at most 4 times, until 15 minutes before the close;
     already placed shares are skipped), the buy-back watch running from then until the close, the
     day's paths recorded, the opening auction recorded (only at its time), the close done (retried
-    every minute for 9 minutes after its time) and the report (retried every 10 minutes). Steps
+    every minute for 9 minutes after its time; a rerun never sells twice), the check 30 minutes after
+    the close that none of the model's shares is still held, and the report (retried every 10 minutes). Steps
     that need IB Gateway wait while it does not answer."""
     os.makedirs(CACHE, exist_ok=True)
     while True:
@@ -541,7 +619,11 @@ def scheduler():
                     continue
                 place, close = TIMES[m]
                 up = GATEWAY['ok'] is not False
-                if up and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
+                if up and at(now, place, -30) <= now < at(now, close, -15) and not is_done(m, 'leftovers') and may_try(m, 'leftovers', 5, 3):
+                    job(m, 'leftovers', sell_leftovers)
+                tried = ATTEMPTS.get((m, 'leftovers', now.date().isoformat()), (0, None))[0] > 0
+                settled = is_done(m, 'leftovers') or (tried and (m, 'leftovers') not in RUNNING)  # the placing waits for it to finish
+                if up and settled and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
                     job(m, 'place', place_and_watch, done_on_ok=False)  # place_and_watch marks it and starts the watch
                 if up and is_done(m, 'place') and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
                         and may_try(m, 'rebuy', 5):
@@ -555,6 +637,8 @@ def scheduler():
                     job(m, 'auction', record_auction)
                 if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
                     job(m, 'close', close_market)
+                if up and at(now, close, 30) <= now < at(now, close, 240) and not is_done(m, 'flat') and may_try(m, 'flat', 10):
+                    job(m, 'flat', flat_check, done_on_ok=False)
                 if at(now, REPORT[m]) <= now < at(now, REPORT[m], 180) and not is_done(m, 'report') and may_try(m, 'report', 10):
                     job(m, 'report', report)
             except Exception as e:  # noqa: BLE001
@@ -643,9 +727,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path == '/status':  # no key needed: tells the page the bridge is there
-            return self.reply(200, {'bridge': True, 'gateway': gateway_up(), 'port': IB_PORT, 'capital': CAPITAL, 'keyed': bool(KEY),
+            return self.reply(200, {'bridge': True, 'version': VERSION, 'started': STARTED.strftime('%Y-%m-%d %H:%M %Z'), 'gateway': gateway_up(), 'port': IB_PORT, 'capital': CAPITAL, 'keyed': bool(KEY),
                                     'auto': {m: {'place': TIMES[m][0], 'auction': AUCTION.get(m), 'close': TIMES[m][1], 'report': REPORT[m], 'zone': ZONE[m],
-                                                 'today': {a: is_done(m, a) for a in ('place', 'paths', 'auction', 'close', 'report')},
+                                                 'today': {a: is_done(m, a) for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report')},
                                                  'running': sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])} for m in AUTO},
                                     'gatewayApi': GATEWAY,
                                     'last': [{'when': w, 'market': mk, 'action': a, 'ok': ok, 'summary': sm} for w, mk, a, ok, sm in LAST]})

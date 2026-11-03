@@ -134,6 +134,129 @@ def round_to(x, tick, how):
     return round(n * tick, 10)
 
 
+DEAD = ('Cancelled', 'ApiCancelled', 'Inactive')
+
+
+def connect(ib, args, client_id, tries=3):
+    """Connects, retrying: a client id still held (a process ending, a gateway restarting) is often
+    free again within a minute."""
+    for k in range(tries):
+        try:
+            ib.connect(args.host, args.port, clientId=client_id, timeout=20)
+            return
+        except Exception as e:  # noqa: BLE001
+            if k == tries - 1:
+                raise
+            print(f'  connecting as client {client_id}: {type(e).__name__}; again in 20 seconds')
+            import time
+            time.sleep(20)
+
+
+def exit_contract(ib, contract):
+    """The share's contract for a sale: its conId qualified, routed to its home exchange (the
+    auctions), with its price increments."""
+    from ib_async import Contract
+    c = Contract(conId=contract.conId)
+    if not qualified(ib, c):
+        return None, None
+    c.exchange = c.primaryExchange or c.exchange
+    details = ib.reqContractDetails(c)[0]
+    return c, (tick_rule(ib, details, c.exchange), details.minTick)
+
+
+def floor_price(ib, contract, ticks):
+    """The lowest price a forced sale accepts: the lowest low of the share's last 20 days (its own
+    recent range, nothing fixed), on its price increments; None without IBKR's bars."""
+    try:
+        bars = ib.reqHistoricalData(contract, '', '1 M', '1 day', 'TRADES', useRTH=True, timeout=20) or []
+    except Exception:  # noqa: BLE001
+        bars = []
+    lows = [b.low for b in bars[-20:] if b.low and b.low > 0]
+    if not lows:
+        return None
+    lo = min(lows)
+    return round_to(lo, tick_at(ticks[0], ticks[1], lo), 'down')
+
+
+def sell_out(ib, contract, qty, ref, errors, at_close):
+    """Sells qty: at the close (MOC) or at the next price (market; at the open when placed before
+    it), and confirms IBKR took the order. Refused (a share too thin for a market order, 202; an
+    order type the exchange does not take), it sells with a limit at the share's 20-day low instead,
+    which trades at the auction's or the market's price above it. Returns (ok, what happened)."""
+    from ib_async import MarketOrder, LimitOrder
+    c, ticks = exit_contract(ib, contract)
+    if c is None:
+        return False, f'{contract.symbol}: not found at IBKR, NOT SOLD'
+    o = MarketOrder('SELL', qty, orderRef=ref, tif='DAY')
+    if at_close:
+        o.orderType = 'MOC'
+    t = ib.placeOrder(c, o)
+    for _ in range(16):
+        ib.sleep(0.5)
+        if t.orderStatus.status in DEAD or t.orderStatus.status in ('Submitted', 'PreSubmitted', 'Filled'):
+            break
+    kind = 'at the close' if at_close else 'at market'
+    if t.orderStatus.status not in DEAD:
+        return True, f'{c.symbol}: sell {qty:g} {kind} ({t.orderStatus.status})'
+    why = '; '.join(errors.get(o.orderId, [])) or t.orderStatus.status
+    lim = floor_price(ib, c, ticks)
+    if lim is None:
+        return False, f'{c.symbol}: sell {kind} refused ({why}); no price for a limit: NOT SOLD'
+    t2 = ib.placeOrder(c, LimitOrder('SELL', qty, lim, orderRef=ref, tif='DAY'))
+    for _ in range(16):
+        ib.sleep(0.5)
+        if t2.orderStatus.status in DEAD or t2.orderStatus.status in ('Submitted', 'PreSubmitted', 'Filled'):
+            break
+    if t2.orderStatus.status in DEAD:
+        return False, f"{c.symbol}: sell {kind} refused ({why}); limit {lim} refused ({'; '.join(errors.get(t2.order.orderId, [])) or t2.orderStatus.status}): NOT SOLD"
+    return True, f'{c.symbol}: sell {kind} refused ({why}); sell {qty:g} limit {lim} instead ({t2.orderStatus.status})'
+
+
+def leftovers(args):
+    """The model's shares still held from an earlier day (--tickers: the shares it placed lately, from
+    the bridge's history; never any other holding): with --check, listed (exit 1 when there are any);
+    otherwise sold at the next price (before the open: in the opening auction), unless a sale is
+    already waiting. Its own client (+5), so a busy orders' client never blocks it."""
+    from ib_async import IB
+
+    mine = {ib_symbol(t.split(':')[-1], args.market) for t in (args.tickers or '').split(',') if t}
+    cur = {'UK': {'GBP'}, 'US': {'USD'}, 'EU': {'EUR', 'NOK'}, 'APAC': {'AUD', 'SGD'}}[args.market]
+    ib = IB()
+    errors = {}
+    ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
+    connect(ib, args, args.client_id + 5)
+    held = [p for p in ib.reqPositions() if p.position > 0 and p.contract.symbol in mine and p.contract.currency in cur]
+    if args.check:
+        for p in held:
+            print(f'  {p.contract.symbol}: {p.position:g} shares still held')
+        print(f'{args.market}: {len(held)} of the model\'s shares still held' if held else f'{args.market}: none of the model\'s shares held')
+        ib.disconnect()
+        sys.exit(1 if held else 0)
+    waiting = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.action == 'SELL' and t.orderStatus.status not in DEAD}
+    # Shares bought today by today's orders are the day's trades, not leftovers: never sold here.
+    today = f'ofm-{args.market}-{date.today().isoformat()}'
+    bought = {}
+    for f in ib.reqExecutions():
+        if f.execution.orderRef.startswith(today) and f.execution.side == 'BOT':
+            bought[f.contract.conId] = bought.get(f.contract.conId, 0) + f.execution.shares
+    held = [(p, p.position - bought.get(p.contract.conId, 0)) for p in held]
+    held = [(p, q) for p, q in held if q > 0]
+    ok_all, lines = True, []
+    for p, qty in held:
+        if p.contract.conId in waiting:
+            lines.append(f'{p.contract.symbol}: a sale is already waiting')
+            continue
+        ok, line = sell_out(ib, p.contract, qty, f'ofm-{args.market}-leftover-{date.today().isoformat()}', errors, at_close=False)
+        ok_all &= ok
+        lines.append(line)
+    ib.sleep(2)
+    ib.disconnect()
+    for line in lines:
+        print('  ' + line)
+    print(f'{args.market} leftovers: {len(held)} held from earlier days' + (f": {'; '.join(lines)}" if lines else ''))
+    sys.exit(0 if ok_all else 1)
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC'], required=True)
@@ -153,6 +276,9 @@ def main():
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
+    a.add_argument('--leftovers', action='store_true', help="sell the model's shares still held from earlier days (--tickers)")
+    a.add_argument('--tickers', help='with --leftovers: the shares the model placed lately, comma separated')
+    a.add_argument('--check', action='store_true', help='with --leftovers: only list them; exit 1 when there are any')
     a.add_argument('--ping', action='store_true', help="exit 0 when IB Gateway's API answers within 15 seconds, else 1")
     args = a.parse_args()
     # Each market its own API clients (IBKR allows one connection per client id): the orders' client
@@ -164,6 +290,8 @@ def main():
 
     if args.ping:
         return ping(args)
+    if args.leftovers:
+        return leftovers(args)
     if args.diag:
         return diag(args)
     if args.auction:
@@ -191,7 +319,7 @@ def main():
     ib = IB()
     errors = {}  # IBKR's errors by order id (a rejection arrives after placeOrder returns)
     ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
-    ib.connect(args.host, args.port, clientId=args.client_id)
+    connect(ib, args, args.client_id)
 
     if args.report:
         # Today's fills of this model's orders, a share at a time: bought, sold, average prices, the
@@ -199,7 +327,7 @@ def main():
         # commissions), and the commissions.
         per = {}
         for f in ib.fills():
-            if f.execution.orderRef != ref:
+            if not f.execution.orderRef.startswith(ref):  # the day's orders and the close's sales (ref-close)
                 continue
             e = per.setdefault(f.contract.symbol, {'ticker': f.contract.symbol, 'currency': f.contract.currency,
                                                     'bought': 0.0, 'buy_value': 0.0, 'sold': 0.0, 'sell_value': 0.0, 'pnl': 0.0, 'commission': 0.0})
@@ -223,25 +351,43 @@ def main():
         return
 
     if args.close:
-        # Cancel this model's open orders of today, then sell each position they opened at the close.
+        # Cancel this model's open orders of today (its stops and take-profits too), confirm they are
+        # gone, then sell each position they opened at the close and confirm IBKR took each sale; a
+        # share whose orders could not be cancelled is not sold (its stop could sell it a second time).
         mine = [t for t in ib.openTrades() if t.order.orderRef == ref]
         for t in mine:
             ib.cancelOrder(t.order)
+        for _ in range(20):
+            ib.sleep(0.5)
+            if all(t.orderStatus.status in DEAD + ('Filled',) for t in mine):
+                break
+        live = [t for t in ib.reqAllOpenOrders() if t.orderStatus.status not in DEAD + ('Filled', 'PendingCancel')]
+        stuck = {t.contract.conId: t.contract.symbol for t in live if t.order.orderRef == ref}
+        # A sale an earlier run of the close placed (its own reference): a rerun never sells twice.
+        selling = {t.contract.conId for t in live if t.order.orderRef == ref + '-close' and t.order.action == 'SELL'}
         filled = {}
         for f in ib.fills():
             if f.execution.orderRef == ref and f.execution.side == 'BOT':
                 filled[f.contract.conId] = (f.contract, filled.get(f.contract.conId, (None, 0))[1] + f.execution.shares)
-        held = {p.contract.conId: p.position for p in ib.positions()}
+        held = {p.contract.conId: p.position for p in ib.reqPositions()}
+        ok_all, lines = True, []
+        for con, sym in stuck.items():
+            ok_all = False
+            lines.append(f'{sym}: an order of today could not be cancelled: NOT SOLD')
         for con, (contract, bought) in filled.items():
             qty = min(bought, held.get(con, 0))
-            if qty > 0:
-                o = MarketOrder('SELL', qty, orderRef=ref, tif='DAY')
-                o.orderType = 'MOC'
-                ib.placeOrder(contract, o)
-                print(f'  {contract.symbol}: sell {qty} at the close')
+            if qty > 0 and con in selling:
+                lines.append(f'{contract.symbol}: its sale at the close is already placed')
+            elif qty > 0 and con not in stuck:
+                ok, line = sell_out(ib, contract, qty, ref + '-close', errors, at_close=True)
+                ok_all &= ok
+                lines.append(line)
         ib.sleep(2)
         ib.disconnect()
-        return
+        for line in lines:
+            print('  ' + line)
+        print(f"{args.market} close: " + ('; '.join(lines) if lines else 'nothing held'))
+        sys.exit(0 if ok_all else 1)
 
     # A rerun the same day places only what is not there yet: a share with an order or a fill of
     # today's reference (from any client) is skipped, so an interrupted placing is never doubled.

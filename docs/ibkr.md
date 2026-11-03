@@ -147,6 +147,25 @@ API has been silent for 3 minutes, the `restarter` container restarts IB Gateway
 the only container given Docker's socket: it publishes no port, holds no secrets and can do nothing
 but restart IB Gateway. `/status` and the diagnostics show today's steps and the watchdog.
 
+Nothing is held overnight, and that is checked rather than assumed:
+- **The close confirms every sale.** It cancels the day's stops and take-profits first; a share whose
+  orders could not be cancelled is not sold (its stop could sell it twice) and is reported. A sale at
+  the close that IBKR refuses (a share too thin for a market order, 202, or an order type the
+  exchange does not take) is replaced by a limit sale at the share's lowest price of the last 20 days,
+  on IBKR's own price steps. A rerun of the close never sells a share twice. Before the close the
+  bridge ends any of its own processes still holding the market's IBKR connection.
+- **30 minutes after the close** the bridge checks that none of the model's shares is still held;
+  if one is, the step fails (the monitor turns red and GitHub emails you).
+- **Before each day's placing** the model's shares still held from an earlier day are sold at the
+  open, unless a sale is already waiting. Only shares the model's own orders placed in the last 10
+  days count: anything else in the account is never touched.
+
+The bridge's image is built by GitHub on every change (`ghcr.io/svr-net/trading-bridge`, stamped
+with its commit), so updating the NAS is
+`cd /volume1/DEV/trading/docker/ibkr/nas && sudo docker compose pull && sudo docker compose up -d`.
+The monitor shows the version the NAS runs and fails when it is not the latest. If the image cannot
+be pulled, `deploy-nas.sh` builds it on the NAS as before.
+
 ## 2f. History of orders and fills
 
 The bridge keeps a history on the NAS (`docker/ibkr/nas/history/history.jsonl`, kept across updates):
