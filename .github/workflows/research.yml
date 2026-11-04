@@ -1,0 +1,92 @@
+# Research: the model's walk-forward backtest in several variants side by side, on the private store's
+# bars (svr-net/eod), for one market. Results only (the backtest's summary lines): no prices, no orders,
+# nothing published or pushed. Each variant is a set of research switches (X_ environment variables
+# of apps/ofm_research) and/or a filter on the share list.
+name: Research (model variants)
+
+on:
+  workflow_dispatch:
+    inputs:
+      market: { description: 'Market', type: choice, options: [EU, UK, US, APAC], default: EU }
+      variants: { description: 'Variants (comma separated; see the list in the workflow)', default: 'base,npick5,npick20,ridge,par,ams,no-osl,liquid' }
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.v.outputs.list }}
+    steps:
+      - id: v
+        run: echo "list=$(echo '${{ inputs.variants }}' | tr -d ' ' | jq -Rc 'split(",")')" >> "$GITHUB_OUTPUT"
+  run:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+    env:
+      MARKET: ${{ inputs.market }}
+      EXCHANGES: ${{ inputs.market == 'US' && 'NYSE,NASDAQ' || inputs.market == 'APAC' && 'ASX,SGX' || inputs.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA,OSL' || 'LSE' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check out the EOD store (svr-net/eod)
+        uses: actions/checkout@v4
+        with:
+          repository: svr-net/eod
+          token: ${{ secrets.EOD_TOKEN }}
+          path: data/eoddata
+          fetch-depth: 1
+      - name: The share bars (as the daily run builds them)
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: |
+          set -o pipefail
+          mkdir -p data
+          echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+            case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
+            node tools/eoddata/fetch.mjs --exchange "$EX" --universe "$([ "$MARKET" = US ] && echo 2000 || ([ "$MARKET" = EU ] && echo 300 || echo 500))" --years 9 --currency "$CUR" --out "data/$EX.csv" > /dev/null
+            case "$MARKET" in EU|APAC) tail -n +2 "data/$EX.csv" | awk -F, -v OFS=, -v ex="$EX" '{$2=ex":"$2; print}' >> data/stocks.csv;; *) tail -n +2 "data/$EX.csv" >> data/stocks.csv;; esac
+          done
+      - name: The variant's share list
+        run: |
+          V='${{ matrix.variant }}'
+          keep() { { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, "$1"; } > data/v.csv && mv data/v.csv data/stocks.csv; }
+          case "$V" in
+            par) keep '$2 ~ /^PAR:/' ;;
+            ams) keep '$2 ~ /^AMS:/' ;;
+            no-osl) keep '$2 !~ /^OSL:/' ;;
+            liquid)  # each exchange's 100 most traded shares (by their median daily traded value)
+              tail -n +2 data/stocks.csv | awk -F, '{split($2,a,":"); v[$2]+=$6*$7; n[$2]++; ex[$2]=a[1]} END {for (t in v) print ex[t], v[t]/n[t], t}' \
+                | sort -k1,1 -k2,2gr | awk '{c[$1]++; if (c[$1] <= 100) print $3}' > data/keep.txt
+              { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' data/keep.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;;
+          esac
+          echo "shares: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build the model
+        run: |
+          sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
+          cmake -S . -B build -G Ninja
+          cmake --build build --target ofm_research
+      - name: The backtest (results only)
+        run: |
+          set -o pipefail
+          V='${{ matrix.variant }}'
+          case "$V" in
+            npick5) export X_NPICK=5 ;;
+            npick20) export X_NPICK=20 ;;
+            ridge) export X_LEARN_RIDGE=1 ;;
+          esac
+          STAMP=(--exit safety)
+          case "$MARKET" in EU|APAC) STAMP+=(--venues tools/venues.txt);; esac
+          if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
+          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report.txt
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|candidate trades|calibration|filled" report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
