@@ -38,7 +38,9 @@ jobs:
         market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA,OSL' || 'LSE' }}
+      # EU without Amsterdam (no edge on its own in the 8-year backtest, Sharpe 0.47, yet 6 of 10 orders
+      # on 3 Nov) and Oslo (no trading permission at IBKR): research of 4 Nov, Sharpe 2.43 -> 2.62 with the tilt.
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,BRU,LIS,MSE,FRA' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -155,6 +157,11 @@ jobs:
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
           # to GBP 6,000), USD 5,000 in the US, EUR 5,000 in Europe, 1,000 in Asia-Pacific.
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac  # EU's exchanges: their own amounts (tools/venues.txt), the same
+          # Per market (research of 4 Nov, 8-year walk-forward backtests): the UK 15 trades a day (9% more
+          # profit at GBP 5,000 an order, Sharpe 5.42 -> 5.55); the EU the limit's depth tilted by the
+          # signal's rank, learnt on or off each day (the strongest signals a step shallower, so they miss
+          # fewer buys; with the exchanges above 14% more profit, Sharpe 2.43 -> 2.62).
+          case "$MARKET" in UK) export X_NPICK=15;; EU) export X_TILT=1;; esac
           X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:

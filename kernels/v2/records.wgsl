@@ -24,10 +24,23 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var y : f32 = 0.0;
     var n : f32 = 0.0;
     for (var j = 0u; j < P.NT; j = j + 1u) {
+      if (cand[k * P.NT + j] >= 0.0) { n = n + 1.0; }
+    }
+    // The tilt (P.u1 > 0: the codes per ranking, P.u2 the exit settings per entry): an odd code moves
+    // the j-th of the day's n trades floor(2j/(n-1) - 1/2) limit depths, the strongest shallower.
+    let tilt : bool = P.u1 > 0u && (k % P.u1) % 2u == 1u && n > 1.0;
+    var j2 : f32 = 0.0;
+    for (var j = 0u; j < P.NT; j = j + 1u) {
       let s : f32 = cand[k * P.NT + j];
       if (s < 0.0) { continue; }
-      n = n + 1.0;
-      y = y + ret[u32(s) * P.u0 + li];
+      var lj : u32 = li;
+      if (tilt) {
+        let nE : i32 = i32(P.u0 / P.u2);
+        let e : i32 = i32(li / P.u2) + i32(floor(2.0 * j2 / (n - 1.0) - 0.5));
+        lj = u32(min(max(e, 0), nE - 1)) * P.u2 + li % P.u2;
+      }
+      j2 = j2 + 1.0;
+      y = y + ret[u32(s) * P.u0 + lj];
     }
     if (n > 0.0) { y = y / f32(P.NT); }  // a share each of NT: a ranking's missing trades stay in cash
     s1[g] = s1[g] + y;
