@@ -254,7 +254,7 @@ function brokerToday() {
       const counted = r.bought || r.held;
       const qty = r.bought || r.held;
       const trade = counted
-        ? `${qty} at ${px(r.buy)}\n${r.held ? (r.price != null ? `now ${px(r.price)}` : 'held') : `sold at ${px(r.sell)}`}`
+        ? `${qty}${r.ordered && r.bought && r.bought < r.ordered ? ` of ${r.ordered}` : ''} at ${px(r.buy)}\n${r.held ? (r.price != null ? `now ${px(r.price)}` : 'held') : `sold at ${px(r.sell)}`}`
         : r.limit != null ? `buy at ${px(r.limit)}` : '';
       const tone = /refused|earlier/.test(r.state) ? 'neg' : /held/.test(r.state) ? 'warn' : '';
       return [[`${r.ticker}\n${r.state}`, `share ${tone}`], [trade, 'num'],

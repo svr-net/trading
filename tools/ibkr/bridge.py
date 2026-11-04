@@ -750,7 +750,7 @@ class Handler(BaseHTTPRequestHandler):
             hit = TRADES.get(m)
             if hit and time.monotonic() - hit[0] < 30:
                 return self.reply(200, hit[1])
-            code, out = run_submit(['--market', m, '--state', '--tickers', ','.join(model_tickers(m))], timeout=90)
+            code, out = run_submit(['--market', m, '--state', '--capital', str(CAPITAL), '--tickers', ','.join(model_tickers(m))], timeout=90)
             line = next((x for x in reversed(out.splitlines()) if x.startswith('{')), '')
             if code != 0 or not line:
                 return self.reply(502, {'error': (out.splitlines() or ['no answer from IBKR'])[-1]})
