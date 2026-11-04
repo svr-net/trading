@@ -724,6 +724,49 @@ int main(int argc, char** argv) {
       }
       return falls[i].size() >= 20;
     };
+    // The limit's unit (the scale its depth d is measured in), as the orders set it at the close t:
+    // the share's daily sigma; X_DIPSCALE (research): the share's own mean fall from the previous
+    // close to the day's low over its last 100 days (at least 20, else sigma), so a limit sits where
+    // its own dips reach; X_REGIME (research): times the market's range of the last 5 days over its
+    // median of the last 250 (each day the shares' median high-to-low range), deeper in turbulence.
+    const bool dipOwn = std::getenv("X_DIPSCALE") != nullptr, dipRegime = std::getenv("X_REGIME") != nullptr;
+    std::vector<double> mktRange(T, kNaN), regime(T, 1.0);
+    if (dipRegime) {
+      std::vector<double> r;
+      for (std::size_t t = 0; t < T; ++t) {
+        r.clear();
+        for (std::size_t i = 0; i < N; ++i) {
+          const double h = m.high(t, i), l = m.low(t, i);
+          if (std::isfinite(h) && std::isfinite(l) && h > 0 && l > 0 && h >= l) r.push_back(std::log(h / l));
+        }
+        if (r.size() >= 10) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); mktRange[t] = r[r.size() / 2]; }
+      }
+      for (std::size_t t = 0; t < T; ++t) {
+        double sm = 0; int n = 0;
+        for (std::size_t u = t >= 4 ? t - 4 : 0; u <= t; ++u) if (std::isfinite(mktRange[u])) sm += mktRange[u], ++n;
+        r.clear();
+        for (std::size_t u = t >= 249 ? t - 249 : 0; u <= t; ++u) if (std::isfinite(mktRange[u])) r.push_back(mktRange[u]);
+        if (n > 0 && r.size() >= 60) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); if (r[r.size() / 2] > 0) regime[t] = (sm / n) / r[r.size() / 2]; }
+      }
+    }
+    std::vector<double> dipMemo(N, 0.0);
+    std::vector<std::size_t> dipDay(N, ~std::size_t(0));
+    const auto dipUnit = [&](std::size_t t, std::size_t i) {
+      const double sig = std::exp(ft[(t * N + i) * Km + 20]);
+      double u = sig;
+      if (dipOwn) {
+        if (dipDay[i] != t) {
+          double sm = 0; int n = 0;
+          for (std::size_t v = t >= 99 ? t - 99 : 1; v <= t && v >= 1; ++v) {
+            const double pc = m.close(v - 1, i), l = m.low(v, i);
+            if (std::isfinite(pc) && std::isfinite(l) && pc > 0 && l > 0) sm += std::max(0.0, std::log(pc / l)), ++n;
+          }
+          dipDay[i] = t, dipMemo[i] = n >= 20 && sm > 0 ? sm / n : sig;
+        }
+        u = dipMemo[i];
+      }
+      return u * regime[t];
+    };
     // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
     // the close t, known when the orders are made), the take-profit that would have paid the most on
     // average: each day sold at it once the high cleared it by a half-spread, else at the close (on
@@ -786,7 +829,7 @@ int main(int argc, char** argv) {
       Trade r{};
       const double pc = m.close(t, i), sig = std::exp(ft[(t * N + i) * Km + 20]);
       const double o = m.open(t + 1, i), hi = m.high(t + 1, i), lo = m.low(t + 1, i), c = m.close(t + 1, i), half = std::exp(0.5 * spread[t * N + i]);
-      const double L = pc * std::exp(-d * sig);
+      const double L = pc * std::exp(-d * dipUnit(t, i));
       r.limit = L / pc - 1;
       bool intraday = false;
       const bool noAuction = fullSpread || quoted[i];
@@ -896,14 +939,14 @@ int main(int argc, char** argv) {
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
               st.insert(st.end(), rbvals.begin(), rbvals.end());  // the buy-back's fractions, then how an unclear day counts
-              st.insert(st.end(), {double(rebuyMode), rebuyWeight});
+              st.insert(st.end(), {double(rebuyMode), rebuyWeight, dipUnit(t, i)});  // last: the limit's unit (levels.wgsl)
             }
             cand[k * nPick + j] = double(slotOf[i]);
           }
         const std::size_t nLe = nE * nLv;  // entry and exit settings per share
         std::vector<double> ret(ns * nLe, 0.0);
         ofm::v2::gen::V2Header<double> H{};
-        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + nRb + 2);
+        H.T = std::uint32_t(nLe), H.N = std::uint32_t(ns), H.K = std::uint32_t(16 + 2 * nP + nRb + 3);
         H.t0 = std::uint32_t(nE), H.u0 = std::uint32_t(nP), H.u1 = std::uint32_t(nA), H.NT = std::uint32_t(nRb), H.u2 = closeOnly ? 1u : safetyOnly ? 2u : 0u;
         ofm::v2::gen::Levels<double> kl;
         kl.P = H, kl.st = st.data(), kl.dv = dvals.data(), kl.av = avals.data(), kl.ret = ret.data();
@@ -1022,7 +1065,7 @@ int main(int argc, char** argv) {
         const std::size_t i = picks[q].second;
         // The limit from the last close (tilted by the signal's rank when learnt so).
         const double dq = tiltOf(fx[2]) ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), fx[3] + 0.5 * tiltSteps(q, picks.size()))) : fx[3];
-        const double limit = std::exp(-dq * std::exp(ft[(t * N + i) * Km + 20]));
+        const double limit = std::exp(-dq * dipUnit(t, i));
         // The levels from the expected entry: the limit, or the last close when the limit is above it
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);

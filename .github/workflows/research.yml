@@ -72,6 +72,8 @@ jobs:
                 | sort -k1,1 -k2,2gr | awk '{c[$1]++; if (c[$1] <= 100) print $3}' > data/keep.txt
               { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' data/keep.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;;
           esac
+          # Combinable tokens (variant = tokens joined by +): noamsosl, the share list without Amsterdam and Oslo.
+          case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
           echo "shares: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l), days: $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort -u | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Build the model
         run: |
@@ -92,6 +94,16 @@ jobs:
             npick20) export X_NPICK=20 ;;
             ridge) export X_LEARN_RIDGE=1 ;;
           esac
+          # Combinable tokens (variant = tokens joined by +): n<k> k trades a day, tilt, dipscale (the limit in
+          # the share's own dips), regime (deeper when the market's range is wide), dip0, ridge.
+          for tok in $(echo "$V" | tr '+' ' '); do
+            case "$tok" in
+              n[0-9]*) export X_NPICK="${tok#n}" ;;
+              tilt) export X_TILT=1 ;;
+              dipscale) export X_DIPSCALE=1 ;;
+              regime) export X_REGIME=1 ;;
+            esac
+          done
           STAMP=(--exit safety)
           case "$MARKET" in EU|APAC) STAMP+=(--venues tools/venues.txt);; esac
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
