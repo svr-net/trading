@@ -496,6 +496,22 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < nRb; ++q) rbvals[q] = axis(7, double(q));
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
+    // X_DIPNN (research): the dip network. For each of the day's trades (the model's picks) it predicts
+    // the expected net gain per order at each of the lattice's limit depths (the chance the dip is
+    // reached times the gain from there to the exit, after costs: the fills on bad news included), with
+    // the exits as learnt; the order goes at the best depth, or not at all when none is expected to
+    // gain. Inputs, after the literature: the model's features and prediction, the share's volatility,
+    // its own dips and its spread and liquidity (Lo, MacKinlay and Zhang 2002: a limit's fill depends
+    // on its distance and the volatility), the market's range and its last 4 weeks (Nagel 2012: the
+    // returns to liquidity provision rise with market volatility, most in small, illiquid, volatile
+    // shares). Each input standardised by its running mean and spread so far; trained walk-forward:
+    // a day's samples are learnt only once its outcome is known, after the day's decisions.
+    const std::size_t nnIn = (Km - 1) + 7;
+    ofm::net::Net dnn(nnIn, 32, std::vector<double>(nE, -1.0));
+    dnn.lr = 3e-4;
+    std::vector<double> nnMu(nnIn, 0.0), nnM2(nnIn, 0.0), nnMemX, nnMemY, nnDays, nnBase;
+    double nnSeen = 0, nnOrders = 0, nnPlaced = 0, nnFilled = 0, nnTrained = 0;
+    std::uint64_t nnRng = 0x2545F4914F6CDD1Dull;
     std::vector<std::array<double, nD>> used;
     std::vector<std::array<double, 5>> paths;  // per candidate trade: filled, the stop and the take-profit from the entry, stopped, took profit
     std::vector<std::string> sd;
@@ -730,8 +746,9 @@ int main(int argc, char** argv) {
     // its own dips reach; X_REGIME (research): times the market's range of the last 5 days over its
     // median of the last 250 (each day the shares' median high-to-low range), deeper in turbulence.
     const bool dipOwn = std::getenv("X_DIPSCALE") != nullptr, dipRegime = std::getenv("X_REGIME") != nullptr;
-    std::vector<double> mktRange(T, kNaN), regime(T, 1.0);
-    if (dipRegime) {
+    const bool dipNN = std::getenv("X_DIPNN") != nullptr;  // research: the dip network (below)
+    std::vector<double> mktRange(T, kNaN), regime(T, 1.0), mktRet20(T, 0.0);
+    if (dipRegime || dipNN) {
       std::vector<double> r;
       for (std::size_t t = 0; t < T; ++t) {
         r.clear();
@@ -747,25 +764,34 @@ int main(int argc, char** argv) {
         r.clear();
         for (std::size_t u = t >= 249 ? t - 249 : 0; u <= t; ++u) if (std::isfinite(mktRange[u])) r.push_back(mktRange[u]);
         if (n > 0 && r.size() >= 60) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); if (r[r.size() / 2] > 0) regime[t] = (sm / n) / r[r.size() / 2]; }
+        // The market's last 4 weeks (Nagel's control): the shares' median log return over 20 days.
+        r.clear();
+        if (t >= 20)
+          for (std::size_t i = 0; i < N; ++i) {
+            const double a = m.close(t - 20, i), c = m.close(t, i);
+            if (std::isfinite(a) && std::isfinite(c) && a > 0 && c > 0) r.push_back(std::log(c / a));
+          }
+        if (r.size() >= 10) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); mktRet20[t] = r[r.size() / 2]; }
       }
     }
+    std::vector<double> regimeRaw = regime;  // the market's range ratio (an input of the dip network)
+    if (!dipRegime) std::fill(regime.begin(), regime.end(), 1.0);
     std::vector<double> dipMemo(N, 0.0);
     std::vector<std::size_t> dipDay(N, ~std::size_t(0));
-    const auto dipUnit = [&](std::size_t t, std::size_t i) {
+    const auto ownDip = [&](std::size_t t, std::size_t i) {
       const double sig = std::exp(ft[(t * N + i) * Km + 20]);
-      double u = sig;
-      if (dipOwn) {
-        if (dipDay[i] != t) {
-          double sm = 0; int n = 0;
-          for (std::size_t v = t >= 99 ? t - 99 : 1; v <= t && v >= 1; ++v) {
-            const double pc = m.close(v - 1, i), l = m.low(v, i);
-            if (std::isfinite(pc) && std::isfinite(l) && pc > 0 && l > 0) sm += std::max(0.0, std::log(pc / l)), ++n;
-          }
-          dipDay[i] = t, dipMemo[i] = n >= 20 && sm > 0 ? sm / n : sig;
+      if (dipDay[i] != t) {
+        double sm = 0; int n = 0;
+        for (std::size_t v = t >= 99 ? t - 99 : 1; v <= t && v >= 1; ++v) {
+          const double pc = m.close(v - 1, i), l = m.low(v, i);
+          if (std::isfinite(pc) && std::isfinite(l) && pc > 0 && l > 0) sm += std::max(0.0, std::log(pc / l)), ++n;
         }
-        u = dipMemo[i];
+        dipDay[i] = t, dipMemo[i] = n >= 20 && sm > 0 ? sm / n : sig;
       }
-      return u * regime[t];
+      return dipMemo[i];
+    };
+    const auto dipUnit = [&](std::size_t t, std::size_t i) {
+      return (dipOwn ? ownDip(t, i) : std::exp(ft[(t * N + i) * Km + 20])) * regime[t];
     };
     // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
     // the close t, known when the orders are made), the take-profit that would have paid the most on
@@ -897,6 +923,57 @@ int main(int argc, char** argv) {
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1], x[2]);
       adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6], x[7], tiltOf(x[2]))), used.push_back(x);
+      if (dipNN && !today.empty()) {
+        std::vector<double> raw, xin, yt;
+        for (const auto& e : today) {
+          const std::size_t i = e.second;
+          const double* f = &ft[(t * N + i) * Km];
+          for (std::size_t k = 0; k + 1 < Km; ++k) raw.push_back(std::isfinite(f[k]) ? f[k] : 0.0);
+          const double sig = std::exp(f[20]);
+          raw.push_back(rawExpected(t, i)), raw.push_back(std::log(sig)), raw.push_back(std::log(ownDip(t, i) / sig)),
+              raw.push_back(spread[t * N + i]), raw.push_back(liqRank[i] / double(N)),
+              raw.push_back(std::log(std::max(1e-3, regimeRaw[t]))), raw.push_back(mktRet20[t]);
+          for (std::size_t q2 = 0; q2 < nE; ++q2) yt.push_back(std::clamp(100.0 * trade(t, i, dvals[q2], x[4], x[5], x[6], x[7]).ret, -20.0, 20.0));
+        }
+        const std::size_t ns = today.size();
+        for (std::size_t r = 0; r < ns; ++r)  // standardised by what was seen before today
+          for (std::size_t k = 0; k < nnIn; ++k) {
+            const double v = raw[r * nnIn + k], sd = nnSeen > 1 ? std::sqrt(nnM2[k] / (nnSeen - 1)) : 1.0;
+            xin.push_back(std::clamp(sd > 0 ? (v - nnMu[k]) / sd : 0.0, -4.0, 4.0));
+          }
+        if (nnTrained >= 250) {  // the decision, from the network as trained on earlier days only
+          const auto pr = dnn.predict(xin, ns);
+          double day = 0;
+          for (std::size_t r = 0; r < ns; ++r) {
+            std::size_t best = 0;
+            for (std::size_t q2 = 1; q2 < nE; ++q2) if (pr[r * nE + q2] > pr[r * nE + best]) best = q2;
+            nnOrders += 1;
+            if (!(pr[r * nE + best] > 0)) continue;  // no depth expected to gain: no order (cash)
+            const Trade tr = trade(t, today[r].second, dvals[best], x[4], x[5], x[6], x[7]);
+            nnPlaced += 1, nnFilled += tr.filled > 0, day += tr.ret / double(nPick);
+          }
+          nnDays.push_back(day), nnBase.push_back(adaptiveLevels.back());
+        }
+        // The day's outcome is known now: its samples are learnt (with as many replayed from earlier days).
+        for (std::size_t r = 0; r < ns; ++r)
+          for (std::size_t k = 0; k < nnIn; ++k) {
+            const double v = raw[r * nnIn + k];
+            nnSeen += k == 0, (void)0;
+            const double n = nnSeen, dlt = v - nnMu[k];
+            nnMu[k] += dlt / n, nnM2[k] += dlt * (v - nnMu[k]);
+          }
+        nnMemX.insert(nnMemX.end(), xin.begin(), xin.end()), nnMemY.insert(nnMemY.end(), yt.begin(), yt.end());
+        std::vector<double> bx = xin, by = yt;
+        const std::size_t nm = nnMemY.size() / nE;
+        for (std::size_t r = 0; r < ns && nm > ns; ++r) {
+          nnRng ^= nnRng << 13, nnRng ^= nnRng >> 7, nnRng ^= nnRng << 17;
+          const std::size_t pick = std::size_t(nnRng % nm);
+          bx.insert(bx.end(), nnMemX.begin() + std::ptrdiff_t(pick * nnIn), nnMemX.begin() + std::ptrdiff_t((pick + 1) * nnIn));
+          by.insert(by.end(), nnMemY.begin() + std::ptrdiff_t(pick * nE), nnMemY.begin() + std::ptrdiff_t((pick + 1) * nE));
+        }
+        dnn.step(bx, by, by.size() / nE);
+        nnTrained += 1;
+      }
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
@@ -1037,6 +1114,11 @@ int main(int argc, char** argv) {
                   100 * qt(2, 0.1), 100 * qt(2, 0.9), 100 * tk / std::max(fl, 1.0));
     }
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
+    if (dipNN && !nnDays.empty()) {
+      const auto an = stats(nnDays), ab = stats(nnBase);
+      std::printf("  dip network (%zu days)             %+7.1f%% a year (Sharpe %5.2f), %.0f%% of orders placed, %.1f%% of placed filled; the learnt depth on the same days %+.1f%% (Sharpe %.2f)\n",
+                  nnDays.size(), 100 * an.first, an.second, nnOrders > 0 ? 100 * nnPlaced / nnOrders : 0.0, nnPlaced > 0 ? 100 * nnFilled / nnPlaced : 0.0, 100 * ab.first, ab.second);
+    }
     // The next open's trades: the 10 highest predictions lag closes before the last close, among
     // the stocks with a bar at the last close (their targets are not known yet), from the pool and
     // ranked and with the levels by the settings learnt over the whole backtest. Expected open-to-close: the prediction

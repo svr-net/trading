@@ -1,6 +1,6 @@
 // #include header.wgsl
 // Each sample's gradient of the quantile (pinball) loss: output o is the quantile tau[o] of target
-// y[s][o]. x [nS][In], y [nS][Out], g [nS][nP]. Grid ceil(nS/8).
+// y[s][o] (tau[o] < 0: its mean, by the squared loss). x [nS][In], y [nS][Out], g [nS][nP]. Grid ceil(nS/8).
 @group(0) @binding(1) var<storage, read> w : array<f32>;
 @group(0) @binding(2) var<storage, read> x : array<f32>;
 @group(0) @binding(3) var<storage, read> y : array<f32>;
@@ -30,7 +30,9 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     for (var o = 0u; o < P.Out; o = o + 1u) {
       var z : f32 = w[oB3() + o];
       for (var k = 0u; k < P.Hd; k = k + 1u) { z = z + w[oW3() + o * P.Hd + k] * h2[k]; }
-      if (z > y[s * P.Out + o]) { d3[o] = 1.0 - tau[o]; } else { d3[o] = 0.0 - tau[o]; }
+      if (tau[o] < 0.0) {
+        d3[o] = z - y[s * P.Out + o];  // tau < 0: the mean (squared loss), for an expected value
+      } else if (z > y[s * P.Out + o]) { d3[o] = 1.0 - tau[o]; } else { d3[o] = 0.0 - tau[o]; }
       g[gs + oB3() + o] = d3[o];
       for (var k = 0u; k < P.Hd; k = k + 1u) { g[gs + oW3() + o * P.Hd + k] = d3[o] * h2[k]; }
     }
