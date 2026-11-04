@@ -506,7 +506,11 @@ int main(int argc, char** argv) {
     // returns to liquidity provision rise with market volatility, most in small, illiquid, volatile
     // shares). Each input standardised by its running mean and spread so far; trained walk-forward:
     // a day's samples are learnt only once its outcome is known, after the day's decisions.
-    const std::size_t nnIn = (Km - 1) + 7;
+    // The share's own features only (kernels/v2/features.wgsl 0..26, from its own past bars): never the
+    // next day's targets (27..30), nor the interactions, standardised within each day over the shares
+    // with a next bar (whether a share trades tomorrow is not known at the close).
+    constexpr std::size_t nnOwn = 27;
+    const std::size_t nnIn = nnOwn + 7;
     ofm::net::Net dnn(nnIn, 32, std::vector<double>(nE, -1.0));
     dnn.lr = 3e-4;
     std::vector<double> nnMu(nnIn, 0.0), nnM2(nnIn, 0.0), nnMemX, nnMemY, nnDays, nnBase;
@@ -928,7 +932,7 @@ int main(int argc, char** argv) {
         for (const auto& e : today) {
           const std::size_t i = e.second;
           const double* f = &ft[(t * N + i) * Km];
-          for (std::size_t k = 0; k + 1 < Km; ++k) raw.push_back(std::isfinite(f[k]) ? f[k] : 0.0);
+          for (std::size_t k = 0; k < nnOwn; ++k) raw.push_back(std::isfinite(f[k]) ? f[k] : 0.0);
           const double sig = std::exp(f[20]);
           raw.push_back(rawExpected(t, i)), raw.push_back(std::log(sig)), raw.push_back(std::log(ownDip(t, i) / sig)),
               raw.push_back(spread[t * N + i]), raw.push_back(liqRank[i] / double(N)),
@@ -951,6 +955,9 @@ int main(int argc, char** argv) {
             if (!(pr[r * nE + best] > 0)) continue;  // no depth expected to gain: no order (cash)
             const Trade tr = trade(t, today[r].second, dvals[best], x[4], x[5], x[6], x[7]);
             nnPlaced += 1, nnFilled += tr.filled > 0, day += tr.ret / double(nPick);
+            // The decision in the trade log (the no-look-ahead checks compare it before a date whose later
+            // bars change): the share, the depth chosen and its predicted gain, made at the close t.
+            if (tradeLog) std::fprintf(tradeLog, "%s,%s,nn,%zu,%.9g\n", m.dates[t + 1].c_str(), m.tickers[today[r].second].c_str(), best, pr[r * nE + best]);
           }
           nnDays.push_back(day), nnBase.push_back(adaptiveLevels.back());
         }
