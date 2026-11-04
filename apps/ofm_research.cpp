@@ -547,6 +547,14 @@ int main(int argc, char** argv) {
         c[2] = bk;
         best = index(c);
       }
+      // X_DIP0 (research): no dip, the entry fixed at the lattice's shallowest limit (2 sd above the
+      // previous close: bought at the open), the stop, take-profit and buy-back learnt for it.
+      if (std::getenv("X_DIP0")) {
+        std::size_t c0[nD];
+        coords(best, c0);
+        c0[3] = 0;
+        best = index(c0);
+      }
       const std::size_t r0 = best / nLv;
       std::size_t lv = r0 * nLv;
       for (std::size_t g = lv + 1; g < (r0 + 1) * nLv; ++g)
