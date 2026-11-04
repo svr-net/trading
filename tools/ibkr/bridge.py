@@ -158,7 +158,10 @@ def record_check(market, path):
 def run_submit(args, timeout=300):
     p = subprocess.run([sys.executable, os.path.join(HERE, 'submit.py'), *args, '--host', IB_HOST, '--port', str(IB_PORT)],
                        capture_output=True, text=True, timeout=timeout)
-    return p.returncode, (p.stdout + p.stderr).strip()
+    # The summaries read the last line: the script's own (its standard output) when it succeeds, its
+    # error when it fails; ib_async's log lines on standard error never stand in for a result.
+    out = (p.stdout + p.stderr) if p.returncode else (p.stderr + p.stdout)
+    return p.returncode, out.strip()
 
 
 def history_add(record):
