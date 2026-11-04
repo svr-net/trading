@@ -292,7 +292,7 @@ def state(args):
     def row(c):
         return rows.setdefault(c.symbol, {'ticker': c.symbol, 'currency': c.currency, 'state': '', 'limit': None, 'stop': None, 'take': None,
                                           'bought': 0.0, 'buy': None, 'sold': 0.0, 'sell': None, 'soldBy': '', 'held': 0.0, 'price': None,
-                                          'pnl': 0.0, 'open': None, 'fees': 0.0, 'note': ''})
+                                          'pnl': 0.0, 'open': None, 'fees': 0.0, 'feesKnown': False, 'ordered': None, 'note': ''})
     orders = {}
     for t in list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(False)):
         o = t.order
@@ -302,6 +302,7 @@ def state(args):
         r = row(t.contract)
         if o.action == 'BUY' and not o.parentId and o.orderType == 'LMT':
             r['limit'], r['buyStatus'] = num(o.lmtPrice), t.orderStatus.status
+            r['ordered'] = (r['ordered'] or 0) + float(o.totalQuantity or 0)  # partial fills show against it
         elif o.action == 'SELL' and o.orderType == 'STP':
             r['stop'] = num(o.auxPrice)
         elif o.action == 'SELL' and o.orderType == 'LMT' and o.parentId:
@@ -320,12 +321,33 @@ def state(args):
             by = 'close' if (e.orderRef or '').endswith('-close') else {'STP': 'stop', 'LMT': 'take-profit'}.get(getattr(o, 'orderType', ''), 'sale')
             r['soldBy'] = ', '.join(sorted(set(filter(None, r['soldBy'].split(', '))) | {by}))
         cr = f.commissionReport
-        if cr is not None:
-            r['fees'] += num(cr.commission) or 0.0
-            r['pnl'] += num(cr.realizedPNL) or 0.0
+        if cr is not None and num(cr.commission) is not None:
+            r['fees'] += num(cr.commission)
+            r['feesKnown'] = True
     for (tk, k), v in bv.items():
         r = rows[tk]
         r['buy' if k == 'bought' else 'sell'] = v / r[k] if r[k] else None
+    # The profit from the fills themselves (IBKR's realised figure comes only with its commission
+    # reports, which a reconnected client may not get again: every row showed 0 on 4 Nov): the shares
+    # sold times the sale less the purchase price, in money (IBKR's price magnifier: LSE prices are in
+    # pence, 100 to the pound), less the commissions IBKR reported.
+    mags = {}
+    for r in rows.values():
+        if r['sold'] and r['buy'] and r['sell']:
+            c = next((x.contract for x in ib.reqExecutions() if x.contract.symbol == r['ticker']), None)
+            if c is not None and c.conId not in mags:
+                try:
+                    m = float(ib.reqContractDetails(c)[0].priceMagnifier or 1) or 1.0
+                except Exception:  # noqa: BLE001
+                    m = 1.0
+                if m == 1.0 and r['ordered'] and r['limit'] and args.capital > 0:
+                    # Not reported: the scale the order was sized with (its shares times its limit
+                    # against the amount a trade, pence or pounds), the nearer of 1 and 100.
+                    k = r['ordered'] * r['limit'] / args.capital
+                    m = 100.0 if k > 0 and abs(math.log(k / 100.0)) < abs(math.log(k)) else 1.0
+                mags[c.conId] = m
+            mag = mags.get(c.conId, 1.0) if c is not None else 1.0
+            r['pnl'] = min(r['sold'], r['bought']) * (r['sell'] - r['buy']) / mag - r['fees']
     for it in ib.portfolio():
         c = it.contract
         if it.position <= 0 or (c.symbol not in mine and c.symbol not in rows):
