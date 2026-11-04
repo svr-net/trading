@@ -143,6 +143,10 @@ def connect(ib, args, client_id, tries=3):
     for k in range(tries):
         try:
             ib.connect(args.host, args.port, clientId=client_id, timeout=20)
+            # ib_async can log "API connection failed" and return without a connection (IB Gateway
+            # still logging in, 4 Nov): that is a failure, never a run against nothing.
+            if not ib.isConnected():
+                raise ConnectionError('IB Gateway did not accept the API connection')
             return
         except Exception as e:  # noqa: BLE001
             if k == tries - 1:
@@ -600,7 +604,7 @@ def auction(args):
     if now > opens + timedelta(minutes=5):
         sys.exit(f'{args.market} opened at {opens:%H:%M}: too late to record its auction')
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id + 1)  # beside the orders' client
+    connect(ib, args, args.client_id + 1)  # beside the orders' client
     ib.reqMarketDataType(1)  # real time
     num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > -1e300 else None  # noqa: E731
     tickers = {}
@@ -655,7 +659,7 @@ def paths(args):
     if now > ends:
         sys.exit(f'{args.market} closed at {ch:02d}:{cm:02d}: too late to record its day')
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id + 4)  # beside the orders', the auction's and the bars' clients
+    connect(ib, args, args.client_id + 4)  # beside the orders', the auction's and the bars' clients
     ib.reqMarketDataType(3)  # delayed where not subscribed
     num = lambda x: x if isinstance(x, (int, float)) and math.isfinite(x) and x > 0 else ''  # noqa: E731
     tickers = {}
@@ -706,7 +710,7 @@ def rebuy(args, ref):
     state = args.out or f'/tmp/rebuy-{ref}.txt'
     handled = set(open(state).read().split()) if os.path.exists(state) else set()
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id)
+    connect(ib, args, args.client_id)
     placed, mine = 0, []
     while datetime.now(tz) < until:
         fills = ib.reqExecutions()
@@ -769,6 +773,8 @@ def diag(args):
     ib.errorEvent += lambda req, code, msg, contract: errors.append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2158) else None
     try:
         ib.connect(args.host, args.port, clientId=args.client_id + 3, timeout=10)
+        if not ib.isConnected():
+            raise ConnectionError('IB Gateway did not accept the API connection')
     except Exception as e:  # noqa: BLE001
         print(json.dumps({**out, 'api': False, 'error': str(e) or type(e).__name__}))
         return
@@ -822,7 +828,7 @@ def daily_bars(args):
     book = json.load(open(args.orders))
     pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id + 2)
+    connect(ib, args, args.client_id + 2)
     got = missing = 0
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)

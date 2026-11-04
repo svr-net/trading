@@ -141,3 +141,14 @@ td.warn { color: var(--hedged); }
 #today td { white-space: pre-line; vertical-align: top; }
 #today td.share::first-line { font-weight: 700; color: var(--ink); }
 #today td.num { white-space: pre; }
+/* Day by day: one fold per past day. */
+.days details.day { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; margin: 0 0 8px; }
+.days summary { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px; cursor: pointer; list-style: none; }
+.days summary::-webkit-details-marker { display: none; }
+.days summary::before { content: "\25B8"; color: var(--muted); }
+.days details[open] summary::before { content: "\25BE"; }
+.days .day-date { font-weight: 700; }
+.days .day-count { color: var(--muted); font-size: 13px; flex: 1; }
+.days .day-pnl { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.days .day-pnl.pos { color: var(--good); } .days .day-pnl.neg { color: var(--bad); }
+.days details .table-scroll { border: 0; border-top: 1px solid var(--rule); border-radius: 0 0 10px 10px; }

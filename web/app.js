@@ -284,12 +284,16 @@ function todayLoop(on) {
 function brokerHistory() {
   if (!bridgeKey()) return;
   bridge('/history').then((h) => {
-    const rows = [];
     const code = (x) => x.split(':').pop().replace(' ', '.');  // EXCHANGE:CODE in multi-exchange markets; IBKR's "BT A"
     // A broker's price against the model's (EODData's): LSE prices may be in pence on one side and pounds on the other.
     const ratio = (a, b) => { const r = a / b; const s = [1, 0.01, 100].reduce((p, x) => (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / p)) ? x : p), 1); return r / s; };
     let n = 0, wins = 0, pnl = {}, placedN = 0, checked = 0, agree = 0, gapN = 0, gapS = 0, retN = 0, retA = 0, retM = 0;
-    for (const d of h.days.filter((x) => x.market === brokerMarket())) {
+    // Today is in "Today at Interactive Brokers" (live); the days before, one fold each, newest first.
+    const today = new Date().toLocaleDateString('en-CA');
+    const perDay = {};
+    for (const d of h.days.filter((x) => x.market === brokerMarket() && x.date && x.date !== today)) {
+      const day = (perDay[d.date] = perDay[d.date] || { rows: [], bought: 0, orders: 0, pnl: {} });
+      day.orders += d.orders.length;
       const traded = Object.fromEntries(d.trades.map((t) => [code(t.ticker), t]));
       const model = Object.fromEntries((d.model || []).map((t) => [code(t.ticker), t]));
       const reported = d.trades.length > 0 || (d.model || []).length > 0;
@@ -303,6 +307,7 @@ function brokerHistory() {
           n += 1;
           if (t.ret > 0) wins += 1;
           pnl[t.currency] = (pnl[t.currency] || 0) + t.pnl;  // IBKR's realised P&L, after its commissions
+          day.bought += 1, day.pnl[t.currency] = (day.pnl[t.currency] || 0) + t.pnl;
         }
         // The comparison: did both fill, the entry's gap (positive: paid more than the model assumed), the returns.
         let gap = null;
@@ -316,14 +321,34 @@ function brokerHistory() {
         }
         const modelSays = mo ? (mo.filled > 0 ? pct(mo.ret, 2) : 'no buy') : '';
         const yours = filled && t.ret != null ? pct(t.ret, 2) : (filled ? 'open' : (reported ? 'no buy' : 'waiting'));
-        rows.push([[d.date.slice(5)], [name],
+        day.rows.push([[name],
           [`${yours}${modelSays ? ` (model ${modelSays})` : ''}`, `num ${filled && t.ret != null ? (t.ret >= 0 ? 'pos' : 'neg') : ''}`],
           gap != null ? [pct(gap, 2), `num ${gap <= 0 ? 'pos' : 'neg'}`] : ['', 'num'],
-          filled ? [`${t.pnl.toFixed(2)} (fees ${t.commission.toFixed(2)})`, `num ${t.pnl >= 0 ? 'pos' : 'neg'}`] : ['', 'num']]);
+          filled ? [`${t.pnl.toFixed(2)} (fees ${t.commission.toFixed(2)})`, `num ${t.pnl > 0 ? 'pos' : t.pnl < 0 ? 'neg' : ''}`] : ['', 'num']]);
       }
     }
-    table($('broker-history'), [['Day'], ['Share'], ['Return (model)', 'num'], ['Paid vs model', 'num'], ['Profit (fees)', 'num']],
-      rows.length ? rows : [{ gap: 'Nothing yet: your results appear after the first trading day.' }]);
+    const box = $('broker-history');
+    box.replaceChildren();
+    const dates = Object.keys(perDay).sort().reverse();
+    if (!dates.length) box.append(cell('p', 'Nothing yet: each trading day appears here once it is over.', 'muted'));
+    for (const date of dates) {
+      const day = perDay[date];
+      const money = Object.entries(day.pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
+      const total = Object.values(day.pnl).reduce((a, b) => a + b, 0);
+      const fold = document.createElement('details');
+      fold.className = 'day';
+      const head = document.createElement('summary');
+      const when = new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      head.append(cell('span', when, 'day-date'), cell('span', `${day.orders} orders · ${day.bought} bought`, 'day-count'),
+        cell('span', money || '–', `day-pnl ${total > 0 ? 'pos' : total < 0 ? 'neg' : ''}`));
+      const wrap = document.createElement('div');
+      wrap.className = 'table-scroll';
+      const t = document.createElement('table');
+      wrap.append(t);
+      table(t, [['Share'], ['Return (model)', 'num'], ['Paid vs model', 'num'], ['Profit (fees)', 'num']], day.rows);
+      fold.append(head, wrap);
+      box.append(fold);
+    }
     const money = Object.entries(pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
     const vs = checked
       ? ` · against the model: fills agree on ${agree} of ${checked}` + (gapN ? `, entry ${pct(gapS / gapN, 2)} vs the model's on average` : '')
