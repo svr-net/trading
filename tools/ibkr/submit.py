@@ -169,13 +169,27 @@ def exit_contract(ib, contract):
 
 
 def floor_price(ib, contract, ticks):
-    """The lowest price a forced sale accepts: the lowest low of the share's last 20 days (its own
-    recent range, nothing fixed), on its price increments; None without IBKR's bars."""
+    """The lowest price a forced sale accepts, on the share's price increments: the lowest low of its
+    last 20 days (its own recent range, nothing fixed); without IBKR's daily bars (no data
+    subscription for the exchange: 162, ALITL on 4 Nov), the lowest of today's low, the last trade,
+    the bid and the previous close in IBKR's free delayed quote; None when neither answers."""
+    lows = []
     try:
         bars = ib.reqHistoricalData(contract, '', '1 M', '1 day', 'TRADES', useRTH=True, timeout=20) or []
+        lows = [b.low for b in bars[-20:] if b.low and b.low > 0]
     except Exception:  # noqa: BLE001
-        bars = []
-    lows = [b.low for b in bars[-20:] if b.low and b.low > 0]
+        pass
+    if not lows:
+        ib.reqMarketDataType(4)  # delayed, frozen when the market is shut: free, no subscription
+        k = ib.reqMktData(contract, '', False, False)
+        for _ in range(20):
+            ib.sleep(0.5)
+            lows = [x for x in (k.low, k.last, k.bid, k.close) if isinstance(x, (int, float)) and math.isfinite(x) and x > 0]
+            if lows:
+                ib.sleep(1.0)  # the rest of the quote's fields
+                lows = [x for x in (k.low, k.last, k.bid, k.close) if isinstance(x, (int, float)) and math.isfinite(x) and x > 0]
+                break
+        ib.cancelMktData(contract)
     if not lows:
         return None
     lo = min(lows)
