@@ -469,6 +469,12 @@ int main(int argc, char** argv) {
     const std::size_t nK = (aimCap ? 6 : 1) * 2, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
     const auto gateOf = [&](double) { return true; };
+    // X_TILT (research): the selection's code k % 2 (else unused) learnt as a tilt of the limit's depth by
+    // the signal's rank: of a day's n trades the strongest a lattice step (0.5 sd) shallower, the weakest
+    // a step deeper (floor(2j/(n-1) - 1/2) steps for the j-th), so strong signals miss fewer buys.
+    const bool tiltOn = std::getenv("X_TILT") != nullptr;
+    const auto tiltOf = [&](double k) { return tiltOn && (std::size_t(std::floor(k + 0.5)) % 2 == 1); };
+    const auto tiltSteps = [](std::size_t j, std::size_t n) { return n > 1 ? std::floor(2.0 * double(j) / double(n - 1) - 0.5) : 0.0; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
@@ -815,9 +821,10 @@ int main(int argc, char** argv) {
       return r;
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
-    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
+    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool tilt = false) {
       double rg = 0;
-      for (const auto& e : w) rg += trade(t, e.second, d, ps, pt, al, rf).ret / double(nPick);  // a tenth each: a missing trade stays in cash
+      for (std::size_t j = 0; j < w.size(); ++j)  // a tenth each: a missing trade stays in cash
+        rg += trade(t, w[j].second, tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, w.size()))) : d, ps, pt, al, rf).ret / double(nPick);
       return rg;
     };
     for (std::size_t q = warm; q < days.size(); ++q) {
@@ -846,7 +853,7 @@ int main(int argc, char** argv) {
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
       const auto today = ranked(t, x[0], x[1], x[2]);
-      adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
+      adaptiveLevels.push_back(dayResult(t, today, x[3], x[4], x[5], x[6], x[7], tiltOf(x[2]))), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
@@ -919,6 +926,7 @@ int main(int argc, char** argv) {
         }
         ofm::v2::gen::V2Header<double> R{};
         R.T = std::uint32_t(nV), R.u0 = std::uint32_t(nLe), R.NT = std::uint32_t(nPick), R.t0 = std::uint32_t(nDays + 1);
+        if (tiltOn) R.u1 = std::uint32_t(nK), R.u2 = std::uint32_t(nLv);  // the tilt (X_TILT): the codes per ranking and the exit settings per entry
         ofm::v2::gen::Records<double> kr;
         kr.P = R, kr.cand = cand.data(), kr.ret = ret.data(), kr.s1 = s1v.data(), kr.s2 = s2v.data(), kr.dn = dnv.data(), kr.sc = scv.data(), kr.so = sov.data();
         ofm::detail::dispatch(kr, ofm::detail::groups(std::uint32_t(nV), 64));
@@ -1012,8 +1020,9 @@ int main(int argc, char** argv) {
       const auto picks = capTo(t, v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
       for (std::size_t q = 0; q < picks.size(); ++q) {
         const std::size_t i = picks[q].second;
-        // The limit from the last close.
-        const double limit = std::exp(-fx[3] * std::exp(ft[(t * N + i) * Km + 20]));
+        // The limit from the last close (tilted by the signal's rank when learnt so).
+        const double dq = tiltOf(fx[2]) ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), fx[3] + 0.5 * tiltSteps(q, picks.size()))) : fx[3];
+        const double limit = std::exp(-dq * std::exp(ft[(t * N + i) * Km + 20]));
         // The levels from the expected entry: the limit, or the last close when the limit is above it
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);

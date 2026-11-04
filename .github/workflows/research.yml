@@ -64,7 +64,7 @@ jobs:
             par) keep '$2 ~ /^PAR:/' ;;
             ams) keep '$2 ~ /^AMS:/' ;;
             no-osl) keep '$2 !~ /^OSL:/' ;;
-            no-osl-ams|no-osl-ams-dip0) keep '$2 !~ /^(OSL|AMS):/' ;;
+            no-osl-ams|no-osl-ams-dip0|no-osl-ams-tilt) keep '$2 !~ /^(OSL|AMS):/' ;;
             par-bru) keep '$2 ~ /^(PAR|BRU):/' ;;
             no-osl-ams-n5) keep '$2 !~ /^(OSL|AMS):/' ;;
             liquid)  # each exchange's 100 most traded shares (by their median daily traded value)
@@ -85,6 +85,9 @@ jobs:
           case "$V" in
             npick5|no-osl-ams-n5) export X_NPICK=5 ;;
             dip0|no-osl-ams-dip0) export X_DIP0=1 ;;
+            tilt|no-osl-ams-tilt) export X_TILT=1 ;;
+            npick15) export X_NPICK=15 ;;
+            tilt20) export X_TILT=1 X_NPICK=20 ;;
             npick20) export X_NPICK=20 ;;
             ridge) export X_LEARN_RIDGE=1 ;;
           esac
