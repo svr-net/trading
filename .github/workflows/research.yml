@@ -105,7 +105,7 @@ jobs:
         if: matrix.variant == 'anatomy'
         run: |
           set -o pipefail
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          CAPITAL=5000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
           for TOP in 500 100; do ./build/ofm_anatomy "${A[@]}" --top "$TOP"; done | tee report.txt
@@ -114,7 +114,7 @@ jobs:
         if: matrix.variant == 'swing'
         run: |
           set -o pipefail
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          CAPITAL=5000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
           # Beside the store's bars: the same with IBKR's own daily bars where the bridge fetched them
@@ -155,9 +155,14 @@ jobs:
             esac
           done
           STAMP=(--exit safety)
-          case "$MARKET" in EU|APAC) STAMP+=(--venues tools/venues.txt);; esac
+          CAPITAL=5000
+          VENUES=tools/venues.txt
+          # Token amount<k>: k a trade (the exchanges' own currencies) in place of tools/venues.txt's and the capital.
+          for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in amount[0-9]*)
+            CAPITAL="${tok#amount}"; VENUES=data/venues.txt
+            awk -v ex=",$EXCHANGES," -v k="$CAPITAL" '!/^#/ && index(ex, "," $1 ",") { $2 = k } { print }' tools/venues.txt > "$VENUES";; esac; done
+          case "$MARKET" in EU|APAC) STAMP+=(--venues "$VENUES");; esac
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
           # Token ibkr: IBKR's own daily bars in place of the store's where the bridge fetched them.
           case "+$V+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && STAMP+=(--override "data/eoddata/ibkr/$MARKET/daily.csv") || echo "IBKR bars: none for $MARKET in the store" >> report0.txt;; esac
           ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
