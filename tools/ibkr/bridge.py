@@ -343,12 +343,18 @@ def watch_rebuy(market):
         REBUY_RUNNING.discard(market)
 
 
+BACKGROUND = [0]  # background jobs in flight (any kind): the update waits for none
+
+
 def in_background(market, action, job):
     def run():
+        BACKGROUND[0] += 1
         try:
             ok, summary = job(market)
         except Exception as e:  # noqa: BLE001
             ok, summary = False, str(e)
+        finally:
+            BACKGROUND[0] -= 1
         LAST.insert(0, (datetime.now(ZoneInfo(ZONE[market])).strftime('%Y-%m-%d %H:%M %Z'), market, action, ok, summary))
         del LAST[10:]
         sys.stderr.write(f'bridge: {action} {market}: {"ok" if ok else "FAILED"} {summary}\n')
@@ -379,6 +385,8 @@ def diag():
     out = []
     add = lambda check, ok, detail: out.append({'check': check, 'ok': ok, 'detail': detail})  # noqa: E731
     add('Bridge', True, f'version {VERSION}, running since {STARTED:%Y-%m-%d %H:%M %Z}; automatic: {",".join(AUTO) or "off"}; capital {CAPITAL:g} a trade')
+    add('Bridge update', None if UPDATE['note'] == 'not checked yet' else not UPDATE['note'].startswith(('no restarter', 'failed')),
+        f"newest image checked when no market is near its day: {UPDATE['note']}")
     # The token: read the store, and whether it may write (the auctions and bars go there).
     if not TOKEN:
         add('EOD_TOKEN', False, 'not set in .env')
@@ -693,20 +701,51 @@ def scheduler():
                     job(m, 'report', report)
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f'bridge: scheduler {m}: {e}\n')
+        try:
+            if quiet() and time.monotonic() - UPDATE['last'] >= 3600:
+                UPDATE['last'] = time.monotonic()
+                UPDATE['note'] = ask_restarter('/update', 900)
+                sys.stderr.write(f"bridge: update: {UPDATE['note']}\n")
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f'bridge: update: {e}\n')
         time.sleep(30)
+
+
+UPDATE = {'last': -1e9, 'note': 'not checked yet'}
+
+
+def quiet():
+    """No job in flight and no automatic market within an hour of its day (from an hour before the
+    placing to half an hour after the report, weekdays): the time the bridge may be replaced by a newer
+    image without touching a trading day."""
+    if RUNNING or BACKGROUND[0] or REBUY_RUNNING or PATHS_RUNNING or BARS_RUNNING:
+        return False
+    for m in AUTO:
+        now = datetime.now(ZoneInfo(ZONE[m]))
+        if now.weekday() < 5 or os.environ.get('AUTO_WEEKENDS'):
+            if at(now, TIMES[m][0], -60) <= now < at(now, REPORT[m], 30):
+                return False
+    return True
+
+
+def ask_restarter(path, timeout):
+    """POSTs to the restarter (tools/ibkr/restarter.py, the only container with Docker's socket);
+    returns its note."""
+    url = os.environ.get('GATEWAY_RESTARTER', 'http://restarter:8766') + path
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST'), timeout=timeout) as r:
+            return json.loads(r.read()).get('note', 'done')
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read() or b'{}').get('note', f'restarter answered {e.code}')
+    except Exception as e:  # noqa: BLE001
+        return f'no restarter ({type(e).__name__})'
 
 
 def restart_gateway():
     """Asks the restarter (tools/ibkr/restarter.py, the only container with Docker's socket) to restart
     IB Gateway; returns a note."""
-    url = os.environ.get('GATEWAY_RESTARTER', 'http://restarter:8766') + '/restart'
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST'), timeout=150) as r:
-            return json.loads(r.read()).get('note', 'restarted')
-    except urllib.error.HTTPError as e:
-        return json.loads(e.read() or b'{}').get('note', f'restarter answered {e.code}')
-    except Exception as e:  # noqa: BLE001
-        return f'no restarter ({type(e).__name__}): restart IB Gateway by hand'
+    note = ask_restarter('/restart', 150)
+    return note + ': restart IB Gateway by hand' if note.startswith('no restarter') else note
 
 
 def watchdog():
