@@ -29,9 +29,18 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade, its value in NOK in Oslo` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
+  if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
+};
+
+// The exchanges scanned (r.exchanges, written by the daily run), in words.
+const EXCHANGE = { LSE: 'London Stock Exchange', NYSE: 'NYSE', NASDAQ: 'NASDAQ', PAR: 'Paris', AMS: 'Amsterdam', BRU: 'Brussels', LIS: 'Lisbon', MSE: 'Madrid', FRA: 'Frankfurt', OSL: 'Oslo', ASX: 'Australia (ASX)', SGX: 'Singapore (SGX)' };
+const places = (r, source) => {
+  const ex = r.exchanges;
+  if (!ex?.length) return { UK: 'London Stock Exchange', US: 'New York (NYSE and NASDAQ)', EU: 'Europe', APAC: 'Australia (ASX) and Singapore (SGX)' }[source] || source;
+  const names = ex.map((e) => EXCHANGE[e] || e);
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 };
 
 // The markets traded automatically (the bridge's AUTO_MARKETS once it answers; the UK until then);
@@ -42,7 +51,7 @@ const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€' }[c.market] || ''}${c
 // The plan in plain words, the orders, and the backtest (folded away).
 function render(r, source) {
   shown = r;
-  const where = { UK: 'London Stock Exchange', US: 'New York (NYSE and NASDAQ)', EU: 'Paris, Amsterdam, Brussels, Lisbon, Madrid, Frankfurt and Oslo', APAC: 'Australia (ASX) and Singapore (SGX)' }[source] || source;
+  const where = places(r, source);
   const n = r.orders.length, c = r.costs;
   const isLive = live.has(source);
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });

@@ -202,7 +202,7 @@ jobs:
           # The other market's job may push first: rebase and retry.
           for k in 1 2 3 4 5; do
             git fetch -q origin main && git reset -q --hard origin/main
-            cp report/ofm.json "web/data/$M.json"
+            jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' report/ofm.json > "web/data/$M.json"  # the page names the exchanges scanned
             python3 tools/report/daily_email.py track report/ofm.json "$TRACK"
             git add "web/data/$M.json" "$TRACK"
             if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
