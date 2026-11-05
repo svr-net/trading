@@ -119,11 +119,12 @@ inline std::vector<std::vector<std::size_t>> universe(const Panel& p, std::size_
 // The broker's costs on a trade of `capital` (IBKR fixed pricing), as fractions of its value:
 // UK GBP 3 or 0.05%, the stamp duty 0.5% on buying (not AIM shares: --stamp-free); US USD 0.005 a
 // share, at least USD 1, at most 1%; elsewhere each exchange's line of tools/venues.txt (EXCHANGE
-// amount rate minimum fee buy-tax both-tax) for tickers EXCHANGE:CODE.
+// amount rate minimum fee buy-tax both-tax [buy-tax on a share held past the day]) for tickers
+// EXCHANGE:CODE.
 struct Costs {
   int kind = 0;  // 1 UK, 2 US, 3 by venue
   double capital = 5000;
-  std::vector<std::array<double, 6>> venue;  // per share: amount rate minimum fee buy-tax both-tax
+  std::vector<std::array<double, 7>> venue;  // per share: amount rate minimum fee buy-tax both-tax overnight-buy-tax
   std::vector<char> stampFree;
   double side(std::size_t i, double price) const {  // the commission and fees of one side
     if (kind == 2) {
@@ -134,28 +135,30 @@ struct Costs {
     const auto& v = venue[i];
     return v[0] > 0 ? std::max(v[2], v[1] * v[0]) / v[0] + v[3] + v[5] : 0.0;
   }
-  double buyTax(std::size_t i) const {
+  double buyTax(std::size_t i, bool overnight) const {  // UK stamp duty: on every purchase of a share
     if (kind == 1) return stampFree[i] ? 0.0 : 0.005;
-    return kind == 3 ? venue[i][4] : 0.0;
+    return kind == 3 ? venue[i][overnight ? 6 : 4] : 0.0;
   }
-  double roundTrip(std::size_t i, double buy, double sell) const { return side(i, buy) + side(i, sell) + buyTax(i); }
+  double roundTrip(std::size_t i, double buy, double sell, bool overnight) const { return side(i, buy) + side(i, sell) + buyTax(i, overnight); }
 };
 
 inline Costs costs(const Panel& p, const std::string& market, double capital, const std::string& venuesFile, const std::string& stampFreeFile) {
   Costs c;
   c.kind = market == "UK" ? 1 : market == "US" ? 2 : 3;
   c.capital = capital;
-  c.venue.assign(p.N, {0, 0, 0, 0, 0, 0});
+  c.venue.assign(p.N, {0, 0, 0, 0, 0, 0, 0});
   c.stampFree.assign(p.N, 0);
   if (!venuesFile.empty()) {
     std::ifstream in(venuesFile);
-    std::map<std::string, std::array<double, 6>> line;
+    std::map<std::string, std::array<double, 7>> line;
     for (std::string s; std::getline(in, s);) {
       if (s.empty() || s[0] == '#') continue;
       std::istringstream ls(s);
       std::string ex;
-      std::array<double, 6> v{};
-      if (ls >> ex >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5]) line[ex] = v;
+      std::array<double, 7> v{};
+      if (!(ls >> ex >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5])) continue;
+      if (!(ls >> v[6])) v[6] = v[4];
+      line[ex] = v;
     }
     for (std::size_t i = 0; i < p.N; ++i) {
       const auto k = p.tickers[i].find(':');
@@ -229,22 +232,17 @@ inline std::vector<Signal> signals(const Panel& p) {
 // A holding window as orders can trade it, the signal known at the close t: bought at the next
 // session's open (auction) or at its close (auction; the order in before the close, so the signal is
 // a day old), held `days` closes after the entry (0: sold at the next open, overnight) and sold at
-// that close (auction), or at the open after the entry for an overnight hold.
+// that close (auction), or at the open after the entry for an overnight hold. The model trades only
+// within the day (bought at the open, sold at the close); the others are kept for measurement.
 struct Window {
   const char* name;
   bool entryAtClose;
   int days;  // closes held after the entry; 0 overnight (sold at the next open)
+  bool overnight() const { return entryAtClose || days > 1; }
 };
 
 inline const std::vector<Window>& windows() {
-  static const std::vector<Window> w = {
-      {"open, sold at its close", false, 0},
-      {"open, held 5 days", false, 5},
-      {"open, held 20 days", false, 20},
-      {"close, sold at the next open", true, 0},
-      {"close, sold at the next close", true, 1},
-      {"close, held 5 days", true, 5},
-  };
+  static const std::vector<Window> w = {{"open, sold at its close", false, 0}};
   return w;
 }
 
@@ -262,7 +260,7 @@ inline std::vector<Leg> legs(const Panel& p, const Costs& c, const Window& w, st
     const double buy = prev;
     for (std::size_t d = e; d <= last && d < p.T; ++d) {
       const double px = p.ok(d, i) ? p.C[d * N + i] : prev;
-      out.push_back({d, px / prev - 1, d == e ? c.side(i, buy) + c.buyTax(i) : 0.0});
+      out.push_back({d, px / prev - 1, d == e ? c.side(i, buy) + c.buyTax(i, w.overnight()) : 0.0});
       prev = px;
     }
     if (out.size() < std::size_t(std::max(1, w.days))) return {};
@@ -274,13 +272,13 @@ inline std::vector<Leg> legs(const Panel& p, const Costs& c, const Window& w, st
   if (w.days == 0) {
     if (!p.hasOpen(e + 1, i)) return out;
     const double sell = p.O[(e + 1) * N + i];
-    out.push_back({e + 1, sell / buy - 1, c.roundTrip(i, buy, sell)});
+    out.push_back({e + 1, sell / buy - 1, c.roundTrip(i, buy, sell, true)});
     return out;
   }
   double prev = buy;
   for (std::size_t d = e + 1; d <= e + std::size_t(w.days) && d < p.T; ++d) {
     const double px = p.ok(d, i) ? p.C[d * N + i] : prev;
-    out.push_back({d, px / prev - 1, d == e + 1 ? c.side(i, buy) + c.buyTax(i) : 0.0});
+    out.push_back({d, px / prev - 1, d == e + 1 ? c.side(i, buy) + c.buyTax(i, true) : 0.0});
     prev = px;
   }
   if (out.size() < std::size_t(w.days)) return {};

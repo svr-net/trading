@@ -67,7 +67,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var entry : f32 = 0.0;
     var intra : bool = false;
     var y : f32 = 0.0;
-    if (o <= lim) { entry = o; if (st[b + 8u] > 1.5 && st[b + 8u] < 2.5) { entry = min(o * half, lim); if (lim <= st[b + 4u]) { entry = lim; } } if (st[b + 8u] > 2.5) { entry = min(o * half, lim); } } else if (l <= lim / half) { entry = lim; intra = true; }
+    if (o <= lim) { entry = min(o * half, lim); if (lim <= st[b + 4u]) { entry = lim; } } else if (l <= lim / half) { entry = lim; intra = true; }  // an open fill: a dip limit pays the limit; one above the last close the open's offer or the limit
     if (entry > 0.0) {
       // The levels as the orders set them before the open: from the anchor, the limit or the previous
       // close when the limit is above it (the fill's price is not known when they are placed).
@@ -85,7 +85,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       // A stop within a spread of the anchor: no order placed (cash), as the orders skip it.
       if (fs * half * half <= 1.0) {
         var px : f32 = c;
-        if (st[b + 8u] > 2.5) { px = c / half; }  // research (3): the open's buy at the ask, the close's sale at the bid
+        if (st[b + 8u] > 2.5) { px = c / half; }  // no auctions (3): the close's sale at the bid
         if (!intra && o <= stop) { px = o / half; }          // opened through the stop: sold at the open
         else if (l <= stop) { px = stop / half; }
         else if (!intra && h >= take * half) { px = max(take, o); }  // a take-profit below the open fills at the open
