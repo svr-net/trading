@@ -10,9 +10,10 @@
 //   H5    bought at the next open, held 5 days (a fifth of the book renewed each day)
 //   H20   the same, 20 days
 // The returns are net of a round trip's costs: the commission (IBKR's US fixed rate: $0.005 a share,
-// at least $1, at most 1%, on --capital a trade) on both sides; the auctions cross at one price, so a
-// window traded only in auctions pays no spread; the others pay the spread (Abdi and Ranaldo's
-// estimate from the bars, the past only) once. The book renews 1/h of itself a day over h days.
+// at least $1, at most 1%, on --capital a trade) on both sides. Every window buys and sells in the
+// opening or the closing auction, which cross at one price: no spread. The book renews 1/h of itself
+// a day over h days. The share list is today's (the store's): shares delisted since are missing, so
+// the long side of a falling-share signal is flattered; the top less the bottom tenth is less so.
 // Also: the market (every tradable share, equally weighted) over each window, and the top tenth less
 // the bottom tenth (gross: a short's costs are not modelled). For each: the mean a year, the Sharpe
 // ratio, the t statistic, and the first and the second half of the days apart (a pattern found in
@@ -100,17 +101,11 @@ int main(int argc, char** argv) {
   const auto ret = [&](std::size_t t, std::size_t i, std::size_t back) {  // close t-back to close t
     return t >= back && ok(t, i) && ok(t - back, i) ? C[t * N + i] / C[(t - back) * N + i] - 1 : kNaN;
   };
-  // The spread (Abdi and Ranaldo, about 64 days, the past only) and the median traded value (20 days).
-  std::vector<double> spread(T * N, 0.0), value(T * N, kNaN);
+  // The median traded value (20 days, the past only).
+  std::vector<double> value(T * N, kNaN);
   for (std::size_t i = 0; i < N; ++i) {
-    double e = 0, w = 0;
     std::vector<double> win;
     for (std::size_t t = 1; t < T; ++t) {
-      if (ok(t, i) && ok(t - 1, i)) {
-        const double c = std::log(C[(t - 1) * N + i]), a = c - 0.5 * std::log(H[(t - 1) * N + i] * L[(t - 1) * N + i]), b = c - 0.5 * std::log(H[t * N + i] * L[t * N + i]);
-        e += (4 * a * b - e) / 64, w += (1 - w) / 64;
-      }
-      spread[t * N + i] = w > 0 ? std::sqrt(std::max(0.0, e / w)) : 0.0;
       if (ok(t, i)) win.push_back(C[t * N + i] * V[t * N + i]);
       if (win.size() > 20) win.erase(win.begin());
       if (win.size() == 20) {
@@ -119,16 +114,6 @@ int main(int argc, char** argv) {
         value[t * N + i] = s[10];
       }
     }
-  }
-  // The spread where the estimate has none: that day's median among the shares with one.
-  for (std::size_t t = 1; t < T; ++t) {
-    std::vector<double> v;
-    for (std::size_t i = 0; i < N; ++i)
-      if (spread[t * N + i] > 0) v.push_back(spread[t * N + i]);
-    if (v.empty()) continue;
-    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(v.size() / 2), v.end());
-    for (std::size_t i = 0; i < N; ++i)
-      if (!(spread[t * N + i] > 0)) spread[t * N + i] = v[v.size() / 2];
   }
   const auto commission = [&](double price) {  // one side, a fraction of the trade
     const double shares = std::floor(capital / price);
@@ -219,7 +204,7 @@ int main(int argc, char** argv) {
     double r = age == 1 ? C[d * N + i] / O[(f + 1) * N + i] - 1 : (ok(d - 1, i) ? C[d * N + i] / C[(d - 1) * N + i] - 1 : 0.0);
     if (net) {
       if (age == 1) r -= commission(O[(f + 1) * N + i]);
-      if (age == std::size_t(h)) r -= commission(C[d * N + i]) + (h == 1 ? 0.0 : spread[f * N + i]);  // a spread once for a held trade (sold in the close's auction otherwise)
+      if (age == std::size_t(h)) r -= commission(C[d * N + i]);
     }
     return r;
   };
@@ -239,7 +224,7 @@ int main(int argc, char** argv) {
     return have ? sum / double(n) : kNaN;
   };
   const std::size_t start = 260, mid = start + (T - start) / 2;
-  std::printf("anatomy: %zu shares, %zu days (%s to %s); each day the %zu most traded at %.0f or more; costs: IBKR US fixed on %.0f a trade, the spread outside the auctions\n",
+  std::printf("anatomy: %zu shares, %zu days (%s to %s); each day the %zu most traded at %.0f or more; costs: IBKR US fixed on %.0f a trade, auctions only (no spread); today's share list (survivors)\n",
               N, T, dayIx.begin()->first.c_str(), dayIx.rbegin()->first.c_str(), top, minPrice, capital);
   const auto first = [&](std::size_t d) { return d < mid; };
   // The market itself over each window (gross and net), every tradable share equally weighted.
