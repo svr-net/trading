@@ -163,7 +163,8 @@ jobs:
           # fewer buys; with the exchanges above 14% more profit, Sharpe 2.43 -> 2.62).
           # UK: the limit's unit times the market's range (5 days over the median of 250; X_REGIME), research of
           # 5 Nov (8-year walk-forward, 15 trades a day): 54.1% a year, Sharpe 5.64 -> 55.3%, Sharpe 6.33.
-          case "$MARKET" in UK) export X_NPICK=15 X_REGIME=1;; EU) export X_TILT=1;; esac
+          # EU (with the tilt, without Amsterdam and Oslo): 19.1% a year, Sharpe 2.93 -> 19.3%, Sharpe 3.01.
+          case "$MARKET" in UK) export X_NPICK=15 X_REGIME=1;; EU) export X_TILT=1 X_REGIME=1;; esac
           X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
