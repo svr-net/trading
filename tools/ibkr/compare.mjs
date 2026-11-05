@@ -37,8 +37,7 @@ for (const d of days.slice().reverse()) {
     if (mf || lf) {  // each disagreement and each shared fill, as ratios only (no prices)
       const r = (a, b) => (a > 0 && b > 0 ? pct(a / b - 1) : '-');
       const lim = (placed.get(sym(m.ticker)) || {}).limit;
-      detail.push(`  ${d.date} ${d.market} ${sym(m.ticker)}: limit ${pct(m.limit)} from the close; `
-        + `backtest ${mf ? `${m.filled === 1 ? 'open' : 'intraday'} fill at the placed limit ${r(m.entry, lim)}, ${['close', 'stop', 'take'][m.exit] || '?'} ${pct(m.exitPrice / m.entry - 1)}` : 'no fill'}; `
+      detail.push(`  ${d.date} ${d.market} ${sym(m.ticker)}: backtest ${mf ? `${m.filled === 1 ? 'open' : 'intraday'} fill at the placed limit ${r(m.entry, lim)}, ${['close', 'stop', 'take'][m.exit] || '?'} ${pct(m.exitPrice / m.entry - 1)}` : 'no fill'}; `
         + `IBKR ${lim == null ? 'no order placed' : lf ? `bought at the limit ${r(l.buy, lim)}, sold ${pct(l.ret)}` : 'no fill'}`);
     }
   }
