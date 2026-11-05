@@ -11,13 +11,15 @@ on:
   # APAC (ASX, SGX) at 10:00 UTC, after the Singapore close; EU at 18:30 UTC, after the European close,
   # and UK and EU again at 21:30 UTC (EODData's European and London days came after the 18:30 and
   # 19:00 scans on 5 Nov, which made the orders from the day before; the later run makes them from
-  # the day's close).
+  # the day's close), and once more at 05:30 UTC before the next open (EODData's day may come later
+  # still; the bridge places UK and EU at 07:45 UTC, so the morning run's orders are the ones placed).
   schedule:
     - cron: '0 19 * * 1-5'
     - cron: '30 22 * * 1-5'
     - cron: '0 10 * * 1-5'
     - cron: '30 18 * * 1-5'
     - cron: '30 21 * * 1-5'
+    - cron: '30 5 * * 1-5'
   workflow_dispatch:
     inputs:
       market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC], default: all }
@@ -39,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || github.event.schedule == '30 21 * * 1-5' && '["UK","EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
     env:
       MARKET: ${{ matrix.market }}
       # EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
