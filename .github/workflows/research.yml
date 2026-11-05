@@ -93,7 +93,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -101,8 +101,15 @@ jobs:
           node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
           ./build/ofm_delay --daily data/stocks.csv --bars data/intraday.csv --cost 0.004 | tee report.txt
           { echo "### $MARKET delay"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Where the market's returns are and which kinds of strategy earn them (variant anatomy; results only)
+        if: matrix.variant == 'anatomy'
+        run: |
+          set -o pipefail
+          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          for TOP in 500 100; do ./build/ofm_anatomy --csv data/stocks.csv --top "$TOP" --capital "$CAPITAL"; done | tee report.txt
+          { echo "### $MARKET anatomy"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
-        if: matrix.variant != 'delay'
+        if: matrix.variant != 'delay' && matrix.variant != 'anatomy'
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
