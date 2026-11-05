@@ -542,6 +542,7 @@ int main(int argc, char** argv) {
     const bool robust = std::getenv("X_SINGLEBEST") == nullptr;
     std::vector<double> entryScore(nR * nE, 0.0), entrySortino(nR * nE, 0.0);
     const bool capBySortino = std::getenv("X_CAPRET") == nullptr;
+    std::vector<double> depthScore(nE, 0.0);  // the learnt setting's score at each limit depth (the others as learnt)
     const auto learnt = [&] {
       std::size_t best = 0;
       if (robust) {
@@ -580,6 +581,14 @@ int main(int argc, char** argv) {
         coords(best, c0);
         c0[3] = 0;
         best = index(c0);
+      }
+      {
+        std::size_t cq[nD];
+        coords(best, cq);
+        for (std::size_t q = 0; q < nE; ++q) {
+          cq[3] = q;
+          depthScore[q] = robust ? entryScore[index(cq) / nLv] : score(index(cq));
+        }
       }
       const std::size_t r0 = best / nLv;
       std::size_t lv = r0 * nLv;
@@ -894,11 +903,54 @@ int main(int argc, char** argv) {
       }
       return r;
     };
+    // X_SHAREDEPTH (research): each share's own limit depth. The learnt setting's score at each depth
+    // (depthScore) plus the share's own offset there: its mean net result per order at that depth over
+    // its past days (every day with an outcome, an unfilled order 0) less all shares' mean, shrunk by
+    // empirical Bayes (weight tau2 / (tau2 + sigma2 / n): the spread between shares against the noise
+    // of the share's own mean, both measured from the data each day). The depth with the highest total
+    // is the share's; one with little history keeps the learnt depth.
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr;
+    std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
+    std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
+    std::size_t sdDay = ~std::size_t(0);
+    const auto shareOffsets = [&](std::size_t t) {
+      if (sdDay == t) return;
+      sdDay = t;
+      for (std::size_t q = 0; q < nE; ++q) {
+        double tot = 0, totN = 0, wSS = 0, wDf = 0;
+        for (std::size_t i = 0; i < N; ++i) {
+          const double n = sdN[i * nE + q];
+          tot += sdS1[i * nE + q], totN += n;
+          if (n >= 2) wSS += sdS2[i * nE + q] - sdS1[i * nE + q] * sdS1[i * nE + q] / n, wDf += n - 1;
+        }
+        const double M = totN > 0 ? tot / totN : 0, sig2 = wDf > 0 ? wSS / wDf : 0;
+        double mm = 0, mv = 0, en = 0, k = 0;
+        for (std::size_t i = 0; i < N; ++i) {
+          const double n = sdN[i * nE + q];
+          if (n < 2) continue;
+          const double m = sdS1[i * nE + q] / n;
+          mm += m, mv += m * m, en += sig2 / n, k += 1;
+        }
+        const double tau2 = k > 1 ? std::max(0.0, (mv - mm * mm / k) / (k - 1) - en / k) : 0.0;
+        for (std::size_t i = 0; i < N; ++i) {
+          const double n = sdN[i * nE + q];
+          const double w = n >= 2 && tau2 > 0 ? tau2 / (tau2 + sig2 / n) : 0.0;
+          sdOff[i * nE + q] = n >= 2 ? w * (sdS1[i * nE + q] / n - M) : 0.0;
+        }
+      }
+    };
+    const auto shareDepth = [&](std::size_t t, std::size_t i) {
+      shareOffsets(t);
+      std::size_t bq = 0;
+      for (std::size_t q = 1; q < nE; ++q)
+        if (depthScore[q] + sdOff[i * nE + q] > depthScore[bq] + sdOff[i * nE + bq]) bq = q;
+      return dvals[bq];
+    };
     // The day's result: every trade one unit, a trade not filled stays in cash.
     const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool tilt = false) {
       double rg = 0;
       for (std::size_t j = 0; j < w.size(); ++j)  // a tenth each: a missing trade stays in cash
-        rg += trade(t, w[j].second, tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, w.size()))) : d, ps, pt, al, rf).ret / double(nPick);
+        rg += trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, w.size()))) : d, ps, pt, al, rf).ret / double(nPick);
       return rg;
     };
     // X_FILLN (research): the number of orders learnt from how often orders fill. An order that does not
@@ -927,7 +979,7 @@ int main(int argc, char** argv) {
       return (k + 0.5) / (double(h.size()) + 1.0);
     };
     const auto fillProb = [&](std::size_t t, std::size_t i, double d) { return std::clamp(calFillP.at(rawFill(t, i, d)), 0.0, 1.0); };
-    const auto depthAt = [&](double d, bool tilt, std::size_t j, std::size_t n) {
+    const auto depthAt0 = [&](double d, bool tilt, std::size_t j, std::size_t n) {
       return tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, n))) : d;
     };
     // The orders: the ranked, gated candidates in order until their expected fills reach nPick (the
@@ -938,7 +990,7 @@ int main(int argc, char** argv) {
         double e = 0;
         std::size_t k = 0;
         for (; k < all.size(); ++k) {
-          const double p = fillProb(t, all[k].second, depthAt(d, tilt, k, std::max(n, k + 1)));
+          const double p = fillProb(t, all[k].second, shareDepthOn ? shareDepth(t, all[k].second) : depthAt0(d, tilt, k, std::max(n, k + 1)));
           if (k >= nPick && e + p > double(nPick)) break;
           e += p;
         }
@@ -950,7 +1002,7 @@ int main(int argc, char** argv) {
     const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool tilt) {
       double rg = 0, fills = 0;
       for (std::size_t j = 0; j < w.size(); ++j) {
-        const Trade tr = trade(t, w[j].second, depthAt(d, tilt, j, w.size()), ps, pt, al, rf);
+        const Trade tr = trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : depthAt0(d, tilt, j, w.size()), ps, pt, al, rf);
         rg += tr.ret, fills += tr.filled > 0;
       }
       return rg / std::max(double(nPick), fills);
@@ -1047,9 +1099,10 @@ int main(int argc, char** argv) {
       for (std::size_t k = 0; k < today.size(); ++k) {  // the trades, for the diagnostics and the log
         const std::size_t i = today[k].second, src = (t - lag) * N + i;
         const double o = m.open(t + 1, i);
-        const double dk = fillN ? depthAt(x[3], tiltOf(x[2]), k, today.size()) : x[3];
+        const double dk = shareDepthOn ? shareDepth(t, i) : fillN ? depthAt0(x[3], tiltOf(x[2]), k, today.size()) : x[3];
         const Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
-        if (fillN) calFillP.pts.emplace_back(rawFill(t, i, dk), double(tr.filled > 0)), calFillP.dirty = true, dayFills += tr.filled > 0;
+        if (fillN) calFillP.pts.emplace_back(rawFill(t, i, dk), double(tr.filled > 0)), calFillP.dirty = true;
+        dayFills += tr.filled > 0;
         tradeOrders += 1;
         if (tr.filled > 0) tradeFilled += 1, tradeSum += tr.ret, tradeGained += tr.ret > 0;  // the day is over: this pick's result joins the calibration (used from the next day's decisions)
         if (t + 2 == T) {  // the latest day: the morning's orders, for the comparison with the broker's fills
@@ -1063,6 +1116,14 @@ int main(int argc, char** argv) {
                        m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
       }
       ordersMax = std::max(ordersMax, double(today.size())), fillsMax = std::max(fillsMax, dayFills);
+      if (shareDepthOn)  // the day is over: every share with an outcome adds its result at each depth (used from the next day)
+        for (std::size_t i = 0; i < N; ++i) {
+          if (!tradable[t * N + i] || !(m.close(t + 1, i) > 0) || !std::isfinite(m.close(t + 1, i)) || !(m.close(t, i) > 0)) continue;
+          for (std::size_t q = 0; q < nE; ++q) {
+            const double r = trade(t, i, dvals[q], x[4], x[5], x[6], x[7]).ret;
+            sdS1[i * nE + q] += r, sdS2[i * nE + q] += r * r, sdN[i * nE + q] += 1;
+          }
+        }
       // Every lattice point's record takes today, in two fused kernels: levels.wgsl trades each of the
       // day's candidates (a slot: its prices, sigma, half-spread, SAR and level quantiles at the
       // lattice's tails) once under every entry and exit setting; records.wgsl adds each setting's
@@ -1217,7 +1278,7 @@ int main(int argc, char** argv) {
       for (std::size_t q = 0; q < picks.size(); ++q) {
         const std::size_t i = picks[q].second;
         // The limit from the last close (tilted by the signal's rank when learnt so).
-        const double dq = depthAt(fx[3], tiltOf(fx[2]), q, picks.size());
+        const double dq = shareDepthOn ? shareDepth(t, i) : depthAt0(fx[3], tiltOf(fx[2]), q, picks.size());
         const double limit = std::exp(-dq * dipUnit(t, i));
         // The levels from the expected entry: the limit, or the last close when the limit is above it
         // (a limit above the close buys at about the open, not at the limit).
