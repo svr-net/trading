@@ -13,9 +13,11 @@ const sym = (t) => String(t || '').split(':').pop().replace('.', ' ').toUpperCas
 const pct = (x) => (x == null || !Number.isFinite(x) ? '-' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(2)}%`);
 const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 const tot = {};
+const detail = [];
 for (const d of days.slice().reverse()) {
   if (!d.model || !d.trades) continue;
   const live = new Map(d.trades.map((t) => [sym(t.ticker), t]));
+  const placed = new Map((d.orders || []).map((o) => [sym(o.ticker), o]));
   const T = (tot[d.market] ||= { days: 0, orders: 0, mFill: 0, lFill: 0, both: 0, mOnly: 0, lOnly: 0, mGross: [], lGross: [], mNet: [], lAll: [] });
   let both = 0, mOnly = 0, lOnly = 0;
   const mg = [], lg = [];
@@ -32,11 +34,19 @@ for (const d of days.slice().reverse()) {
     } else if (mf) mOnly += 1;
     else if (lf) lOnly += 1;
     if (lf && Number.isFinite(l.ret)) T.lAll.push(l.ret);
+    if (mf || lf) {  // each disagreement and each shared fill, as ratios only (no prices)
+      const r = (a, b) => (a > 0 && b > 0 ? pct(a / b - 1) : '-');
+      const lim = (placed.get(sym(m.ticker)) || {}).limit;
+      detail.push(`  ${d.date} ${d.market} ${sym(m.ticker)}: limit ${pct(m.limit)} from the close; `
+        + `backtest ${mf ? `${m.filled === 1 ? 'open' : 'intraday'} fill at the placed limit ${r(m.entry, lim)}, ${['close', 'stop', 'take'][m.exit] || '?'} ${pct(m.exitPrice / m.entry - 1)}` : 'no fill'}; `
+        + `IBKR ${lim == null ? 'no order placed' : lf ? `bought at the limit ${r(l.buy, lim)}, sold ${pct(l.ret)}` : 'no fill'}`);
+    }
   }
   T.days += 1, T.both += both, T.mOnly += mOnly, T.lOnly += lOnly;
   console.log(`${d.date} ${d.market}: ${d.model.length} orders; filled in both ${both}, only in the backtest ${mOnly}, only at IBKR ${lOnly}; `
     + `both-filled gross: backtest ${pct(mean(mg))}, IBKR ${pct(mean(lg))}`);
 }
+console.log(`\nTrade by trade:\n${detail.join('\n')}`);
 for (const [m, T] of Object.entries(tot)) {
   console.log(`\n${m}: ${T.days} days, ${T.orders} orders; filled: backtest ${T.mFill} (${pct(T.mFill / T.orders)}), IBKR ${T.lFill} (${pct(T.lFill / T.orders)}); `
     + `both ${T.both}, only backtest ${T.mOnly}, only IBKR ${T.lOnly}`);
