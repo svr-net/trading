@@ -149,7 +149,8 @@ jobs:
               fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               idle) export X_IDLE=1 ;;  # idle money charged this model's own mean daily result per slot (walk-forward)
-              fillnet) export X_FILLNET=1 ;;  # each share's depth by its predicted chance of the dip (learnt) times the picks' result if filled
+              fillnet) export X_FILLNET=1 ;;
+              likely) export X_LIKELY=1 ;;  # only orders predicted more likely than not to fill, profitable after costs and the buy-back  # each share's depth by its predicted chance of the dip (learnt) times the picks' result if filled
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
             esac
           done

@@ -1001,7 +1001,7 @@ int main(int argc, char** argv) {
     // to fill is the share's own fills at that depth with one observation at all shares' rate. No depth
     // with a positive total: no order for the share that day. Implies X_SHAREDEPTH.
     const bool idleCost = std::getenv("X_IDLE") != nullptr;
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || idleCost || std::getenv("X_FILLNET") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || idleCost || std::getenv("X_FILLNET") != nullptr || std::getenv("X_LIKELY") != nullptr;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
@@ -1049,7 +1049,10 @@ int main(int argc, char** argv) {
     // the share is that chance times the mean net result of the past trades filled at that depth (the
     // learnt exits); the share's depth is the best, and no order when none is positive. Nothing fixed:
     // the regressions, the calibration and the results come from the data before each close.
-    const bool fillNet = std::getenv("X_FILLNET") != nullptr;
+    // X_LIKELY (research; implies X_FILLNET): only orders more likely than not to fill: a depth counts
+    // only when its predicted chance is above one half.
+    const bool likelyOnly = std::getenv("X_LIKELY") != nullptr;
+    const bool fillNet = std::getenv("X_FILLNET") != nullptr || likelyOnly;
     const std::size_t nX = std::min<std::size_t>(Fm + 4, 64);  // 1, the dips' and the gaps' records (log-odds), the gaps' spread, the inputs
     std::vector<double> fnG(fillNet ? nE * nX * nX : 0, 0.0), fnB(fillNet ? nE * nX : 0, 0.0), fnBeta(fillNet ? nE * nX : 0, 0.0);
     std::size_t fnDay = ~std::size_t(0), fnOffDay = ~std::size_t(0);
@@ -1108,10 +1111,13 @@ int main(int argc, char** argv) {
         double best = 0;
         for (std::size_t q = 0; q < nE; ++q) {
           if (!(pickF[q] > 0)) continue;
-          const double ev = fnProb(t, i, q) * (pickRf[q] / pickF[q] + sfOff[i * nE + q]);
+          const double pq = fnProb(t, i, q);
+          if (likelyOnly && !(pq > 0.5)) continue;
+          const double ev = pq * (pickRf[q] / pickF[q] + sfOff[i * nE + q]);
           if (bq == nE || ev > best) best = ev, bq = q;
         }
         if (bq < nE) return best > 0 ? dvals[bq] : kNaN;
+        if (likelyOnly && pickF[0] + pickF[nE - 1] > 0) return kNaN;  // no depth likely to fill: no order
       }  // before any pick's outcome: the learnt depth, as below
       shareOffsets(t);
       double op = 0;
