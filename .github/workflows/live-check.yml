@@ -1,0 +1,21 @@
+# The backtest against the broker, trade by trade, from the bridge's history (tools/ibkr/compare.mjs).
+# Results only: returns and counts, no prices, keys or account numbers.
+name: Backtest vs IBKR
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compare
+        env:
+          BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
+          BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+        run: node tools/ibkr/compare.mjs | tee -a "$GITHUB_STEP_SUMMARY"
