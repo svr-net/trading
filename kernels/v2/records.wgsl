@@ -23,12 +23,16 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     let li : u32 = g % P.u0;
     var y : f32 = 0.0;
     var n : f32 = 0.0;
-    for (var j = 0u; j < P.NT; j = j + 1u) {
-      if (cand[k * P.NT + j] >= 0.0) { n = n + 1.0; }
-    }
     // The tilt (P.u1 > 0: the codes per ranking, P.u2 the exit settings per entry): an odd code moves
-    // the j-th of the day's n trades floor(2j/(n-1) - 1/2) limit depths, the strongest shallower.
-    let tilt : bool = P.u1 > 0u && (k % P.u1) % 2u == 1u && n > 1.0;
+    // the j-th of the day's n trades floor(2j/(n-1) - 1/2) limit depths, the strongest shallower. The
+    // day's count n is needed only then (a ranking without candidates sums nothing either way).
+    let tilted : bool = P.u1 > 0u && (k % P.u1) % 2u == 1u;
+    if (tilted) {
+      for (var j = 0u; j < P.NT; j = j + 1u) {
+        if (cand[k * P.NT + j] >= 0.0) { n = n + 1.0; }
+      }
+    }
+    let tilt : bool = tilted && n > 1.0;
     var j2 : f32 = 0.0;
     for (var j = 0u; j < P.NT; j = j + 1u) {
       let s : f32 = cand[k * P.NT + j];
@@ -42,7 +46,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
       j2 = j2 + 1.0;
       y = y + ret[u32(s) * P.u0 + lj];
     }
-    if (n > 0.0) { y = y / f32(P.NT); }  // a share each of NT: a ranking's missing trades stay in cash
+    y = y / f32(P.NT);  // a share each of NT: a ranking's missing trades stay in cash
     s1[g] = s1[g] + y;
     s2[g] = s2[g] + y * y;
     let loss : f32 = min(y, 0.0);
