@@ -164,7 +164,10 @@ jobs:
           # UK: the limit's unit times the market's range (5 days over the median of 250; X_REGIME), research of
           # 5 Nov (8-year walk-forward, 15 trades a day): 54.1% a year, Sharpe 5.64 -> 55.3%, Sharpe 6.33.
           # EU (with the tilt, without Amsterdam and Oslo): 19.1% a year, Sharpe 2.93 -> 19.3%, Sharpe 3.01.
-          case "$MARKET" in UK) export X_NPICK=15 X_REGIME=1;; EU) export X_TILT=1 X_REGIME=1;; esac
+          # EU: the number of orders learnt from how often they fill (X_FILLN; the bridge holds the orders beyond
+          # the 10 the money pays for out of the opening auction and cancels the rest once 10 have filled):
+          # research of 5 Nov, 0.72 -> 3.26 buys a day, 19.1% -> 30.9% a year (Sharpe 2.93 -> 2.15).
+          case "$MARKET" in UK) export X_NPICK=15 X_REGIME=1;; EU) export X_TILT=1 X_FILLN=1;; esac
           X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
