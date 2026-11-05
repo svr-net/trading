@@ -163,4 +163,4 @@ jobs:
           [ -f report0.txt ] && cat report0.txt >> report.txt
           # The next open's orders as the page shows them (share and limit from the last close; no prices).
           jq -r '"next open: " + ((.orders|length)|tostring) + " orders: " + ([.orders[] | "\(.ticker) \((.limit*1000|round)/10)%"] | join(", "))' data/r.json >> report.txt || true
-          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
