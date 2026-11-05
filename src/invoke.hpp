@@ -8,7 +8,9 @@
 // Native builds keep one pool of worker threads for the whole run, with no locks: a dispatch
 // publishes its job and bumps an epoch the workers spin on, each thread claims chunks of workgroups
 // with a compare-exchange, and the caller works too, then spins until every worker has checked out.
-// Idle workers spin briefly, then yield; nothing locks or blocks.
+// Idle workers spin briefly, then sleep until the next dispatch wakes them (a condition variable,
+// touched only when one sleeps), so the serial work between dispatches, and other processes, get
+// the cores instead of spinning threads.
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +18,8 @@
 #include <memory>
 #include <vector>
 #ifndef __EMSCRIPTEN__
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -52,13 +56,15 @@ class Pool {
     call_ = [](void* b, std::uint32_t t) { (*static_cast<F*>(b))(t); };
     use_.store(use, std::memory_order_relaxed);
     pending_.store(use - 1, std::memory_order_relaxed);
-    epoch_.fetch_add(1, std::memory_order_release);
+    epoch_.fetch_add(1, std::memory_order_seq_cst);
+    wake();
     body(0u);
     while (pending_.load(std::memory_order_acquire) != 0) relax();
   }
   ~Pool() {
     stop_.store(true, std::memory_order_release);
-    epoch_.fetch_add(1, std::memory_order_release);
+    epoch_.fetch_add(1, std::memory_order_seq_cst);
+    wake();
     for (auto& t : workers_) t.join();
   }
 
@@ -71,8 +77,18 @@ class Pool {
     std::uint64_t seen = 0;
     for (;;) {
       std::uint64_t e;
-      for (std::uint32_t spin = 0; (e = epoch_.load(std::memory_order_acquire)) == seen; ++spin)
-        if (spin < 4096) relax(); else std::this_thread::yield();
+      for (std::uint32_t spin = 0; (e = epoch_.load(std::memory_order_acquire)) == seen; ++spin) {
+        if (spin < 4096) {
+          relax();
+          continue;
+        }
+        // Asleep until the epoch moves: counted first, so a dispatch that bumps the epoch after this
+        // check sees the sleeper and wakes it (both orders are total: seq_cst).
+        std::unique_lock<std::mutex> lock(mutex_);
+        sleepers_.fetch_add(1, std::memory_order_seq_cst);
+        cv_.wait(lock, [&] { return epoch_.load(std::memory_order_seq_cst) != seen; });
+        sleepers_.fetch_sub(1, std::memory_order_relaxed);
+      }
       seen = e;
       if (stop_.load(std::memory_order_acquire)) return;
       if (t < use_.load(std::memory_order_relaxed)) {
@@ -81,7 +97,15 @@ class Pool {
       }
     }
   }
+  void wake() {
+    if (sleepers_.load(std::memory_order_seq_cst) == 0) return;
+    { std::lock_guard<std::mutex> lock(mutex_); }
+    cv_.notify_all();
+  }
   std::vector<std::thread> workers_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::atomic<std::uint32_t> sleepers_{0};
   std::atomic<std::uint64_t> epoch_{0};
   std::atomic<std::uint32_t> use_{0}, pending_{0};
   std::atomic<bool> stop_{false};

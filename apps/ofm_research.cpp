@@ -274,19 +274,18 @@ int main(int argc, char** argv) {
   // zero) from the day's median, on the side of illiquid (low value), stale (unmoved closes) or
   // erratic (wide range), is an outlier.
   {
-    std::vector<double> stat(3 * N), ok(N);
+    // Every share's day's window at once (kernels/v2/window.wgsl), then each day's screen.
+    std::vector<double> win(3 * T * N, 0.0), winOk(T * N, 0.0), stat(3 * N), ok(N);
+    {
+      ofm::v2::gen::Window<double> kw;
+      kw.P = P, kw.bars = bars.data(), kw.out = win.data(), kw.ok = winOk.data();
+      ofm::detail::dispatch(kw, ofm::detail::groups(std::uint32_t(T * N), 64));
+    }
     std::size_t out = 0, seen = 0;
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t i = 0; i < N; ++i) {
-        double n = 0, lv = 0, st = 0, sn = 0, rg = 0;
-        for (std::size_t u = t >= 59 ? t - 59 : 0; u <= t; ++u) {
-          const double c = m.close(u, i), v = m.volume(u, i), h = m.high(u, i), l = m.low(u, i);
-          if (!(c > 0) || !(h > 0) || !(l > 0)) continue;
-          n += 1, lv += std::log(c * std::max(v, 1.0)), rg += std::log(h / l);
-          if (u > 0 && m.close(u - 1, i) > 0) st += c == m.close(u - 1, i), sn += 1;
-        }
-        ok[i] = n >= 40 && sn > 0;
-        if (ok[i]) stat[i] = lv / n, stat[N + i] = st / sn, stat[2 * N + i] = rg / n;
+        ok[i] = winOk[t * N + i];
+        if (ok[i]) stat[i] = win[t * N + i], stat[N + i] = win[(T + t) * N + i], stat[2 * N + i] = win[(2 * T + t) * N + i];
       }
       double med[3], sc[3];
       for (std::size_t k = 0; k < 3; ++k) {
@@ -494,19 +493,22 @@ int main(int argc, char** argv) {
     // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
     // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
     // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
-    const std::size_t nK = (aimCap ? 6 : 1) * 2, nR = nC * nB * nK, nV = nR * nE * nLv;
+    // Without X_TILT an odd code selects exactly what the even one below it does (same cap, no gate), so
+    // only the even codes are on the lattice (half the records to keep; the same choices, as a tie goes to
+    // the lower code and the code is never refined between its neighbours).
+    const bool tiltOn = std::getenv("X_TILT") != nullptr;
+    const std::size_t kStep = tiltOn ? 1 : 2, nK = (aimCap ? 6 : 1) * 2 / kStep, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
     const auto gateOf = [&](double) { return true; };
     // X_TILT (research): the selection's code k % 2 (else unused) learnt as a tilt of the limit's depth by
     // the signal's rank: of a day's n trades the strongest a lattice step (0.5 sd) shallower, the weakest
     // a step deeper (floor(2j/(n-1) - 1/2) steps for the j-th), so strong signals miss fewer buys.
-    const bool tiltOn = std::getenv("X_TILT") != nullptr;
     const auto tiltOf = [&](double k) { return tiltOn && (std::size_t(std::floor(k + 0.5)) % 2 == 1); };
     const auto tiltSteps = [](std::size_t j, std::size_t n) { return n > 1 ? std::floor(2.0 * double(j) / double(n - 1) - 0.5) : 0.0; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
-      if (d == 2) return x;  // the selection's code (capOf, gateOf)
+      if (d == 2) return double(kStep) * x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
@@ -573,12 +575,15 @@ int main(int argc, char** argv) {
     std::vector<double> depthScore(nE, 0.0);  // the learnt setting's score at each limit depth (the others as learnt)
     const auto learnt = [&] {
       std::size_t best = 0;
+      // Each entry's means of its records' two scores over the level settings (kernels/v2/entry.wgsl).
+      if (robust || (nK > 1 && capBySortino)) {
+        ofm::v2::gen::V2Header<double> E{};
+        E.T = std::uint32_t(nR * nE), E.u0 = std::uint32_t(nLv);
+        ofm::v2::gen::Entry<double> ke;
+        ke.P = E, ke.sc = scv.data(), ke.so = sov.data(), ke.es = entryScore.data(), ke.eo = entrySortino.data();
+        ofm::detail::dispatch(ke, ofm::detail::groups(std::uint32_t(nR * nE), 16));
+      }
       if (robust) {
-        for (std::size_t r = 0; r < nR * nE; ++r) {
-          double sm = 0;
-          for (std::size_t g = r * nLv; g < (r + 1) * nLv; ++g) sm += score(g);
-          entryScore[r] = sm / double(nLv);
-        }
         for (std::size_t r = 1; r < nR * nE; ++r)
           if (entryScore[r] > entryScore[best / nLv]) best = r * nLv;
       } else {
@@ -588,11 +593,6 @@ int main(int argc, char** argv) {
       // The AIM cap, a limit on risk, by Sortino (averaged over the level settings), at the pool,
       // ranking and entry chosen; X_CAPRET=1 (research): by return with them.
       if (nK > 1 && capBySortino) {
-        for (std::size_t r = 0; r < nR * nE; ++r) {
-          double sm = 0;
-          for (std::size_t g = r * nLv; g < (r + 1) * nLv; ++g) sm += ddScore(g);
-          entrySortino[r] = sm / double(nLv);
-        }
         std::size_t c[nD];
         coords(best, c);
         const auto at = [&](std::size_t k) { c[2] = k; return entrySortino[index(c) / nLv]; };
@@ -1190,7 +1190,7 @@ int main(int argc, char** argv) {
       rankLiquidity(t, false);
       std::vector<std::vector<std::pair<double, std::size_t>>> v(nR);
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / (nB * nK))), axis(1, double(k / nK % nB)), axis(2, double(k % nK)));
-      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2];  // no AIM cap, no gate
+      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2 / kStep], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2 / kStep];  // no AIM cap, no gate
       double r = 0, pm = 0;
       const auto oc = [&](std::size_t i) { const double x = m.close(t + 1, i) / m.open(t + 1, i) - 1; return std::isfinite(x) ? x : 0.0; };  // no bar: cash
       for (const auto& e : all0) r += oc(e.second) / double(all0.size()), pm += e.first / double(all0.size());
