@@ -319,6 +319,7 @@ int main(int argc, char** argv) {
       double expected, stop, take;  // the calibrated expected gain from the buy price if the order buys, net of its costs; the stop and take-profit from the entry (NaN: none)
       double limit;                 // the buy limit from the last close
       double rebuy, rebuyCost;      // the buy-back after a stop (its fraction back up to the entry; 0 none) and a round trip's costs (its sale at the entry and these)
+      double fill = kNaN;           // its chance to buy: how often the share's own days would have filled an order this deep (all its days so far)
     };
     std::vector<Pick> picks;
     std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
@@ -1311,8 +1312,14 @@ int main(int argc, char** argv) {
         // (a limit above the close buys at about the open, not at the limit).
         const auto [fs, fk] = levelsAt(t, i, m.close(t, i) * std::min(limit, 1.0), fx[4], fx[5], fx[6]);
         if (fs * std::exp(spread[t * N + i]) > 1) continue;  // a stop within a spread of the entry: skipped, as in the backtest
+        double fills = 0, days = 0;  // the share's own days: how often an order this deep (in its unit then) would have bought
+        for (std::size_t u = lag; u + 1 < T; ++u) {
+          if (!(m.close(u, i) > 0) || !(m.open(u + 1, i) > 0) || !(m.low(u + 1, i) > 0)) continue;
+          days += 1, fills += trade(u, i, dq, fx[4], fx[5], fx[6], fx[7]).filled > 0;
+        }
         lastRun.picks.push_back({i, calibrated(rawExpected(t, i), true), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1, fs > 0 ? fx[7] : 0.0,
-                                 fee[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0});  // calibrated: the gain from the buy price if it buys, net of costs
+                                 fee[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0,
+                                 days > 0 ? fills / days : kNaN});  // calibrated: the gain from the buy price if it buys, net of costs
       }
     }
     return pred;
@@ -1423,8 +1430,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
       auto lvl = [](double x) { return std::isfinite(x) ? std::to_string(x) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g}", q ? "," : "", m.tickers[pk.stock].c_str(),
-                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy);
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g,\"fill\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
+                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy, lvl(pk.fill).c_str());
       o << b;
     }
     o << "],\"recent\":[";

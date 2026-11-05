@@ -63,12 +63,16 @@ function render(r, source) {
     : (r.backtest?.sharpe ?? 0) < 1
       ? `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
       : `<strong>Not traded automatically:</strong> the bridge does not trade this market (AUTO_MARKETS)${n ? '; the orders below are what it would place' : ''}.`;
-  $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`;
+  const buys = r.orders.reduce((a, o) => a + (o.fill ?? 0), 0);  // the orders' chances added up: the buys to expect
+  $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`
+    + (r.orders.some((o) => o.fill != null) ? ` · about ${buys.toFixed(1)} of these orders expected to buy` : '');
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
   const head = [['Share'], ['Buy at', 'num']];
   if (levels) head.push(['Stop', 'num'], ['Target', 'num']);
   const rebuys = r.orders.some((o) => o.rebuy > 0);  // a buy-back after a stop (learnt; none on most days)
   if (rebuys) head.push(['Buy-back', 'num']);
+  const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
+  if (chances) head.push(['Chance to buy', 'num']);
   head.push(['Expected gain', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
@@ -76,6 +80,7 @@ function render(r, source) {
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1), o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
+      if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num']);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // a tiny expectation keeps a digit more
       return row;
     }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
