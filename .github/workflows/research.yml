@@ -37,7 +37,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The share bars are the same for every variant of a market on a day: the first job builds them, the
+      # others restore them (GitHub's cache, private to this repository) and skip the store and the build.
+      - name: The day
+        run: echo "DAY=$(date -u +%F)" >> "$GITHUB_ENV"
+      - name: The day's share bars, if another job built them (only on a work branch, whose caches pull requests from forks cannot read)
+        id: bars
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache@v4
+        with:
+          path: data/bars-all.csv
+          key: research-bars-${{ inputs.market }}-${{ env.DAY }}
       - name: Check out the EOD store (svr-net/eod)
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay'
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -45,6 +57,7 @@ jobs:
           path: data/eoddata
           fetch-depth: 1
       - name: The share bars (as the daily run builds them)
+        if: steps.bars.outputs.cache-hit != 'true'
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
@@ -58,6 +71,7 @@ jobs:
           done
       - name: The variant's share list
         run: |
+          if [ -f data/bars-all.csv ] && [ ! -f data/stocks.csv ]; then cp data/bars-all.csv data/stocks.csv; else cp data/stocks.csv data/bars-all.csv; fi
           V='${{ matrix.variant }}'
           keep() { { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, "$1"; } > data/v.csv && mv data/v.csv data/stocks.csv; }
           case "$V" in
