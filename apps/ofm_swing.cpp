@@ -155,19 +155,26 @@ int main(int argc, char** argv) {
       }
     }
   };
-  // Each setting's book: its daily net result (the day a leg ends on), every setting from the start.
-  std::vector<std::vector<double>> book(nCfg, std::vector<double>(T + 25, 0.0));
+  // Each setting's book: its daily net result (the day a leg ends on), every setting from the start;
+  // and each window's market (every tradable share, equally weighted, gross) over the same days, with
+  // the costs of selling it short in an index fund (a round trip of the most traded share, no tax):
+  // the book less the market is the setting hedged.
+  std::vector<std::vector<double>> book(nCfg, std::vector<double>(T + 25, 0.0)), mkt(W, std::vector<double>(T + 25, 0.0));
   std::vector<std::size_t> firstDay(nCfg, 0);
   std::vector<std::vector<std::size_t>> picksAt(nCfg);  // the last close's picks (the orders)
   std::vector<std::vector<double>> beta(nModels);
   const std::size_t warm = 260;  // signals need a year of bars (momentum, the 52-week high)
-  // The walk-forward choice: each close, the setting with the best past Sharpe ratio (a year at least).
-  std::vector<Series> past(nCfg);
-  Series meta, metaH1, metaH2;
-  std::vector<double> metaDays;
-  long switches = 0;
+  // The walk-forward choices, unhedged and hedged: each close, the setting with the best past Sharpe
+  // ratio after a year; another setting replaces it only when its Sharpe ratio is better by more than
+  // the estimate's standard error (sqrt(252 / days) a year), so noise does not churn the book.
+  std::vector<Series> past(nCfg), pastH(nCfg);
+  struct Meta {
+    std::size_t chosen, start = 0;
+    long switches = 0;
+    std::vector<double> days;
+  };
+  Meta plain{nCfg, 0, 0, {}}, hedged{nCfg, 0, 0, {}};
   FILE* trace = traceOut.empty() ? nullptr : std::fopen(traceOut.c_str(), "w");
-  std::size_t chosen = nCfg, metaStart = 0;
   std::vector<std::size_t> pending(W, 0);
   for (std::size_t t = 0; t + 1 < T; ++t) {
     // The sums: days settled by the close t, then the fade.
@@ -189,15 +196,27 @@ int main(int argc, char** argv) {
     // The day's results so far: the settings' books up to the close t (each day once).
     if (t > 0) {
       for (std::size_t c = 0; c < nCfg; ++c)
-        if (firstDay[c] && t >= firstDay[c]) past[c].add(book[c][t]);
-      if (chosen < nCfg) {
-        meta.add(book[chosen][t]), metaDays.push_back(book[chosen][t]);
-      }
+        if (firstDay[c] && t >= firstDay[c]) past[c].add(book[c][t]), pastH[c].add(book[c][t] - mkt[c / nP / (nL * nF)][t]);
+      if (plain.chosen < nCfg) plain.days.push_back(book[plain.chosen][t]);
+      if (hedged.chosen < nCfg) hedged.days.push_back(book[hedged.chosen][t] - mkt[hedged.chosen / nP / (nL * nF)][t]);
     }
     if (t < warm + 60) continue;
-    // The settings' picks at the close t, and their trades into the books.
     const auto& u = uni[t];
     if (u.size() < 2 * picks.back()) continue;
+    // Each window's market from the close t (and the hedge's costs on its first day).
+    const double hedgeCost = 2 * cost.side(u[0], p.C[t * N + u[0]]);
+    for (std::size_t w = 0; w < W; ++w) {
+      const double held = double(std::max(1, win[w].days));
+      std::vector<std::vector<swing::Leg>> all;
+      for (std::size_t i : u) {
+        auto lg = swing::legs(p, cost, win[w], t, i);
+        if (!lg.empty()) all.push_back(std::move(lg));
+      }
+      for (const auto& lg : all)
+        for (std::size_t k = 0; k < lg.size(); ++k)
+          if (lg[k].day < mkt[w].size()) mkt[w][lg[k].day] += (lg[k].gross + (k == 0 ? hedgeCost : 0.0)) / double(all.size()) / held;
+    }
+    // The settings' picks at the close t, and their trades into the books.
     for (std::size_t w = 0; w < W; ++w)
       for (std::size_t f = 0; f < nF; ++f)
         for (std::size_t l = 0; l < nL; ++l) {
@@ -225,33 +244,32 @@ int main(int argc, char** argv) {
             }
           }
         }
-    // The walk-forward choice for the next session: the best past Sharpe ratio after a year.
-    std::size_t best = nCfg;
-    double bestSh = -1e300;
-    for (std::size_t c = 0; c < nCfg; ++c)
-      if (past[c].n >= 250 && past[c].sharpe() > bestSh) bestSh = past[c].sharpe(), best = c;
-    if (best < nCfg && best != chosen) {
-      if (chosen < nCfg) {  // the whole book sold and the new one bought: a round trip on all of it
-        double rt = 0;
-        for (std::size_t i : u) rt += cost.roundTrip(i, p.C[t * N + i], p.C[t * N + i]);
-        rt /= double(u.size());
-        if (!metaDays.empty()) meta.sum -= rt, meta.sum2 += rt * rt - 2 * rt * metaDays.back(), metaDays.back() -= rt;
-        ++switches;
+    // The walk-forward choices for the next session.
+    double rt = 0;  // changing setting: the whole book sold and the new one bought
+    for (std::size_t i : u) rt += cost.roundTrip(i, p.C[t * N + i], p.C[t * N + i]);
+    rt /= double(u.size());
+    for (Meta* m : {&plain, &hedged}) {
+      const auto& ps = m == &plain ? past : pastH;
+      std::size_t best = nCfg;
+      for (std::size_t c = 0; c < nCfg; ++c)
+        if (ps[c].n >= 250 && (best == nCfg || ps[c].sharpe() > ps[best].sharpe())) best = c;
+      if (best == nCfg || best == m->chosen) continue;
+      if (m->chosen < nCfg && ps[best].sharpe() - ps[m->chosen].sharpe() <= std::sqrt(252.0 / double(ps[best].n))) continue;
+      if (m->chosen < nCfg) {
+        if (!m->days.empty()) m->days.back() -= rt;
+        ++m->switches;
+      } else {
+        m->start = t + 1;
       }
-      if (chosen == nCfg) metaStart = t + 1;
-      chosen = best;
+      m->chosen = best;
     }
-    if (trace && chosen < nCfg) {
-      std::fprintf(trace, "%s %zu", p.days[t].c_str(), chosen);
-      for (std::size_t i : picksAt[chosen]) std::fprintf(trace, " %s", p.tickers[i].c_str());
+    if (trace && plain.chosen < nCfg) {
+      std::fprintf(trace, "%s %zu %zu", p.days[t].c_str(), plain.chosen, hedged.chosen);
+      for (std::size_t i : picksAt[plain.chosen]) std::fprintf(trace, " %s", p.tickers[i].c_str());
       std::fprintf(trace, "\n");
     }
   }
   if (trace) std::fclose(trace);
-  // The halves of the walk-forward days.
-  for (std::size_t k = 0; k < metaDays.size(); ++k) (k < metaDays.size() / 2 ? metaH1 : metaH2).add(metaDays[k]);
-  double peak = 0, eq = 0, dd = 0;
-  for (double r : metaDays) eq += std::log1p(r), peak = std::max(peak, eq), dd = std::min(dd, eq - peak);
   const auto name = [&](std::size_t c) {
     const std::size_t q = c % nP, mdl = c / nP, l = mdl % nL, f = mdl / nL % nF, w = mdl / (nL * nF);
     char b[160];
@@ -260,30 +278,47 @@ int main(int argc, char** argv) {
   };
   std::printf("swing: %zu shares, %zu days (%s to %s); each day the %zu most traded%s; costs %s on %.0f a trade (auctions: no spread)\n", N, T,
               p.days.front().c_str(), p.days.back().c_str(), top, minPrice > 0 ? " at the price floor or above" : "", market.c_str(), capital);
-  std::printf("swing: walk-forward (every choice from the past only): %s, from %s; max drawdown %.1f%%; %ld changes of setting\n", fmt(meta).c_str(),
-              metaStart < T ? p.days[metaStart].c_str() : "-", 100 * (std::exp(dd) - 1), switches);
-  std::printf("swing:   first half  %s\n", fmt(metaH1).c_str());
-  std::printf("swing:   second half %s\n", fmt(metaH2).c_str());
+  for (const Meta* m : {&plain, &hedged}) {
+    Series all, h1, h2;
+    double peak = 0, eq = 0, dd = 0;
+    for (std::size_t k = 0; k < m->days.size(); ++k) {
+      all.add(m->days[k]), (k < m->days.size() / 2 ? h1 : h2).add(m->days[k]);
+      eq += std::log1p(m->days[k]), peak = std::max(peak, eq), dd = std::min(dd, eq - peak);
+    }
+    std::printf("swing: walk-forward, %s (every choice from the past only): %s, from %s; max drawdown %.1f%%; %ld changes of setting\n",
+                m == &plain ? "unhedged" : "hedged (less the market, short in an index fund)", fmt(all).c_str(), m->start < T ? p.days[m->start].c_str() : "-",
+                100 * (std::exp(dd) - 1), m->switches);
+    std::printf("swing:   first half  %s\n", fmt(h1).c_str());
+    std::printf("swing:   second half %s\n", fmt(h2).c_str());
+  }
   // For comparison only: each window's best setting chosen in hindsight over the same days.
   for (std::size_t w = 0; w < W; ++w) {
     std::size_t bc = nCfg;
     for (std::size_t c = 0; c < nCfg; ++c)
       if (c / nP / (nL * nF) == w && (bc == nCfg || past[c].sharpe() > past[bc].sharpe())) bc = c;
-    if (bc < nCfg) std::printf("swing:   hindsight, %-30s %s (%s)\n", win[w].name, fmt(past[bc]).c_str(), name(bc).c_str());
+    std::size_t bh = nCfg;
+    for (std::size_t c = 0; c < nCfg; ++c)
+      if (c / nP / (nL * nF) == w && (bh == nCfg || pastH[c].sharpe() > pastH[bh].sharpe())) bh = c;
+    if (bc < nCfg) std::printf("swing:   hindsight, %-30s %s (%s); hedged %s (%s)\n", win[w].name, fmt(past[bc]).c_str(), name(bc).c_str(), fmt(pastH[bh]).c_str(), name(bh).c_str());
   }
-  if (chosen < nCfg) {
-    const std::size_t mdl = chosen / nP;
-    std::printf("swing: learnt for the next session: %s\n", name(chosen).c_str());
+  // The next session's orders: the hedged or the unhedged choice, whichever's walk-forward Sharpe
+  // ratio is the better so far.
+  const auto sharpeOf = [](const Meta& m) { Series x; for (double r : m.days) x.add(r); return x.sharpe(); };
+  const Meta& use = sharpeOf(hedged) > sharpeOf(plain) ? hedged : plain;
+  const bool hedge = &use == &hedged;
+  if (use.chosen < nCfg) {
+    const std::size_t chosen = use.chosen, mdl = chosen / nP;
+    const auto& w = win[chosen / nP / (nL * nF)];
+    std::printf("swing: learnt for the next session: %s%s\n", name(chosen).c_str(), hedge ? ", hedged (the same amount short in an index fund)" : ", unhedged");
     std::printf("swing: its weights on the signal ranks:");
     for (std::size_t s = 0; s < S; ++s) std::printf(" %s %+.4f%s", sig[s].name, beta[mdl].empty() ? 0.0 : beta[mdl][1 + s], s + 1 < S ? "," : "\n");
-    std::printf("swing: next session's buys (%s): ", win[chosen / nP / (nL * nF)].name);
+    std::printf("swing: next session's buys (%s): ", w.name);
     for (std::size_t k = 0; k < picksAt[chosen].size(); ++k) std::printf("%s%s", k ? ", " : "", p.tickers[picksAt[chosen][k]].c_str());
     std::printf("\n");
     if (!ordersOut.empty()) {
-      const auto& w = win[chosen / nP / (nL * nF)];
       std::ofstream o(ordersOut);
       o << "{\"asOf\":\"" << p.days.back() << "\",\"model\":\"swing\",\"window\":\"" << w.name << "\",\"entry\":\"" << (w.entryAtClose ? "close" : "open")
-        << "\",\"days\":" << w.days << ",\"orders\":[";
+        << "\",\"days\":" << w.days << ",\"hedge\":" << (hedge ? "true" : "false") << ",\"orders\":[";
       for (std::size_t k = 0; k < picksAt[chosen].size(); ++k) o << (k ? "," : "") << "{\"ticker\":\"" << p.tickers[picksAt[chosen][k]] << "\"}";
       o << "]}\n";
     }
