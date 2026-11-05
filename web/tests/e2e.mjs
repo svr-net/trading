@@ -1,6 +1,6 @@
 // Browser test of the page in headless Chromium (Playwright): node web/tests/e2e.mjs
 // Serves web/ and checks that each market's published scan renders: the summary, the next open's
-// trades (at most 10), and, opened, the backtest tile, the chart and the last days, without page errors.
+// trades (no more than the scan's orders), and, opened, the backtest tile, the chart and the last days, without page errors.
 // Environment: PLAYWRIGHT_MODULE (path to playwright's index.mjs), CHROMIUM_PATH.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -38,7 +38,8 @@ for (const m of ['uk', 'us']) {
     const annual = await page.$eval('#verdict .tile .v', (e) => parseFloat(e.textContent) / 100);
     const drawn = await page.$eval('#chart', (c) => c.width > 0);
     const recent = await page.$$eval('#recent tbody tr', (r) => r.length);
-    if (trades > 10 || !Number.isFinite(annual) || !drawn || recent < 1) throw new Error(`not rendered: ${trades} trades, ${annual}, chart ${drawn}, ${recent} days`);
+    const orders = JSON.parse(fs.readFileSync(path.join(root, 'data', `${m}.json`), 'utf8')).orders.length;
+    if (trades > orders || !Number.isFinite(annual) || !drawn || recent < 1) throw new Error(`not rendered: ${trades} trades, ${annual}, chart ${drawn}, ${recent} days`);
     if (errors.length) throw new Error(errors.join(' | '));
     console.log(`ok   ${m}: ${trades} trades, backtest ${(100 * annual).toFixed(1)}% a year`);
   } catch (e) {
