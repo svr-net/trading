@@ -126,6 +126,7 @@ jobs:
               regime) export X_REGIME=1 ;;
               dipnn) export X_DIPNN=1 ;;
               fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
+              sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
             esac
           done
           STAMP=(--exit safety)

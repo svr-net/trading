@@ -613,9 +613,49 @@ def main():
         bracket(smart, f'{t.contract.symbol} (SMART)', int(o2.totalQuantity), o2.lmtPrice, take, stop)
     if resent:
         ib.sleep(5)
+    # An order IBKR refused for its size (201: "not exceeding N" shares, its own limit, read from its
+    # answer) goes again for N shares; one refused for its price step (110) goes again with its prices
+    # on the next coarser increment of the share's own market rule. Each refused order at most once per
+    # round, a few rounds; the refused one no longer counts.
+    import re
+    superseded = set()
+    for _round in range(4):
+        again = 0
+        for t in list(ib.trades()):
+            o2 = t.order
+            if o2.orderRef != ref or o2.parentId or o2.action != 'BUY' or o2.orderId in superseded \
+                    or t.orderStatus.status not in ('Cancelled', 'ApiCancelled', 'Inactive'):
+                continue
+            errs = errors.get(o2.orderId, [])
+            kids = [x.order for x in ib.trades() if x.order.parentId == o2.orderId]
+            take = next((k.lmtPrice for k in kids if k.orderType == 'LMT'), None)
+            stop = next((k.auxPrice for k in kids if k.orderType == 'STP'), None)
+            qty, lim = int(o2.totalQuantity), o2.lmtPrice
+            size = next((re.search(r'exceeding\s+([0-9]+)', e) for e in errs if e.startswith('201') and 'exceeding' in e), None)
+            if size and 0 < int(size.group(1)) < qty:
+                qty = int(size.group(1))
+            elif any(e.startswith('110') for e in errs):
+                details = ib.reqContractDetails(t.contract)[0]
+                rule = tick_rule(ib, details, t.contract.exchange if t.contract.exchange != 'SMART' else t.contract.primaryExchange)
+                now = tick_at(rule, details.minTick, lim)
+                coarser = sorted({step for _, step in (rule or ()) if step > now + 1e-12})
+                if not coarser:
+                    continue
+                step = coarser[0]
+                lim = round_to(lim, step, 'down')
+                take = round_to(take, step, 'up') if take else None
+                stop = round_to(stop, step, 'down') if stop else None
+            else:
+                continue
+            superseded.add(o2.orderId)
+            bracket(t.contract, f'{t.contract.symbol} (again)', qty, lim, take, stop, o2.goodAfterTime or None)
+            again += 1
+        if not again:
+            break
+        ib.sleep(5)
     accepted = rejected = 0
     for t in ib.openTrades() + [t for t in ib.trades() if t.orderStatus.status in ('Cancelled', 'ApiCancelled', 'Inactive')]:
-        if t.order.orderRef != ref or t.order.parentId:
+        if t.order.orderRef != ref or t.order.parentId or t.order.orderId in superseded:
             continue
         if t.contract.conId in resent and t.contract.exchange != 'SMART' and t.orderStatus.status in ('Cancelled', 'ApiCancelled', 'Inactive'):
             continue  # its SMART resend is the one that counts
