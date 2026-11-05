@@ -159,9 +159,14 @@ def record_check(market, path):
 def run_submit(args, timeout=300):
     p = subprocess.run([sys.executable, os.path.join(HERE, 'submit.py'), *args, '--host', IB_HOST, '--port', str(IB_PORT)],
                        capture_output=True, text=True, timeout=timeout)
-    # The summaries read the last line: the script's own (its standard output) when it succeeds, its
-    # error when it fails; ib_async's log lines on standard error never stand in for a result.
-    out = (p.stdout + p.stderr) if p.returncode else (p.stderr + p.stdout)
+    # The summaries read the last line: the script's own result (its standard output), success or
+    # failure, so ib_async's log lines on standard error never stand in for it (5 Nov: an EU close's
+    # failure showed only 'Error 300: Can't find EId'); its error last only when it crashed. A failure's
+    # whole output goes to the bridge's log (docker logs) too.
+    crashed = 'Traceback' in p.stderr or not p.stdout.strip()
+    out = (p.stdout + p.stderr) if crashed else (p.stderr + p.stdout)
+    if p.returncode:
+        sys.stderr.write(f"bridge: submit.py {' '.join(args)} exited {p.returncode}:\n{p.stdout}{p.stderr}\n")
     return p.returncode, out.strip()
 
 
