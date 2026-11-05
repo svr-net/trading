@@ -49,7 +49,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || contains(matrix.variant, 'opp')
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay'
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -94,16 +94,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
           cmake --build build --target ofm_research ofm_delay
-      - name: The opportunity (variant token opp) - the UK model's daily return per trade slot, walk-forward
-        if: contains(matrix.variant, 'opp')
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: |
-          set -o pipefail
-          node tools/eoddata/fetch.mjs --exchange LSE --universe 500 --years 9 --currency GBP --out data/uk.csv > /dev/null
-          X_NPICK=15 X_REGIME=1 ./build/ofm_research --csv data/uk.csv --lag 1 --scan --costs UK --pricing fixed --capital 5000 --exit safety \
-            --stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv --daily-out data/opp.csv | grep -E "self-adaptive" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "opportunity: $(($(wc -l < data/opp.csv) - 1)) days"
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -137,7 +127,7 @@ jobs:
               dipnn) export X_DIPNN=1 ;;
               fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
-              opp) export X_OPPORTUNITY=data/opp.csv ;;  # idle money charged the UK model's daily return (learnt walk-forward)
+              idle) export X_IDLE=1 ;;  # idle money charged this model's own mean daily result per slot (walk-forward)
             esac
           done
           STAMP=(--exit safety)

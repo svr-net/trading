@@ -33,7 +33,6 @@ std::string readFile(const std::string& p) {
 
 int main(int argc, char** argv) {
   std::string csv, seriesCsv, jsonOut, ordersOut;
-  std::string dailyOut;  // --daily-out: the self-adaptive backtest's daily return per trade slot (date,ret), for another market's opportunity cost
   std::size_t topN = 0;  // trade only each day's topN most traded (0: all)
   std::size_t lag = 0;   // a check on the data: trade on the predictions made lag closes earlier
   bool closeOnly = false, safetyOnly = false;  // --exit close: sold at the close; --exit safety: a safety stop only (see levelsAt)
@@ -52,7 +51,6 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--lag") lag = std::size_t(std::atol(argv[k + 1]));
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
-    if (std::string(argv[k]) == "--daily-out") dailyOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
     if (std::string(argv[k]) == "--costs") {
@@ -911,31 +909,13 @@ int main(int argc, char** argv) {
     // empirical Bayes (weight tau2 / (tau2 + sigma2 / n): the spread between shares against the noise
     // of the share's own mean, both measured from the data each day). The depth with the highest total
     // is the share's; one with little history keeps the learnt depth.
-    // X_OPPORTUNITY=file (research): money tied to an order that does not fill could have earned elsewhere;
-    // the file is another market's backtest (date, daily return per trade slot; ofm_research
-    // --daily-out), its mean up to each close the opportunity. A depth's total is then its score and the
-    // share's offset less (1 - its chance to fill) x the opportunity; the chance to fill is the share's own
-    // fills at that depth with one observation at all shares' rate; no depth with a positive total: no
-    // order for the share that day. Implies X_SHAREDEPTH.
-    const char* oppFile = std::getenv("X_OPPORTUNITY");
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || oppFile != nullptr;
-    std::vector<double> oppMean(T, 0.0);
-    if (oppFile) {
-      std::map<std::string, double> opp;
-      std::ifstream in(oppFile);
-      std::string line;
-      std::getline(in, line);
-      while (std::getline(in, line)) {
-        const auto c = line.find(',');
-        if (c != std::string::npos) opp[line.substr(0, c)] = std::atof(line.c_str() + c + 1);
-      }
-      double sum = 0, n = 0;
-      auto it = opp.begin();
-      for (std::size_t t = 0; t < T; ++t) {
-        while (it != opp.end() && it->first <= m.dates[t]) sum += it->second, n += 1, ++it;
-        oppMean[t] = n > 0 ? sum / n : 0.0;
-      }
-    }
+    // X_IDLE (research): money tied to an order that does not fill could have earned what this model's
+    // own trades earn: a depth's total for a share is its score and offset less (1 - its chance to fill)
+    // times the model's mean daily result per trade slot so far (its own walk-forward days); the chance
+    // to fill is the share's own fills at that depth with one observation at all shares' rate. No depth
+    // with a positive total: no order for the share that day. Implies X_SHAREDEPTH.
+    const bool idleCost = std::getenv("X_IDLE") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || idleCost;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
@@ -970,7 +950,11 @@ int main(int argc, char** argv) {
     std::vector<double> poolF(nE, 0.0), poolN(nE, 0.0);
     const auto shareDepth = [&](std::size_t t, std::size_t i) {
       shareOffsets(t);
-      const double op = oppFile ? oppMean[t] : 0.0;
+      double op = 0;
+      if (idleCost && !adaptiveLevels.empty()) {
+        for (double y : adaptiveLevels) op += y;
+        op /= double(adaptiveLevels.size());
+      }
       const auto total = [&](std::size_t q) {
         const double pooled = poolN[q] > 0 ? poolF[q] / poolN[q] : 0.5;
         const double pf = (sdF[i * nE + q] + pooled) / (sdN[i * nE + q] + 1.0);
@@ -979,7 +963,7 @@ int main(int argc, char** argv) {
       std::size_t bq = 0;
       for (std::size_t q = 1; q < nE; ++q)
         if (total(q) > total(bq)) bq = q;
-      if (oppFile && !(total(bq) > 0)) return kNaN;  // no depth earns more than the money would elsewhere: no order
+      if (idleCost && !(total(bq) > 0)) return kNaN;  // no depth earns more than the money would elsewhere: no order
       return dvals[bq];
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
@@ -1382,11 +1366,6 @@ int main(int argc, char** argv) {
   // ranked of the pool with their last closes, whose opening auctions the bridge records (--auction),
   // and the pool's tickers, whose daily bars the bridge fetches from IBKR (--bars); and the model's own
   // result for the latest day's orders (check), which the bridge sets beside the broker's fills.
-  if (!dailyOut.empty()) {
-    std::ofstream o(dailyOut);
-    o << "date,ret\n";
-    for (std::size_t q = 0; q < lastRun.ret.size() && q < lastRun.dates.size(); ++q) o << lastRun.dates[q] << ',' << lastRun.ret[q] << '\n';
-  }
   if (!ordersOut.empty()) {
     std::ofstream o(ordersOut);
     // slots: the trades the money pays for; when there are more orders (X_FILLN), the bridge holds the
