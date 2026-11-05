@@ -291,13 +291,26 @@ def placed_digest_file(market):
 
 
 def orders_changed(market):
-    """Whether the day's orders file is newer than the one placed today (a rerun of the market's scan
-    during the day)."""
-    f = placed_digest_file(market)
-    if not os.path.exists(f):
+    """Whether the day's orders file differs from the orders placed today (a rerun of the market's scan
+    during the day): its orders (share and limit) against today's last 'placed' record in the history,
+    which every bridge version writes, so a bridge redeployed mid-day still sees it."""
+    day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+    last = None
+    try:
+        for line in open(os.path.join(HISTORY, 'history.jsonl')).read().splitlines()[-400:]:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('kind') == 'placed' and r.get('market') == market and r.get('date') == day:
+                last = r
+    except OSError:
         return False
-    path = fetch_orders(market)
-    return hashlib.sha256(open(path, 'rb').read()).hexdigest() != open(f).read().strip()
+    if not last:
+        return False
+    key = lambda orders: sorted((o.get('ticker'), round(float(o.get('limit') or 0), 6)) for o in orders)  # noqa: E731
+    book = json.load(open(fetch_orders(market)))
+    return key(book.get('orders', [])) != key(last.get('orders', []))
 
 
 def replace_orders(market):
