@@ -8,7 +8,8 @@ Writes report/ofm.json and report/ofm.txt (the live strategy, as before), report
 and .txt for each shadow, and report/strategies.json (the market's strategies, results only). With
 --publish-orders (the main branch): the orders to data/eoddata/orders/<MARKET>.json (live) and
 data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is built at that version
-first (in .pins/<ref>). A shadow that fails is reported and skipped; the live one failing fails the run.
+first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
+tools/eoddata/aim.txt). A shadow that fails is reported and skipped; the live one failing fails the run.
 """
 import argparse
 import json
@@ -34,6 +35,8 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: only the model's research switches (X_*) may be set, not {bad}")
         if 'ref' in s and not REF.match(s['ref']):
             sys.exit(f"strategies: {market} {s['name']}: a bad ref {s['ref']!r}")
+        if s.get('only') not in (None, 'aim'):
+            sys.exit(f"strategies: {market} {s['name']}: an unknown share filter {s['only']!r}")
     return out
 
 
@@ -51,6 +54,19 @@ def binary(ref):
     return exe
 
 
+def only_aim(csv):
+    """The share list's AIM shares only (tools/eoddata/aim.txt), as a file beside it."""
+    out = csv + '.aim.csv'
+    if not os.path.exists(out):
+        aim = {l.split(',')[0].strip() for l in open('tools/eoddata/aim.txt') if l.strip()}
+        with open(csv) as f, open(out, 'w') as o:
+            o.write(next(f))
+            for line in f:
+                if line.split(',', 2)[1] in aim:
+                    o.write(line)
+    return out
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument('--market', required=True)
@@ -64,14 +80,18 @@ def main():
     for s in strategies(args.config, args.market):
         live = s['role'] == 'live'
         stem = 'ofm' if live else f"shadow-{s['name']}"
-        cmd = [binary(s.get('ref')), *model, '--json', f'report/{stem}.json']
+        args_m = list(model)
+        if s.get('only') == 'aim' and '--csv' in args_m:
+            k = args_m.index('--csv') + 1
+            args_m[k] = only_aim(args_m[k])
+        cmd = [binary(s.get('ref')), *args_m, '--json', f'report/{stem}.json']
         if args.publish_orders:
             path = f'data/eoddata/orders/{args.market}.json' if live else f"data/eoddata/shadow/{args.market}-{s['name']}.json"
             os.makedirs(os.path.dirname(path), exist_ok=True)
             cmd += ['--orders', path]
         env = {k: v for k, v in os.environ.items() if not k.startswith('X_')}
         env.update(s.get('env', {}), X_VERIFY='1')
-        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
         with open(f'report/{stem}.txt', 'w') as log:
             p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             log.write(p.stdout)
@@ -81,7 +101,7 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} failed ({p.returncode})")
             print(f"strategies: the shadow {s['name']} failed ({p.returncode}): skipped")
             continue
-        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'report': f'{stem}.json'})
+        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'report': f'{stem}.json'})
     with open('report/strategies.json', 'w') as f:
         json.dump(index, f, indent=1)
 
