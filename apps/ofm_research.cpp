@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   // --costs UK|US: the broker's costs on every filled trade (kernels/v2/levels.wgsl), --capital the
   // amount a trade, --stamp the UK stamp duty on buying, --stamp-free a file of the tickers exempt
   // from it (AIM shares, one ticker a line).
-  std::string stampFree, venuesFile, costMarket, segmentsFile;
+  std::string stampFree, venuesFile, costMarket, segmentsFile, overrideFile;
   double rebuyWeight = 0.35;  // how a day daily bars cannot settle counts in a buy-back (--rebuy-weight; measured by ofm_paths)
   bool fixedPricing = true;  // --pricing fixed (the default: IBKR's fixed commissions) or tiered  // --venues: each exchange's costs (see fee below)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
@@ -64,10 +64,36 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--rebuy-weight") rebuyWeight = std::atof(argv[k + 1]);  // measured by ofm_paths
     if (std::string(argv[k]) == "--pricing") fixedPricing = std::string(argv[k + 1]) != "tiered";
     if (std::string(argv[k]) == "--venues") venuesFile = argv[k + 1];
+    if (std::string(argv[k]) == "--override") overrideFile = argv[k + 1];
   }
   for (int k = 1; k < argc; ++k)
     if (std::string(argv[k]) == "--scan") scanOnly = true;
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
+  // --override (IBKR's own daily bars, the same format): where it has a share's day, its open, high,
+  // low and close replace the store's (the volume stays: the pool's ranks are the store's). Reported:
+  // how far the store's lows were from IBKR's (a low the exchange's book never traded at fills a dip
+  // limit in the backtest that IBKR would not).
+  if (!overrideFile.empty()) {
+    const ofm::Market ib = ofm::parseMarketCsv(readFile(overrideFile));
+    std::map<std::string, std::size_t> di, ti;
+    for (std::size_t t = 0; t < mk.T(); ++t) di[mk.dates[t]] = t;
+    for (std::size_t i = 0; i < mk.N(); ++i) ti[mk.tickers[i]] = i;
+    std::vector<double> gap;
+    std::size_t deeper = 0;
+    for (std::size_t u = 0; u < ib.T(); ++u)
+      for (std::size_t j = 0; j < ib.N(); ++j) {
+        const auto d = di.find(ib.dates[u].substr(0, 10)), k = ti.find(ib.tickers[j]);
+        const double o = ib.open(u, j), h = ib.high(u, j), l = ib.low(u, j), c = ib.close(u, j);
+        if (d == di.end() || k == ti.end() || !(o > 0 && h > 0 && l > 0 && c > 0)) continue;
+        const std::size_t t = d->second, i = k->second;
+        if (mk.low(t, i) > 0) gap.push_back(std::log(l / mk.low(t, i))), deeper += mk.low(t, i) < l * 0.99;
+        mk.open(t, i) = o, mk.high(t, i) = h, mk.low(t, i) = l, mk.close(t, i) = c;
+      }
+    std::sort(gap.begin(), gap.end());
+    if (gap.empty()) std::printf("IBKR bars: none in common with the store (%s)\n", overrideFile.c_str());
+    else std::printf("IBKR bars: %zu share-days replaced; the store's low below IBKR's by a median %.2f%%, by over 1%% on %.1f%% of them (%s)\n", gap.size(),
+                     100 * gap[gap.size() / 2], 100.0 * double(deeper) / double(gap.size()), overrideFile.c_str());
+  }
   // Impossible bars (a low above the open or the close, a high below them, a price not above zero)
   // are dropped as missing.
   std::size_t dropped = 0;
