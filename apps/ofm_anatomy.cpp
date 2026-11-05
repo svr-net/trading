@@ -9,8 +9,9 @@
 //   CC    bought at the close, sold at the next close
 //   H5    bought at the next open, held 5 days (a fifth of the book renewed each day)
 //   H20   the same, 20 days
-// The returns are net of a round trip's costs: the commission (IBKR's US fixed rate: $0.005 a share,
-// at least $1, at most 1%, on --capital a trade) on both sides. Every window buys and sells in the
+// The returns are net of a round trip's costs (IBKR's, apps/swing.hpp: the commission on both sides,
+// the taxes). ON and CC buy in the same close's auction the signal is read at: a measure of where the
+// returns are, not a tradable rule (apps/ofm_swing.cpp trades only what orders can). Every window buys and sells in the
 // opening or the closing auction, which cross at one price: no spread. The book renews 1/h of itself
 // a day over h days. The share list is today's (the store's): shares delisted since are missing, so
 // the long side of a falling-share signal is flattered; the top less the bottom tenth is less so.
@@ -19,20 +20,19 @@
 // ratio, the t statistic, and the first and the second half of the days apart (a pattern found in
 // the first half must hold in the second to be worth anything).
 //
-//   ofm_anatomy --csv stocks.csv [--top 500] [--min-price 5] [--capital 5000]
+//   ofm_anatomy --csv stocks.csv [--costs US|UK|EU|APAC] [--top 500] [--min-price 5] [--capital 5000]
+//               [--venues tools/venues.txt] [--stamp-free aim.txt]
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <functional>
-#include <map>
-#include <sstream>
 #include <string>
 #include <vector>
 
+#include "swing.hpp"
+
 namespace {
-const double kNaN = std::nan("");
+using swing::kNaN;
 
 struct Series {
   double sum = 0, sum2 = 0;
@@ -57,123 +57,37 @@ std::string fmt(const Series& s) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv;
+  std::string csv, market = "US", venues, stampFree;
   std::size_t top = 500;
-  double minPrice = 5, capital = 5000;
+  double minPrice = 0, capital = 5000;
   for (int k = 1; k + 1 < argc; ++k) {
     const std::string a = argv[k];
     if (a == "--csv") csv = argv[++k];
     else if (a == "--top") top = std::size_t(std::atol(argv[++k]));
     else if (a == "--min-price") minPrice = std::atof(argv[++k]);
     else if (a == "--capital") capital = std::atof(argv[++k]);
+    else if (a == "--costs") market = argv[++k];
+    else if (a == "--venues") venues = argv[++k];
+    else if (a == "--stamp-free") stampFree = argv[++k];
   }
   if (csv.empty()) {
-    std::fprintf(stderr, "usage: ofm_anatomy --csv stocks.csv [--top 500] [--min-price 5] [--capital 5000]\n");
+    std::fprintf(stderr, "usage: ofm_anatomy --csv stocks.csv [--costs US|UK|EU|APAC] [--top 500] [--min-price 5] [--capital 5000] [--venues f] [--stamp-free f]\n");
     return 2;
   }
-  // The panel: days x shares.
-  std::map<std::string, std::size_t> dayIx, tickIx;
-  std::vector<std::vector<std::string>> rows;
-  {
-    std::ifstream in(csv);
-    std::string line;
-    std::getline(in, line);
-    while (std::getline(in, line)) {
-      std::vector<std::string> f;
-      std::stringstream ss(line);
-      for (std::string x; std::getline(ss, x, ',');) f.push_back(x);
-      if (f.size() < 7) continue;
-      dayIx.emplace(f[0], 0), tickIx.emplace(f[1], 0);
-      rows.push_back(std::move(f));
-    }
-  }
-  std::size_t T = 0, N = 0;
-  for (auto& [d, i] : dayIx) i = T++;
-  for (auto& [t, i] : tickIx) i = N++;
-  std::vector<double> O(T * N, kNaN), H = O, L = O, C = O, V = O;
-  for (const auto& f : rows) {
-    const std::size_t at = dayIx[f[0]] * N + tickIx[f[1]];
-    const double o = std::atof(f[2].c_str()), h = std::atof(f[3].c_str()), l = std::atof(f[4].c_str()), c = std::atof(f[5].c_str());
-    if (o > 0 && h > 0 && l > 0 && c > 0 && h >= l) O[at] = o, H[at] = h, L[at] = l, C[at] = c, V[at] = std::atof(f[6].c_str());
-  }
-  rows.clear();
-  const auto ok = [&](std::size_t t, std::size_t i) { return t < T && C[t * N + i] > 0; };
-  const auto ret = [&](std::size_t t, std::size_t i, std::size_t back) {  // close t-back to close t
-    return t >= back && ok(t, i) && ok(t - back, i) ? C[t * N + i] / C[(t - back) * N + i] - 1 : kNaN;
-  };
-  // The median traded value (20 days, the past only).
-  std::vector<double> value(T * N, kNaN);
-  for (std::size_t i = 0; i < N; ++i) {
-    std::vector<double> win;
-    for (std::size_t t = 1; t < T; ++t) {
-      if (ok(t, i)) win.push_back(C[t * N + i] * V[t * N + i]);
-      if (win.size() > 20) win.erase(win.begin());
-      if (win.size() == 20) {
-        std::vector<double> s = win;
-        std::nth_element(s.begin(), s.begin() + 10, s.end());
-        value[t * N + i] = s[10];
-      }
-    }
-  }
-  const auto commission = [&](double price) {  // one side, a fraction of the trade
-    const double shares = std::floor(capital / price);
-    return shares > 0 ? std::min(0.01, std::max(1.0, 0.005 * shares) / capital) : 0.01;
-  };
-  // The signals, known at the close t (higher: bought). NaN: none.
-  struct Signal { const char* name; std::function<double(std::size_t, std::size_t)> f; };
-  const auto vol = [&](std::size_t t, std::size_t i, std::size_t n) {
-    Series s;
-    for (std::size_t k = 0; k < n; ++k) {
-      const double r = ret(t - k, i, 1);
-      if (!std::isfinite(r)) return kNaN;
-      s.add(r);
-    }
-    return s.sd();
-  };
-  const std::vector<Signal> sig = {
-      {"loser 1d", [&](std::size_t t, std::size_t i) { return -ret(t, i, 1); }},
-      {"loser 5d", [&](std::size_t t, std::size_t i) { return -ret(t, i, 5); }},
-      {"loser 20d", [&](std::size_t t, std::size_t i) { return -ret(t, i, 20); }},
-      {"momentum 12-1m", [&](std::size_t t, std::size_t i) { return t >= 252 && ok(t - 21, i) && ok(t - 252, i) ? C[(t - 21) * N + i] / C[(t - 252) * N + i] - 1 : kNaN; }},
-      {"near 52w high", [&](std::size_t t, std::size_t i) {
-         if (t < 252) return kNaN;
-         double h = 0;
-         for (std::size_t k = 0; k < 252; ++k) if (ok(t - k, i)) h = std::max(h, H[(t - k) * N + i]);
-         return h > 0 ? C[t * N + i] / h : kNaN; }},
-      {"low volatility", [&](std::size_t t, std::size_t i) { return t >= 21 ? -vol(t, i, 20) : kNaN; }},
-      {"low max day", [&](std::size_t t, std::size_t i) {
-         if (t < 22) return kNaN;
-         double m = -1;
-         for (std::size_t k = 0; k < 21; ++k) { const double r = ret(t - k, i, 1); if (std::isfinite(r)) m = std::max(m, r); }
-         return -m; }},
-      {"close near low", [&](std::size_t t, std::size_t i) {  // internal bar strength, low: bought
-         const double h = H[t * N + i], l = L[t * N + i];
-         return h > l ? -(C[t * N + i] - l) / (h - l) : kNaN; }},
-      {"day fell open-close", [&](std::size_t t, std::size_t i) { return -(C[t * N + i] / O[t * N + i] - 1); }},
-      {"gapped down", [&](std::size_t t, std::size_t i) { return t >= 1 && ok(t - 1, i) ? -(O[t * N + i] / C[(t - 1) * N + i] - 1) : kNaN; }},
-      {"volume surge", [&](std::size_t t, std::size_t i) {
-         if (t < 60) return kNaN;
-         double a = 0, b = 0;
-         for (std::size_t k = 0; k < 60; ++k) { if (!ok(t - k, i)) return kNaN; (k < 5 ? a : b) += V[(t - k) * N + i]; }
-         return b > 0 ? (a / 5) / (b / 55) : kNaN; }},
-      {"below 20d mean", [&](std::size_t t, std::size_t i) {
-         if (t < 20) return kNaN;
-         double s = 0;
-         for (std::size_t k = 0; k < 20; ++k) { if (!ok(t - k, i)) return kNaN; s += C[(t - k) * N + i]; }
-         return -(C[t * N + i] / (s / 20) - 1); }},
-      {"loser 5d, low vol", [&](std::size_t t, std::size_t i) { const double v = t >= 21 ? vol(t, i, 20) : kNaN; return v > 0 ? -ret(t, i, 5) / v : kNaN; }},
-  };
+  const swing::Panel p = swing::load(csv);
+  const std::size_t T = p.T, N = p.N;
+  const auto& O = p.O;
+  const auto& C = p.C;
+  const auto ok = [&](std::size_t t, std::size_t i) { return p.ok(t, i); };
+  const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
+  const auto commission = [&](std::size_t i, double price) { return cost.side(i, price); };
+  const auto sig = swing::signals(p);
   const std::vector<std::pair<const char*, int>> windows = {{"ON", -1}, {"ID", 1}, {"CC", 0}, {"H5", 5}, {"H20", 20}};
   const std::size_t S = sig.size(), W = windows.size();
   // Each day's tradable shares and, for each signal, its top and bottom tenths (formed at the close t).
-  std::vector<std::vector<std::size_t>> uni(T);
+  const auto uni = swing::universe(p, top, minPrice);
   std::vector<std::vector<std::vector<std::size_t>>> topSet(S, std::vector<std::vector<std::size_t>>(T)), botSet = topSet;
   for (std::size_t t = 0; t < T; ++t) {
-    std::vector<std::pair<double, std::size_t>> v;
-    for (std::size_t i = 0; i < N; ++i)
-      if (ok(t, i) && C[t * N + i] >= minPrice && std::isfinite(value[t * N + i])) v.emplace_back(value[t * N + i], i);
-    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-    for (std::size_t r = 0; r < std::min(top, v.size()); ++r) uni[t].push_back(v[r].second);
     for (std::size_t s = 0; s < S; ++s) {
       std::vector<std::pair<double, std::size_t>> z;
       for (std::size_t i : uni[t]) {
@@ -193,18 +107,18 @@ int main(int argc, char** argv) {
     const double cf = C[f * N + i];
     if (h == -1) {  // ON: close f to open f+1
       if (!(O[d * N + i] > 0)) return 0.0;
-      return O[d * N + i] / cf - 1 - (net ? 2 * commission(cf) : 0.0);
+      return O[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) : 0.0);
     }
     if (h == 0) {  // CC: close f to close f+1, both auctions
       if (!ok(d, i)) return 0.0;
-      return C[d * N + i] / cf - 1 - (net ? 2 * commission(cf) : 0.0);
+      return C[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) : 0.0);
     }
     const std::size_t age = d - f;  // 1: the entry day (open to close)
     if (!ok(d, i) || !(O[(f + 1) * N + i] > 0)) return 0.0;
     double r = age == 1 ? C[d * N + i] / O[(f + 1) * N + i] - 1 : (ok(d - 1, i) ? C[d * N + i] / C[(d - 1) * N + i] - 1 : 0.0);
     if (net) {
-      if (age == 1) r -= commission(O[(f + 1) * N + i]);
-      if (age == std::size_t(h)) r -= commission(C[d * N + i]);
+      if (age == 1) r -= commission(i, O[(f + 1) * N + i]);
+      if (age == std::size_t(h)) r -= commission(i, C[d * N + i]);
     }
     return r;
   };
@@ -224,8 +138,8 @@ int main(int argc, char** argv) {
     return have ? sum / double(n) : kNaN;
   };
   const std::size_t start = 260, mid = start + (T - start) / 2;
-  std::printf("anatomy: %zu shares, %zu days (%s to %s); each day the %zu most traded at %.0f or more; costs: IBKR US fixed on %.0f a trade, auctions only (no spread); today's share list (survivors)\n",
-              N, T, dayIx.begin()->first.c_str(), dayIx.rbegin()->first.c_str(), top, minPrice, capital);
+  std::printf("anatomy: %zu shares, %zu days (%s to %s); each day the %zu most traded at %.0f or more; costs %s on %.0f a trade, auctions only (no spread); today's share list (survivors)\n",
+              N, T, p.days.front().c_str(), p.days.back().c_str(), top, minPrice, market.c_str(), capital);
   const auto first = [&](std::size_t d) { return d < mid; };
   // The market itself over each window (gross and net), every tradable share equally weighted.
   std::printf("anatomy: %-22s %-4s %24s | %24s | %24s\n", "the market (all held)", "win", "all days: a year Sh t", "first half", "second half");

@@ -106,7 +106,9 @@ jobs:
         run: |
           set -o pipefail
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
-          for TOP in 500 100; do ./build/ofm_anatomy --csv data/stocks.csv --top "$TOP" --capital "$CAPITAL"; done | tee report.txt
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
+          case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
+          for TOP in 500 100; do ./build/ofm_anatomy "${A[@]}" --top "$TOP"; done | tee report.txt
           { echo "### $MARKET anatomy"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The swing model, walk-forward (variant swing; results only)
         if: matrix.variant == 'swing'
