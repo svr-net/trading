@@ -55,6 +55,22 @@
     },
     "ref": null
    }
+  ],
+  "us": [
+   {
+    "name": "base",
+    "role": "live",
+    "env": {},
+    "ref": null
+   },
+   {
+    "name": "regime",
+    "role": "shadow",
+    "env": {
+     "X_REGIME": "1"
+    },
+    "ref": null
+   }
   ]
  }
 }
