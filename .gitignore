@@ -84,3 +84,4 @@ __pycache__/
 .env
 docker/ibkr/.env
 docker/ibkr/nas/
+.pins/

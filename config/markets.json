@@ -1,0 +1,30 @@
+{
+  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version). Changing a market's strategy is a change to this file, reviewed in a pull request.",
+  "markets": {
+    "UK": {
+      "live": { "name": "n15-regime", "env": { "X_NPICK": "15", "X_REGIME": "1" } },
+      "shadows": [
+        { "name": "n15-regime-fillnet", "env": { "X_NPICK": "15", "X_REGIME": "1", "X_FILLNET": "1" } }
+      ]
+    },
+    "EU": {
+      "live": { "name": "sharedepth-filln", "env": { "X_SHAREDEPTH": "1", "X_FILLN": "1" } },
+      "shadows": [
+        { "name": "sharedepth", "env": { "X_SHAREDEPTH": "1" } },
+        { "name": "fillnet", "env": { "X_FILLNET": "1" } }
+      ]
+    },
+    "US": {
+      "live": { "name": "base", "env": {} },
+      "shadows": [
+        { "name": "regime", "env": { "X_REGIME": "1" } }
+      ]
+    },
+    "APAC": {
+      "live": { "name": "base", "env": {} },
+      "shadows": [
+        { "name": "regime", "env": { "X_REGIME": "1" } }
+      ]
+    }
+  }
+}

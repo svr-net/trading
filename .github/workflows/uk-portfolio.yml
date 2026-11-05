@@ -140,31 +140,31 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p report
-          ORDERS=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then mkdir -p data/eoddata/orders; ORDERS=(--orders "data/eoddata/orders/$MARKET.json"); fi
+          PUBLISH=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then PUBLISH=(--publish-orders); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
           STAMP=(); if [ "$MARKET" = UK ]; then node tools/eoddata/aim.mjs tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
           # UK: which shares trade through the opening and closing auctions (the exchange's monthly
           # instrument list; the committed one if that fails): the others pay a half-spread each way.
           if [ "$MARKET" = UK ]; then node tools/eoddata/lse_segments.mjs tools/eoddata/lse_segments.csv || true; STAMP+=(--segments tools/eoddata/lse_segments.csv); fi
-          # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, 1,000 in Asia-Pacific).
+          # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
           # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
           # else sold at the close): shares stopped in the opening volatility mostly recover by the close
           # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).
           STAMP+=(--exit safety)
-          # X_VERIFY: every day's kernel trades are checked against the trade path that makes the orders;
-          # any difference stops the run before anything is published.
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
           # to GBP 6,000), USD 5,000 in the US, EUR 5,000 in Europe, 5,000 in Asia-Pacific (AUD, SGD; the
           # exchanges' amounts are in tools/venues.txt).
           CAPITAL=5000
-          # Per market (8-year walk-forward backtests with IBKR's fills and costs, 5 Nov): the EU each share's
-          # own limit depth (X_SHAREDEPTH) and the number of orders learnt from how often they fill
-          # (X_FILLN; the bridge holds the orders beyond the 10 the money pays for out of the opening auction
-          # and cancels the rest once 10 have bought): 16.0% -> 33.1% a year, Sharpe 2.42 -> 2.58, 1.07 ->
-          # 2.97 buys a day. The UK 15 orders a day, the limit's unit times the market's range (X_REGIME).
-          case "$MARKET" in UK) export X_NPICK=15 X_REGIME=1;; EU) export X_SHAREDEPTH=1 X_FILLN=1;; esac
-          X_VERIFY=1 ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" "${ORDERS[@]}" --json report/ofm.json | tee report/ofm.txt
+          # The market's strategies (config/markets.json): the live one makes the orders the bridge places;
+          # each shadow runs on the same data, its orders kept in the store and never placed, its results
+          # beside the live one's on the page. Every run checks the kernel's trades against the trade
+          # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
+          python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
+          grep -E "^strategies|self-adaptive pool|  orders:|before costs" report/strategies.log || true  # each strategy's headline in the log
+          for f in report/shadow-*.txt; do
+            if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
+          done
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already
@@ -206,7 +206,16 @@ jobs:
             git fetch -q origin main && git reset -q --hard origin/main
             jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' report/ofm.json > "web/data/$M.json"  # the page names the exchanges scanned
             python3 tools/report/daily_email.py track report/ofm.json "$TRACK"
-            git add "web/data/$M.json" "$TRACK"
+            # The shadows (results only, as the live one's) and the market's entry in the strategies' index.
+            for f in report/shadow-*.json; do
+              [ -f "$f" ] || continue
+              n=${f#report/shadow-}; n=${n%.json}
+              jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' "$f" > "web/data/$M-$n.json"
+              python3 tools/report/daily_email.py track "$f" "web/data/track-$M-$n.json"
+              git add "web/data/$M-$n.json" "web/data/track-$M-$n.json"
+            done
+            python3 -c "import json,sys; p='web/data/strategies.json'; d=json.load(open(p)) if __import__('os').path.exists(p) else {'about':'Each market\'s strategies: the live one and its shadows (config/markets.json); results only.','markets':{}}; s=json.load(open('report/strategies.json')); d['markets'][s['market'].lower()]=[{'name':x['name'],'role':x['role'],'env':x['env'],'ref':x['ref']} for x in s['strategies']]; json.dump(d,open(p,'w'),indent=1)"
+            git add "web/data/$M.json" "$TRACK" web/data/strategies.json
             if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
             git commit -q -m "$MARKET scan $(date -u +%Y-%m-%d) (results only)"
             git push -q origin HEAD:main && break
