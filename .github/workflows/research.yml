@@ -72,13 +72,23 @@ jobs:
                 | sort -k1,1 -k2,2gr | awk '{c[$1]++; if (c[$1] <= 100) print $3}' > data/keep.txt
               { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' data/keep.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;;
           esac
+          # Combinable tokens (variant = tokens joined by +): noamsosl, the share list without Amsterdam and Oslo.
+          case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
           echo "shares: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l), days: $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort -u | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Build the model
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research
+          cmake --build build --target ofm_research ofm_delay
+      - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
+        if: matrix.variant == 'delay'
+        run: |
+          set -o pipefail
+          node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
+          ./build/ofm_delay --daily data/stocks.csv --bars data/intraday.csv --cost 0.004 | tee report.txt
+          { echo "### $MARKET delay"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
+        if: matrix.variant != 'delay'
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
@@ -92,9 +102,20 @@ jobs:
             npick20) export X_NPICK=20 ;;
             ridge) export X_LEARN_RIDGE=1 ;;
           esac
+          # Combinable tokens (variant = tokens joined by +): n<k> k trades a day, tilt, dipscale (the limit in
+          # the share's own dips), regime (deeper when the market's range is wide), dip0, ridge.
+          for tok in $(echo "$V" | tr '+' ' '); do
+            case "$tok" in
+              n[0-9]*) export X_NPICK="${tok#n}" ;;
+              tilt) export X_TILT=1 ;;
+              dipscale) export X_DIPSCALE=1 ;;
+              regime) export X_REGIME=1 ;;
+              dipnn) export X_DIPNN=1 ;;
+            esac
+          done
           STAMP=(--exit safety)
           case "$MARKET" in EU|APAC) STAMP+=(--venues tools/venues.txt);; esac
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
           ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report.txt
-          { echo "### $MARKET $V"; echo '```'; grep -E "a year|candidate trades|calibration|filled|verify" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|candidate trades|calibration|filled|verify|dip network" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"

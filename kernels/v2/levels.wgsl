@@ -9,7 +9,7 @@
 // previous close, sigma, the half-spread factor, the SAR (0 none), 1 with 20 days of history, its
 // seven cost fields (see costOf), then the falls at the u0 tail fractions and the rises at them
 // (logs from the open over the last 100 days), then the NT buy-back fractions, the unclear days' mode
-// and their weight. dv [t0] the limit depths (sigmas below the previous
+// and their weight, then the limit's unit (sigma, or the share's own dip scale). dv [t0] the limit depths (units below the previous
 // close), av [u1] the SAR weights. ret [N][T]: the trade's return (0 when the limit is not reached,
 // or when the stop-loss sits within a spread of the entry: a trade stopped as it fills is skipped).
 @group(0) @binding(1) var<storage, read> st : array<f32>;
@@ -63,7 +63,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     let c : f32 = st[b + 3u];
     let half : f32 = st[b + 6u];
     let sar : f32 = st[b + 7u];
-    let lim : f32 = st[b + 4u] * exp(-dv[ce] * st[b + 5u]);
+    let lim : f32 = st[b + 4u] * exp(-dv[ce] * st[b + P.K - 1u]);  // the limit's unit: the slot's last field
     var entry : f32 = 0.0;
     var intra : bool = false;
     var y : f32 = 0.0;

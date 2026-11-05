@@ -12,7 +12,8 @@
 namespace ofm::net {
 
 /// A network of two hidden layers of rectified linear units (at most 64) and linear outputs,
-/// trained by Adam on the quantile loss (output o is the quantile tau[o] of its target).
+/// trained by Adam on the quantile loss (output o is the quantile tau[o] of its target; tau[o] < 0:
+/// its mean, by the squared loss).
 struct Net {
   std::size_t In, Hd, Out;
   std::vector<double> w, m, v, tau;
