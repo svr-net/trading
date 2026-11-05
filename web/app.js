@@ -165,6 +165,38 @@ function showMarket(m) {
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
     .then((r) => { if (market === m) render(r, name); })
     .catch(() => { if (market === m) $('asof').textContent = `No ${name} scan has been published yet; it appears after the next scheduled run.`; });
+  sideBySide(m);
+}
+// The market's strategies (data/strategies.json, from config/markets.json): the live one and its
+// shadows, each with its backtest and its record since tracking began (the same days for each).
+function sideBySide(m) {
+  const el = $('sidebyside');
+  el.replaceChildren();
+  const get = (f) => fetch(`data/${f}`, { cache: 'no-cache' }).then((res) => (res.ok ? res.json() : null)).catch(() => null);
+  get('strategies.json').then(async (idx) => {
+    const list = idx?.markets?.[m] || [];
+    if (!list.length) { table(el, [['Strategy']], [{ gap: 'one strategy: the live one (no shadows published yet)' }]); return; }
+    const liveTrack = m === 'uk' ? 'track.json' : `track-${m}.json`;
+    const rows = await Promise.all(list.map(async (s) => {
+      const live = s.role === 'live';
+      const [r, t] = await Promise.all([get(live ? `${m}.json` : `${m}-${s.name}.json`), get(live ? liveTrack : `track-${m}-${s.name}.json`)]);
+      return { s, r, t };
+    }));
+    const since = rows.map((x) => x.t?.days?.[0]?.date).filter(Boolean).sort().pop();  // the days all have
+    const record = (t) => {
+      const d = (t?.days || []).filter((x) => !since || x.date >= since).map((x) => x.day ?? 0);
+      return d.length ? [d.reduce((w, x) => w * (1 + x), 1) - 1, d.length] : [null, 0];
+    };
+    if (market !== m) return;
+    table(el, [['Strategy'], ['Backtest a year', 'num'], ['Sharpe', 'num'], ['Orders bought', 'num'], ['Tracked', 'num'], ['Next open', 'num']],
+      rows.map(({ s, r, t }) => {
+        const B = r?.backtest || {};
+        const [rec, n] = record(t);
+        return [[`${s.name}${s.role === 'live' ? ' (live)' : ' (shadow)'}`], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
+          [B.orders ? `${Math.round(100 * B.trades / B.orders)}%` : '–', 'num'], n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num'],
+          [r ? String((r.orders || []).length) : '–', 'num']];
+      }));
+  });
 }
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => showMarket(b.dataset.market));
 showMarket(market);

@@ -58,6 +58,9 @@
     <div class="chart"><canvas id="chart" height="300" aria-label="Growth of 1 for the daily trades"></canvas><div class="legend" id="legend"></div></div>
     <h3>Last 20 days</h3>
     <div class="table-scroll"><table id="recent"></table></div>
+    <h3>Strategies side by side</h3>
+    <div class="table-scroll"><table id="sidebyside"></table></div>
+    <p class="hint" id="sidebyside-hint">The live strategy places the orders; each shadow runs on the same data every day and is never traded. The days since tracking began count the same daily results for each, so a shadow that keeps beating the live one is the case for switching (config/markets.json).</p>
     <p class="hint">A simulation of the same orders over the past years, every decision made only from what was known at the time, after Interactive Brokers' commissions and taxes. It is likely optimistic: the share lists are today's (companies that failed are missing) and small shares' opening prices may be better than an order could get. Your own results are what counts.</p>
   </section>
 
