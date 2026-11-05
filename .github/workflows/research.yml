@@ -149,7 +149,6 @@ jobs:
               fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               idle) export X_IDLE=1 ;;  # idle money charged this model's own mean daily result per slot (walk-forward)
-              atlimit) export X_FILLATLIMIT=1 ;;  # every fill pays the limit (IBKR's fills: within 0.24% of it)
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
             esac
           done

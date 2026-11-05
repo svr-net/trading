@@ -94,9 +94,9 @@ int main(int argc, char** argv) {
   // Which shares trade through the exchange's opening and closing auctions (--segments: the London
   // Stock Exchange's instrument list, ticker,segment: the SETS order book's segments, SET*, STMM and
   // AMSM, uncross at the open and the close at one price; the others, SETSqx and quote-driven, trade
-  // with market makers at their quotes). A share without auctions buys at the open's offer and sells
-  // at the close's bid: a half-spread each way (as a stop or a take-profit already pays), in the
-  // backtest, the ranking and the expectation alike. Without --segments, every share has auctions.
+  // with market makers at their quotes). A share without auctions sells at the close's bid (a
+  // half-spread, as a stop or a take-profit already pays), in the backtest, the ranking and the
+  // expectation alike. Without --segments, every share has auctions.
   std::vector<char> quoted(N, 0);
   if (!segmentsFile.empty()) {
     std::istringstream in(readFile(segmentsFile));
@@ -445,7 +445,8 @@ int main(int argc, char** argv) {
     // c 0 to 3), the ranking (the expected return net of the share's own costs, over its volatility to
     // the power 1 - beta: 0 ranks in volatilities, 1 by the expected net return), the entry (a limit buy d standard
     // deviations below the previous close, d -2 to 2: filled at the open when the stock opens at or
-    // below it, else during the day when its low trades half a spread through it, else not traded;
+    // below it (at the limit, or at the open's offer for a limit above the previous close), else
+    // during the day when its low trades half a spread through it, else not traded;
     // after a fill during the day the take-profit is not credited, its high may have come first), and
     // the levels, from the entry, relative to each stock's
     // own moves from the open over its last 100 days (log low/open and log high/open): the stop-loss
@@ -651,11 +652,10 @@ int main(int argc, char** argv) {
     // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
     // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
     const bool netRank = !std::getenv("X_GROSSRANK");
-    // X_FILLATLIMIT (research): no gain from an open below a dip limit (at or under the last close):
-    // it pays the limit, as IBKR's fills do (all within 0.24% under it, 30 Oct to 4 Nov); a limit above
-    // the last close buys at the open's offer (the open and a half-spread) or the limit if lower.
-    // X_FULLSPREAD (research): every share buys at the open's offer and sells at the close's bid.
-    const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;
+    // An open fill: no gain from an open below a dip limit (at or under the last close): it pays the
+    // limit, as IBKR's fills do (all within 0.24% under it, 30 Oct to 4 Nov); a limit above the last
+    // close buys at the open's offer (the open and a half-spread) or the limit if lower.
+    // X_FULLSPREAD (research): every share sells at the close's bid too.
     const bool fullSpread = std::getenv("X_FULLSPREAD") != nullptr;
     const bool verify = std::getenv("X_VERIFY") != nullptr;
     // The buy-back after a stop (a learnt setting, axis 7): daily bars cannot tell whether the high
@@ -878,7 +878,7 @@ int main(int argc, char** argv) {
       r.limit = L / pc - 1;
       bool intraday = false;
       const bool noAuction = fullSpread || quoted[i];
-      if (o <= L) r.entry = fillAtLimit && L <= pc ? L : fillAtLimit || noAuction ? std::min(o * half, L) : o, r.filled = 1;
+      if (o <= L) r.entry = L <= pc ? L : std::min(o * half, L), r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       // The levels as the orders set them before the open (as kernels/v2/levels.wgsl): from the anchor,
@@ -888,7 +888,7 @@ int main(int argc, char** argv) {
       if (fs * half * half > 1) return Trade{r.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0};  // a stop within a spread of the anchor: no order (cash)
       const double stop = anchor * fs, take = anchor * fk;
       r.stop = stop / r.entry - 1, r.take = fk < 1e300 ? take / r.entry - 1 : 0.0;
-      double px = noAuction ? c / half : c;  // without auctions (or X_FULLSPREAD): the open's buy at the offer, the close's sale at the bid
+      double px = noAuction ? c / half : c;  // without auctions (or X_FULLSPREAD): the close's sale at the bid
       if (!intraday && o <= stop) px = o / half, r.exit = 1;  // opened through the stop: sold at the open
       else if (lo <= stop) px = stop / half, r.exit = 1;
       else if (!intraday && hi >= take * half) px = std::max(take, o), r.exit = 2;  // a take-profit below the open fills at the open
@@ -1170,7 +1170,7 @@ int main(int argc, char** argv) {
               slotOf[i] = long(ns++);
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
-                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fillAtLimit ? 2.0 : fullSpread || quoted[i] ? 3.0 : 1.0) : 0.0});
+                                   std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fullSpread || quoted[i] ? 3.0 : 1.0) : 0.0});
               st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
