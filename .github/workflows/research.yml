@@ -155,9 +155,14 @@ jobs:
             esac
           done
           STAMP=(--exit safety)
-          case "$MARKET" in EU|APAC) STAMP+=(--venues tools/venues.txt);; esac
-          if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          VENUES=tools/venues.txt
+          # Token amount<k>: k a trade (the exchanges' own currencies) in place of tools/venues.txt's and the capital.
+          for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in amount[0-9]*)
+            CAPITAL="${tok#amount}"; VENUES=data/venues.txt
+            awk -v ex=",$EXCHANGES," -v k="$CAPITAL" '!/^#/ && index(ex, "," $1 ",") { $2 = k } { print }' tools/venues.txt > "$VENUES";; esac; done
+          case "$MARKET" in EU|APAC) STAMP+=(--venues "$VENUES");; esac
+          if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           # Token ibkr: IBKR's own daily bars in place of the store's where the bridge fetched them.
           case "+$V+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && STAMP+=(--override "data/eoddata/ibkr/$MARKET/daily.csv") || echo "IBKR bars: none for $MARKET in the store" >> report0.txt;; esac
           ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
