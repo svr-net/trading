@@ -494,19 +494,22 @@ int main(int argc, char** argv) {
     // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
     // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
     // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
-    const std::size_t nK = (aimCap ? 6 : 1) * 2, nR = nC * nB * nK, nV = nR * nE * nLv;
+    // Without X_TILT an odd code selects exactly what the even one below it does (same cap, no gate), so
+    // only the even codes are on the lattice (half the records to keep; the same choices, as a tie goes to
+    // the lower code and the code is never refined between its neighbours).
+    const bool tiltOn = std::getenv("X_TILT") != nullptr;
+    const std::size_t kStep = tiltOn ? 1 : 2, nK = (aimCap ? 6 : 1) * 2 / kStep, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
     const auto gateOf = [&](double) { return true; };
     // X_TILT (research): the selection's code k % 2 (else unused) learnt as a tilt of the limit's depth by
     // the signal's rank: of a day's n trades the strongest a lattice step (0.5 sd) shallower, the weakest
     // a step deeper (floor(2j/(n-1) - 1/2) steps for the j-th), so strong signals miss fewer buys.
-    const bool tiltOn = std::getenv("X_TILT") != nullptr;
     const auto tiltOf = [&](double k) { return tiltOn && (std::size_t(std::floor(k + 0.5)) % 2 == 1); };
     const auto tiltSteps = [](std::size_t j, std::size_t n) { return n > 1 ? std::floor(2.0 * double(j) / double(n - 1) - 0.5) : 0.0; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
-      if (d == 2) return x;  // the selection's code (capOf, gateOf)
+      if (d == 2) return double(kStep) * x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
@@ -1190,7 +1193,7 @@ int main(int argc, char** argv) {
       rankLiquidity(t, false);
       std::vector<std::vector<std::pair<double, std::size_t>>> v(nR);
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / (nB * nK))), axis(1, double(k / nK % nB)), axis(2, double(k % nK)));
-      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2];  // no AIM cap, no gate
+      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2 / kStep], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2 / kStep];  // no AIM cap, no gate
       double r = 0, pm = 0;
       const auto oc = [&](std::size_t i) { const double x = m.close(t + 1, i) / m.open(t + 1, i) - 1; return std::isfinite(x) ? x : 0.0; };  // no bar: cash
       for (const auto& e : all0) r += oc(e.second) / double(all0.size()), pm += e.first / double(all0.size());

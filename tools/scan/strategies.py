@@ -77,6 +77,10 @@ def main():
     model = args.model[1:] if args.model[:1] == ['--'] else args.model
     os.makedirs('report', exist_ok=True)
     index = {'market': args.market, 'strategies': []}
+    # Every strategy's command first (a pinned version built, the AIM share list written), then all of
+    # them at once: each is deterministic and writes only its own files, so running them side by side
+    # changes nothing but the time (the model's kernels leave cores idle between their dispatches).
+    jobs = []
     for s in strategies(args.config, args.market):
         live = s['role'] == 'live'
         stem = 'ofm' if live else f"shadow-{s['name']}"
@@ -91,15 +95,19 @@ def main():
             cmd += ['--orders', path]
         env = {k: v for k, v in os.environ.items() if not k.startswith('X_')}
         env.update(s.get('env', {}), X_VERIFY='1')
+        log = open(f'report/{stem}.txt', 'w')
+        jobs.append((s, live, stem, subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT), log))
+    for s, live, stem, p, log in jobs:
+        code = p.wait()
+        log.close()
         print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
-        with open(f'report/{stem}.txt', 'w') as log:
-            p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            log.write(p.stdout)
-        sys.stdout.write(p.stdout)
-        if p.returncode:
+        sys.stdout.write(open(f'report/{stem}.txt').read())
+        if code:
             if live:
-                sys.exit(f"strategies: the live strategy {s['name']} failed ({p.returncode})")
-            print(f"strategies: the shadow {s['name']} failed ({p.returncode}): skipped")
+                for _, _, _, q, _ in jobs:
+                    q.kill()
+                sys.exit(f"strategies: the live strategy {s['name']} failed ({code})")
+            print(f"strategies: the shadow {s['name']} failed ({code}): skipped")
             continue
         index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'report': f'{stem}.json'})
     with open('report/strategies.json', 'w') as f:

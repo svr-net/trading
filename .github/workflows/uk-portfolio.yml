@@ -52,6 +52,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The model's build, tests and no-look-ahead checks (generated data only) run in the background while
+      # the data downloads; the model step waits for them, and nothing is published if they fail.
+      - name: Build the model and run its checks (in the background)
+        run: |
+          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
       # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
       # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
@@ -104,11 +109,12 @@ jobs:
       # EODData serves only today's fundamentals: each day's, for the model's shares, are kept in the
       # store (fundamentals/<EXCHANGE>/<date>.csv.gz) so that a history builds up; with the latest
       # profiles (sectors, industries). A failure here does not stop the scan.
-      - name: Keep the day's fundamentals and the profiles (svr-net/eod)
+      - name: Keep the day's fundamentals and the profiles (svr-net/eod; in the background)
         continue-on-error: true
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals | tee -a "$GITHUB_STEP_SUMMARY"
+        # In the background (the model does not read them): the push step waits for it.
+        run: nohup sh -c 'node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals; echo $? > profiles.rc' > profiles.log 2>&1 &
       - name: Update futures, index and currency series (only the days missing)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
@@ -128,11 +134,6 @@ jobs:
             echo "last:    $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Build the model
-        run: |
-          sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
-          cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_tests
       # The predictive model (apps/ofm_research, fused kernels in kernels/v2): every share's
       # features from its daily OHLCV, a walk-forward linear model with liquidity and volatility
       # interactions, traded on the prediction one close older (so bid-ask bounce between the
@@ -140,8 +141,11 @@ jobs:
       # and sold at the close. Results only.
       # Before anything is published: the model's tests and its no-look-ahead checks (a generated
       # market: later data changed, a day's bars removed, the kernel against the trade path).
-      - name: Tests and no-look-ahead checks
-        run: ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research
+      - name: Tests and no-look-ahead checks (the build started above)
+        run: |
+          for i in $(seq 1 600); do if [ -f build.rc ]; then break; fi; sleep 2; done
+          cat build.log
+          exit "$(cat build.rc 2>/dev/null || echo 1)"
       - name: The model and the daily trades (results only)
         run: |
           set -o pipefail
@@ -172,6 +176,14 @@ jobs:
             if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The day's fundamentals (started above)
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          if [ ! -f profiles.log ]; then exit 0; fi
+          for i in $(seq 1 900); do if [ -f profiles.rc ]; then break; fi; sleep 1; done
+          tee -a "$GITHUB_STEP_SUMMARY" < profiles.log
+          exit "$(cat profiles.rc 2>/dev/null || echo 1)"
       # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
       # rebase and retry; a file both jobs updated (the shared series) keeps the version already
       # pushed, which holds the same days.
