@@ -107,17 +107,17 @@ int main(int argc, char** argv) {
     const double cf = C[f * N + i];
     if (h == -1) {  // ON: close f to open f+1
       if (!(O[d * N + i] > 0)) return 0.0;
-      return O[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) : 0.0);
+      return O[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) + cost.buyTax(i, true) : 0.0);
     }
     if (h == 0) {  // CC: close f to close f+1, both auctions
       if (!ok(d, i)) return 0.0;
-      return C[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) : 0.0);
+      return C[d * N + i] / cf - 1 - (net ? 2 * commission(i, cf) + cost.buyTax(i, true) : 0.0);
     }
     const std::size_t age = d - f;  // 1: the entry day (open to close)
     if (!ok(d, i) || !(O[(f + 1) * N + i] > 0)) return 0.0;
     double r = age == 1 ? C[d * N + i] / O[(f + 1) * N + i] - 1 : (ok(d - 1, i) ? C[d * N + i] / C[(d - 1) * N + i] - 1 : 0.0);
     if (net) {
-      if (age == 1) r -= commission(i, O[(f + 1) * N + i]);
+      if (age == 1) r -= commission(i, O[(f + 1) * N + i]) + cost.buyTax(i, h != 1);
       if (age == std::size_t(h)) r -= commission(i, C[d * N + i]);
     }
     return r;

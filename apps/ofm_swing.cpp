@@ -9,7 +9,7 @@
 // fade (none, or a half-life), the ridge and the number of shares bought (5, 10, 20). Every setting
 // trades on paper every day from the start; each close, the setting whose past daily results (net of
 // the broker's costs: apps/swing.hpp) have the best Sharpe ratio, after a year of them, is the one
-// traded the next session. Changing setting sells the whole book and buys the new one, at its costs.
+// traded the next session. Every trade ends the same day (bought at the open, sold at the close).
 // The headline is that walk-forward result (every choice from the past only), in full and its first
 // and second half apart; the settings fixed in hindsight are shown beside it only for comparison.
 //
@@ -248,9 +248,6 @@ int main(int argc, char** argv) {
           }
         }
     // The walk-forward choices for the next session.
-    double rt = 0;  // changing setting: the whole book sold and the new one bought
-    for (std::size_t i : u) rt += cost.roundTrip(i, p.C[t * N + i], p.C[t * N + i]);
-    rt /= double(u.size());
     for (Meta* m : {&plain, &hedged}) {
       const auto& ps = m == &plain ? past : pastH;
       std::size_t best = nCfg;
@@ -258,12 +255,8 @@ int main(int argc, char** argv) {
         if (ps[c].n >= 250 && (best == nCfg || ps[c].sharpe() > ps[best].sharpe())) best = c;
       if (best == nCfg || best == m->chosen) continue;
       if (m->chosen < nCfg && ps[best].sharpe() - ps[m->chosen].sharpe() <= std::sqrt(252.0 / double(ps[best].n))) continue;
-      if (m->chosen < nCfg) {
-        if (!m->days.empty()) m->days.back() -= rt;
-        ++m->switches;
-      } else {
-        m->start = t + 1;
-      }
+      if (m->chosen < nCfg) ++m->switches;  // every trade ends the same day: nothing to sell on a change
+      else m->start = t + 1;
       m->chosen = best;
     }
     if (trace && plain.chosen < nCfg) {
