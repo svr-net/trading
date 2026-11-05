@@ -1,11 +1,13 @@
 name: Delete merged branches
 
 # Deletes a pull request's branch once it is merged, and on demand every branch already merged
-# into main (main itself is kept).
+# into main, plus the branches named (stale ones not merged; main is always kept).
 on:
   pull_request:
     types: [closed]
   workflow_dispatch:
+    inputs:
+      branches: { description: 'Also delete these branches (comma separated; never main)', default: '' }
 
 permissions:
   contents: write
@@ -24,8 +26,13 @@ jobs:
         run: git push origin --delete "$BRANCH" || echo "$BRANCH is already gone"
       - name: Delete every branch merged into main
         if: github.event_name == 'workflow_dispatch'
+        env:
+          NAMED: ${{ inputs.branches }}
         run: |
           git fetch --prune origin
           git branch -r --merged origin/main | sed 's#^ *origin/##' | grep -v -E '^(main|HEAD)( |$)' | while read -r b; do
             git push origin --delete "$b" && echo "deleted $b"
+          done
+          printf '%s\n' "$NAMED" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v -E '^(main|HEAD|)$' | while read -r b; do
+            git push origin --delete "$b" && echo "deleted $b" || echo "$b: not found"
           done
