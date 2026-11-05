@@ -59,6 +59,7 @@ inside Docker, published on 127.0.0.1 only), PORT (8765).
 """
 import base64
 import hmac
+import hashlib
 import json
 import math
 import os
@@ -264,6 +265,7 @@ def place_and_watch(market):
     watch until the close's time in the same thread, so the watch connects only after the placing
     has let go of the market's client. Returns (ok, summary)."""
     path = fetch_orders(market)
+    digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()
     as_of = json.load(open(path)).get('asOf', '')
     if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
         return False, f'orders from {as_of or "?"} are too old: not placed'
@@ -278,8 +280,35 @@ def place_and_watch(market):
         return False, summary or 'failed'
     placed(market, path, False)
     mark_done(market, 'place')
+    with open(placed_digest_file(market), 'w') as f:  # the file placed today: a newer one is placed too (scheduler)
+        f.write(digest)
     in_background(market, 'rebuy', watch_rebuy)
     return True, summary
+
+
+def placed_digest_file(market):
+    return os.path.join(CACHE, f'placed-{market}-{datetime.now(ZoneInfo(ZONE[market])).date().isoformat()}.sha256')
+
+
+def orders_changed(market):
+    """Whether the day's orders file is newer than the one placed today (a rerun of the market's scan
+    during the day)."""
+    f = placed_digest_file(market)
+    if not os.path.exists(f):
+        return False
+    path = fetch_orders(market)
+    return hashlib.sha256(open(path, 'rb').read()).hexdigest() != open(f).read().strip()
+
+
+def replace_orders(market):
+    """A newer orders file during the day: the watch lets go of the market's client, the orders not
+    yet placed go in (those already placed are kept), then the watch starts again on the new file."""
+    free_client(market)
+    for _ in range(30):  # the watch's thread notices its process ended
+        if market not in REBUY_RUNNING:
+            break
+        time.sleep(1)
+    return place_and_watch(market)
 
 
 def watch_rebuy(market):
@@ -630,8 +659,12 @@ def scheduler():
                 if up and settled and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
                     job(m, 'place', place_and_watch, done_on_ok=False)  # place_and_watch marks it and starts the watch
                 if up and is_done(m, 'place') and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
-                        and may_try(m, 'rebuy', 5):
+                        and (m, 'replace') not in RUNNING and may_try(m, 'rebuy', 5):
                     job(m, 'rebuy', watch_rebuy, done_on_ok=False)
+                # A newer orders file during the session (the scan run again): placed too, without anyone pressing anything.
+                if up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and (m, 'place') not in RUNNING \
+                        and (m, 'replace') not in RUNNING and may_try(m, 'replace-check', 3) and orders_changed(m):
+                    job(m, 'replace', replace_orders, done_on_ok=False)
                 start = AUCTION.get(m) or place
                 if PATHS and up and at(now, start) <= now < at(now, close, 15) and m not in PATHS_RUNNING and not is_done(m, 'paths') \
                         and may_try(m, 'paths', 5):
@@ -785,7 +818,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == '/place':
             if not body.get('dryRun'):  # in the background (minutes), then the buy-back watch; the status shows it when done
-                in_background(m, 'place', place_and_watch)
+                in_background(m, 'place', replace_orders)  # the running watch lets go of the client first
                 return self.reply(202, {'ok': True, 'log': f'{m}: placing the orders (a few minutes; already placed shares are skipped), then watching the stops for buy-backs. Diagnostics shows the result.'})
             try:
                 code, out = run_submit(['--market', m, '--orders', fetch_orders(m), '--capital', str(CAPITAL)] + (['--dry-run'] if body.get('dryRun') else []))
