@@ -516,8 +516,13 @@ def main():
     # A rerun the same day places only what is not there yet: a share with an order or a fill of
     # today's reference (from any client) is skipped, so an interrupted placing is never doubled.
     dead = ('Cancelled', 'ApiCancelled', 'Inactive', 'PendingCancel')  # an order IBKR no longer works: placed again
-    have = {t.contract.conId for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.orderStatus.status not in dead}
-    have |= {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
+    open_now = [t for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.orderStatus.status not in dead]
+    have = {t.contract.conId for t in open_now}
+    bought_ids = {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
+    have |= bought_ids
+    # A share placed earlier today and not filled at all: a newer orders file moves its prices instead.
+    waiting = {t.contract.conId: t for t in open_now if t.order.action == 'BUY' and not t.order.parentId
+               and t.orderStatus.filled == 0 and t.contract.conId not in bought_ids}
     resent = set()
 
     def bracket(contract, sym, qty, lim, take, stop, good_after=None):
@@ -560,7 +565,7 @@ def main():
         if not qualified(ib, contract):
             print(f'  {sym}: not found at IBKR, skipped')
             continue
-        if contract.conId in have:
+        if contract.conId in have and contract.conId not in waiting:
             print(f'  {sym}: already placed today, skipped')
             continue
         details = ib.reqContractDetails(contract)[0]
@@ -591,6 +596,24 @@ def main():
             continue
         take = round_to(o['take'] * scale, tick(o['take'] * scale), 'up') if o.get('take') else None
         stop = round_to(o['stop'] * scale, tick(o['stop'] * scale), 'down') if o.get('stop') else None
+        if contract.conId in waiting:  # placed earlier today, unfilled: its prices moved to this file's
+            t0 = waiting[contract.conId]
+            if abs(t0.order.lmtPrice - lim) < 1e-9:
+                print(f'  {sym}: already placed today at {lim}, kept')
+                continue
+            kids = [x for x in ib.openTrades() if x.order.parentId == t0.order.orderId]
+            t0.order.lmtPrice = lim
+            t0.order.transmit = not kids
+            ib.placeOrder(t0.contract, t0.order)
+            for k, x in enumerate(kids):
+                if x.order.orderType == 'LMT' and take:
+                    x.order.lmtPrice = take
+                if x.order.orderType == 'STP' and stop:
+                    x.order.auxPrice = stop
+                x.order.transmit = k == len(kids) - 1
+                ib.placeOrder(x.contract, x.order)
+            print(f'  {sym}: moved to buy {t0.order.totalQuantity:g} limit {lim}' + (f', take {take}' if take else '') + (f', stop {stop}' if stop else ''))
+            continue
         bracket(contract, sym, qty, lim, take, stop, after if after and k_order >= slots else None)
     # IBKR's answer to each order (a rejection comes after placeOrder returns). An order refused only
     # for being routed directly to the exchange (10311: the gateway's API precautions; BYPASS_WARNING
