@@ -43,9 +43,11 @@ const places = (r, source) => {
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 };
 
-// The markets traded automatically (the bridge's AUTO_MARKETS once it answers; the UK until then);
-// the others are research only.
-let live = new Set(['UK']);
+// The markets traded automatically: the bridge's AUTO_MARKETS once it answers, remembered in this
+// browser for when it cannot be reached (away from home); UK and EU until it has answered once.
+const LIVE_KEY = 'trading.live';
+let live = new Set(['UK', 'EU']);
+try { const v = JSON.parse(localStorage.getItem(LIVE_KEY)); if (Array.isArray(v) && v.length) live = new Set(v); } catch { /* none kept */ }
 const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')}${c.venues ? ' (each exchange\'s currency)' : ''}` : '');
 
 // The plan in plain words, the orders, and the backtest (folded away).
@@ -58,7 +60,9 @@ function render(r, source) {
   $('summary').className = `summary ${isLive ? 'live' : 'research'}`;
   $('summary').innerHTML = isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; anything bought is sold by the close.`
-    : `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`;
+    : (r.backtest?.sharpe ?? 0) < 1
+      ? `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
+      : `<strong>Not traded automatically:</strong> the bridge does not trade this market (AUTO_MARKETS)${n ? '; the orders below are what it would place' : ''}.`;
   $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`;
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
   const head = [['Share'], ['Buy at', 'num']];
@@ -213,6 +217,7 @@ function brokerProbe(opened) {
       + (last ? ` · last action: ${last.market} ${last.action} ${last.when}, ${last.ok ? 'ok' : 'FAILED'}` : '');
     // The markets the bridge trades are the live ones; the others are research.
     const auto2 = new Set(Object.keys(s.auto || {}));
+    if (auto2.size) try { localStorage.setItem(LIVE_KEY, JSON.stringify([...auto2])); } catch { /* not kept */ }
     if (auto2.size && [...auto2].join() !== [...live].join()) { live = auto2; if (shown) render(shown, MARKETS[market]); }
     brokerOrders();
     $('history-title').hidden = false;
