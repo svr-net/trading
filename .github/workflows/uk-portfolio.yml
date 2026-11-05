@@ -161,6 +161,7 @@ jobs:
           # beside the live one's on the page. Every run checks the kernel's trades against the trade
           # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
           python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
+          grep -E "^strategies|self-adaptive pool|  orders:|before costs" report/strategies.log || true  # each strategy's headline in the log
           for f in report/shadow-*.txt; do
             if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
