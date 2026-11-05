@@ -75,7 +75,7 @@ std::string fmt(const Series& s) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, market, venues, stampFree, ordersOut, traceOut;
+  std::string csv, market, venues, stampFree, ordersOut, traceOut, overrideCsv;
   std::size_t top = 500;
   double capital = 5000, minPrice = 0;
   for (int k = 1; k + 1 < argc; ++k) {
@@ -88,13 +88,16 @@ int main(int argc, char** argv) {
     else if (a == "--venues") venues = argv[++k];
     else if (a == "--stamp-free") stampFree = argv[++k];
     else if (a == "--orders") ordersOut = argv[++k];
+    else if (a == "--override") overrideCsv = argv[++k];  // another source's bars where it has them (IBKR's)
     else if (a == "--trace") traceOut = argv[++k];  // each close: the setting chosen and its picks (the no-look-ahead check)
   }
   if (csv.empty() || market.empty()) {
     std::fprintf(stderr, "usage: ofm_swing --csv stocks.csv --costs US|UK|EU|APAC [--capital 5000] [--top 500] [--min-price 5] [--venues f] [--stamp-free f] [--orders out.json]\n");
     return 2;
   }
-  const swing::Panel p = swing::load(csv);
+  swing::Panel loaded = swing::load(csv);
+  const std::string overridden = overrideCsv.empty() ? "" : swing::override(loaded, overrideCsv);
+  const swing::Panel& p = loaded;
   const std::size_t T = p.T, N = p.N;
   const auto uni = swing::universe(p, top, minPrice);
   const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
@@ -278,11 +281,13 @@ int main(int argc, char** argv) {
   };
   std::printf("swing: %zu shares, %zu days (%s to %s); each day the %zu most traded%s; costs %s on %.0f a trade (auctions: no spread)\n", N, T,
               p.days.front().c_str(), p.days.back().c_str(), top, minPrice > 0 ? " at the price floor or above" : "", market.c_str(), capital);
+  if (!overridden.empty()) std::printf("swing: bars from %s: %s\n", overrideCsv.c_str(), overridden.c_str());
   for (const Meta* m : {&plain, &hedged}) {
-    Series all, h1, h2;
+    Series all, h1, h2, last;
     double peak = 0, eq = 0, dd = 0;
     for (std::size_t k = 0; k < m->days.size(); ++k) {
       all.add(m->days[k]), (k < m->days.size() / 2 ? h1 : h2).add(m->days[k]);
+      if (k + 500 >= m->days.size()) last.add(m->days[k]);
       eq += std::log1p(m->days[k]), peak = std::max(peak, eq), dd = std::min(dd, eq - peak);
     }
     std::printf("swing: walk-forward, %s (every choice from the past only): %s, from %s; max drawdown %.1f%%; %ld changes of setting\n",
@@ -290,6 +295,7 @@ int main(int argc, char** argv) {
                 100 * (std::exp(dd) - 1), m->switches);
     std::printf("swing:   first half  %s\n", fmt(h1).c_str());
     std::printf("swing:   second half %s\n", fmt(h2).c_str());
+    std::printf("swing:   last 500    %s\n", fmt(last).c_str());
   }
   // For comparison only: each window's best setting chosen in hindsight over the same days.
   for (std::size_t w = 0; w < W; ++w) {

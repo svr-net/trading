@@ -56,6 +56,38 @@ inline Panel load(const std::string& csv) {
   return p;
 }
 
+// The bars of another source where it has them (e.g. IBKR's own daily bars: their open is the
+// opening auction's price), in place of the panel's; returns a summary of how far the panel's opens
+// were from them (share-days compared, the median gap, the share of gaps over 1%).
+inline std::string override(Panel& p, const std::string& csv) {
+  std::map<std::string, std::size_t> dayIx, tickIx;
+  for (std::size_t t = 0; t < p.T; ++t) dayIx[p.days[t]] = t;
+  for (std::size_t i = 0; i < p.N; ++i) tickIx[p.tickers[i]] = i;
+  std::ifstream in(csv);
+  std::string line;
+  std::getline(in, line);
+  std::vector<double> gap;
+  while (std::getline(in, line)) {
+    std::vector<std::string> f;
+    std::stringstream ss(line);
+    for (std::string x; std::getline(ss, x, ',');) f.push_back(x);
+    if (f.size() < 7) continue;
+    const auto d = dayIx.find(f[0].substr(0, 10)), k = tickIx.find(f[1]);
+    if (d == dayIx.end() || k == tickIx.end()) continue;
+    const std::size_t at = d->second * p.N + k->second;
+    const double o = std::atof(f[2].c_str()), h = std::atof(f[3].c_str()), l = std::atof(f[4].c_str()), c = std::atof(f[5].c_str());
+    if (!(o > 0 && h > 0 && l > 0 && c > 0 && h >= l)) continue;
+    if (p.O[at] > 0) gap.push_back(std::fabs(std::log(p.O[at] / o)));
+    p.O[at] = o, p.H[at] = h, p.L[at] = l, p.C[at] = c;
+  }
+  char b[200];
+  if (gap.empty()) return "no share-day in common";
+  std::sort(gap.begin(), gap.end());
+  const double over = double(gap.end() - std::upper_bound(gap.begin(), gap.end(), 0.01)) / double(gap.size());
+  std::snprintf(b, sizeof b, "%zu share-days replaced; the panel's open was off by a median %.2f%%, by over 1%% on %.1f%% of them", gap.size(), 100 * gap[gap.size() / 2], 100 * over);
+  return b;
+}
+
 // Each day's tradable shares: a price of at least minPrice, 20 days of trading, and among the top
 // most traded by their median daily traded value over those 20 days (the past only).
 inline std::vector<std::vector<std::size_t>> universe(const Panel& p, std::size_t top, double minPrice) {

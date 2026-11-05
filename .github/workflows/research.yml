@@ -49,7 +49,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay'
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing'
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -117,7 +117,10 @@ jobs:
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
-          for TOP in 500 100; do ./build/ofm_swing "${A[@]}" --top "$TOP"; done | tee report.txt
+          # Beside the store's bars: the same with IBKR's own daily bars where the bridge fetched them
+          # (their open is the opening auction's), to tell a real edge from a wrong open in the data.
+          IB=data/eoddata/ibkr/$MARKET/daily.csv
+          { for TOP in 500 100; do ./build/ofm_swing "${A[@]}" --top "$TOP"; [ -f "$IB" ] && ./build/ofm_swing "${A[@]}" --top "$TOP" --override "$IB"; done; [ -f "$IB" ] || echo "swing: no IBKR bars for $MARKET in the store"; } | tee report.txt
           { echo "### $MARKET swing"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
         if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing'
