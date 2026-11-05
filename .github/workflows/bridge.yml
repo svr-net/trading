@@ -5,6 +5,8 @@
 name: Bridge monitor
 on:
   workflow_dispatch:
+    inputs:
+      bars: { description: "Also fetch this market's daily bars from IBKR into the store (UK, EU, US, APAC; about an hour, in the background)", default: '' }
   schedule:
     - cron: '7,37 7-17 * * 1-5'   # UTC: the UK and EU sessions, their closes and reports
 permissions:
@@ -20,6 +22,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: IBKR's daily bars for a market (on demand)
+        if: inputs.bars != ''
+        env:
+          BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
+          BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+          MARKET: ${{ inputs.bars }}
+        run: |
+          case "$MARKET" in UK|EU|US|APAC) ;; *) echo "unknown market $MARKET"; exit 1;; esac
+          curl -sS --max-time 60 -X POST "$BRIDGE_URL/bars" -H 'Origin: https://svr-net.github.io' -H "X-Bridge-Key: $BRIDGE_KEY" \
+            -H 'Content-Type: application/json' -d "{\"market\": \"$MARKET\"}" | tee -a "$GITHUB_STEP_SUMMARY"; echo
       - name: The bridge's state
         env:
           BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
