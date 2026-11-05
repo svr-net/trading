@@ -8,12 +8,15 @@ name: Daily trades (UK, EU, US and APAC)
 on:
   # Weekday evenings: UK at 19:00 UTC (after the London close), US at 22:30 UTC (after the New
   # York close): download the day, scan, publish the proposals and email the daily report.
-  # APAC (ASX, SGX) at 10:00 UTC, after the Singapore close; EU at 18:30 UTC, after the European close.
+  # APAC (ASX, SGX) at 10:00 UTC, after the Singapore close; EU at 18:30 UTC, after the European close,
+  # and again at 21:30 UTC (EODData's European day came after 18:30 on 5 Nov: that scan made the
+  # orders from the day before; the later run makes them from the day's close).
   schedule:
     - cron: '0 19 * * 1-5'
     - cron: '30 22 * * 1-5'
     - cron: '0 10 * * 1-5'
     - cron: '30 18 * * 1-5'
+    - cron: '30 21 * * 1-5'
   workflow_dispatch:
     inputs:
       market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC], default: all }
@@ -35,12 +38,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || (github.event.schedule == '30 18 * * 1-5' || github.event.schedule == '30 21 * * 1-5') && '["EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      # EU without Amsterdam (no edge on its own in the 8-year backtest, Sharpe 0.47, yet 6 of 10 orders
-      # on 3 Nov) and Oslo (no trading permission at IBKR): research of 4 Nov, Sharpe 2.43 -> 2.62 with the tilt.
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,BRU,LIS,MSE,FRA' || 'LSE' }}
+      # EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
+      # fills and costs, 8-year walk-forward): 8.4% a year, Sharpe 1.38 -> 18.2%, Sharpe 1.71.
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
