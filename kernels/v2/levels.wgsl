@@ -67,7 +67,7 @@ fn main(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_index)
     var entry : f32 = 0.0;
     var intra : bool = false;
     var y : f32 = 0.0;
-    if (o <= lim) { entry = o; if (st[b + 8u] > 1.5 && st[b + 8u] < 2.5) { entry = lim; } if (st[b + 8u] > 2.5) { entry = min(o * half, lim); } } else if (l <= lim / half) { entry = lim; intra = true; }
+    if (o <= lim) { entry = o; if (st[b + 8u] > 1.5 && st[b + 8u] < 2.5) { entry = min(o * half, lim); if (lim <= st[b + 4u]) { entry = lim; } } if (st[b + 8u] > 2.5) { entry = min(o * half, lim); } } else if (l <= lim / half) { entry = lim; intra = true; }
     if (entry > 0.0) {
       // The levels as the orders set them before the open: from the anchor, the limit or the previous
       // close when the limit is above it (the fill's price is not known when they are placed).

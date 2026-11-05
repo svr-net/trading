@@ -651,8 +651,12 @@ int main(int argc, char** argv) {
     // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
     // 0: in volatilities). X_GROSSRANK=1 (research): ranked before costs, as before.
     const bool netRank = !std::getenv("X_GROSSRANK");
+    // X_FILLATLIMIT (research): no gain from an open below a dip limit (at or under the last close):
+    // it pays the limit, as IBKR's fills do (all within 0.24% under it, 30 Oct to 4 Nov); a limit above
+    // the last close buys at the open's offer (the open and a half-spread) or the limit if lower.
+    // X_FULLSPREAD (research): every share buys at the open's offer and sells at the close's bid.
     const bool fillAtLimit = std::getenv("X_FILLATLIMIT") != nullptr;
-    const bool fullSpread = std::getenv("X_FULLSPREAD") != nullptr;  // research: an open fill pays the limit, not the open
+    const bool fullSpread = std::getenv("X_FULLSPREAD") != nullptr;
     const bool verify = std::getenv("X_VERIFY") != nullptr;
     // The buy-back after a stop (a learnt setting, axis 7): daily bars cannot tell whether the high
     // came after the stop, so a day whose high reached the buy-back's level but whose close is below
@@ -874,7 +878,7 @@ int main(int argc, char** argv) {
       r.limit = L / pc - 1;
       bool intraday = false;
       const bool noAuction = fullSpread || quoted[i];
-      if (o <= L) r.entry = fillAtLimit ? L : noAuction ? std::min(o * half, L) : o, r.filled = 1;
+      if (o <= L) r.entry = fillAtLimit && L <= pc ? L : fillAtLimit || noAuction ? std::min(o * half, L) : o, r.filled = 1;
       else if (lo <= L / half) r.entry = L, r.filled = 2, intraday = true;
       else return r;
       // The levels as the orders set them before the open (as kernels/v2/levels.wgsl): from the anchor,

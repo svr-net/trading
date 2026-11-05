@@ -41,6 +41,13 @@ target_include_directories(ofm_research PRIVATE ${OFM_GENERATED} ${CMAKE_SOURCE_
 enable_testing()
 add_executable(ofm_paths apps/ofm_paths.cpp)
 add_executable(ofm_delay apps/ofm_delay.cpp)
+add_executable(ofm_anatomy apps/ofm_anatomy.cpp)
+add_executable(ofm_swing apps/ofm_swing.cpp)
+foreach(app ofm_anatomy ofm_swing)
+  if(NOT MSVC)
+    target_compile_options(${app} PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
+  endif()
+endforeach()
 
 add_executable(ofm_tests tests/tests.cpp)
 target_link_libraries(ofm_tests PRIVATE ofm)

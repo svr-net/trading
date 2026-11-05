@@ -8,9 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       branches: { description: 'Also delete these branches (comma separated; never main)', default: '' }
+      runs: { description: 'Also delete these workflow runs, logs and summaries (ids, comma separated)', default: '' }
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   delete:
@@ -35,4 +37,13 @@ jobs:
           done
           printf '%s\n' "$NAMED" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v -E '^(main|HEAD|)$' | while read -r b; do
             git push origin --delete "$b" && echo "deleted $b" || echo "$b: not found"
+          done
+      - name: Delete the workflow runs named
+        if: github.event_name == 'workflow_dispatch' && inputs.runs != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          printf '%s\n' "$RUNS" | tr ',' '\n' | tr -dc '0-9\n' | grep . | while read -r id; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$id" && echo "deleted run $id" || echo "run $id: not deleted"
           done

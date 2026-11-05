@@ -49,7 +49,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay'
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing'
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -93,7 +93,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -101,8 +101,29 @@ jobs:
           node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
           ./build/ofm_delay --daily data/stocks.csv --bars data/intraday.csv --cost 0.004 | tee report.txt
           { echo "### $MARKET delay"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Where the market's returns are and which kinds of strategy earn them (variant anatomy; results only)
+        if: matrix.variant == 'anatomy'
+        run: |
+          set -o pipefail
+          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
+          case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
+          for TOP in 500 100; do ./build/ofm_anatomy "${A[@]}" --top "$TOP"; done | tee report.txt
+          { echo "### $MARKET anatomy"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The swing model, walk-forward (variant swing; results only)
+        if: matrix.variant == 'swing'
+        run: |
+          set -o pipefail
+          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
+          case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
+          # Beside the store's bars: the same with IBKR's own daily bars where the bridge fetched them
+          # (their open is the opening auction's), to tell a real edge from a wrong open in the data.
+          IB=data/eoddata/ibkr/$MARKET/daily.csv
+          { for TOP in 500 100; do ./build/ofm_swing "${A[@]}" --top "$TOP"; [ -f "$IB" ] && ./build/ofm_swing "${A[@]}" --top "$TOP" --override "$IB"; done; [ -f "$IB" ] || echo "swing: no IBKR bars for $MARKET in the store"; } | tee report.txt
+          { echo "### $MARKET swing"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
-        if: matrix.variant != 'delay'
+        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing'
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
@@ -128,6 +149,8 @@ jobs:
               fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               idle) export X_IDLE=1 ;;  # idle money charged this model's own mean daily result per slot (walk-forward)
+              atlimit) export X_FILLATLIMIT=1 ;;  # every fill pays the limit (IBKR's fills: within 0.24% of it)
+              fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
             esac
           done
           STAMP=(--exit safety)
