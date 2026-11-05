@@ -105,7 +105,7 @@ jobs:
         if: matrix.variant == 'anatomy'
         run: |
           set -o pipefail
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          CAPITAL=5000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
           for TOP in 500 100; do ./build/ofm_anatomy "${A[@]}" --top "$TOP"; done | tee report.txt
@@ -114,7 +114,7 @@ jobs:
         if: matrix.variant == 'swing'
         run: |
           set -o pipefail
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          CAPITAL=5000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in US) A+=(--min-price 5);; UK) A+=(--stamp-free tools/eoddata/aim.txt);; *) A+=(--venues tools/venues.txt);; esac
           # Beside the store's bars: the same with IBKR's own daily bars where the bridge fetched them
@@ -155,7 +155,7 @@ jobs:
             esac
           done
           STAMP=(--exit safety)
-          CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
+          CAPITAL=5000
           VENUES=tools/venues.txt
           # Token amount<k>: k a trade (the exchanges' own currencies) in place of tools/venues.txt's and the capital.
           for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in amount[0-9]*)
