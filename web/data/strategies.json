@@ -27,6 +27,34 @@
     },
     "ref": null
    }
+  ],
+  "uk": [
+   {
+    "name": "aim-regime",
+    "role": "live",
+    "env": {
+     "X_REGIME": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "n15-regime",
+    "role": "shadow",
+    "env": {
+     "X_NPICK": "15",
+     "X_REGIME": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "aim-n15-regime",
+    "role": "shadow",
+    "env": {
+     "X_NPICK": "15",
+     "X_REGIME": "1"
+    },
+    "ref": null
+   }
   ]
  }
 }
