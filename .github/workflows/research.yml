@@ -111,6 +111,7 @@ jobs:
               dipscale) export X_DIPSCALE=1 ;;
               regime) export X_REGIME=1 ;;
               dipnn) export X_DIPNN=1 ;;
+              fillN|filln) export X_FILLN=1 ;;  # the number of orders learnt from how often they fill
             esac
           done
           STAMP=(--exit safety)
@@ -118,4 +119,4 @@ jobs:
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           CAPITAL=1000; case "$MARKET" in UK|US|EU) CAPITAL=5000;; esac
           ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report.txt
-          { echo "### $MARKET $V"; echo '```'; grep -E "a year|candidate trades|calibration|filled|verify|dip network" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|candidate trades|calibration|filled|verify|dip network" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
