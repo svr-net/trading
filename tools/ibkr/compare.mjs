@@ -38,7 +38,7 @@ for (const d of days.slice().reverse()) {
       const r = (a, b) => (a > 0 && b > 0 ? pct(a / b - 1) : '-');
       const lim = (placed.get(sym(m.ticker)) || {}).limit;
       detail.push(`  ${d.date} ${d.market} ${sym(m.ticker)}: backtest ${mf ? `${m.filled === 1 ? 'open' : 'intraday'} fill at the placed limit ${r(m.entry, lim)}, ${['close', 'stop', 'take'][m.exit] || '?'} ${pct(m.exitPrice / m.entry - 1)}` : 'no fill'}; `
-        + `IBKR ${lim == null ? 'no order placed' : lf ? `bought at the limit ${r(l.buy, lim)}, sold ${pct(l.ret)}` : 'no fill'}`);
+        + `IBKR ${lim == null ? 'no order placed' : lf ? `bought at the limit ${r(l.buy, lim)}, sold${l.soldBy ? ` (${l.soldBy}${l.soldAt ? ` ${l.soldAt} UTC` : ''})` : ''} ${pct(l.ret)}` : 'no fill'}`);
     }
   }
   T.days += 1, T.both += both, T.mOnly += mOnly, T.lOnly += lOnly;

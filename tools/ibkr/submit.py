@@ -449,7 +449,9 @@ def main():
         # Today's fills of this model's orders, a share at a time: bought, sold, average prices, the
         # return, the realised profit and loss IBKR reports for the closing fills (after its
         # commissions), and the commissions.
+        from datetime import timezone
         per = {}
+        kinds = {t.order.permId: t.order.orderType for t in list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(False))}
         for f in ib.fills():
             if not f.execution.orderRef.startswith(ref):  # the day's orders and the close's sales (ref-close)
                 continue
@@ -457,6 +459,10 @@ def main():
                                                     'bought': 0.0, 'buy_value': 0.0, 'sold': 0.0, 'sell_value': 0.0, 'pnl': 0.0, 'commission': 0.0})
             side = 'bought' if f.execution.side == 'BOT' else 'sold'
             e[side] += f.execution.shares
+            if side == 'sold':  # how and when it was sold: the close's sale, else the bracket's stop or take-profit
+                ot = kinds.get(f.execution.permId, '')
+                e['soldBy'] = 'close' if f.execution.orderRef.endswith('-close') else {'STP': 'stop', 'LMT': 'take-profit'}.get(ot, 'bracket')
+                e['soldAt'] = f.time.astimezone(timezone.utc).strftime('%H:%M') if f.time else None
             e['buy_value' if side == 'bought' else 'sell_value'] += f.execution.shares * f.execution.price
             cr = f.commissionReport
             if cr is not None:
@@ -469,7 +475,8 @@ def main():
             buy = e['buy_value'] / e['bought'] if e['bought'] else None
             sell = e['sell_value'] / e['sold'] if e['sold'] else None
             out.append({'ticker': e['ticker'], 'currency': e['currency'], 'bought': e['bought'], 'buy': buy, 'sold': e['sold'], 'sell': sell,
-                        'ret': (sell / buy - 1) if buy and sell else None, 'pnl': e['pnl'], 'commission': e['commission']})
+                        'ret': (sell / buy - 1) if buy and sell else None, 'pnl': e['pnl'], 'commission': e['commission'],
+                        'soldBy': e.get('soldBy'), 'soldAt': e.get('soldAt')})
         print(json.dumps({'date': date.today().isoformat(), 'market': args.market, 'trades': out}))
         ib.disconnect()
         return
