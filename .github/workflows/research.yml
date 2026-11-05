@@ -79,8 +79,16 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research
+          cmake --build build --target ofm_research ofm_delay
+      - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
+        if: matrix.variant == 'delay'
+        run: |
+          set -o pipefail
+          node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
+          ./build/ofm_delay --daily data/stocks.csv --bars data/intraday.csv --cost 0.004 | tee report.txt
+          { echo "### $MARKET delay"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
+        if: matrix.variant != 'delay'
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
