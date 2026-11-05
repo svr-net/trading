@@ -274,19 +274,18 @@ int main(int argc, char** argv) {
   // zero) from the day's median, on the side of illiquid (low value), stale (unmoved closes) or
   // erratic (wide range), is an outlier.
   {
-    std::vector<double> stat(3 * N), ok(N);
+    // Every share's day's window at once (kernels/v2/window.wgsl), then each day's screen.
+    std::vector<double> win(3 * T * N, 0.0), winOk(T * N, 0.0), stat(3 * N), ok(N);
+    {
+      ofm::v2::gen::Window<double> kw;
+      kw.P = P, kw.bars = bars.data(), kw.out = win.data(), kw.ok = winOk.data();
+      ofm::detail::dispatch(kw, ofm::detail::groups(std::uint32_t(T * N), 64));
+    }
     std::size_t out = 0, seen = 0;
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t i = 0; i < N; ++i) {
-        double n = 0, lv = 0, st = 0, sn = 0, rg = 0;
-        for (std::size_t u = t >= 59 ? t - 59 : 0; u <= t; ++u) {
-          const double c = m.close(u, i), v = m.volume(u, i), h = m.high(u, i), l = m.low(u, i);
-          if (!(c > 0) || !(h > 0) || !(l > 0)) continue;
-          n += 1, lv += std::log(c * std::max(v, 1.0)), rg += std::log(h / l);
-          if (u > 0 && m.close(u - 1, i) > 0) st += c == m.close(u - 1, i), sn += 1;
-        }
-        ok[i] = n >= 40 && sn > 0;
-        if (ok[i]) stat[i] = lv / n, stat[N + i] = st / sn, stat[2 * N + i] = rg / n;
+        ok[i] = winOk[t * N + i];
+        if (ok[i]) stat[i] = win[t * N + i], stat[N + i] = win[(T + t) * N + i], stat[2 * N + i] = win[(2 * T + t) * N + i];
       }
       double med[3], sc[3];
       for (std::size_t k = 0; k < 3; ++k) {
@@ -576,12 +575,15 @@ int main(int argc, char** argv) {
     std::vector<double> depthScore(nE, 0.0);  // the learnt setting's score at each limit depth (the others as learnt)
     const auto learnt = [&] {
       std::size_t best = 0;
+      // Each entry's means of its records' two scores over the level settings (kernels/v2/entry.wgsl).
+      if (robust || (nK > 1 && capBySortino)) {
+        ofm::v2::gen::V2Header<double> E{};
+        E.T = std::uint32_t(nR * nE), E.u0 = std::uint32_t(nLv);
+        ofm::v2::gen::Entry<double> ke;
+        ke.P = E, ke.sc = scv.data(), ke.so = sov.data(), ke.es = entryScore.data(), ke.eo = entrySortino.data();
+        ofm::detail::dispatch(ke, ofm::detail::groups(std::uint32_t(nR * nE), 16));
+      }
       if (robust) {
-        for (std::size_t r = 0; r < nR * nE; ++r) {
-          double sm = 0;
-          for (std::size_t g = r * nLv; g < (r + 1) * nLv; ++g) sm += score(g);
-          entryScore[r] = sm / double(nLv);
-        }
         for (std::size_t r = 1; r < nR * nE; ++r)
           if (entryScore[r] > entryScore[best / nLv]) best = r * nLv;
       } else {
@@ -591,11 +593,6 @@ int main(int argc, char** argv) {
       // The AIM cap, a limit on risk, by Sortino (averaged over the level settings), at the pool,
       // ranking and entry chosen; X_CAPRET=1 (research): by return with them.
       if (nK > 1 && capBySortino) {
-        for (std::size_t r = 0; r < nR * nE; ++r) {
-          double sm = 0;
-          for (std::size_t g = r * nLv; g < (r + 1) * nLv; ++g) sm += ddScore(g);
-          entrySortino[r] = sm / double(nLv);
-        }
         std::size_t c[nD];
         coords(best, c);
         const auto at = [&](std::size_t k) { c[2] = k; return entrySortino[index(c) / nLv]; };
