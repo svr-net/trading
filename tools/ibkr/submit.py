@@ -520,10 +520,13 @@ def main():
     have |= {f.contract.conId for f in ib.reqExecutions() if f.execution.orderRef == ref}
     resent = set()
 
-    def bracket(contract, sym, qty, lim, take, stop):
+    def bracket(contract, sym, qty, lim, take, stop, good_after=None):
         """A day limit buy with its take-profit (limit sell) and stop-loss (stop sell) attached, one
-        cancelling the other, active once the buy fills."""
+        cancelling the other, active once the buy fills; good_after (UTC, yyyymmdd-hh:mm:ss): the buy
+        works only from then."""
         parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY', transmit=False)
+        if good_after:
+            parent.goodAfterTime = good_after
         ib.placeOrder(contract, parent)
         children = []
         if take:
@@ -539,7 +542,19 @@ def main():
             parent.transmit = True
             ib.placeOrder(contract, parent)
         print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
-    for o in book['orders']:
+    # More orders than the money pays for (the orders' slots; the model places more when few fill):
+    # the first slots go into the opening auction, the rest only from a minute after the open (IBKR's
+    # good-after time), and the watch (--rebuy) cancels whatever is still open once slots have filled.
+    slots = int(book.get('slots') or 0)
+    after = None
+    if slots and len(book['orders']) > slots:
+        from datetime import datetime, timedelta, timezone
+        from zoneinfo import ZoneInfo
+        tz_name, oh, om = OPEN[args.market]
+        opens = datetime.now(ZoneInfo(tz_name)).replace(hour=oh, minute=om, second=0, microsecond=0)
+        after = (opens.astimezone(timezone.utc) + timedelta(minutes=1)).strftime('%Y%m%d-%H:%M:%S')
+        print(f'{args.market}: {len(book["orders"])} orders for {slots} trades: the first {slots} in the opening auction, the rest from {after} UTC')
+    for k_order, o in enumerate(book['orders']):
         contract = contract_of(o['ticker'], args.market)
         sym = o['ticker']
         if not qualified(ib, contract):
@@ -576,7 +591,7 @@ def main():
             continue
         take = round_to(o['take'] * scale, tick(o['take'] * scale), 'up') if o.get('take') else None
         stop = round_to(o['stop'] * scale, tick(o['stop'] * scale), 'down') if o.get('stop') else None
-        bracket(contract, sym, qty, lim, take, stop)
+        bracket(contract, sym, qty, lim, take, stop, after if after and k_order >= slots else None)
     # IBKR's answer to each order (a rejection comes after placeOrder returns). An order refused only
     # for being routed directly to the exchange (10311: the gateway's API precautions; BYPASS_WARNING
     # in the NAS's settings lifts it) goes again through IBKR's SMART routing, its exchange as the
@@ -737,7 +752,9 @@ def rebuy(args, ref):
 
     book = json.load(open(args.orders))
     plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
-    if not plan:
+    slots = int(book.get('slots') or 0)
+    capped = bool(slots) and len(book['orders']) > slots  # more orders than the money pays for: watch the fills
+    if not plan and not capped:
         print(f'{args.market} buy-back: none in the orders')
         return
     tz = ZoneInfo(OPEN[args.market][0])
@@ -748,7 +765,30 @@ def rebuy(args, ref):
     ib = IB()
     connect(ib, args, args.client_id)
     placed, mine = 0, []
+    full = [False]
+
+    def cap_check(*_):
+        """Once the day's buys (the model's orders, not its buy-backs) have filled slots shares, its
+        buy orders still open are cancelled (their stops and take-profits with them): the money is used."""
+        if not capped or full[0]:
+            return
+        bought = {x.contract.conId for x in ib.fills() if x.execution.orderRef == ref and x.execution.side == 'BOT'}
+        if len(bought) < slots:
+            return
+        full[0] = True
+        n = 0
+        for t in ib.openTrades():
+            o = t.order
+            if o.orderRef == ref and o.action == 'BUY' and not o.parentId and o.orderType == 'LMT' and t.contract.conId not in bought \
+                    and t.orderStatus.filled == 0:
+                ib.cancelOrder(o)
+                n += 1
+        print(f'  {len(bought)} of {slots} trades filled: {n} buy orders still open cancelled')
+    if capped:
+        ib.execDetailsEvent += cap_check  # at once on each fill, and each round below
+        ib.reqAllOpenOrders()
     while datetime.now(tz) < until:
+        cap_check()
         fills = ib.reqExecutions()
         for tr in ib.reqCompletedOrders(True):
             o, c = tr.order, tr.contract

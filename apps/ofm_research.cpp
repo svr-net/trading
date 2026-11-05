@@ -1280,7 +1280,9 @@ int main(int argc, char** argv) {
   // result for the latest day's orders (check), which the bridge sets beside the broker's fills.
   if (!ordersOut.empty()) {
     std::ofstream o(ordersOut);
-    o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"orders\":[";
+    // slots: the trades the money pays for; when there are more orders (X_FILLN), the bridge holds the
+    // ones after the first slots out of the opening auction and cancels the rest once slots have filled.
+    o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"slots\":" << nPick << ",\"orders\":[";
     char b[512];
     for (std::size_t q = 0; q < lastRun.picks.size(); ++q) {
       const auto& pk = lastRun.picks[q];
