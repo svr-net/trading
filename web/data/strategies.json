@@ -1,0 +1,32 @@
+{
+ "about": "Each market's strategies: the live one and its shadows (config/markets.json); results only.",
+ "markets": {
+  "eu": [
+   {
+    "name": "sharedepth-filln",
+    "role": "live",
+    "env": {
+     "X_SHAREDEPTH": "1",
+     "X_FILLN": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "sharedepth",
+    "role": "shadow",
+    "env": {
+     "X_SHAREDEPTH": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "fillnet",
+    "role": "shadow",
+    "env": {
+     "X_FILLNET": "1"
+    },
+    "ref": null
+   }
+  ]
+ }
+}
