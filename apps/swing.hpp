@@ -194,6 +194,19 @@ inline std::vector<Signal> signals(const Panel& p) {
     s /= double(n);
     return std::sqrt(std::max(0.0, s2 / double(n) - s * s));
   };
+  // The mean intraday (which 0: log close/open) or overnight (1: log open/previous close) return of
+  // share i over the n days up to t; NaN with fewer than 2/3 of them.
+  const auto split = [&p, N](std::size_t t, std::size_t i, std::size_t n, int which) {
+    if (t < n) return kNaN;
+    double s = 0;
+    std::size_t k = 0;
+    for (std::size_t u = t + 1 - n; u <= t; ++u) {
+      const double o = p.O[u * N + i], c = p.C[u * N + i], pc = u > 0 ? p.C[(u - 1) * N + i] : 0.0;
+      if (!(o > 0) || !(c > 0) || (which == 1 && !(pc > 0))) continue;
+      s += which == 0 ? std::log(c / o) : std::log(o / pc), ++k;
+    }
+    return 3 * k >= 2 * n ? s / double(k) : kNaN;
+  };
   return {
       {"loser 1d", [&p](std::size_t t, std::size_t i) { return -p.ret(t, i, 1); }},
       {"loser 5d", [&p](std::size_t t, std::size_t i) { return -p.ret(t, i, 5); }},
@@ -226,6 +239,18 @@ inline std::vector<Signal> signals(const Panel& p) {
          for (std::size_t k = 0; k < 20; ++k) { if (!p.ok(t - k, i)) return kNaN; s += p.C[(t - k) * N + i]; }
          return -(p.C[t * N + i] / (s / 20) - 1); }},
       {"loser 5d, low vol", [&p, vol](std::size_t t, std::size_t i) { const double v = vol(t, i, 20); return v > 0 ? -p.ret(t, i, 5) / v : kNaN; }},
+      // The tug of war (Lou, Polk and Skouras 2019, JFE): a share's own intraday returns continue
+      // intraday for months, and its overnight returns reverse intraday. Means of the open-to-close
+      // and of the close-to-open log returns over the last n days up to the close t (at least 2/3 of
+      // the days with both bars).
+      {"intraday mom 20d", [split](std::size_t t, std::size_t i) { return split(t, i, 20, 0); }},
+      {"intraday mom 60d", [split](std::size_t t, std::size_t i) { return split(t, i, 60, 0); }},
+      {"intraday mom 250d", [split](std::size_t t, std::size_t i) { return split(t, i, 250, 0); }},
+      {"overnight rev 20d", [split](std::size_t t, std::size_t i) { const double x = split(t, i, 20, 1); return -x; }},
+      {"overnight rev 60d", [split](std::size_t t, std::size_t i) { const double x = split(t, i, 60, 1); return -x; }},
+      {"overnight rev 250d", [split](std::size_t t, std::size_t i) { const double x = split(t, i, 250, 1); return -x; }},
+      {"intraday less overnight 60d", [split](std::size_t t, std::size_t i) { return split(t, i, 60, 0) - split(t, i, 60, 1); }},
+      {"intraday less overnight 250d", [split](std::size_t t, std::size_t i) { return split(t, i, 250, 0) - split(t, i, 250, 1); }},
   };
 }
 
