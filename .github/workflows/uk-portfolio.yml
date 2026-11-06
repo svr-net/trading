@@ -176,6 +176,12 @@ jobs:
           # else sold at the close): shares stopped in the opening volatility mostly recover by the close
           # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).
           STAMP+=(--exit safety)
+          # IBKR's own daily bars (the bridge fetches them into the store on Saturdays: two years, their open
+          # the opening auction's price) in place of the store's where it has them: EODData's open for a thin
+          # share is not the auction's (4 Nov HCM: the store's open 2.4% under the limit, IBKR filled at the
+          # limit), so the model learns and backtests on prices that traded. Every strategy gets them.
+          IB="data/eoddata/ibkr/$MARKET/daily.csv"
+          if [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ]; then STAMP+=(--override "$IB"); echo "IBKR bars: $(($(wc -l < "$IB") - 1)) rows in place of the store's"; else echo "IBKR bars: none for $MARKET in the store; the store's bars are used"; fi
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
           # to GBP 6,000), USD 5,000 in the US, EUR 5,000 in Europe, 5,000 in Asia-Pacific (AUD, SGD; the
           # exchanges' amounts are in tools/venues.txt).
