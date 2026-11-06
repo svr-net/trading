@@ -143,6 +143,8 @@ jobs:
           case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
           # The account (10 slots, as the live model), the store's bars against IBKR's own where the bridge fetched them.
           IB=data/eoddata/ibkr/$MARKET/daily.csv
+          # IBKR's file in numbers (no prices): its rows, days, shares, and the tickers' shape beside the store's.
+          [ -f "$IB" ] && echo "IBKR bars: rows $(($(wc -l < "$IB") - 1)), $(tail -n +2 "$IB" | cut -c1-10 | sort -u | sed -n '1p;$p' | paste -sd' ' | sed 's/ / to /'), shares $(tail -n +2 "$IB" | cut -d, -f2 | sort -u | wc -l), ticker shapes $(tail -n +2 "$IB" | cut -d, -f2 | sed 's/[A-Z0-9.]/x/g' | sort | uniq -c | sort -rn | head -3 | tr -s ' ' | paste -sd';'); the store's: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sed 's/[A-Z0-9.]/x/g' | sort | uniq -c | sort -rn | head -3 | tr -s ' ' | paste -sd';')"
           { for TOP in 300 100; do
               if [ -f "$IB" ]; then ./build/ofm_single "${A[@]}" --top "$TOP" --ibkr-days "$IB"; ./build/ofm_single "${A[@]}" --top "$TOP" --override "$IB"
               else ./build/ofm_single "${A[@]}" --top "$TOP"; echo "single: no IBKR bars for $MARKET in the store"; fi
