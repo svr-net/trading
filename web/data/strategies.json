@@ -64,6 +64,15 @@
      "X_REGIME": "1"
     },
     "ref": null
+   },
+   {
+    "name": "aim-regime-size",
+    "role": "shadow",
+    "env": {
+     "X_REGIME": "1",
+     "X_SIZE": "1"
+    },
+    "ref": null
    }
   ],
   "us": [
