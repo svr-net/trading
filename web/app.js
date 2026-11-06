@@ -296,6 +296,8 @@ function brokerToday() {
   $('today-summary').textContent = 'Asking Interactive Brokers…';
   bridge(`/trades?market=${m}`).then((t) => {
     if (brokerMarket() !== m) return;
+    // The bridge reads IBKR in the background and answers at once: before its first read, a note.
+    if (!t.at) { $('today-summary').textContent = t.error || 'Being read from Interactive Brokers: in a minute.'; setTimeout(() => { if (brokerMarket() === m) brokerToday(); }, 20000); return; }
     const px = (x) => (x == null ? '' : x >= 100 ? x.toFixed(1) : x.toFixed(x >= 10 ? 2 : 3));
     const money = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
     const cls = (x) => (x > 0 ? 'num pos' : x < 0 ? 'num neg' : 'num');
@@ -322,7 +324,7 @@ function brokerToday() {
     const bad = n((r) => r.state === 'refused by IBKR');
     if (bad) parts.push(`${bad} refused`);
     const totals = Object.entries(tot).map(([c, v]) => `${money(v)} ${c}`).join(', ');
-    $('today-summary').innerHTML = `<b>${parts.join(' · ')}</b>${totals ? ` · profit today ${totals}` : ''} · ${t.at.slice(11, 16)}`;
+    $('today-summary').innerHTML = `<b>${parts.join(' · ')}</b>${totals ? ` · profit today ${totals}` : ''} · ${t.at.slice(11, 16)}${t.age > 90 ? ` (${Math.round(t.age / 60)} min ago)` : ''}${t.note ? ` · last read failed: ${t.note}` : ''}`;
   }).catch((e) => { if (brokerMarket() === m) $('today-summary').textContent = `Not available now: ${e.message}`; });
 }
 $('today-refresh').addEventListener('click', brokerToday);

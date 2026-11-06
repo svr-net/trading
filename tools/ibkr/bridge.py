@@ -99,7 +99,10 @@ AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.ge
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
 VERSION = os.environ.get('BRIDGE_VERSION', 'unknown')  # the commit it was built from
-TRADES = {}  # market -> (when, the live state): asked of IBKR at most every 30 seconds
+TRADES = {}  # market -> (when, the live state): read from IBKR in the background (refresher), served from here
+TRADES_NOTE = {}  # market -> the last read's failure, if it failed
+IBDIAG = {'at': None, 'd': None}  # the IBKR part of /diag (submit.py --diag), refreshed in the background
+READING = set()  # the background reads in flight ('trades-UK', 'diag', ...): one of each at a time
 LAST = []  # the latest automatic actions, newest first: (when, market, action, ok, summary)
 
 
@@ -385,6 +388,66 @@ def fetch_bars(market):
         BARS_RUNNING.discard(market)
 
 
+def read_once(name, fn):
+    """Runs fn in the background unless the same read is already in flight; never blocks a request."""
+    with START_LOCK:
+        if name in READING:
+            return
+        READING.add(name)
+
+    def run():
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f'bridge: background read {name}: {e}\n')
+        finally:
+            READING.discard(name)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def read_trades(m):
+    """Today's trades and the model's holdings from IBKR (submit.py --state), into TRADES."""
+    code, out = run_submit(['--market', m, '--state', '--capital', str(CAPITAL), '--tickers', ','.join(model_tickers(m))], timeout=180)
+    line = next((x for x in reversed(out.splitlines()) if x.startswith('{')), '')
+    if code != 0 or not line:
+        TRADES_NOTE[m] = (out.splitlines() or ['no answer from IBKR'])[-1]
+        return
+    TRADES[m] = (time.monotonic(), json.loads(line))
+    TRADES_NOTE.pop(m, None)
+
+
+def read_ibdiag():
+    """The API, the account and the data on one share (submit.py --diag), into IBDIAG."""
+    m = (AUTO or ['UK'])[0]
+    try:
+        code, text = run_submit(['--market', m, '--diag'], timeout=180)
+        line = next((l for l in reversed(text.splitlines()) if l.startswith('{')), '')
+        d = json.loads(line) if line else {'api': False, 'error': text.splitlines()[-1] if text else 'no answer'}
+    except Exception as e:  # noqa: BLE001
+        d = {'api': False, 'error': str(e)}
+    IBDIAG['at'], IBDIAG['d'] = time.monotonic(), d
+
+
+def refresher():
+    """Keeps the slow reads fresh so that requests answer at once from the latest snapshot: each
+    automatic market's trades every minute from 30 minutes before its placing to 30 minutes after its
+    close (weekdays), the IBKR check every 5 minutes. Each read is a short-lived client of its own."""
+    while True:
+        for m in AUTO:
+            try:
+                now = datetime.now(ZoneInfo(ZONE[m]))
+                place, close = TIMES[m]
+                if now.weekday() < 5 and at(now, place, -30) <= now < at(now, close, 30):
+                    hit = TRADES.get(m)
+                    if not hit or time.monotonic() - hit[0] >= 55:
+                        read_once(f'trades-{m}', lambda m=m: read_trades(m))
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(f'bridge: refresher {m}: {e}\n')
+        if IBDIAG['at'] is None or time.monotonic() - IBDIAG['at'] >= 300:
+            read_once('diag', read_ibdiag)
+        time.sleep(20)
+
+
 def diag():
     """The checks behind GET /diag, each {check, ok (true, false, or null: a warning), detail}."""
     out = []
@@ -415,16 +478,18 @@ def diag():
             add(f'{m} orders', False, str(e))
     add('IB Gateway port', gateway_up(), f'{IB_HOST}:{IB_PORT}')
     m = (AUTO or ['UK'])[0]
-    try:
-        code, text = run_submit(['--market', m, '--diag'], timeout=90)
-        line = next((l for l in reversed(text.splitlines()) if l.startswith('{')), '')
-        d = json.loads(line) if line else {'api': False, 'error': text.splitlines()[-1] if text else 'no answer'}
-    except Exception as e:  # noqa: BLE001
-        d = {'api': False, 'error': str(e)}
-    if not d.get('api'):
-        add('IB Gateway API', False, d.get('error', 'no answer'))
+    # The IBKR part from the background (refresher): a request never waits on IBKR.
+    if IBDIAG['at'] is None or time.monotonic() - IBDIAG['at'] >= 300:
+        read_once('diag', read_ibdiag)
+    d = IBDIAG['d']
+    ago = f" (checked {int(time.monotonic() - IBDIAG['at'])} s ago)" if IBDIAG['at'] is not None else ''
+    if d is None:
+        add('IB Gateway API', None, 'being checked in the background: ask again in a minute')
+        d = {}
+    elif not d.get('api'):
+        add('IB Gateway API', False, d.get('error', 'no answer') + ago)
     else:
-        add('IB Gateway API', True, f"logged in, {'paper' if d.get('paper') else 'LIVE'} account; IBKR time {d.get('serverTime', '?')}")
+        add('IB Gateway API', True, f"logged in, {'paper' if d.get('paper') else 'LIVE'} account; IBKR time {d.get('serverTime', '?')}{ago}")
         live = d.get('dataType') == 1 and not any(e.startswith(('354', '10089', '10168')) for e in d.get('errors', []))
         quote = ', '.join(f'{k} {d[k]}' for k in ('bid', 'ask', 'last', 'close') if d.get(k))
         add(f'{m} real-time data', live or None, f"{d.get('probe', '?')}: " + (quote or 'no prices (outside hours, or no subscription)') +
@@ -837,15 +902,14 @@ class Handler(BaseHTTPRequestHandler):
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:
                 return
+            # From the background's latest read (refresher), at once; an old or missing one is read again
+            # in the background and the request answers with what there is.
             hit = TRADES.get(m)
-            if hit and time.monotonic() - hit[0] < 30:
-                return self.reply(200, hit[1])
-            code, out = run_submit(['--market', m, '--state', '--capital', str(CAPITAL), '--tickers', ','.join(model_tickers(m))], timeout=90)
-            line = next((x for x in reversed(out.splitlines()) if x.startswith('{')), '')
-            if code != 0 or not line:
-                return self.reply(502, {'error': (out.splitlines() or ['no answer from IBKR'])[-1]})
-            TRADES[m] = (time.monotonic(), json.loads(line))
-            return self.reply(200, TRADES[m][1])
+            if not hit or time.monotonic() - hit[0] >= 55:
+                read_once(f'trades-{m}', lambda: read_trades(m))
+            if not hit:
+                return self.reply(202, {'error': TRADES_NOTE.get(m) or 'being read from IBKR: ask again in a minute', 'shares': []})
+            return self.reply(200, {**hit[1], 'age': int(time.monotonic() - hit[0]), 'note': TRADES_NOTE.get(m, '')})
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:
@@ -920,4 +984,5 @@ if __name__ == '__main__':
         seed_done()
         threading.Thread(target=scheduler, daemon=True).start()
         threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=refresher, daemon=True).start()
     ThreadingHTTPServer((bind, port), Handler).serve_forever()

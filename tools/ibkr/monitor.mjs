@@ -6,8 +6,8 @@
 const base = (process.env.BRIDGE_URL || '').replace(/\/+$/, '');
 if (!base) { console.log('BRIDGE_URL not set'); process.exit(1); }
 const key = process.env.BRIDGE_KEY || '';
-const get = async (path, keyed) => {
-  const r = await fetch(base + path, { headers: { Origin: 'https://svr-net.github.io', ...(keyed ? { 'X-Bridge-Key': key } : {}) }, signal: AbortSignal.timeout(60000) });
+const get = async (path, keyed, ms = 60000) => {
+  const r = await fetch(base + path, { headers: { Origin: 'https://svr-net.github.io', ...(keyed ? { 'X-Bridge-Key': key } : {}) }, signal: AbortSignal.timeout(ms) });
   return { code: r.status, body: await r.json().catch(() => ({})) };
 };
 import { execFileSync } from 'node:child_process';
@@ -58,7 +58,7 @@ try {
 }
 if (key) {
   try {
-    const d = await get('/diag', true);
+    const d = await get('/diag', true, 150000);
     console.log(`diagnostics (HTTP ${d.code}):`);
     for (const c of d.body.checks || d.body || []) {
       if (!c || !c.check) continue;
@@ -69,25 +69,29 @@ if (key) {
       const o = await get(`/orders?market=${m}`, true);
       console.log(`orders ${m}: ${(o.body.orders || []).length} in today's file (as of ${o.body.asOf || '?'})`);
     }
-    // Today's trades from IBKR (GET /trades), as returns only: each share's state and its move from
-    // the purchase (to the sale, or to the last price while held); no prices, no amounts.
-    const pct = (a, b) => (a > 0 && b > 0 ? 100 * (a / b - 1) : null);
-    const f = (x) => (x == null ? '   ?  ' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
-    for (const m of AUTO_REPORT) {
-      const t = await get(`/trades?market=${m}`, true);
-      if (t.code !== 200) { console.log(`trades ${m}: not read (HTTP ${t.code}: ${t.body.error || ''})`); continue; }
-      const rows = t.body.shares || [];
-      const bought = rows.filter((r) => r.bought > 0 || r.held > 0);
-      const moves = bought.map((r) => (r.sold >= r.bought && r.bought > 0 ? pct(r.sell, r.buy) : pct(r.price, r.buy))).filter((x) => x != null);
-      const mean = moves.length ? moves.reduce((a, b) => a + b, 0) / moves.length : null;
-      console.log(`trades ${m} (${t.body.at || ''}): ${rows.length} shares, ${bought.length} bought or held, ${moves.filter((x) => x > 0).length} up, ${moves.filter((x) => x < 0).length} down, mean move ${f(mean)} before costs`);
-      for (const r of bought) {
-        const done = r.sold >= r.bought && r.bought > 0;
-        console.log(`  ${String(r.ticker).padEnd(8)} ${f(done ? pct(r.sell, r.buy) : pct(r.price, r.buy))}  ${r.state}${r.soldBy ? ` (${r.soldBy})` : ''}`);
-      }
-    }
   } catch (e) {
     console.log(`diagnostics not read: ${e.message}`);
+  }
+  try {
+      // Today's trades from IBKR (GET /trades), as returns only: each share's state and its move from
+      // the purchase (to the sale, or to the last price while held); no prices, no amounts.
+      const pct = (a, b) => (a > 0 && b > 0 ? 100 * (a / b - 1) : null);
+      const f = (x) => (x == null ? '   ?  ' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
+      for (const m of AUTO_REPORT) {
+        const t = await get(`/trades?market=${m}`, true, 120000);
+        if (t.code !== 200 || !t.body.at) { console.log(`trades ${m}: not read yet (HTTP ${t.code}: ${t.body.error || ''})`); continue; }
+        const rows = t.body.shares || [];
+        const bought = rows.filter((r) => r.bought > 0 || r.held > 0);
+        const moves = bought.map((r) => (r.sold >= r.bought && r.bought > 0 ? pct(r.sell, r.buy) : pct(r.price, r.buy))).filter((x) => x != null);
+        const mean = moves.length ? moves.reduce((a, b) => a + b, 0) / moves.length : null;
+        console.log(`trades ${m} (${t.body.at || ''}, read ${t.body.age ?? '?'} s ago${t.body.note ? `; last read failed: ${t.body.note}` : ''}): ${rows.length} shares, ${bought.length} bought or held, ${moves.filter((x) => x > 0).length} up, ${moves.filter((x) => x < 0).length} down, mean move ${f(mean)} before costs`);
+        for (const r of bought) {
+          const done = r.sold >= r.bought && r.bought > 0;
+          console.log(`  ${String(r.ticker).padEnd(8)} ${f(done ? pct(r.sell, r.buy) : pct(r.price, r.buy))}  ${r.state}${r.soldBy ? ` (${r.soldBy})` : ''}`);
+        }
+      }
+  } catch (e) {
+    console.log(`trades not read: ${e.message}`);
   }
 } else {
   console.log('(BRIDGE_KEY secret not set: diagnostics skipped)');
