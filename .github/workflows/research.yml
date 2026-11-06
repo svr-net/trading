@@ -150,6 +150,14 @@ jobs:
               else ./build/ofm_single "${A[@]}" --top "$TOP"; echo "single: no IBKR bars for $MARKET in the store"; fi
             done; } | tee report.txt
           { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The single-share model's fills, stricter (variant single; results only)
+        if: matrix.variant == 'single'
+        run: |
+          set -o pipefail
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital 5000 --top 300)
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
+          for K in 1 2 4; do ./build/ofm_single "${A[@]}" --through "$K" | grep -E "spreads through|filled|the account"; done | tee report.txt
+          { echo "### $MARKET single, stricter fills"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
         if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single')
         run: |

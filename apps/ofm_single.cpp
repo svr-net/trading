@@ -102,7 +102,7 @@ struct ShareResult {
 
 int main(int argc, char** argv) {
   std::string csv, market, venues, stampFree, overrideCsv, ibkrDays;
-  double capital = 5000;
+  double capital = 5000, through = 0.5;  // --through: how many spreads the low must trade through a limit to fill it (a check on the fills)
   std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   for (int k = 1; k + 1 < argc; ++k) {
     const std::string a = argv[k];
@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
     else if (a == "--slots") slots = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
     else if (a == "--override") overrideCsv = argv[++k];
     else if (a == "--ibkr-days") ibkrDays = argv[++k];
+    else if (a == "--through") through = std::atof(argv[++k]);
   }
   if (csv.empty() || market.empty()) {
     std::fprintf(stderr, "usage: ofm_single --csv stocks.csv --costs UK|EU|US|APAC [--capital 5000] [--top 300] [--venues f] [--stamp-free f]\n");
@@ -201,7 +202,7 @@ int main(int argc, char** argv) {
         else {
           const double lim = c0 * std::exp(-kDepth[k] * sigma[t]);
           if (o <= lim) entry = o;
-          else if (lo <= lim * std::exp(-0.5 * spread[t])) entry = lim;
+          else if (lo <= lim * std::exp(-through * spread[t])) entry = lim;
           else return 0.0;
         }
         filled = true;
@@ -318,8 +319,8 @@ int main(int argc, char** argv) {
   }
   std::sort(means.begin(), means.end());
   const auto q = [&](double f) { return means.empty() ? 0.0 : means[std::min(means.size() - 1, std::size_t(f * double(means.size())))]; };
-  std::printf("single: %s, %zu shares, %s to %s; each share learns and is backtested on its own bars only (top %zu traded each day, %.0f a trade)\n",
-              market.c_str(), N, p.days[first].c_str(), p.days[last].c_str(), top, capital);
+  std::printf("single: %s, %zu shares, %s to %s; each share learns and is backtested on its own bars only (top %zu traded each day, %.0f a trade; a limit fills when the low trades %.1f spreads through it)\n",
+              market.c_str(), N, p.days[first].c_str(), p.days[last].c_str(), top, capital, through);
   const auto line = [](const char* name, const Rec& r) {
     std::printf("single: %-38s %8.0f orders, an order %+.4f%% (t %+5.1f)\n", name, r.n, 100 * r.mean(), r.t());
   };
