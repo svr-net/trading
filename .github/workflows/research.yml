@@ -88,6 +88,11 @@ jobs:
           esac
           # Combinable tokens (variant = tokens joined by +): noamsosl, the share list without Amsterdam and Oslo.
           case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
+          # drop<k>s<seed>: a robustness check, k% of the shares left out at random (a hash of the ticker and
+          # the seed), so the backtest's dependence on exactly which shares are in the list can be measured.
+          for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in drop[0-9]*s[0-9]*)
+            k="${tok#drop}"; k="${k%%s*}"; seed="${tok##*s}"
+            keep "BEGIN { for (c = 32; c < 127; c++) ord[sprintf(\"%c\", c)] = c } { h = $seed; for (j = 1; j <= length(\$2); j++) h = (h * 31 + ord[substr(\$2, j, 1)]) % 1000003; if (h % 100 >= $k) print }";; esac; done
           # noosl: without Oslo, the live EU universe (no trading permission there).
           case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           # The variant's share list in numbers (as the daily run's summary): to set beside the live scan's.
