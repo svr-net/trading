@@ -219,11 +219,47 @@ def store_put(path, data, message):
         pass
 
 
+# IBKR's market data lines (a paper account streams about 100 shares at once; more answer "101: Max
+# number of tickers has been reached" and those shares record nothing): the recordings share a budget
+# (MARKET_LINES, 90 by default, the rest kept for the orders' checks and /diag). Each asks for its share
+# of the budget among the automatic markets whose sessions overlap (UK, EU and US do, APAC trades
+# alone), the paths at least the day's orders; it gets what is free when it starts and gives it back
+# when it ends.
+LINES_BUDGET = int(os.environ.get('MARKET_LINES', '90'))
+LINES_USED = {}  # recording ('paths-UK', 'auction-EU', ...) -> the lines it holds
+OVERLAP = {'UK': ('UK', 'EU', 'US'), 'EU': ('UK', 'EU', 'US'), 'US': ('UK', 'EU', 'US'), 'APAC': ('APAC',)}
+
+
+def lines_grant(name, want):
+    with START_LOCK:
+        free = LINES_BUDGET - sum(n for k, n in LINES_USED.items() if k != name)
+        LINES_USED[name] = max(0, min(want, free))
+        return LINES_USED[name]
+
+
+def lines_release(name):
+    with START_LOCK:
+        LINES_USED.pop(name, None)
+
+
+def lines_want(market, orders=0):
+    together = sum(1 for m in OVERLAP[market] if m in AUTO) or 1
+    return max(LINES_BUDGET // together, orders)
+
+
 def record_auction(market):
     """The candidates' opening auction (submit.py --auction), kept with the history and in the private
-    store as auction/<MARKET>/<date>.json; returns (ok, summary)."""
+    store as auction/<MARKET>/<date>.json; returns (ok, summary). Its lines come after the paths'."""
     path = fetch_orders(market)
-    code, out = run_submit(['--market', market, '--orders', path, '--auction'], timeout=1500)
+    name = f'auction-{market}'
+    n = lines_grant(name, lines_want(market))
+    if n == 0:
+        lines_release(name)
+        return True, 'skipped: no market data lines free (the paths hold them; without real-time data on the account it records nothing anyway)'
+    try:
+        code, out = run_submit(['--market', market, '--orders', path, '--auction', '--lines', str(n)], timeout=1500)
+    finally:
+        lines_release(name)
     line = next((l for l in reversed(out.splitlines()) if l.startswith('{')), '')
     if code != 0 or not line:
         return False, out.splitlines()[-1] if out else 'no recording'
@@ -249,11 +285,16 @@ def record_paths(market):
     if market in PATHS_RUNNING:
         return False, 'already running'
     PATHS_RUNNING.add(market)
+    name = f'paths-{market}'
     try:
         day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
         out_file = os.path.join(HISTORY, f'paths-{market}-{day}.csv')
         os.makedirs(HISTORY, exist_ok=True)
-        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--paths', '--out', out_file], timeout=12 * 3600)
+        path = fetch_orders(market)
+        n = lines_grant(name, lines_want(market, len(json.load(open(path)).get('orders', []))))
+        if n == 0:
+            return False, 'no market data lines free'
+        code, out = run_submit(['--market', market, '--orders', path, '--paths', '--out', out_file, '--lines', str(n)], timeout=12 * 3600)
         summary = out.splitlines()[-1] if out else ''
         if code != 0 or not os.path.exists(out_file):
             return False, summary or 'failed'
@@ -261,6 +302,7 @@ def record_paths(market):
             store_put(f'paths/{market}/{day}.csv', f.read(), f'{market} intraday paths {day}')
         return True, summary
     finally:
+        lines_release(name)
         PATHS_RUNNING.discard(market)
 
 

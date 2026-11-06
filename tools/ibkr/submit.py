@@ -430,6 +430,7 @@ def main():
     a.add_argument('--rebuy', action='store_true', help="watch the day's stops and place their buy-backs")
     a.add_argument('--until', help='HH:MM, the exchange clock: --rebuy stops watching then')
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
+    a.add_argument('--lines', type=int, default=0, help='with --paths or --auction: at most this many shares streamed at once (IBKR market data lines; 0: all)')
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     a.add_argument('--leftovers', action='store_true', help="sell the model's shares still held from earlier days (--tickers)")
@@ -743,6 +744,18 @@ def main():
 OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
 
 
+def streamed(book, lines):
+    """The shares a recording streams: the day's orders first, then the other candidates in their
+    rank, at most lines of them (IBKR's market data lines; 0: all)."""
+    cands = book.get('candidates') or book['orders']
+    ordered = {o['ticker'] for o in book.get('orders', [])}
+    first = [c for c in cands if c['ticker'] in ordered] + [{'ticker': o['ticker'], 'close': o.get('close')} for o in book.get('orders', [])
+                                                             if o['ticker'] not in {c['ticker'] for c in cands}]
+    rest = [c for c in cands if c['ticker'] not in ordered]
+    out = first + rest
+    return out[:lines] if lines > 0 else out
+
+
 def auction(args):
     """The candidates' opening auction, as IBKR streams it (generic tick 225: the indicative price,
     volume and imbalance), sampled every 15 seconds until the open, then the open itself. Needs the
@@ -752,7 +765,7 @@ def auction(args):
     from ib_async import IB, Stock
 
     book = json.load(open(args.orders))
-    cands = book.get('candidates') or book['orders']
+    cands = streamed(book, args.lines)
     zone, h, mi = OPEN[args.market]
     tz = ZoneInfo(zone)
     now = datetime.now(tz)
@@ -768,7 +781,7 @@ def auction(args):
         contract = contract_of(c['ticker'], args.market)
         if qualified(ib, contract):
             tickers[c['ticker']] = ib.reqMktData(contract, '225', False, False)
-    rows = {t: {'ticker': t, 'close': c['close'], 'score': c.get('score'), 'samples': []} for t, c in ((c['ticker'], c) for c in cands) if t in tickers}
+    rows = {t: {'ticker': t, 'close': c.get('close'), 'score': c.get('score'), 'samples': []} for t, c in ((c['ticker'], c) for c in cands) if t in tickers}
 
     def sample(at):
         for t, k in tickers.items():
@@ -805,7 +818,7 @@ def paths(args):
     if not args.out:
         sys.exit('--out is required with --paths')
     book = json.load(open(args.orders))
-    cands = book.get('candidates') or book['orders']
+    cands = streamed(book, args.lines)
     zone, h, mi = OPEN[args.market]
     tz = ZoneInfo(zone)
     now = datetime.now(tz)
