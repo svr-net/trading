@@ -33,8 +33,12 @@ highest ranked candidates (submit.py --auction; it places nothing): the indicati
 imbalance every 15 seconds until the open, then the open. Each day's recording is kept in
 HISTORY_DIR/auction and written to the private store as auction/<MARKET>/<date>.json, where the
 research reads it. On Saturdays at AUTO_BARS (06:00; empty: off), and on POST /bars, it fetches
-IBKR's daily bars for the pool into the private store (ibkr/<MARKET>/daily.csv): IBKR's opens are the
-opening auctions', to check the opens the model learns from.
+IBKR's daily bars for the pool (two years) into the private store (ibkr/<MARKET>/daily.csv); and every
+trading day after the report (BARS_DAILY=1, the default; 0 off) the latest month of them, merged into
+that file, so the evening's and the morning's scans learn and backtest on the prices that traded:
+IBKR's open and close are the auctions', its low one the exchange's book traded at (EODData's low for
+a thin UK share was a median 1.3% under IBKR's: dip limits the backtest filled that IBKR would not).
+One fetch at a time (IBKR's pacing).
 
 The day's paths (PATHS=1, the default; 0 off): on the same days, at the auction's time (or, without
 it, the place time), the bridge records in the background the day's candidates' prices every 30
@@ -95,6 +99,7 @@ REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get(
 # The opening auction's recording (submit.py --auction; places nothing), after the orders are in: the
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
+BARS_DAILY = os.environ.get('BARS_DAILY', '1') != '0'  # every trading day after the report: the latest month merged in
 AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
@@ -411,18 +416,40 @@ def in_background(market, action, job):
     threading.Thread(target=run, daemon=True).start()
 
 
-def fetch_bars(market):
+def fetch_bars(market, daily=False):
     """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), written to the
-    private store as ibkr/<MARKET>/daily.csv; returns (ok, summary)."""
-    if market in BARS_RUNNING:
-        return False, 'already running'
+    private store as ibkr/<MARKET>/daily.csv; returns (ok, summary). daily: only the latest month,
+    merged into the full file kept here (a share-day IBKR answers again replaces the kept one); without
+    a full file yet, the full two years."""
+    if BARS_RUNNING:
+        return False, f"waiting: {', '.join(sorted(BARS_RUNNING))} bars fetching"
     BARS_RUNNING.add(market)
     try:
         out_file = os.path.join(HISTORY, f'ibkr-{market}.csv')
-        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', out_file], timeout=6 * 3600)
+        merge = daily and os.path.exists(out_file) and os.path.getsize(out_file) > 100
+        target = out_file + '.month' if merge else out_file
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', target, *(['--duration', '1 M'] if merge else [])],
+                               timeout=6 * 3600)
         summary = out.splitlines()[-1] if out else ''
         if code != 0:
             return False, summary or 'failed'
+        if merge:
+            import csv
+            with open(target, newline='') as f:
+                new = list(csv.reader(f))
+            if len(new) < 2:
+                return False, f'{summary}: no bars in the latest month; the full file kept'
+            fresh = {(r[0][:10], r[1]) for r in new[1:] if len(r) >= 2}
+            with open(out_file, newline='') as f:
+                rows = [r for r in list(csv.reader(f))[1:] if len(r) >= 2 and (r[0][:10], r[1]) not in fresh]
+            rows += new[1:]
+            rows.sort(key=lambda r: (r[0][:10], r[1]))
+            with open(out_file + '.tmp', 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(new[0])
+                w.writerows(rows)
+            os.replace(out_file + '.tmp', out_file)
+            summary += f'; merged: {len(rows)} rows, the latest {rows[-1][0][:10] if rows else "none"}'
         with open(out_file, 'rb') as f:
             store_put(f'ibkr/{market}/daily.csv', f.read(), f'{market} daily bars from IBKR {date.today().isoformat()}')
         return True, summary
@@ -790,12 +817,17 @@ def scheduler():
         for m in AUTO:
             try:
                 now = datetime.now(ZoneInfo(ZONE[m]))
-                if now.weekday() == 5 and BARS_AT and at(now, BARS_AT) <= now < at(now, BARS_AT, 60) and not is_done(m, 'bars'):
+                if now.weekday() == 5 and BARS_AT and at(now, BARS_AT) <= now < at(now, BARS_AT, 240) and not is_done(m, 'bars') and not BARS_RUNNING \
+                        and may_try(m, 'bars', 10):
                     job(m, 'bars', fetch_bars)
                 if now.weekday() >= 5 and not os.environ.get('AUTO_WEEKENDS'):
                     continue
                 place, close = TIMES[m]
                 up = GATEWAY['ok'] is not False
+                # IBKR's daily bars, the latest month merged in, after the day's report (one market at a time).
+                if BARS_DAILY and up and at(now, REPORT[m], 15) <= now < at(now, REPORT[m], 360) and not is_done(m, 'bars') and not BARS_RUNNING \
+                        and may_try(m, 'bars', 20, 4):
+                    job(m, 'bars', lambda mk: fetch_bars(mk, daily=True))
                 if up and at(now, place, -30) <= now < at(now, close, -15) and not is_done(m, 'leftovers') and may_try(m, 'leftovers', 5, 3):
                     job(m, 'leftovers', sell_leftovers)
                 tried = ATTEMPTS.get((m, 'leftovers', now.date().isoformat()), (0, None))[0] > 0

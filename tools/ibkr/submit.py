@@ -432,6 +432,7 @@ def main():
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
     a.add_argument('--lines', type=int, default=0, help='with --paths or --auction: at most this many shares streamed at once (IBKR market data lines; 0: all)')
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
+    a.add_argument('--duration', default='', help="IBKR's duration for --bars in place of --years (e.g. '1 M': the latest month, merged into the full file by the bridge)")
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
     a.add_argument('--leftovers', action='store_true', help="sell the model's shares still held from earlier days (--tickers)")
     a.add_argument('--tickers', help='with --leftovers: the shares the model placed lately, comma separated')
@@ -1042,7 +1043,7 @@ def daily_bars(args):
             bars = []
             if qualified(ib, contract):
                 try:
-                    bars = ib.reqHistoricalData(contract, '', f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
+                    bars = ib.reqHistoricalData(contract, '', args.duration or f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
                 except Exception as e:  # noqa: BLE001
                     sys.stderr.write(f'  {t}: {e}\n')
             for b in bars:
