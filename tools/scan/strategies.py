@@ -9,7 +9,8 @@ and .txt for each shadow, and report/strategies.json (the market's strategies, r
 --publish-orders (the main branch): the orders to data/eoddata/orders/<MARKET>.json (live) and
 data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is built at that version
 first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
-tools/eoddata/aim.txt). A shadow that fails is reported and skipped; the live one failing fails the run.
+tools/eoddata/aim.txt); one with "app": "single" is the single-share model (apps/ofm_single: every
+share learnt and backtested on its own bars only), given the same arguments. A shadow that fails is reported and skipped; the live one failing fails the run.
 """
 import argparse
 import json
@@ -37,11 +38,19 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: a bad ref {s['ref']!r}")
         if s.get('only') not in (None, 'aim'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown share filter {s['only']!r}")
+        if s.get('app') not in (None, 'single'):
+            sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
+        if s.get('app') and s['role'] == 'live':
+            sys.exit(f"strategies: {market} {s['name']}: the single-share model runs as a shadow only (the bridge places the research model's orders)")
+        if s.get('app') and 'ref' in s:
+            sys.exit(f"strategies: {market} {s['name']}: a pinned version is for the research model only")
     return out
 
 
-def binary(ref):
+def binary(ref, app=None):
     """The model's binary: this checkout's, or one built at ref."""
+    if app == 'single':
+        return './build/ofm_single'
     if not ref:
         return './build/ofm_research'
     root = os.path.join('.pins', ref.replace('/', '_'))
@@ -88,7 +97,7 @@ def main():
         if s.get('only') == 'aim' and '--csv' in args_m:
             k = args_m.index('--csv') + 1
             args_m[k] = only_aim(args_m[k])
-        cmd = [binary(s.get('ref')), *args_m, '--json', f'report/{stem}.json']
+        cmd = [binary(s.get('ref'), s.get('app')), *args_m, '--json', f'report/{stem}.json']
         if args.publish_orders:
             path = f'data/eoddata/orders/{args.market}.json' if live else f"data/eoddata/shadow/{args.market}-{s['name']}.json"
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -100,7 +109,7 @@ def main():
     for s, live, stem, p, log in jobs:
         code = p.wait()
         log.close()
-        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + (' (single-share model)' if s.get('app') else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
         sys.stdout.write(open(f'report/{stem}.txt').read())
         if code:
             if live:
@@ -109,7 +118,7 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} failed ({code})")
             print(f"strategies: the shadow {s['name']} failed ({code}): skipped")
             continue
-        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'report': f'{stem}.json'})
+        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'), 'report': f'{stem}.json'})
     with open('report/strategies.json', 'w') as f:
         json.dump(index, f, indent=1)
 
