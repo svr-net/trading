@@ -73,8 +73,18 @@ int main(int argc, char** argv) {
   // low and close replace the store's (the volume stays: the pool's ranks are the store's). Reported:
   // how far the store's lows were from IBKR's (a low the exchange's book never traded at fills a dip
   // limit in the backtest that IBKR would not).
+  // An override file with too few bars to read (none fetched yet, an empty file) is reported and the
+  // store's bars are used: the override only checks the store, so it never stops a run.
+  ofm::Market ib;
   if (!overrideFile.empty()) {
-    const ofm::Market ib = ofm::parseMarketCsv(readFile(overrideFile));
+    try {
+      ib = ofm::parseMarketCsv(readFile(overrideFile));
+    } catch (const std::exception& e) {
+      std::printf("IBKR bars: none usable (%s: %s); the store's bars are used\n", overrideFile.c_str(), e.what());
+      overrideFile.clear();
+    }
+  }
+  if (!overrideFile.empty()) {
     std::map<std::string, std::size_t> di, ti;
     for (std::size_t t = 0; t < mk.T(); ++t) di[mk.dates[t]] = t;
     for (std::size_t i = 0; i < mk.N(); ++i) ti[mk.tickers[i]] = i;
@@ -492,23 +502,14 @@ int main(int argc, char** argv) {
     constexpr std::size_t nC = 4, nB = 5, nE = 9, nP = 7, nA = 5, nRb = 11, nLv = nP * nP * nA * nRb, nD = 8;
     // The selection's code k (one discrete axis): the AIM cap 2 * (k / 2) (UK; else none), learnt like
     // the rest. Always gated: only trades expected to gain after their costs (calibrated), so no order
-    // expected to lose is placed or published (k % 2, once a learnt choice of the gate, is unused).
-    // Without X_TILT an odd code selects exactly what the even one below it does (same cap, no gate), so
-    // only the even codes are on the lattice (half the records to keep; the same choices, as a tie goes to
-    // the lower code and the code is never refined between its neighbours).
-    const bool tiltOn = std::getenv("X_TILT") != nullptr;
-    const std::size_t kStep = tiltOn ? 1 : 2, nK = (aimCap ? 6 : 1) * 2 / kStep, nR = nC * nB * nK, nV = nR * nE * nLv;
+    // expected to lose is placed or published. The codes are even (0, 2, .., 10: the cap's step).
+    const std::size_t nK = aimCap ? 6 : 1, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
     const auto gateOf = [&](double) { return true; };
-    // X_TILT (research): the selection's code k % 2 (else unused) learnt as a tilt of the limit's depth by
-    // the signal's rank: of a day's n trades the strongest a lattice step (0.5 sd) shallower, the weakest
-    // a step deeper (floor(2j/(n-1) - 1/2) steps for the j-th), so strong signals miss fewer buys.
-    const auto tiltOf = [&](double k) { return tiltOn && (std::size_t(std::floor(k + 0.5)) % 2 == 1); };
-    const auto tiltSteps = [](std::size_t j, std::size_t n) { return n > 1 ? std::floor(2.0 * double(j) / double(n - 1) - 0.5) : 0.0; };
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
-      if (d == 2) return double(kStep) * x;  // the selection's code (capOf, gateOf)
+      if (d == 2) return 2.0 * x;  // the selection's code (capOf, gateOf)
       if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
@@ -526,26 +527,6 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < nRb; ++q) rbvals[q] = axis(7, double(q));
     double nDays = 0;
     std::vector<double> adaptiveLevels, byRank[2];
-    // X_DIPNN (research): the dip network. For each of the day's trades (the model's picks) it predicts
-    // the expected net gain per order at each of the lattice's limit depths (the chance the dip is
-    // reached times the gain from there to the exit, after costs: the fills on bad news included), with
-    // the exits as learnt; the order goes at the best depth, or not at all when none is expected to
-    // gain. Inputs, after the literature: the model's features and prediction, the share's volatility,
-    // its own dips and its spread and liquidity (Lo, MacKinlay and Zhang 2002: a limit's fill depends
-    // on its distance and the volatility), the market's range and its last 4 weeks (Nagel 2012: the
-    // returns to liquidity provision rise with market volatility, most in small, illiquid, volatile
-    // shares). Each input standardised by its running mean and spread so far; trained walk-forward:
-    // a day's samples are learnt only once its outcome is known, after the day's decisions.
-    // The share's own features only (kernels/v2/features.wgsl 0..26, from its own past bars): never the
-    // next day's targets (27..30), nor the interactions, standardised within each day over the shares
-    // with a next bar (whether a share trades tomorrow is not known at the close).
-    constexpr std::size_t nnOwn = 27;
-    const std::size_t nnIn = nnOwn + 7;
-    ofm::net::Net dnn(nnIn, 32, std::vector<double>(nE, -1.0));
-    dnn.lr = 3e-4;
-    std::vector<double> nnMu(nnIn, 0.0), nnM2(nnIn, 0.0), nnMemX, nnMemY, nnDays, nnBase;
-    double nnSeen = 0, nnOrders = 0, nnPlaced = 0, nnFilled = 0, nnTrained = 0;
-    std::uint64_t nnRng = 0x2545F4914F6CDD1Dull;
     std::vector<std::array<double, nD>> used;
     std::vector<std::array<double, 5>> paths;  // per candidate trade: filled, the stop and the take-profit from the entry, stopped, took profit
     std::vector<std::string> sd;
@@ -601,14 +582,6 @@ int main(int argc, char** argv) {
           if (at(k) > at(bk)) bk = k;
         c[2] = bk;
         best = index(c);
-      }
-      // X_DIP0 (research): no dip, the entry fixed at the lattice's shallowest limit (2 sd above the
-      // previous close: bought at the open), the stop, take-profit and buy-back learnt for it.
-      if (std::getenv("X_DIP0")) {
-        std::size_t c0[nD];
-        coords(best, c0);
-        c0[3] = 0;
-        best = index(c0);
       }
       {
         std::size_t cq[nD];
@@ -786,14 +759,11 @@ int main(int argc, char** argv) {
       return falls[i].size() >= 20;
     };
     // The limit's unit (the scale its depth d is measured in), as the orders set it at the close t:
-    // the share's daily sigma; X_DIPSCALE (research): the share's own mean fall from the previous
-    // close to the day's low over its last 100 days (at least 20, else sigma), so a limit sits where
-    // its own dips reach; X_REGIME (research): times the market's range of the last 5 days over its
-    // median of the last 250 (each day the shares' median high-to-low range), deeper in turbulence.
-    const bool dipOwn = std::getenv("X_DIPSCALE") != nullptr, dipRegime = std::getenv("X_REGIME") != nullptr;
-    const bool dipNN = std::getenv("X_DIPNN") != nullptr;  // research: the dip network (below)
-    std::vector<double> mktRange(T, kNaN), regime(T, 1.0), mktRet20(T, 0.0);
-    if (dipRegime || dipNN) {
+    // the share's daily sigma; X_REGIME: times the market's range of the last 5 days over its median
+    // of the last 250 (each day the shares' median high-to-low range), deeper in turbulence.
+    const bool dipRegime = std::getenv("X_REGIME") != nullptr;
+    std::vector<double> mktRange(T, kNaN), regime(T, 1.0);
+    if (dipRegime) {
       std::vector<double> r;
       for (std::size_t t = 0; t < T; ++t) {
         r.clear();
@@ -809,34 +779,10 @@ int main(int argc, char** argv) {
         r.clear();
         for (std::size_t u = t >= 249 ? t - 249 : 0; u <= t; ++u) if (std::isfinite(mktRange[u])) r.push_back(mktRange[u]);
         if (n > 0 && r.size() >= 60) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); if (r[r.size() / 2] > 0) regime[t] = (sm / n) / r[r.size() / 2]; }
-        // The market's last 4 weeks (Nagel's control): the shares' median log return over 20 days.
-        r.clear();
-        if (t >= 20)
-          for (std::size_t i = 0; i < N; ++i) {
-            const double a = m.close(t - 20, i), c = m.close(t, i);
-            if (std::isfinite(a) && std::isfinite(c) && a > 0 && c > 0) r.push_back(std::log(c / a));
-          }
-        if (r.size() >= 10) { std::nth_element(r.begin(), r.begin() + std::ptrdiff_t(r.size() / 2), r.end()); mktRet20[t] = r[r.size() / 2]; }
       }
     }
-    std::vector<double> regimeRaw = regime;  // the market's range ratio (an input of the dip network)
-    if (!dipRegime) std::fill(regime.begin(), regime.end(), 1.0);
-    std::vector<double> dipMemo(N, 0.0);
-    std::vector<std::size_t> dipDay(N, ~std::size_t(0));
-    const auto ownDip = [&](std::size_t t, std::size_t i) {
-      const double sig = std::exp(ft[(t * N + i) * Km + 20]);
-      if (dipDay[i] != t) {
-        double sm = 0; int n = 0;
-        for (std::size_t v = t >= 99 ? t - 99 : 1; v <= t && v >= 1; ++v) {
-          const double pc = m.close(v - 1, i), l = m.low(v, i);
-          if (std::isfinite(pc) && std::isfinite(l) && pc > 0 && l > 0) sm += std::max(0.0, std::log(pc / l)), ++n;
-        }
-        dipDay[i] = t, dipMemo[i] = n >= 20 && sm > 0 ? sm / n : sig;
-      }
-      return dipMemo[i];
-    };
     const auto dipUnit = [&](std::size_t t, std::size_t i) {
-      return (dipOwn ? ownDip(t, i) : std::exp(ft[(t * N + i) * Km + 20])) * regime[t];
+      return std::exp(ft[(t * N + i) * Km + 20]) * regime[t];
     };
     // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
     // the close t, known when the orders are made), the take-profit that would have paid the most on
@@ -995,13 +941,7 @@ int main(int argc, char** argv) {
     // empirical Bayes (weight tau2 / (tau2 + sigma2 / n): the spread between shares against the noise
     // of the share's own mean, both measured from the data each day). The depth with the highest total
     // is the share's; one with little history keeps the learnt depth.
-    // X_IDLE (research): money tied to an order that does not fill could have earned what this model's
-    // own trades earn: a depth's total for a share is its score and offset less (1 - its chance to fill)
-    // times the model's mean daily result per trade slot so far (its own walk-forward days); the chance
-    // to fill is the share's own fills at that depth with one observation at all shares' rate. No depth
-    // with a positive total: no order for the share that day. Implies X_SHAREDEPTH.
-    const bool idleCost = std::getenv("X_IDLE") != nullptr;
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || idleCost || std::getenv("X_FILLNET") != nullptr || std::getenv("X_LIKELY") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
@@ -1039,7 +979,7 @@ int main(int argc, char** argv) {
       sdDay = t;
       ebOffsets(sdS1, sdS2, sdN, sdOff);
     };
-    std::vector<double> poolF(nE, 0.0), poolN(nE, 0.0), pickRf(nE, 0.0), pickF(nE, 0.0);
+    std::vector<double> pickRf(nE, 0.0), pickF(nE, 0.0);
     // X_FILLNET (research): the chance that a share's dip reaches each depth tomorrow, predicted from
     // what is known at the close: for each depth a regression of whether the order filled on the
     // share's own record of dips that deep (the log-odds of how often its low reached it), of gaps that
@@ -1049,10 +989,7 @@ int main(int argc, char** argv) {
     // the share is that chance times the mean net result of the past trades filled at that depth (the
     // learnt exits); the share's depth is the best, and no order when none is positive. Nothing fixed:
     // the regressions, the calibration and the results come from the data before each close.
-    // X_LIKELY (research; implies X_FILLNET): only orders more likely than not to fill: a depth counts
-    // only when its predicted chance is above one half.
-    const bool likelyOnly = std::getenv("X_LIKELY") != nullptr;
-    const bool fillNet = std::getenv("X_FILLNET") != nullptr || likelyOnly;
+    const bool fillNet = std::getenv("X_FILLNET") != nullptr;
     const std::size_t nX = std::min<std::size_t>(Fm + 4, 64);  // 1, the dips' and the gaps' records (log-odds), the gaps' spread, the inputs
     std::vector<double> fnG(fillNet ? nE * nX * nX : 0, 0.0), fnB(fillNet ? nE * nX : 0, 0.0), fnBeta(fillNet ? nE * nX : 0, 0.0);
     std::size_t fnDay = ~std::size_t(0), fnOffDay = ~std::size_t(0);
@@ -1112,64 +1049,43 @@ int main(int argc, char** argv) {
         for (std::size_t q = 0; q < nE; ++q) {
           if (!(pickF[q] > 0)) continue;
           const double pq = fnProb(t, i, q);
-          if (likelyOnly && !(pq > 0.5)) continue;
           const double ev = pq * (pickRf[q] / pickF[q] + sfOff[i * nE + q]);
           if (bq == nE || ev > best) best = ev, bq = q;
         }
         if (bq < nE) return best > 0 ? dvals[bq] : kNaN;
-        if (likelyOnly && pickF[0] + pickF[nE - 1] > 0) return kNaN;  // no depth likely to fill: no order
       }  // before any pick's outcome: the learnt depth, as below
       shareOffsets(t);
-      double op = 0;
-      if (idleCost && !adaptiveLevels.empty()) {
-        for (double y : adaptiveLevels) op += y;
-        op /= double(adaptiveLevels.size());
-      }
-      const auto total = [&](std::size_t q) {
-        const double pooled = poolN[q] > 0 ? poolF[q] / poolN[q] : 0.5;
-        const double pf = (sdF[i * nE + q] + pooled) / (sdN[i * nE + q] + 1.0);
-        return depthScore[q] + sdOff[i * nE + q] - (1.0 - pf) * op;
-      };
+      const auto total = [&](std::size_t q) { return depthScore[q] + sdOff[i * nE + q]; };
       std::size_t bq = 0;
       for (std::size_t q = 1; q < nE; ++q)
         if (total(q) > total(bq)) bq = q;
-      if (idleCost && !(total(bq) > 0)) return kNaN;  // no depth earns more than the money would elsewhere: no order
       return dvals[bq];
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
-    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool tilt = false) {
+    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0;
       for (std::size_t j = 0; j < w.size(); ++j)  // a tenth each: a missing trade stays in cash
       {
-        const double dj = shareDepthOn ? shareDepth(t, w[j].second) : tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, w.size()))) : d;
+        const double dj = shareDepthOn ? shareDepth(t, w[j].second) : d;
         if (std::isfinite(dj)) rg += trade(t, w[j].second, dj, ps, pt, al, rf).ret / double(nPick);  // no order: cash
       }
       return rg;
     };
-    const auto depthAt0 = [&](double d, bool tilt, std::size_t j, std::size_t n) {
-      return tilt ? std::max(axis(3, 0.0), std::min(axis(3, double(nE - 1)), d + 0.5 * tiltSteps(j, n))) : d;
-    };
-    // The orders: the ranked, gated candidates in order until their expected fills reach nPick (the
-    // tilt depends on the count, so a few rounds until the count settles).
-    const auto fillOrders = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& all, double d, bool tilt) {
-      std::size_t n = std::min(nPick, all.size());
-      for (int round = 0; round < 8; ++round) {
-        double e = 0;
-        std::size_t k = 0;
-        for (; k < all.size(); ++k) {
-          const double p = fillProb(t, all[k].second, shareDepthOn ? shareDepth(t, all[k].second) : depthAt0(d, tilt, k, std::max(n, k + 1)));
-          if (k >= nPick && e + p > double(nPick)) break;
-          e += p;
-        }
-        if (k == n) break;
-        n = k;
+    // The orders: the ranked, gated candidates in order until their expected fills reach nPick.
+    const auto fillOrders = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& all, double d) {
+      double e = 0;
+      std::size_t n = 0;
+      for (; n < all.size(); ++n) {
+        const double p = fillProb(t, all[n].second, shareDepthOn ? shareDepth(t, all[n].second) : d);
+        if (n >= nPick && e + p > double(nPick)) break;
+        e += p;
       }
       return std::vector<std::pair<double, std::size_t>>(all.begin(), all.begin() + std::ptrdiff_t(n));
     };
-    const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool tilt) {
+    const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0, fills = 0;
       for (std::size_t j = 0; j < w.size(); ++j) {
-        const Trade tr = trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : depthAt0(d, tilt, j, w.size()), ps, pt, al, rf);
+        const Trade tr = trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : d, ps, pt, al, rf);
         rg += tr.ret, fills += tr.filled > 0;
       }
       return rg / std::max(double(nPick), fills);
@@ -1190,7 +1106,7 @@ int main(int argc, char** argv) {
       rankLiquidity(t, false);
       std::vector<std::vector<std::pair<double, std::size_t>>> v(nR);
       for (std::size_t k = 0; k < nR; ++k) v[k] = ranked(t, axis(0, double(k / (nB * nK))), axis(1, double(k / nK % nB)), axis(2, double(k % nK)));
-      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 2 / kStep], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 2 / kStep];  // no AIM cap, no gate
+      const auto& all0 = v[((nC - 1) * nB) * nK + nK - 1], &all1 = v[((nC - 1) * nB + nB - 1) * nK + nK - 1];  // no AIM cap, no gate
       double r = 0, pm = 0;
       const auto oc = [&](std::size_t i) { const double x = m.close(t + 1, i) / m.open(t + 1, i) - 1; return std::isfinite(x) ? x : 0.0; };  // no bar: cash
       for (const auto& e : all0) r += oc(e.second) / double(all0.size()), pm += e.first / double(all0.size());
@@ -1200,62 +1116,8 @@ int main(int argc, char** argv) {
       byRank[1].push_back(rk);
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
-      const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3], tiltOf(x[2])) : ranked(t, x[0], x[1], x[2]);
-      adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7], tiltOf(x[2])) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7], tiltOf(x[2]))), used.push_back(x);
-      if (dipNN && !today.empty()) {
-        std::vector<double> raw, xin, yt;
-        for (const auto& e : today) {
-          const std::size_t i = e.second;
-          const double* f = &ft[(t * N + i) * Km];
-          for (std::size_t k = 0; k < nnOwn; ++k) raw.push_back(std::isfinite(f[k]) ? f[k] : 0.0);
-          const double sig = std::exp(f[20]);
-          raw.push_back(rawExpected(t, i)), raw.push_back(std::log(sig)), raw.push_back(std::log(ownDip(t, i) / sig)),
-              raw.push_back(spread[t * N + i]), raw.push_back(liqRank[i] / double(N)),
-              raw.push_back(std::log(std::max(1e-3, regimeRaw[t]))), raw.push_back(mktRet20[t]);
-          for (std::size_t q2 = 0; q2 < nE; ++q2) yt.push_back(std::clamp(100.0 * trade(t, i, dvals[q2], x[4], x[5], x[6], x[7]).ret, -20.0, 20.0));
-        }
-        const std::size_t ns = today.size();
-        for (std::size_t r = 0; r < ns; ++r)  // standardised by what was seen before today
-          for (std::size_t k = 0; k < nnIn; ++k) {
-            const double v = raw[r * nnIn + k], sd = nnSeen > 1 ? std::sqrt(nnM2[k] / (nnSeen - 1)) : 1.0;
-            xin.push_back(std::clamp(sd > 0 ? (v - nnMu[k]) / sd : 0.0, -4.0, 4.0));
-          }
-        if (nnTrained >= 250) {  // the decision, from the network as trained on earlier days only
-          const auto pr = dnn.predict(xin, ns);
-          double day = 0;
-          for (std::size_t r = 0; r < ns; ++r) {
-            std::size_t best = 0;
-            for (std::size_t q2 = 1; q2 < nE; ++q2) if (pr[r * nE + q2] > pr[r * nE + best]) best = q2;
-            nnOrders += 1;
-            if (!(pr[r * nE + best] > 0)) continue;  // no depth expected to gain: no order (cash)
-            const Trade tr = trade(t, today[r].second, dvals[best], x[4], x[5], x[6], x[7]);
-            nnPlaced += 1, nnFilled += tr.filled > 0, day += tr.ret / double(nPick);
-            // The decision in the trade log (the no-look-ahead checks compare it before a date whose later
-            // bars change): the share, the depth chosen and its predicted gain, made at the close t.
-            if (tradeLog) std::fprintf(tradeLog, "%s,%s,nn,%zu,%.9g\n", m.dates[t + 1].c_str(), m.tickers[today[r].second].c_str(), best, pr[r * nE + best]);
-          }
-          nnDays.push_back(day), nnBase.push_back(adaptiveLevels.back());
-        }
-        // The day's outcome is known now: its samples are learnt (with as many replayed from earlier days).
-        for (std::size_t r = 0; r < ns; ++r)
-          for (std::size_t k = 0; k < nnIn; ++k) {
-            const double v = raw[r * nnIn + k];
-            nnSeen += k == 0, (void)0;
-            const double n = nnSeen, dlt = v - nnMu[k];
-            nnMu[k] += dlt / n, nnM2[k] += dlt * (v - nnMu[k]);
-          }
-        nnMemX.insert(nnMemX.end(), xin.begin(), xin.end()), nnMemY.insert(nnMemY.end(), yt.begin(), yt.end());
-        std::vector<double> bx = xin, by = yt;
-        const std::size_t nm = nnMemY.size() / nE;
-        for (std::size_t r = 0; r < ns && nm > ns; ++r) {
-          nnRng ^= nnRng << 13, nnRng ^= nnRng >> 7, nnRng ^= nnRng << 17;
-          const std::size_t pick = std::size_t(nnRng % nm);
-          bx.insert(bx.end(), nnMemX.begin() + std::ptrdiff_t(pick * nnIn), nnMemX.begin() + std::ptrdiff_t((pick + 1) * nnIn));
-          by.insert(by.end(), nnMemY.begin() + std::ptrdiff_t(pick * nE), nnMemY.begin() + std::ptrdiff_t((pick + 1) * nE));
-        }
-        dnn.step(bx, by, by.size() / nE);
-        nnTrained += 1;
-      }
+      const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
+      adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
@@ -1271,7 +1133,7 @@ int main(int argc, char** argv) {
             const Trade tq = trade(t, i, dvals[q], x[4], x[5], x[6], x[7]);
             if (tq.filled > 0) pickRf[q] += tq.ret, pickF[q] += 1;
           }
-        const double dk = shareDepthOn ? shareDepth(t, i) : fillN ? depthAt0(x[3], tiltOf(x[2]), k, today.size()) : x[3];
+        const double dk = shareDepthOn ? shareDepth(t, i) : x[3];
         if (!std::isfinite(dk)) continue;  // no order for the share today
         const Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
         if (fillN) calFillP.pts.emplace_back(rawFill(t, i, dk), double(tr.filled > 0)), calFillP.dirty = true;
@@ -1299,7 +1161,7 @@ int main(int argc, char** argv) {
             const Trade tq = trade(t, i, dvals[q], x[4], x[5], x[6], x[7]);
             const double r = tq.ret;
             sdS1[i * nE + q] += r, sdS2[i * nE + q] += r * r, sdN[i * nE + q] += 1;
-            sdF[i * nE + q] += tq.filled > 0, poolF[q] += tq.filled > 0, poolN[q] += 1;
+            sdF[i * nE + q] += tq.filled > 0;
             if (tq.filled > 0) sfS1[i * nE + q] += r, sfS2[i * nE + q] += r * r;
             if (fillNet && t >= lag) {  // the share's day joins the depth's regression (used from the next close)
               double xv[64];
@@ -1362,7 +1224,6 @@ int main(int argc, char** argv) {
         }
         ofm::v2::gen::V2Header<double> R{};
         R.T = std::uint32_t(nV), R.u0 = std::uint32_t(nLe), R.NT = std::uint32_t(nPick), R.t0 = std::uint32_t(nDays + 1);
-        if (tiltOn) R.u1 = std::uint32_t(nK), R.u2 = std::uint32_t(nLv);  // the tilt (X_TILT): the codes per ranking and the exit settings per entry
         ofm::v2::gen::Records<double> kr;
         kr.P = R, kr.cand = cand.data(), kr.ret = ret.data(), kr.s1 = s1v.data(), kr.s2 = s2v.data(), kr.dn = dnv.data(), kr.sc = scv.data(), kr.so = sov.data();
         ofm::detail::dispatch(kr, ofm::detail::groups(std::uint32_t(nV), 64));
@@ -1436,11 +1297,6 @@ int main(int argc, char** argv) {
       std::printf("  a filled trade on average: %+.3f%% before costs, costs %.3f%%, %+.3f%% after\n", 100 * (tradeSum + tradeCost) / tradeFilled, 100 * tradeCost / tradeFilled,
                   100 * tradeSum / tradeFilled);
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
-    if (dipNN && !nnDays.empty()) {
-      const auto an = stats(nnDays), ab = stats(nnBase);
-      std::printf("  dip network (%zu days)             %+7.1f%% a year (Sharpe %5.2f), %.0f%% of orders placed, %.1f%% of placed filled; the learnt depth on the same days %+.1f%% (Sharpe %.2f)\n",
-                  nnDays.size(), 100 * an.first, an.second, nnOrders > 0 ? 100 * nnPlaced / nnOrders : 0.0, nnPlaced > 0 ? 100 * nnFilled / nnPlaced : 0.0, 100 * ab.first, ab.second);
-    }
     // The next open's trades: the 10 highest predictions lag closes before the last close, among
     // the stocks with a bar at the last close (their targets are not known yet), from the pool and
     // ranked and with the levels by the settings learnt over the whole backtest. Expected open-to-close: the prediction
@@ -1465,11 +1321,11 @@ int main(int argc, char** argv) {
       for (std::size_t q = 0; q < std::min<std::size_t>(nCand, v.size()); ++q) lastRun.candidates.emplace_back(v[q].second, v[q].first);
       for (const auto& e : v) lastRun.pool.push_back(e.second);
       auto vAll = v;
-      const auto picks = fillN ? fillOrders(t, capTo(t, vAll, capOf(fx[2]), gateOf(fx[2]), N), fx[3], tiltOf(fx[2])) : capTo(t, v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
+      const auto picks = fillN ? fillOrders(t, capTo(t, vAll, capOf(fx[2]), gateOf(fx[2]), N), fx[3]) : capTo(t, v, capOf(fx[2]), gateOf(fx[2]));  // as learnt: the AIM cap and the gate, the backtest's selection
       for (std::size_t q = 0; q < picks.size(); ++q) {
         const std::size_t i = picks[q].second;
-        // The limit from the last close (tilted by the signal's rank when learnt so).
-        const double dq = shareDepthOn ? shareDepth(t, i) : depthAt0(fx[3], tiltOf(fx[2]), q, picks.size());
+        // The limit from the last close.
+        const double dq = shareDepthOn ? shareDepth(t, i) : fx[3];
         if (!std::isfinite(dq)) continue;  // no depth beats the money's use elsewhere: no order
         const double limit = std::exp(-dq * dipUnit(t, i));
         // The levels from the expected entry: the limit, or the last close when the limit is above it
