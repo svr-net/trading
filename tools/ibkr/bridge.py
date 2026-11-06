@@ -675,9 +675,20 @@ def free_client(market):
 
 
 def close_market(market):
+    """The day's close: today's positions sold at the close (submit.py --close), then any of the
+    model's shares still held from an earlier day sold too (submit.py --leftovers: a sale confirmed
+    with IBKR), so the day ends flat rather than waiting for the next morning (6 Nov: three UK
+    shares held from earlier days were not part of the close and would have stayed over the weekend)."""
     n = free_client(market)
     code, out = run_submit(['--market', market, '--close'], timeout=600)
     last = out.splitlines()[-1] if out else ''
+    tickers = model_tickers(market)
+    if tickers:
+        code2, out2 = run_submit(['--market', market, '--leftovers', '--tickers', ','.join(tickers)], timeout=600)
+        last2 = out2.splitlines()[-1] if out2 else ''
+        if 'held from earlier days' in last2 and not last2.split(':')[1].strip().startswith('0 held'):
+            last += f'; {last2}'
+        code = code or code2
     return code == 0, (f'ended {n} buy-back watch still connected; ' if n else '') + last
 
 
