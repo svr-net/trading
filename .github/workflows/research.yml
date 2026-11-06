@@ -31,7 +31,7 @@ jobs:
         variant: ${{ fromJSON(needs.plan.outputs.variants) }}
     env:
       MARKET: ${{ inputs.market }}
-      EXCHANGES: ${{ inputs.market == 'US' && 'NYSE,NASDAQ' || inputs.market == 'APAC' && 'ASX,SGX' || inputs.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA,OSL' || 'LSE' }}
+      EXCHANGES: ${{ inputs.market == 'US' && 'NYSE,NASDAQ' || inputs.market == 'APAC' && 'ASX,SGX' || inputs.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/bars-all.csv
-          key: research-bars-${{ inputs.market }}-${{ env.DAY }}
+          key: research-bars-${{ inputs.market }}-${{ env.DAY }}-${{ env.EXCHANGES }}
       - name: Check out the EOD store (svr-net/eod)
         if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr')
         uses: actions/checkout@v4
@@ -90,6 +90,8 @@ jobs:
           case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
           # noosl: without Oslo, the live EU universe (no trading permission there).
           case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
+          # The variant's share list in numbers (as the daily run's summary): to set beside the live scan's.
+          echo "share list: rows $(($(wc -l < data/stocks.csv) - 1)), symbols $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l), $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort -u | sed -n '1p;$p' | paste -sd' ' | sed 's/ / to /')" | tee -a "$GITHUB_STEP_SUMMARY"
           case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           # Token aim (UK): only AIM shares (no stamp duty), from tools/eoddata/aim.txt.
           case "+$V+" in *+aim+*) { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' tools/eoddata/aim.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;; esac
