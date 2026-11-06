@@ -41,6 +41,7 @@ import argparse
 import os
 import json
 import math
+import re
 import sys
 from datetime import date
 
@@ -196,11 +197,47 @@ def floor_price(ib, contract, ticks):
     return round_to(lo, tick_at(ticks[0], ticks[1], lo), 'down')
 
 
+def order_fate(ib, trade, errors, wait=20):
+    """Where an order stands at IBKR after up to `wait` seconds: 'live' (working: Submitted or
+    PreSubmitted), 'filled', or 'dead' (cancelled, inactive, or no longer among the open orders).
+    ib_async marks an order 'ValidationError' when IBKR answers with a warning while the order is
+    still live (wrapper.error, isWarning): that is not an answer, so it waits for the next status,
+    and if none comes, asks IBKR for its open orders. Returns (fate, IBKR's messages, numbers masked)."""
+    for _ in range(wait * 2):
+        ib.sleep(0.5)
+        st = trade.orderStatus.status
+        if st == 'Filled':
+            break
+        if st in DEAD or st in ('Submitted', 'PreSubmitted'):
+            break
+    st = trade.orderStatus.status
+    notes = list(errors.get(trade.order.orderId, [])) + [e.message for e in trade.log if getattr(e, 'message', '') and e.errorCode]
+    seen, msgs = set(), []
+    for m in notes:
+        m = re.sub(r'\d+\.\d+', '#', str(m))[:160]
+        if m not in seen:
+            seen.add(m), msgs.append(m)
+    if st == 'Filled':
+        return 'filled', msgs
+    if st in DEAD:
+        return 'dead', msgs
+    if st in ('Submitted', 'PreSubmitted'):
+        return 'live', msgs
+    # No clear status (ValidationError, PendingSubmit, ...): is it among IBKR's open orders?
+    ids = {(t.order.permId, t.order.orderId) for t in ib.reqAllOpenOrders() if t.orderStatus.status not in DEAD}
+    if any(trade.order.permId and pid == trade.order.permId or oid == trade.order.orderId for pid, oid in ids):
+        return 'live', msgs
+    if any(f.execution.orderId == trade.order.orderId for f in ib.reqExecutions()):
+        return 'filled', msgs
+    return 'dead', msgs
+
+
 def sell_out(ib, contract, qty, ref, errors, at_close):
     """Sells qty: at the close (MOC) or at the next price (market; at the open when placed before
-    it), and confirms IBKR took the order. Refused (a share too thin for a market order, 202; an
-    order type the exchange does not take), it sells with a limit at the share's 20-day low instead,
-    which trades at the auction's or the market's price above it. Returns (ok, what happened)."""
+    it), and confirms with IBKR that the order is working or filled (order_fate: a warning is not a
+    confirmation). An order that did not survive (refused, cancelled by the exchange, an order type
+    it does not take) is replaced by a limit at the share's 20-day low, which trades at the auction's
+    or the market's price above it, and that is confirmed the same way. Returns (ok, what happened)."""
     from ib_async import MarketOrder, LimitOrder
     c, ticks = exit_contract(ib, contract)
     if c is None:
@@ -208,26 +245,19 @@ def sell_out(ib, contract, qty, ref, errors, at_close):
     o = MarketOrder('SELL', qty, orderRef=ref, tif='DAY')
     if at_close:
         o.orderType = 'MOC'
-    t = ib.placeOrder(c, o)
-    for _ in range(16):
-        ib.sleep(0.5)
-        if t.orderStatus.status in DEAD or t.orderStatus.status in ('Submitted', 'PreSubmitted', 'Filled'):
-            break
     kind = 'at the close' if at_close else 'at market'
-    if t.orderStatus.status not in DEAD:
-        return True, f'{c.symbol}: sell {qty:g} {kind} ({t.orderStatus.status})'
-    why = '; '.join(errors.get(o.orderId, [])) or t.orderStatus.status
+    fate, msgs = order_fate(ib, ib.placeOrder(c, o), errors)
+    said = f" [IBKR: {' | '.join(msgs)}]" if msgs else ''
+    if fate != 'dead':
+        return True, f'{c.symbol}: sell {qty:g} {kind}: {fate}{said}'
     lim = floor_price(ib, c, ticks)
     if lim is None:
-        return False, f'{c.symbol}: sell {kind} refused ({why}); no price for a limit: NOT SOLD'
-    t2 = ib.placeOrder(c, LimitOrder('SELL', qty, lim, orderRef=ref, tif='DAY'))
-    for _ in range(16):
-        ib.sleep(0.5)
-        if t2.orderStatus.status in DEAD or t2.orderStatus.status in ('Submitted', 'PreSubmitted', 'Filled'):
-            break
-    if t2.orderStatus.status in DEAD:
-        return False, f"{c.symbol}: sell {kind} refused ({why}); limit {lim} refused ({'; '.join(errors.get(t2.order.orderId, [])) or t2.orderStatus.status}): NOT SOLD"
-    return True, f'{c.symbol}: sell {kind} refused ({why}); sell {qty:g} limit {lim} instead ({t2.orderStatus.status})'
+        return False, f'{c.symbol}: sell {kind} did not survive{said}; no price for a limit: NOT SOLD'
+    fate2, msgs2 = order_fate(ib, ib.placeOrder(c, LimitOrder('SELL', qty, lim, orderRef=ref, tif='DAY')), errors)
+    said2 = f" [IBKR: {' | '.join(msgs2)}]" if msgs2 else ''
+    if fate2 == 'dead':
+        return False, f'{c.symbol}: sell {kind} did not survive{said}; limit at the 20-day low did not survive either{said2}: NOT SOLD'
+    return True, f'{c.symbol}: sell {kind} did not survive{said}; limit at the 20-day low instead: {fate2}{said2}'
 
 
 def leftovers(args):
