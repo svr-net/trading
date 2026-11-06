@@ -819,7 +819,8 @@ def restart_gateway():
 
 
 def watchdog():
-    """Every minute, whether IB Gateway's API answers (a connection and its clock, not only the port);
+    """Every minute, whether IB Gateway's API answers and still reaches IBKR's servers (a connection,
+    its clock and one contract lookup: submit.py --ping; not only the port);
     after 3 minutes in a row with its port open but its API silent (hung), IB Gateway is restarted,
     then given 4 minutes to log in."""
     while True:

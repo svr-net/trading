@@ -136,6 +136,7 @@ def round_to(x, tick, how):
 
 
 DEAD = ('Cancelled', 'ApiCancelled', 'Inactive')
+REQUEST_TIMEOUT = 60  # seconds: the longest any single request to IBKR may take (connect())
 
 
 def connect(ib, args, client_id, tries=3):
@@ -148,6 +149,10 @@ def connect(ib, args, client_id, tries=3):
             # still logging in, 4 Nov): that is a failure, never a run against nothing.
             if not ib.isConnected():
                 raise ConnectionError('IB Gateway did not accept the API connection')
+            # Every blocking request answers within a minute or fails (ib_async waits forever by
+            # default): a gateway that accepts connections but no longer reaches IBKR's servers (its
+            # session taken over by a login elsewhere with the same user, 6 Nov) made steps hang for hours.
+            ib.RequestTimeout = REQUEST_TIMEOUT
             return
         except Exception as e:  # noqa: BLE001
             if k == tries - 1:
@@ -951,6 +956,7 @@ def diag(args):
         ib.connect(args.host, args.port, clientId=args.client_id + 3, timeout=10)
         if not ib.isConnected():
             raise ConnectionError('IB Gateway did not accept the API connection')
+        ib.RequestTimeout = REQUEST_TIMEOUT
     except Exception as e:  # noqa: BLE001
         print(json.dumps({**out, 'api': False, 'error': str(e) or type(e).__name__}))
         return
@@ -975,14 +981,22 @@ def diag(args):
 
 
 def ping(args):
-    """The bridge's watchdog: does IB Gateway's API answer? Its own client (9), so it never meets the
-    markets' clients."""
-    from ib_async import IB
+    """The bridge's watchdog: does IB Gateway answer, and does it still reach IBKR's servers? Its
+    clock alone is not enough: a gateway whose session was taken over by a login elsewhere with the
+    same user (6 Nov) still answers the clock but nothing that needs IBKR (contracts, orders,
+    positions), so it also looks up one share's contract, within 20 seconds. Its own client (9), so it
+    never meets the markets' clients."""
+    from ib_async import IB, Stock
 
     ib = IB()
     try:
         ib.connect(args.host, args.port, clientId=9, timeout=15)
+        ib.RequestTimeout = 20
         ok = ib.reqCurrentTime() is not None
+        if ok:
+            ok = bool(ib.reqContractDetails(Stock('VOD', 'SMART', 'GBP', primaryExchange='LSE')))
+            if not ok:
+                print('no answer from IBKR\'s servers: the contract lookup returned nothing')
     except Exception as e:  # noqa: BLE001 - any failure means the API does not answer
         print(f'no answer: {type(e).__name__}')
         ok = False
