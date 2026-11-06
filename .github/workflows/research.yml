@@ -49,7 +49,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}-live
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr')
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr') || startsWith(matrix.variant, 'single')
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -141,7 +141,12 @@ jobs:
           CAPITAL=5000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
           case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
-          for TOP in 300 100; do ./build/ofm_single "${A[@]}" --top "$TOP"; done | tee report.txt
+          # The account (10 slots, as the live model), the store's bars against IBKR's own where the bridge fetched them.
+          IB=data/eoddata/ibkr/$MARKET/daily.csv
+          { for TOP in 300 100; do
+              if [ -f "$IB" ]; then ./build/ofm_single "${A[@]}" --top "$TOP" --ibkr-days "$IB"; ./build/ofm_single "${A[@]}" --top "$TOP" --override "$IB"
+              else ./build/ofm_single "${A[@]}" --top "$TOP"; echo "single: no IBKR bars for $MARKET in the store"; fi
+            done; } | tee report.txt
           { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
         if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single')

@@ -20,13 +20,21 @@
 // Reported: every share's own result, the spread of them across shares, whether a share's first half
 // tells its second (persistence), and the sum of all shares' own trades (for scale, not learnt from).
 //
-//   ofm_single --csv stocks.csv --costs UK|EU|US|APAC [--capital 5000] [--top 300] [--venues tools/venues.txt]
-//              [--stamp-free aim.txt] [--refit 5] [--warm 250]
+// The account: each day at most --slots orders (the capital split in that many trades), given to the
+// shares with the highest own forecasts that day (each forecast still from the share's own model); an
+// unfilled slot stays in cash. With --override (IBKR's own daily bars, the bridge's), its bars replace
+// the store's where it has them, and the trades on those share-days are reported apart: a dip limit
+// that fills on the store's low but not on IBKR's was never a real fill.
+//
+//   ofm_single --csv stocks.csv --costs UK|EU|US|APAC [--capital 5000] [--top 300] [--slots 10]
+//              [--venues tools/venues.txt] [--stamp-free aim.txt] [--override ibkr.csv] [--refit 5] [--warm 250]
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -86,15 +94,16 @@ struct ShareResult {
   Rec ungated;            // every decision, ungated (the share's whole walk-forward paper record)
   Rec open;               // bought in every opening auction it could, sold at the close (no model)
   std::vector<double> day;  // its result each day it traded (gated), 0 otherwise (NaN: not tradable)
+  std::vector<double> fc;   // the forecast of the order it placed that day (NaN: none)
   std::size_t depthUsed[nDepth] = {};
   double fills = 0;
 };
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, market, venues, stampFree;
+  std::string csv, market, venues, stampFree, overrideCsv, ibkrDays;
   double capital = 5000;
-  std::size_t top = 300, refit = 5, warm = 250;
+  std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   for (int k = 1; k + 1 < argc; ++k) {
     const std::string a = argv[k];
     if (a == "--csv") csv = argv[++k];
@@ -105,13 +114,33 @@ int main(int argc, char** argv) {
     else if (a == "--stamp-free") stampFree = argv[++k];
     else if (a == "--refit") refit = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
     else if (a == "--warm") warm = std::size_t(std::atol(argv[++k]));
+    else if (a == "--slots") slots = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
+    else if (a == "--override") overrideCsv = argv[++k];
+    else if (a == "--ibkr-days") ibkrDays = argv[++k];
   }
   if (csv.empty() || market.empty()) {
     std::fprintf(stderr, "usage: ofm_single --csv stocks.csv --costs UK|EU|US|APAC [--capital 5000] [--top 300] [--venues f] [--stamp-free f]\n");
     return 2;
   }
-  const swing::Panel p = swing::load(csv);
-  const std::size_t T = p.T, N = p.N;
+  swing::Panel panel = swing::load(csv);
+  const std::size_t T = panel.T, N = panel.N;
+  std::vector<char> ibDay(T * N, 0);  // the share-days IBKR's bars replaced
+  if (!overrideCsv.empty()) std::printf("single: IBKR's bars: %s\n", swing::override(panel, overrideCsv).c_str()), ibkrDays = overrideCsv;
+  if (!ibkrDays.empty()) {
+    std::map<std::string, std::size_t> di, ti;
+    for (std::size_t t = 0; t < T; ++t) di[panel.days[t]] = t;
+    for (std::size_t i = 0; i < N; ++i) ti[panel.tickers[i]] = i;
+    std::ifstream in(ibkrDays);
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+      const auto c1 = line.find(','), c2 = line.find(',', c1 + 1);
+      if (c1 == std::string::npos || c2 == std::string::npos) continue;
+      const auto d = di.find(line.substr(0, std::min<std::size_t>(c1, 10))), k = ti.find(line.substr(c1 + 1, c2 - c1 - 1));
+      if (d != di.end() && k != ti.end() && panel.C[d->second * N + k->second] > 0) ibDay[d->second * N + k->second] = 1;
+    }
+  }
+  const swing::Panel& p = panel;
   const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
   const auto uni = swing::universe(p, top, market == "US" ? 5.0 : 0.0);
   std::vector<char> tradable(T * N, 0);
@@ -124,7 +153,7 @@ int main(int argc, char** argv) {
   const auto work = [&] {
     for (std::size_t i; (i = next++) < N;) {
       ShareResult& R = res[i];
-      R.day.assign(T, kNaN);
+      R.day.assign(T, kNaN), R.fc.assign(T, kNaN);
       // The share's own inputs at each close, standardised by its own past (expanding).
       std::vector<double> x(T * D, 0.0), mu(F, 0.0), m2(F, 0.0), cnt(F, 0.0), sigma(T, kNaN), spread(T, 0.0);
       std::vector<char> has(T, 0);
@@ -210,14 +239,15 @@ int main(int argc, char** argv) {
         // Each ridge's decision at t: the depth of its highest forecast, if positive.
         const double* a = &x[t * D];
         int pick[nRidge];
+        double fcast[nRidge];
         for (std::size_t q = 0; q < nRidge; ++q) {
-          pick[q] = -1;
+          pick[q] = -1, fcast[q] = 0;
           if (beta[q].empty()) continue;
           double best = 0;
           for (std::size_t k = 0; k < nDepth; ++k) {
             double v = 0;
             for (std::size_t r = 0; r < D; ++r) v += a[r] * beta[q][r * nDepth + k];
-            if (v > best) best = v, pick[q] = int(k);
+            if (v > best) best = v, pick[q] = int(k), fcast[q] = v;
           }
         }
         // The ridge the share's own record so far prefers decides.
@@ -239,7 +269,7 @@ int main(int argc, char** argv) {
             R.ungated.add(out[use]);
             if (gateOpen) {
               R.all.add(out[use]), (t < half ? R.h1 : R.h2).add(out[use]);
-              R.day[t + 1] = out[use];
+              R.day[t + 1] = out[use], R.fc[t + 1] = fcast[use];
               R.depthUsed[pick[use]] += 1, R.fills += out[use] != 0;
             }
           }
@@ -322,5 +352,33 @@ int main(int argc, char** argv) {
   const auto [a2, s2] = yr(dh2);
   std::printf("single: all shares' own trades together (%.1f a day, each the same capital): %+.1f%% a year, Sharpe %.2f | first half %+.1f%% %.2f | second half %+.1f%% %.2f\n",
               nd > 0 ? perDay / nd : 0.0, a0, s0, a1, s1, a2, s2);
+  // The account: each day the --slots highest own forecasts among the shares that order.
+  Rec acct, ah1, ah2;
+  double acctFills = 0, acctOrders = 0;
+  for (std::size_t t = first; t <= last; ++t) {
+    std::vector<std::pair<double, std::size_t>> c;
+    for (std::size_t i = 0; i < N; ++i)
+      if (std::isfinite(res[i].fc[t])) c.emplace_back(res[i].fc[t], i);
+    const std::size_t k = std::min(slots, c.size());
+    std::partial_sort(c.begin(), c.begin() + std::ptrdiff_t(k), c.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    double s = 0;
+    for (std::size_t r = 0; r < k; ++r) s += res[c[r].second].day[t], acctFills += res[c[r].second].day[t] != 0;
+    acctOrders += double(k);
+    const double r = s / double(slots);
+    acct.add(r), (t < (first + last) / 2 ? ah1 : ah2).add(r);
+  }
+  const auto [b0, t0] = yr(acct);
+  const auto [b1, t1] = yr(ah1);
+  const auto [b2, t2] = yr(ah2);
+  std::printf("single: the account (%zu slots, %.0f each; the highest own forecasts): %.1f orders and %.1f fills a day, %+.1f%% a year, Sharpe %.2f | first half %+.1f%% %.2f | second half %+.1f%% %.2f\n",
+              slots, capital, acctOrders / nd, acctFills / nd, b0, t0, b1, t1, b2, t2);
+  if (!ibkrDays.empty()) {  // the orders on the share-days IBKR has bars for (with --override: on IBKR's bars; else on the store's)
+    double o = 0, fl = 0, sm = 0;
+    for (std::size_t i = 0; i < N; ++i)
+      for (std::size_t t = 0; t < T; ++t)
+        if (ibDay[t * N + i] && std::isfinite(res[i].fc[t])) o += 1, fl += res[i].day[t] != 0, sm += res[i].day[t];
+    std::printf("single: on the share-days with IBKR's bars (%s's bars): %.0f orders, %.0f filled (%.0f%%), an order %+.4f%%, a fill %+.3f%%\n", overrideCsv.empty() ? "the store" : "IBKR", o, fl, o > 0 ? 100 * fl / o : 0.0,
+                o > 0 ? 100 * sm / o : 0.0, fl > 0 ? 100 * sm / fl : 0.0);
+  }
   return 0;
 }
