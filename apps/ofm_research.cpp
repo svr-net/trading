@@ -1062,12 +1062,29 @@ int main(int argc, char** argv) {
       return dvals[bq];
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
+    // X_SIZE (research): each order's money by its calibrated expectation (meta-labeling's sizing,
+    // Lopez de Prado): a filled trade's calibrated net return (calFill, walk-forward) over the mean of
+    // the day's positive ones, between 0 and 2, so the day's money stays the same and the picks the
+    // calibration rates higher get more of it. Default: every order one unit.
+    const bool sizeOn = std::getenv("X_SIZE") != nullptr;
+    const auto sizes = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w) {
+      std::vector<double> z(w.size(), 1.0);
+      if (!sizeOn) return z;
+      double sm = 0, n = 0;
+      for (std::size_t j = 0; j < w.size(); ++j) {
+        z[j] = calibrated(rawExpected(t, w[j].second), true);
+        if (z[j] > 0) sm += z[j], n += 1;
+      }
+      for (double& x : z) x = n > 0 ? std::clamp(x / (sm / n), 0.0, 2.0) : 1.0;
+      return z;
+    };
     const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0;
+      const auto z = sizes(t, w);
       for (std::size_t j = 0; j < w.size(); ++j)  // a tenth each: a missing trade stays in cash
       {
         const double dj = shareDepthOn ? shareDepth(t, w[j].second) : d;
-        if (std::isfinite(dj)) rg += trade(t, w[j].second, dj, ps, pt, al, rf).ret / double(nPick);  // no order: cash
+        if (std::isfinite(dj)) rg += z[j] * trade(t, w[j].second, dj, ps, pt, al, rf).ret / double(nPick);  // no order: cash
       }
       return rg;
     };
@@ -1084,9 +1101,10 @@ int main(int argc, char** argv) {
     };
     const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0, fills = 0;
+      const auto z = sizes(t, w);
       for (std::size_t j = 0; j < w.size(); ++j) {
         const Trade tr = trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : d, ps, pt, al, rf);
-        rg += tr.ret, fills += tr.filled > 0;
+        rg += z[j] * tr.ret, fills += tr.filled > 0;
       }
       return rg / std::max(double(nPick), fills);
     };

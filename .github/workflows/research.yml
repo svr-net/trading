@@ -146,6 +146,7 @@ jobs:
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
+              size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
             esac
           done
           STAMP=(--exit safety)
