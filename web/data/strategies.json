@@ -26,6 +26,16 @@
      "X_FILLNET": "1"
     },
     "ref": null
+   },
+   {
+    "name": "sharedepth-filln-size",
+    "role": "shadow",
+    "env": {
+     "X_SHAREDEPTH": "1",
+     "X_FILLN": "1",
+     "X_SIZE": "1"
+    },
+    "ref": null
    }
   ],
   "uk": [
