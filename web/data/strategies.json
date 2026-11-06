@@ -36,6 +36,12 @@
      "X_SIZE": "1"
     },
     "ref": null
+   },
+   {
+    "name": "single",
+    "role": "shadow",
+    "env": {},
+    "ref": null
    }
   ],
   "uk": [
