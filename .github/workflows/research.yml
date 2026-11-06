@@ -88,6 +88,8 @@ jobs:
           esac
           # Combinable tokens (variant = tokens joined by +): noamsosl, the share list without Amsterdam and Oslo.
           case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
+          # noosl: without Oslo, the live EU universe (no trading permission there).
+          case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           # Token aim (UK): only AIM shares (no stamp duty), from tools/eoddata/aim.txt.
           case "+$V+" in *+aim+*) { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' tools/eoddata/aim.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;; esac
