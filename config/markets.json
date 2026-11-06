@@ -24,6 +24,14 @@
             "X_REGIME": "1"
           },
           "only": "aim"
+        },
+        {
+          "name": "aim-regime-size",
+          "env": {
+            "X_REGIME": "1",
+            "X_SIZE": "1"
+          },
+          "only": "aim"
         }
       ]
     },
@@ -46,6 +54,14 @@
           "name": "fillnet",
           "env": {
             "X_FILLNET": "1"
+          }
+        },
+        {
+          "name": "sharedepth-filln-size",
+          "env": {
+            "X_SHAREDEPTH": "1",
+            "X_FILLN": "1",
+            "X_SIZE": "1"
           }
         }
       ]

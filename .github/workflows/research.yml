@@ -88,6 +88,8 @@ jobs:
           esac
           # Combinable tokens (variant = tokens joined by +): noamsosl, the share list without Amsterdam and Oslo.
           case "+$V+" in *+noamsosl+*) keep '$2 !~ /^(OSL|AMS):/' ;; esac
+          # noosl: without Oslo, the live EU universe (no trading permission there).
+          case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           case "+$V+" in *+noosl+*) keep '$2 !~ /^OSL:/' ;; esac
           # Token aim (UK): only AIM shares (no stamp duty), from tools/eoddata/aim.txt.
           case "+$V+" in *+aim+*) { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' tools/eoddata/aim.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;; esac
@@ -146,6 +148,7 @@ jobs:
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
+              size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
             esac
           done
           STAMP=(--exit safety)
