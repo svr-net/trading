@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/bars-all.csv
-          key: research-bars-${{ inputs.market }}-${{ env.DAY }}-${{ env.EXCHANGES }}
+          key: research-bars-${{ inputs.market }}-${{ env.DAY }}-live
       - name: Check out the EOD store (svr-net/eod)
         if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr')
         uses: actions/checkout@v4
