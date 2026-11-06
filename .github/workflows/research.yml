@@ -105,7 +105,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -134,8 +134,17 @@ jobs:
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           { for TOP in 500 100; do ./build/ofm_swing "${A[@]}" --top "$TOP"; [ -f "$IB" ] && ./build/ofm_swing "${A[@]}" --top "$TOP" --override "$IB"; done; [ -f "$IB" ] || echo "swing: no IBKR bars for $MARKET in the store"; } | tee report.txt
           { echo "### $MARKET swing"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The single-share model, each share learnt and backtested on its own bars only (variant single[+tokens]; results only)
+        if: startsWith(matrix.variant, 'single')
+        run: |
+          set -o pipefail
+          CAPITAL=5000
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
+          for TOP in 300 100; do ./build/ofm_single "${A[@]}" --top "$TOP"; done | tee report.txt
+          { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
-        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing'
+        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single')
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
