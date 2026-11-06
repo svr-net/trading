@@ -376,7 +376,6 @@ int main(int argc, char** argv) {
   Run lastRun;
   const std::size_t nPick = std::getenv("X_NPICK") ? std::size_t(std::atol(std::getenv("X_NPICK"))) : 10;
   const double ridgeK = std::getenv("X_RIDGE") ? std::atof(std::getenv("X_RIDGE")) : 1e-6;
-  double gapGateCut = -1e300;  // the market-gap gate's cutoff learnt for the next open (X_GAPGATE; -inf: no gate), for the orders file
   auto model = [&](const std::vector<double>& ft, std::size_t Fm, std::size_t Km, std::size_t nOwn, const char* label) {
     ofm::v2::gen::V2Header<double> Q = P;
     Q.K = std::uint32_t(Km), Q.NT = std::uint32_t(Fm);
@@ -1063,16 +1062,12 @@ int main(int argc, char** argv) {
       return dvals[bq];
     };
     // The day's result: every trade one unit, a trade not filled stays in cash.
-    // gate: the market-gap gate's day (X_GAPGATE, below): the orders not filled at the open are cancelled
-    // after it, so a fill after the open (filled 2) does not happen.
-    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool gate = false) {
+    const auto dayResult = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0;
       for (std::size_t j = 0; j < w.size(); ++j)  // a tenth each: a missing trade stays in cash
       {
         const double dj = shareDepthOn ? shareDepth(t, w[j].second) : d;
-        if (!std::isfinite(dj)) continue;  // no order: cash
-        const Trade tr = trade(t, w[j].second, dj, ps, pt, al, rf);
-        if (!(gate && tr.filled == 2)) rg += tr.ret / double(nPick);
+        if (std::isfinite(dj)) rg += trade(t, w[j].second, dj, ps, pt, al, rf).ret / double(nPick);  // no order: cash
       }
       return rg;
     };
@@ -1087,52 +1082,13 @@ int main(int argc, char** argv) {
       }
       return std::vector<std::pair<double, std::size_t>>(all.begin(), all.begin() + std::ptrdiff_t(n));
     };
-    const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf, bool gate = false) {
+    const auto dayResultN = [&](std::size_t t, const std::vector<std::pair<double, std::size_t>>& w, double d, double ps, double pt, double al, double rf) {
       double rg = 0, fills = 0;
       for (std::size_t j = 0; j < w.size(); ++j) {
         const Trade tr = trade(t, w[j].second, shareDepthOn ? shareDepth(t, w[j].second) : d, ps, pt, al, rf);
-        if (gate && tr.filled == 2) continue;
         rg += tr.ret, fills += tr.filled > 0;
       }
       return rg / std::max(double(nPick), fills);
-    };
-    // X_GAPGATE (research): the market-gap gate. When the whole market opens far down, its fall tends to
-    // go on through the day, and the dips the orders buy after the open lose (ofm_evening: the model's
-    // fills on the days of the lowest fifth of market gaps earned least, in both halves). The market's
-    // gap (the median of the tradable shares' log open over the previous close) is known at the open,
-    // so the orders not yet filled can be cancelled then. Learnt, walk-forward: each day, of no gate
-    // and the past gaps' 5%, 10%, 20% and 30% quantiles as the cutoff, the one whose past days would
-    // have gained most by cancelling their fills after the open (at least 250 days of the model's own
-    // results; until then no gate).
-    const bool gapGateOn = std::getenv("X_GAPGATE") != nullptr;
-    std::vector<double> mktGap(T, kNaN);
-    if (gapGateOn)
-      for (std::size_t t = 1; t < T; ++t) {
-        std::vector<double> g;
-        for (std::size_t i = 0; i < N; ++i)
-          if (tradable[(t - 1) * N + i] && m.open(t, i) > 0 && m.close(t - 1, i) > 0 && std::isfinite(m.open(t, i)) && std::isfinite(m.close(t - 1, i)))
-            g.push_back(std::log(m.open(t, i) / m.close(t - 1, i)));
-        if (g.size() >= 30) {
-          std::nth_element(g.begin(), g.begin() + std::ptrdiff_t(g.size() / 2), g.end());
-          mktGap[t] = g[g.size() / 2];
-        }
-      }
-    std::vector<double> gateGap, gateIntra;  // each past trade day's market gap and its fills' result after the open
-    double gateCut = -1e300;  // the cutoff learnt for the latest day (-inf: no gate)
-    std::size_t gatedDays = 0, gatedFills = 0;
-    const auto learnGate = [&]() {
-      if (gateGap.size() < 250) return -1e300;
-      std::vector<double> sorted = gateGap;
-      std::sort(sorted.begin(), sorted.end());
-      double best = -1e300, gain = 0;
-      for (double qf : {0.05, 0.1, 0.2, 0.3}) {
-        const double c = sorted[std::size_t(qf * double(sorted.size()))];
-        double gn = 0;
-        for (std::size_t h = 0; h < gateGap.size(); ++h)
-          if (gateGap[h] < c) gn -= gateIntra[h];
-        if (gn > gain) gain = gn, best = c;
-      }
-      return best;
     };
     double ordersMax = 0, fillsMax = 0;
     for (std::size_t q = warm; q < days.size(); ++q) {
@@ -1161,16 +1117,7 @@ int main(int argc, char** argv) {
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
       const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
-      bool gateToday = false;
-      if (gapGateOn && std::isfinite(mktGap[t + 1])) {
-        gateCut = learnGate();
-        gateToday = mktGap[t + 1] < gateCut;
-        const double full = fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7]);
-        const double cut = fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7], true) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7], true);
-        gateGap.push_back(mktGap[t + 1]), gateIntra.push_back(full - cut);  // the day's fills after the open, learnt from the next day
-        gatedDays += gateToday;
-      }
-      adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7], gateToday) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7], gateToday)), used.push_back(x);
+      adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
@@ -1188,8 +1135,7 @@ int main(int argc, char** argv) {
           }
         const double dk = shareDepthOn ? shareDepth(t, i) : x[3];
         if (!std::isfinite(dk)) continue;  // no order for the share today
-        Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
-        if (gateToday && tr.filled == 2) tr = Trade{tr.limit, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0.0}, ++gatedFills;  // cancelled after the open (X_GAPGATE)
+        const Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
         if (fillN) calFillP.pts.emplace_back(rawFill(t, i, dk), double(tr.filled > 0)), calFillP.dirty = true;
         if (fillNet)
           for (std::size_t q = 0; q < nE; ++q)
@@ -1351,11 +1297,6 @@ int main(int argc, char** argv) {
       std::printf("  a filled trade on average: %+.3f%% before costs, costs %.3f%%, %+.3f%% after\n", 100 * (tradeSum + tradeCost) / tradeFilled, 100 * tradeCost / tradeFilled,
                   100 * tradeSum / tradeFilled);
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
-    if (gapGateOn) {
-      gapGateCut = learnGate();
-      std::printf("  market-gap gate: %zu of %zu days gated, %zu fills after the open cancelled; for the next open: %s\n", gatedDays, gateGap.size(), gatedFills,
-                  gapGateCut > -1e299 ? (std::string("cancel the unfilled orders after the open when the market's gap is below ") + std::to_string(100 * gapGateCut).substr(0, 6) + "%").c_str() : "no gate");
-    }
     // The next open's trades: the 10 highest predictions lag closes before the last close, among
     // the stocks with a bar at the last close (their targets are not known yet), from the pool and
     // ranked and with the levels by the settings learnt over the whole backtest. Expected open-to-close: the prediction
@@ -1456,11 +1397,7 @@ int main(int argc, char** argv) {
     std::ofstream o(ordersOut);
     // slots: the trades the money pays for; when there are more orders (X_FILLN), the bridge holds the
     // ones after the first slots out of the opening auction and cancels the rest once slots have filled.
-    o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"slots\":" << nPick;
-    // The market-gap gate (X_GAPGATE): the bridge cancels the orders not filled at the open when the
-    // market's opening gap (the median log gap of the day's shares) is below it; absent: no gate.
-    if (gapGateCut > -1e299) o << ",\"gapGate\":" << gapGateCut;
-    o << ",\"orders\":[";
+    o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"slots\":" << nPick << ",\"orders\":[";
     char b[512];
     for (std::size_t q = 0; q < lastRun.picks.size(); ++q) {
       const auto& pk = lastRun.picks[q];

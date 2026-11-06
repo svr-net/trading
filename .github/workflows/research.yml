@@ -146,7 +146,6 @@ jobs:
               sharedepth) export X_SHAREDEPTH=1 ;;  # each share's own limit depth, learnt (empirical Bayes)
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
-              gapgate) export X_GAPGATE=1 ;;  # the market-gap gate: unfilled orders cancelled after the open on a learnt market-wide gap down
             esac
           done
           STAMP=(--exit safety)
