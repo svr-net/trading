@@ -79,12 +79,12 @@ if (key) {
       const f = (x) => (x == null ? '   ?  ' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
       for (const m of AUTO_REPORT) {
         const t = await get(`/trades?market=${m}`, true, 120000);
-        if (t.code !== 200) { console.log(`trades ${m}: not read (HTTP ${t.code}: ${t.body.error || ''})`); continue; }
+        if (t.code !== 200 || !t.body.at) { console.log(`trades ${m}: not read yet (HTTP ${t.code}: ${t.body.error || ''})`); continue; }
         const rows = t.body.shares || [];
         const bought = rows.filter((r) => r.bought > 0 || r.held > 0);
         const moves = bought.map((r) => (r.sold >= r.bought && r.bought > 0 ? pct(r.sell, r.buy) : pct(r.price, r.buy))).filter((x) => x != null);
         const mean = moves.length ? moves.reduce((a, b) => a + b, 0) / moves.length : null;
-        console.log(`trades ${m} (${t.body.at || ''}): ${rows.length} shares, ${bought.length} bought or held, ${moves.filter((x) => x > 0).length} up, ${moves.filter((x) => x < 0).length} down, mean move ${f(mean)} before costs`);
+        console.log(`trades ${m} (${t.body.at || ''}, read ${t.body.age ?? '?'} s ago${t.body.note ? `; last read failed: ${t.body.note}` : ''}): ${rows.length} shares, ${bought.length} bought or held, ${moves.filter((x) => x > 0).length} up, ${moves.filter((x) => x < 0).length} down, mean move ${f(mean)} before costs`);
         for (const r of bought) {
           const done = r.sold >= r.bought && r.bought > 0;
           console.log(`  ${String(r.ticker).padEnd(8)} ${f(done ? pct(r.sell, r.buy) : pct(r.price, r.buy))}  ${r.state}${r.soldBy ? ` (${r.soldBy})` : ''}`);
