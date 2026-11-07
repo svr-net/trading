@@ -3,8 +3,14 @@
  "markets": {
   "eu": [
    {
-    "name": "sharedepth-filln",
+    "name": "base",
     "role": "live",
+    "env": {},
+    "ref": null
+   },
+   {
+    "name": "sharedepth-filln",
+    "role": "shadow",
     "env": {
      "X_SHAREDEPTH": "1",
      "X_FILLN": "1"
