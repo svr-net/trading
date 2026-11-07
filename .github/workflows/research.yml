@@ -49,7 +49,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}-live
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr') || startsWith(matrix.variant, 'single')
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr') || startsWith(matrix.variant, 'single') || startsWith(matrix.variant, 'hold')
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -105,7 +105,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single ofm_mc
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single ofm_mc ofm_hold
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -161,8 +161,24 @@ jobs:
           case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
           for K in 1 2 4; do ./build/ofm_single "${A[@]}" --through "$K" | grep -E "spreads through|filled|the account"; done | tee report.txt
           { echo "### $MARKET single, stricter fills"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Multi-day holds on the single-share model (variant hold[+tokens]; results only)
+        if: startsWith(matrix.variant, 'hold')
+        run: |
+          set -o pipefail
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital 5000)
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
+          IB=data/eoddata/ibkr/$MARKET/daily.csv
+          [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ] && OV=(--override "$IB") || { OV=(); echo "hold: no IBKR bars for $MARKET in the store"; }
+          {
+            # The store's bars (IBKR's where it has them), the 300 and the 100 most traded; stricter fills;
+            # and only the share-days with IBKR's own bars (the prices that traded: the honest test).
+            for TOP in 300 100; do ./build/ofm_hold "${A[@]}" "${OV[@]}" --top "$TOP"; done
+            ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --through 2
+            [ ${#OV[@]} -gt 0 ] && ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --ibkr-only
+          } | tee report.txt
+          { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
-        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single')
+        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single') && !startsWith(matrix.variant, 'hold')
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
