@@ -64,7 +64,8 @@ def build_model(scan, track):
              f"Backtest {B['from']} – {B['to']}: {pct(B['annualReturn'], 1)} a year, Sharpe {B['sharpe']:.2f}, max drawdown"
              f" {100 * B['maxDrawdown']:.1f}%", "",
              f"Trades for the next open (after the close of {scan['asOf']}): buy at the open, sell at the close"]
-    lines += [f"  BUY {o['ticker']:<6} expected {pct(o['expected'])}" for o in orders] or ["  none: stay in cash"]
+    lines += [f"  BUY {o['ticker']:<6} expected {pct(o['expected'])}" + (f" (if it buys {pct(o['ifFilled'])}, chance {round(100 * o['fill'])}%)" if o.get('ifFilled') is not None and o.get('fill') is not None else '')
+              for o in orders] or ["  none: stay in cash"]
     html = "<pre>" + "\n".join(lines) + "</pre>"
     return subject, "\n".join(lines), html
 
