@@ -212,12 +212,20 @@ def other_scores(market, config, fresh_days=10):
 
 
 def other_shares(market, config, fresh_days=10):
-    """The other markets' latest shares of the daily limit (at most fresh_days old)."""
+    """The other markets' latest shares of the daily limit (at most fresh_days old); a market with a
+    budget and no fresh published share holds an equal share until it publishes one, so the first
+    runs never sum past the limit either."""
     from datetime import date
+    markets = [m for m, v in json.load(open(config))['markets'].items() if v.get('budget')]
+    pub = published_budgets(config)
     out = {}
-    for m, b in published_budgets(config).items():
+    for m in markets:
+        if m == market:
+            continue
+        out[m] = 1.0 / len(markets)
+        b = pub.get(m)
         try:
-            if m != market and (date.today() - date.fromisoformat(b.get('date', '')[:10])).days <= fresh_days:
+            if b and (date.today() - date.fromisoformat(b.get('date', '')[:10])).days <= fresh_days:
                 out[m] = float(b.get('share', 0))
         except ValueError:
             pass
@@ -272,6 +280,7 @@ def main():
     jobs = []
     budget = budget_of(args.config, args.market)
     variants = []  # (k, the live strategy run with k trades of the budget's k-th)
+    pending_variants = []  # (k, command, environment): started in waves the runner's memory holds
     for s in strategies(args.config, args.market):
         live = s['role'] == 'live'
         stem = 'ofm' if live else f"shadow-{s['name']}"
@@ -296,8 +305,7 @@ def main():
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
                 cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m, total / k, k), '--json', f'data/budget/report-{k}.json',
                        '--orders', f'data/budget/orders-{k}.json']
-                log = open(f'data/budget/report-{k}.txt', 'w')
-                variants.append((k, subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT), log))
+                pending_variants.append((k, cmd, env))
             continue
         cmd = [binary(s.get('ref'), s.get('app')), *args_m, '--json', f'report/{stem}.json']
         if args.publish_orders:
@@ -308,6 +316,28 @@ def main():
         env.update(s.get('env', {}), X_VERIFY='1')
         log = open(f'report/{stem}.txt', 'w')
         jobs.append((s, live, stem, subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT), log))
+    if pending_variants:  # the runs the memory allows at once (a large market's run holds about 1 GB per million share-days)
+        csv = model[model.index('--csv') + 1] if '--csv' in model else None
+        rows = sum(1 for _ in open(csv)) if csv and os.path.exists(csv) else 0
+        avail = 0
+        try:
+            avail = next(int(l.split()[1]) * 1024 for l in open('/proc/meminfo') if l.startswith('MemAvailable'))
+        except (OSError, StopIteration):
+            pass
+        per = max(1, rows) * 1000  # bytes a run holds per share-day, measured roughly (the features, their interactions, the forecasts)
+        width = max(1, min(len(pending_variants), int(0.7 * avail / per) - len(jobs))) if avail else len(pending_variants)
+        print(f'strategies: {args.market}: {len(pending_variants)} budget runs, {width} at a time ({rows} share-days, {avail / 2**30:.1f} GB free)', flush=True)
+        queue = list(pending_variants)
+        running = []
+        while queue or running:
+            while queue and len(running) < width:
+                k, cmd, env = queue.pop(0)
+                log = open(f'data/budget/report-{k}.txt', 'w')
+                p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+                running.append((k, p, log))
+                variants.append((k, p, log))
+            running[0][1].wait()
+            running = [r for r in running if r[1].poll() is None]
     if variants:  # the budget's runs: the walk-forward choice of how many trades makes the live strategy
         s = next(x for x in strategies(args.config, args.market) if x['role'] == 'live')
         total, slots = budget
