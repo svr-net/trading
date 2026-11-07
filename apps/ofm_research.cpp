@@ -1238,6 +1238,13 @@ int main(int argc, char** argv) {
       return rg / std::max(double(nPick), fills);
     };
     double ordersMax = 0, fillsMax = 0;
+    // X_OCA=k (research): overbooking. Each day k nPick gated orders in their ranking, each slot a
+    // one-cancels-all group (order r in group r mod nPick): a fill in the opening auction counts with
+    // every other fill of that auction in its group (they fill together: an overfill), else the
+    // group's first fill during the day takes the slot and cancels the rest (which came first is
+    // unknown on daily bars: the worst of them). A slot's result is its money's (1/nPick).
+    const std::size_t ocaK = std::getenv("X_OCA") ? std::size_t(std::atol(std::getenv("X_OCA"))) : 0;
+    double ocaOver = 0, ocaSlots = 0, ocaMaxSlots = 0;
     // X_DEPTHTABLE (research; a diagnostic, never a decision): each day the gated candidates in their
     // ranking (up to 3 nPick) traded at every depth of the lattice with the day's learnt exits; per
     // depth and rank band (the top nPick, the next 2 nPick): orders, fills, the mean net return of a
@@ -1270,7 +1277,7 @@ int main(int argc, char** argv) {
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
       chanceDepth = x[3];  // the next day's ranking by chance uses today's learnt depth
-      const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
+      const auto today = ocaK > 1 ? ranked(t, x[0], x[1], x[2], true, ocaK * nPick) : fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
       if (depthTable) {
         const auto cands = ranked(t, x[0], x[1], x[2], true, 3 * nPick);
         for (std::size_t r = 0; r < cands.size() && r < 3 * nPick; ++r)
@@ -1282,7 +1289,33 @@ int main(int argc, char** argv) {
           }
       }
       const auto zToday = sizes(t, today);  // X_SIZE: each trade's money, before the day's outcomes join the calibration (the log's ret carries it)
-      adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
+      std::vector<char> ocaCounted(today.size(), 1);
+      if (ocaK > 1) {  // the slots' groups: order r in group r mod nPick
+        std::vector<std::vector<std::pair<double, std::size_t>>> atOpen(nPick), later(nPick);
+        for (std::size_t r = 0; r < today.size(); ++r) {
+          const double dk = shareDepthOn ? shareDepth(t, today[r].second) : x[3];
+          if (!std::isfinite(dk)) continue;
+          const Trade tr = trade(t, today[r].second, dk, x[4], x[5], x[6], x[7]);
+          if (tr.filled == 1) atOpen[r % nPick].emplace_back(tr.ret, r);
+          else if (tr.filled == 2) later[r % nPick].emplace_back(tr.ret, r);
+        }
+        double rg = 0, slots = 0;
+        std::fill(ocaCounted.begin(), ocaCounted.end(), 0);
+        for (std::size_t g = 0; g < nPick; ++g) {
+          if (!atOpen[g].empty()) {  // the opening auction fills them together: every one counts (an overfill when more than one)
+            for (const auto& e : atOpen[g]) rg += e.first, ocaCounted[e.second] = 1, slots += 1;
+            ocaOver += double(atOpen[g].size() - 1);
+          } else if (!later[g].empty()) {  // during the day the first fill cancels the rest; which came first is unknown: the worst
+            const auto w = *std::min_element(later[g].begin(), later[g].end());
+            rg += w.first, ocaCounted[w.second] = 1, slots += 1;
+          }
+        }
+        for (std::size_t r = 0; r < today.size(); ++r)  // the orders that did not fill count as placed
+          if (!ocaCounted[r]) ocaCounted[r] = 2;
+        ocaSlots += slots, ocaMaxSlots = std::max(ocaMaxSlots, slots);
+        adaptiveLevels.push_back(rg / double(nPick)), used.push_back(x);
+      } else
+        adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
@@ -1345,7 +1378,8 @@ int main(int argc, char** argv) {
           }
         const double dk = shareDepthOn ? shareDepth(t, i) : x[3];
         if (!std::isfinite(dk)) continue;  // no order for the share today
-        const Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
+        Trade tr = trade(t, i, dk, x[4], x[5], x[6], x[7]);
+        if (ocaK > 1 && ocaCounted[k] == 2 && tr.filled > 0) tr.filled = 0, tr.ret = 0, tr.cost = 0;  // cancelled by its group's fill
         if (fillN) calFillP.pts.emplace_back(rawFill(t, i, dk), double(tr.filled > 0)), calFillP.dirty = true;
         if (fillNet)
           for (std::size_t q = 0; q < nE; ++q)
@@ -1507,6 +1541,9 @@ int main(int argc, char** argv) {
                   paths.size(), 100 * fl / double(paths.size()), 100 * qt(1, 0.5), 100 * qt(1, 0.1), 100 * qt(1, 0.9), 100 * st / std::max(fl, 1.0), 100 * qt(2, 0.5),
                   100 * qt(2, 0.1), 100 * qt(2, 0.9), 100 * tk / std::max(fl, 1.0));
     }
+    if (ocaK > 1)
+      std::printf("  overbooking: %zu orders a slot; slots used %.1f%% of slot-days, overfilled slots %.0f (%.2f%% of slot-days), at most %.0f slots on a day (of %zu)\n", ocaK,
+                  100 * ocaSlots / double(nPick * std::max<std::size_t>(1, adaptiveLevels.size())), ocaOver, 100 * ocaOver / double(nPick * std::max<std::size_t>(1, adaptiveLevels.size())), ocaMaxSlots, nPick);
     std::printf("  orders: %.0f, filled %.0f (%.1f%%), %.2f orders and %.2f fills a day; at most %.0f orders and %.0f fills on a day%s\n", tradeOrders, tradeFilled,
                 tradeOrders > 0 ? 100 * tradeFilled / tradeOrders : 0.0, tradeOrders / double(std::max<std::size_t>(1, adaptiveLevels.size())),
                 tradeFilled / double(std::max<std::size_t>(1, adaptiveLevels.size())), ordersMax, fillsMax, fillN ? " (orders learnt from the fills)" : "");
