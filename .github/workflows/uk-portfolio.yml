@@ -56,7 +56,7 @@ jobs:
       # the data downloads; the model step waits for them, and nothing is published if they fail.
       - name: Build the model and run its checks (in the background)
         run: |
-          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
+          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_hold ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
       # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
       # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
@@ -191,9 +191,9 @@ jobs:
           # beside the live one's on the page. Every run checks the kernel's trades against the trade
           # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
           python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
-          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next" report/strategies.log || true  # each strategy's headline in the log
+          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next" report/strategies.log || true  # each strategy's headline in the log
           for f in report/shadow-*.txt; do
-            if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs|^single: the account|^single: next" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
+            if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The day's fundamentals (started above)
