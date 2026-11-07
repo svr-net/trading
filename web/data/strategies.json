@@ -99,6 +99,12 @@
     "role": "shadow",
     "env": {},
     "ref": null
+   },
+   {
+    "name": "hold-up",
+    "role": "shadow",
+    "env": {},
+    "ref": null
    }
   ],
   "us": [
