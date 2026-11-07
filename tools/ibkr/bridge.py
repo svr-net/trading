@@ -33,9 +33,9 @@ highest ranked candidates (submit.py --auction; it places nothing): the indicati
 imbalance every 15 seconds until the open, then the open. Each day's recording is kept in
 HISTORY_DIR/auction and written to the private store as auction/<MARKET>/<date>.json, where the
 research reads it. On Saturdays at AUTO_BARS (06:00; empty: off), and on POST /bars, it fetches
-IBKR's daily bars for the pool (two years) into the private store (ibkr/<MARKET>/daily.csv); and every
-trading day after the report (BARS_DAILY=1, the default; 0 off) the latest month of them, merged into
-that file, so the evening's and the morning's scans learn and backtest on the prices that traded:
+IBKR's daily bars for the pool (two years) and every trading day after the report (BARS_DAILY=1, the
+default; 0 off) the latest month of them, each merged into the private store's ibkr/<MARKET>/daily.csv
+(a fetch never removes bars), so the evening's and the morning's scans learn and backtest on the prices that traded:
 IBKR's open and close are the auctions', its low one the exchange's book traded at (EODData's low for
 a thin UK share was a median 1.3% under IBKR's: dip limits the backtest filled that IBKR would not).
 One fetch at a time (IBKR's pacing).
@@ -222,6 +222,19 @@ def store_put(path, data, message):
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**head, 'Content-Type': 'application/json'}, method='PUT')
     with urllib.request.urlopen(req, timeout=30):
         pass
+
+
+def store_get(path):
+    """One file of the private store (svr-net/eod), or None when it is not there."""
+    url = f'https://api.github.com/repos/svr-net/eod/contents/{path}'
+    head = {'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github.raw', 'User-Agent': 'ofm-bridge'}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=60) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
 # IBKR's market data lines (a paper account streams about 100 shares at once; more answer "101: Max
@@ -417,39 +430,47 @@ def in_background(market, action, job):
 
 
 def fetch_bars(market, daily=False):
-    """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), written to the
-    private store as ibkr/<MARKET>/daily.csv; returns (ok, summary). daily: only the latest month,
-    merged into the full file kept here (a share-day IBKR answers again replaces the kept one); without
-    a full file yet, the full two years."""
+    """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), merged into the
+    file kept here and written to the private store as ibkr/<MARKET>/daily.csv; returns (ok,
+    summary). daily: only the latest month is fetched. Every fetch is merged in (a share-day IBKR
+    answers again replaces the kept one; the rest are kept), so a fetch IBKR answered badly never
+    loses bars: on 7 Nov the Saturday refresh got no EU bars at all and replaced the file with an
+    empty one. Without a kept file, the store's is the start; a fetch with no bars changes nothing."""
+    import csv
     if BARS_RUNNING:
         return False, f"waiting: {', '.join(sorted(BARS_RUNNING))} bars fetching"
     BARS_RUNNING.add(market)
     try:
         out_file = os.path.join(HISTORY, f'ibkr-{market}.csv')
-        merge = daily and os.path.exists(out_file) and os.path.getsize(out_file) > 100
-        target = out_file + '.month' if merge else out_file
-        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', target, *(['--duration', '1 M'] if merge else [])],
-                               timeout=6 * 3600)
+        if not (os.path.exists(out_file) and os.path.getsize(out_file) > 100):
+            kept = store_get(f'ibkr/{market}/daily.csv')
+            if kept and len(kept) > 100:
+                with open(out_file, 'wb') as f:
+                    f.write(kept)
+        have = os.path.exists(out_file) and os.path.getsize(out_file) > 100
+        target = out_file + '.new'
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', target,
+                                *(['--duration', '1 M'] if daily and have else [])], timeout=6 * 3600)
         summary = out.splitlines()[-1] if out else ''
         if code != 0:
             return False, summary or 'failed'
-        if merge:
-            import csv
-            with open(target, newline='') as f:
-                new = list(csv.reader(f))
-            if len(new) < 2:
-                return False, f'{summary}: no bars in the latest month; the full file kept'
+        with open(target, newline='') as f:
+            new = list(csv.reader(f))
+        if len(new) < 2:
+            return False, f'{summary}: no bars from IBKR; the kept file unchanged'
+        rows = []
+        if have:
             fresh = {(r[0][:10], r[1]) for r in new[1:] if len(r) >= 2}
             with open(out_file, newline='') as f:
                 rows = [r for r in list(csv.reader(f))[1:] if len(r) >= 2 and (r[0][:10], r[1]) not in fresh]
-            rows += new[1:]
-            rows.sort(key=lambda r: (r[0][:10], r[1]))
-            with open(out_file + '.tmp', 'w', newline='') as f:
-                w = csv.writer(f)
-                w.writerow(new[0])
-                w.writerows(rows)
-            os.replace(out_file + '.tmp', out_file)
-            summary += f'; merged: {len(rows)} rows, the latest {rows[-1][0][:10] if rows else "none"}'
+        rows += new[1:]
+        rows.sort(key=lambda r: (r[0][:10], r[1]))
+        with open(out_file + '.tmp', 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(new[0])
+            w.writerows(rows)
+        os.replace(out_file + '.tmp', out_file)
+        summary += f'; {len(rows)} rows kept, {len({r[1] for r in rows})} shares, the latest {rows[-1][0][:10]}'
         with open(out_file, 'rb') as f:
             store_put(f'ibkr/{market}/daily.csv', f.read(), f'{market} daily bars from IBKR {date.today().isoformat()}')
         return True, summary
