@@ -3,13 +3,19 @@
   "markets": {
     "UK": {
       "live": {
-        "name": "aim-regime",
+        "name": "regime",
         "env": {
           "X_REGIME": "1"
-        },
-        "only": "aim"
+        }
       },
       "shadows": [
+        {
+          "name": "aim-regime",
+          "env": {
+            "X_REGIME": "1"
+          },
+          "only": "aim"
+        },
         {
           "name": "n15-regime",
           "env": {
@@ -42,13 +48,17 @@
     },
     "EU": {
       "live": {
-        "name": "sharedepth-filln",
-        "env": {
-          "X_SHAREDEPTH": "1",
-          "X_FILLN": "1"
-        }
+        "name": "base",
+        "env": {}
       },
       "shadows": [
+        {
+          "name": "sharedepth-filln",
+          "env": {
+            "X_SHAREDEPTH": "1",
+            "X_FILLN": "1"
+          }
+        },
         {
           "name": "sharedepth",
           "env": {
