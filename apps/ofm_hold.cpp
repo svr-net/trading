@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < res[i].trades.size(); ++q) byDay[res[i].trades[q].order].push_back({res[i].trades[q].fc, {i, q}});
   struct Pos { std::size_t i, q; };
   std::vector<Pos> open;
-  Rec acct, ah1, ah2, taken;
+  Rec acct, ah1, ah2, taken, hed, hh1, hh2;  // hed: less the market's day on the money held (equal-weighted, the day's tradable shares)
   double slotDays = 0, nd = 0;
   const std::size_t mid = (first + last) / 2;
   for (std::size_t u = first; u <= last; ++u) {
@@ -342,8 +342,13 @@ int main(int argc, char** argv) {
       if (u == tr.exit) r -= cost.side(i, p.C[u * N + i]);
     }
     r /= double(slots);
+    double ms = 0, mn = 0;
+    for (std::size_t i = 0; i < N; ++i)
+      if (tradable[(u - 1) * N + i] && p.ok(u, i) && p.ok(u - 1, i)) ms += std::log(p.C[u * N + i] / p.C[(u - 1) * N + i]), mn += 1;
+    const double h = r - (mn > 0 ? ms / mn : 0.0) * double(open.size()) / double(slots);
     slotDays += double(open.size()), nd += 1;
     acct.add(r), (u < mid ? ah1 : ah2).add(r);
+    hed.add(h), (u < mid ? hh1 : hh2).add(h);
   }
   const auto yr = [](const Rec& r) { const double sd = r.sd(); return std::make_pair(25200 * r.mean(), sd > 0 ? r.mean() / sd * std::sqrt(252.0) : 0.0); };
   const auto [a0, s0] = yr(acct);
@@ -351,6 +356,10 @@ int main(int argc, char** argv) {
   const auto [a2, s2] = yr(ah2);
   std::printf("hold: the account (%zu slots, %.0f each): %.1f of them held a day on average, %.0f orders taken (an order %+.4f%%), %+.1f%% a year, Sharpe %.2f | first half %+.1f%% %.2f | second half %+.1f%% %.2f\n",
               slots, capital, nd > 0 ? slotDays / nd : 0.0, taken.n, 100 * taken.mean(), a0, s0, a1, s1, a2, s2);
+  const auto [c0, d0] = yr(hed);
+  const auto [c1, d1] = yr(hh1);
+  const auto [c2, d2] = yr(hh2);
+  std::printf("hold: the account less the market (the market's day on the money held): %+.1f%% a year, Sharpe %.2f | first half %+.1f%% %.2f | second half %+.1f%% %.2f\n", c0, d0, c1, d1, c2, d2);
   if (!ibkrDays.empty())
     std::printf("hold: orders on the share-days with IBKR's bars (%s's bars): %.0f, an order %+.4f%% (t %+.1f)\n", overrideCsv.empty() ? "the store" : "IBKR", ibStore.n,
                 100 * ibStore.mean(), ibStore.t());
