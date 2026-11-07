@@ -145,6 +145,15 @@ jobs:
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           # IBKR's file in numbers (no prices): its rows, days, shares, and the tickers' shape beside the store's.
           [ -f "$IB" ] && echo "IBKR bars: rows $(($(wc -l < "$IB") - 1)), $(tail -n +2 "$IB" | cut -c1-10 | sort -u | sed -n '1p;$p' | paste -sd' ' | sed 's/ / to /'), shares $(tail -n +2 "$IB" | cut -d, -f2 | sort -u | wc -l), ticker shapes $(tail -n +2 "$IB" | cut -d, -f2 | sed 's/[A-Z0-9.]/x/g' | sort | uniq -c | sort -rn | head -3 | tr -s ' ' | paste -sd';'); the store's: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sed 's/[A-Z0-9.]/x/g' | sort | uniq -c | sort -rn | head -3 | tr -s ' ' | paste -sd';')"
+          # IBKR's coverage of the live pool by exchange (counts only): which exchanges' shares IBKR answers for.
+          OF=data/eoddata/orders/$MARKET.json
+          [ -f "$IB" ] && [ -f "$OF" ] && python3 -c "
+import csv, json, sys, collections
+pool = json.load(open('$OF')).get('pool') or []
+got = {r[1] for r in csv.reader(open('$IB')) if len(r) > 1}
+ex = lambda t: t.split(':')[0] if ':' in t else '$MARKET'
+p, g = collections.Counter(map(ex, pool)), collections.Counter(ex(t) for t in pool if t in got)
+print('IBKR bars by exchange (pool shares with bars / in the pool):', ', '.join(f'{k} {g[k]}/{p[k]}' for k in sorted(p)))"
           { for TOP in 300 100; do
               if [ -f "$IB" ]; then ./build/ofm_single "${A[@]}" --top "$TOP" --ibkr-days "$IB"; ./build/ofm_single "${A[@]}" --top "$TOP" --override "$IB"
               else ./build/ofm_single "${A[@]}" --top "$TOP"; echo "single: no IBKR bars for $MARKET in the store"; fi
