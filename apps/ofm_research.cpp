@@ -1115,6 +1115,13 @@ int main(int argc, char** argv) {
         if (total(q) > total(bq)) bq = q;
       return dvals[bq];
     };
+    // With X_BALANCE, an order's chance is at the share's own balanced depth (the one it is placed at);
+    // a share with no depth that gains has none (ranked last, and the gate's order is not placed).
+    if (balance && byChance)
+      chanceOf = [&, chanceAt](std::size_t t, std::size_t i, double) {
+        const double d = shareDepth(t, i);
+        return std::isfinite(d) ? chanceAt(t, i, d) : -1.0;
+      };
     // The day's result: every trade one unit, a trade not filled stays in cash.
     // X_SIZE (research): each order's money by its calibrated expectation (meta-labeling's sizing,
     // Lopez de Prado): a filled trade's calibrated net return (calFill, walk-forward) over the mean of
