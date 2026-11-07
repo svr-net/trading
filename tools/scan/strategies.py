@@ -18,7 +18,14 @@ scaled to it: a larger trade pays its minimum commission on more money, more tra
 Each day the k whose daily results over the year before (the days known then, at least 60) have the
 best mean shrunk by its t statistic is the one traded the next (the most trades before that); the
 latest choice's orders and report are the live ones. The runs' trade logs and orders stay in
-data/budget/ (prices: never published); the choice's record is printed and kept in report/budget.json. A shadow that fails is reported and skipped; the live one failing fails the run.
+data/budget/ (prices: never published); the choice's record is printed and kept in report/budget.json.
+
+The account's daily limit ("account": {"daily_max": 50000, "currency": "EUR"}): at most that much is
+invested in a day across every market. Each market's share of it follows its live strategy's record
+(the chosen day by day results' mean over the last year, shrunk by its t statistic; this market's
+from this run, the others' from their latest web/data/budget-<market>.json, at most 10 days old): a
+market with no positive record gets none, so it places no orders. The share is converted to the
+market's currency with the day's rates (--fx, the scan's FOREX series: EURGBP, GBPUSD, EURAUD). A shadow that fails is reported and skipped; the live one failing fails the run.
 """
 import argparse
 import json
@@ -107,6 +114,36 @@ def with_capital(args_m, amount, tag):
     return a
 
 
+CURRENCY = {'UK': 'GBP', 'EU': 'EUR', 'US': 'USD', 'APAC': 'AUD'}
+
+
+def fx_rates(path):
+    """Each currency's units for one EUR, from the latest closes of the scan's FOREX series."""
+    last = {}
+    try:
+        with open(path) as f:
+            next(f, None)
+            for line in f:
+                c = line.strip().split(',')
+                if len(c) >= 6 and c[1].startswith('FOREX:') and float(c[5] or 0) > 0 and c[0] >= last.get(c[1], ('', 0))[0]:
+                    last[c[1]] = (c[0], float(c[5]))
+    except OSError:
+        pass
+    r = {'EUR': 1.0}
+    if 'FOREX:EURGBP' in last:
+        r['GBP'] = last['FOREX:EURGBP'][1]
+        if 'FOREX:GBPUSD' in last:
+            r['USD'] = r['GBP'] * last['FOREX:GBPUSD'][1]
+    if 'FOREX:EURAUD' in last:
+        r['AUD'] = last['FOREX:EURAUD'][1]
+    return r
+
+
+def account_of(config):
+    a = json.load(open(config)).get('account') or {}
+    return float(a.get('daily_max', 0)), a.get('currency', 'EUR')
+
+
 def days_of(path):
     """A run's daily results (X_TRADELOG.days: date,ret)."""
     out = {}
@@ -147,6 +184,55 @@ def choose(series, window=250, least=60):
     return days, picks, meta, best(len(days))
 
 
+def published_budgets(config):
+    """Every market's latest published choice (web/data/budget-<market>.json), results only."""
+    out = {}
+    for m in json.load(open(config))['markets']:
+        try:
+            out[m] = json.load(open(f'web/data/budget-{m.lower()}.json'))
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def other_scores(market, config, fresh_days=10):
+    """The other markets' records (their latest published, at most fresh_days old)."""
+    from datetime import date
+    out = {}
+    for m, b in published_budgets(config).items():
+        if m == market or 'score' not in b:
+            continue
+        try:
+            if (date.today() - date.fromisoformat(b.get('date', '')[:10])).days > fresh_days:
+                continue
+        except ValueError:
+            continue
+        out[m] = float(b['score'])
+    return out
+
+
+def other_shares(market, config, fresh_days=10):
+    """The other markets' latest shares of the daily limit (at most fresh_days old)."""
+    from datetime import date
+    out = {}
+    for m, b in published_budgets(config).items():
+        try:
+            if m != market and (date.today() - date.fromisoformat(b.get('date', '')[:10])).days <= fresh_days:
+                out[m] = float(b.get('share', 0))
+        except ValueError:
+            pass
+    return out
+
+
+def previous_share(market, config):
+    """This market's share last time; an equal share of the markets with a budget at first."""
+    b = published_budgets(config).get(market)
+    if b and float(b.get('share', 0)) > 0:
+        return float(b['share'])
+    n = sum(1 for m in json.load(open(config))['markets'].values() if m.get('budget'))
+    return 1.0 / max(1, n)
+
+
 def stats(x):
     n = len(x)
     if n < 2:
@@ -174,6 +260,7 @@ def main():
     a.add_argument('--market', required=True)
     a.add_argument('--config', default='config/markets.json')
     a.add_argument('--publish-orders', action='store_true')
+    a.add_argument('--fx', default='data/futures.csv', help="the scan's series (FOREX closes for the account's daily limit)")
     a.add_argument('model', nargs=argparse.REMAINDER)
     args = a.parse_args()
     model = args.model[1:] if args.model[:1] == ['--'] else args.model
@@ -195,6 +282,15 @@ def main():
         if live and budget:
             os.makedirs('data/budget', exist_ok=True)
             total, slots = budget
+            daily, cur = account_of(args.config)
+            rates = fx_rates(args.fx)
+            if daily > 0:  # the runs at this market's share of the limit last time (an equal share at first)
+                mine = CURRENCY.get(args.market)
+                if cur != 'EUR' or mine not in rates:
+                    sys.exit(f"strategies: {args.market}: no rate for {mine} (or the limit's currency {cur} is not EUR)")
+                prev = previous_share(args.market, args.config)
+                total = daily * prev * rates[mine]
+                budget = (total, slots)
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
@@ -227,24 +323,48 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} with {k} trades failed ({code})")
         series = {k: days_of(f'data/budget/trades-{k}.csv.days') for k, _, _ in variants}
         days, picks, meta, nxt = choose(series)
-        lines = [f"budget: {args.market} {total:g} a day over k trades (each {', '.join(f'{k}: {total / k:g}' for k in slots)}); each day the k whose year before was best (walk-forward)"]
+        score = shrunk(meta[-250:])
+        run_total = total  # the amount the runs traded (their costs)
+        daily, cur = account_of(args.config)
+        share, scale = 1.0, 1.0
+        if daily > 0:  # this market's share of the account's daily limit, from every market's record
+            others = other_scores(args.market, args.config)
+            pos = max(0.0, score) + sum(max(0.0, v) for v in others.values())
+            share = max(0.0, score) / pos if pos > 0 else 0.0
+            # never more than the others leave free (their latest shares): the markets' shares never sum past 1
+            share = min(share, max(0.0, 1.0 - sum(other_shares(args.market, args.config).values())))
+            new_total = daily * share * fx_rates(args.fx)[CURRENCY[args.market]]
+            scale = new_total / total if total > 0 else 0.0
+            total = new_total
+        lines = [f"budget: {args.market} {run_total:,.0f} a day run over k trades (each {', '.join(f'{k}: {run_total / k:,.0f}' for k in slots)}); each day the k whose year before was best (walk-forward)"]
         for k in slots:
             a, sh = stats([series[k][d] for d in days])
-            lines.append(f"budget:   {k:2d} trades of {total / k:g}: {100 * a:+.1f}% a year, Sharpe {sh:.2f}; chosen on {picks.count(k)} of {len(days)} days")
+            lines.append(f"budget:   {k:2d} trades of {run_total / k:,.0f}: {100 * a:+.1f}% a year, Sharpe {sh:.2f}; chosen on {picks.count(k)} of {len(days)} days")
         a, sh = stats(meta)
         h = len(meta) // 2
         a1, s1 = stats(meta[:h])
         a2, s2 = stats(meta[h:])
         lines.append(f"budget:   chosen day by day: {100 * a:+.1f}% a year, Sharpe {sh:.2f} | first half {100 * a1:+.1f}% {s1:.2f} | second half {100 * a2:+.1f}% {s2:.2f}")
-        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:g}")
+        if daily > 0:
+            lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; its record {100 * score:+.3f}% a day shrunk, the others': "
+                         + (', '.join(f'{m} {100 * v:+.3f}%' for m, v in sorted(other_scores(args.market, args.config).items())) or 'none yet') + ')')
+        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else ''))
         shutil.copy(f'data/budget/report-{nxt}.json', 'report/ofm.json')
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
+        book = json.load(open(f'data/budget/orders-{nxt}.json'))  # each order's amount: the market's share over the trades
+        for o in book.get('orders', []):
+            o['capital'] = total / nxt
+        if total <= 0:
+            book['orders'] = []
+        book['budget'] = {'total': total, 'trades': nxt, 'amount': total / nxt, 'share': share}
+        with open(f'data/budget/orders-{nxt}.json', 'w') as f:
+            json.dump(book, f)
         if args.publish_orders:
             os.makedirs(f'data/eoddata/orders', exist_ok=True)
             shutil.copy(f'data/budget/orders-{nxt}.json', f'data/eoddata/orders/{args.market}.json')
         with open('report/budget.json', 'w') as f:
-            json.dump({'market': args.market, 'total': total, 'slots': slots, 'next': nxt, 'amount': total / nxt,
+            json.dump({'market': args.market, 'date': days[-1] if days else '', 'score': score, 'share': share, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
                        'chosen': {str(k): picks.count(k) for k in slots}, 'annual': {str(k): stats([series[k][d] for d in days])[0] for k in slots},
                        'auto': {'annual': a, 'sharpe': sh}}, f, indent=1)
         print(f"strategies: {args.market} live {s['name']} (budget {total:g}, {nxt} trades of {total / nxt:g}): {' '.join(f'{x}={v}' for x, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
