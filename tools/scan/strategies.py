@@ -306,12 +306,14 @@ def main():
             total, slots = budget
             daily, cur = account_of(args.config)
             rates = fx_rates(args.fx)
-            if daily > 0:  # the runs at this market's share of the limit last time (an equal share at first)
+            if daily > 0:  # the runs at the whole limit (the record then shares it out)
                 mine = CURRENCY.get(args.market)
                 if cur != 'EUR' or mine not in rates:
                     sys.exit(f"strategies: {args.market}: no rate for {mine} (or the limit's currency {cur} is not EUR)")
-                prev = previous_share(args.market, args.config)
-                total = daily * prev * rates[mine]
+                # The runs at the whole limit: a market's record is what it earns when given the budget,
+                # not what its last share earned (a small share's trades pay the minimum commission on
+                # little money, so its record fell and its share with it: 7 Nov, the UK).
+                total = daily * rates[mine]
                 budget = (total, slots)
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
