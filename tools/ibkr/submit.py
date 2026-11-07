@@ -1022,7 +1022,12 @@ def ping(args):
 
 def daily_bars(args):
     """IBKR's own daily bars (trades, regular hours) for the file's pool, to check the opens the model
-    learns from against the exchange's: IBKR's open is the opening auction's price."""
+    learns from against the exchange's: IBKR's open is the opening auction's price. A share its
+    exchange gives no bars for is asked again through SMART (the exchange as its primary); when the
+    first 3 of an exchange get none that way either, the rest of it is not asked again. The summary
+    counts the shares without bars by IBKR's error (6 Nov: none of Paris's or Brussels's shares had
+    bars, Amsterdam's had)."""
+    import collections
     import csv
     import time
     from ib_async import IB, Stock
@@ -1033,7 +1038,21 @@ def daily_bars(args):
     pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
     ib = IB()
     connect(ib, args, args.client_id + 2)
-    got = missing = 0
+    last_error = {}
+    ib.errorEvent += lambda req, code, msg, *a: last_error.update(code=code, msg=str(msg)[:80]) if code not in (2104, 2106, 2107, 2108, 2158, 2119) else None
+    got = missing = via_smart = 0
+    why = collections.Counter()
+    smart_tries = collections.Counter()  # exchange -> SMART retries that got nothing
+    smart_works = set()
+
+    def fetch(contract):
+        last_error.clear()
+        try:
+            return ib.reqHistoricalData(contract, '', args.duration or f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
+        except Exception as e:  # noqa: BLE001
+            last_error.update(code='exception', msg=type(e).__name__)
+            return []
+
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['date', 'ticker', 'open', 'high', 'low', 'close', 'volume'])
@@ -1042,10 +1061,22 @@ def daily_bars(args):
             contract = contract_of(t, args.market)
             bars = []
             if qualified(ib, contract):
-                try:
-                    bars = ib.reqHistoricalData(contract, '', args.duration or f'{args.years} Y', '1 day', 'TRADES', useRTH=True, timeout=60) or []
-                except Exception as e:  # noqa: BLE001
-                    sys.stderr.write(f'  {t}: {e}\n')
+                bars = fetch(contract)
+                ex = contract.exchange
+                if not bars and contract.exchange != 'SMART' and (ex in smart_works or smart_tries[ex] < 3):
+                    time.sleep(max(0.0, 10.5 - (time.monotonic() - start)))
+                    alt = Stock(contract.symbol, 'SMART', contract.currency, primaryExchange=ex)
+                    if qualified(ib, alt):
+                        bars = fetch(alt)
+                    if bars:
+                        smart_works.add(ex)
+                        via_smart += 1
+                    else:
+                        smart_tries[ex] += 1
+                if not bars:
+                    why[f"{ex} {last_error.get('code', 'no error')}: {last_error.get('msg', 'no bars')}"] += 1
+            else:
+                why['not found at IBKR'] += 1
             for b in bars:
                 w.writerow([b.date.isoformat(), t, b.open, b.high, b.low, b.close, b.volume])
             got, missing = got + bool(bars), missing + (not bars)
@@ -1055,7 +1086,8 @@ def daily_bars(args):
             if k + 1 < len(pool):
                 time.sleep(max(0.0, 10.5 - (time.monotonic() - start)))
     ib.disconnect()
-    print(f'{args.market} bars: {got} shares from IBKR, {missing} without bars')
+    print(f'{args.market} bars: {got} shares from IBKR ({via_smart} through SMART), {missing} without bars'
+          + (': ' + '; '.join(f'{n} {k}' for k, n in why.most_common(4)) if why else ''))
 
 
 if __name__ == '__main__':
