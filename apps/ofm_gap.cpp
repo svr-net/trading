@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -42,7 +43,7 @@ int main(int argc, char** argv) {
   std::string csv, market, venues, stampFree, overrideCsv, tradesOut;
   double budget = 10000;
   std::size_t top = 300;
-  bool tiered = false;
+  bool tiered = false, ibkrOnly = false;
   for (int k = 1; k + 1 < argc; ++k) {
     const std::string a = argv[k];
     if (a == "--csv") csv = argv[++k];
@@ -55,6 +56,8 @@ int main(int argc, char** argv) {
     else if (a == "--pricing") tiered = std::string(argv[++k]) == "tiered";
     else if (a == "--trades") tradesOut = argv[++k];
   }
+  for (int k = 1; k < argc; ++k)  // --ibkr-only: traded only on the share-days with IBKR's own bars (the store's UK opens are not the auctions')
+    if (std::string(argv[k]) == "--ibkr-only") ibkrOnly = true;
   if (csv.empty() || market.empty()) {
     std::fprintf(stderr, "usage: ofm_gap --csv stocks.csv --costs UK|EU|US|APAC [--budget 10000] [--top 300] [--venues f] [--stamp-free f] [--override f] [--pricing tiered] [--trades f]\n");
     return 2;
@@ -63,6 +66,21 @@ int main(int argc, char** argv) {
   if (!overrideCsv.empty()) std::printf("gap: IBKR's bars: %s\n", swing::override(panel, overrideCsv).c_str());
   const swing::Panel& p = panel;
   const std::size_t T = p.T, N = p.N;
+  std::vector<char> ibDay(T * N, !ibkrOnly);  // with --ibkr-only, the share-days IBKR's bars cover
+  if (ibkrOnly && !overrideCsv.empty()) {
+    std::map<std::string, std::size_t> di, ti;
+    for (std::size_t t = 0; t < T; ++t) di[p.days[t]] = t;
+    for (std::size_t i = 0; i < N; ++i) ti[p.tickers[i]] = i;
+    std::ifstream in(overrideCsv);
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+      const auto c1 = line.find(','), c2 = line.find(',', c1 + 1);
+      if (c1 == std::string::npos || c2 == std::string::npos) continue;
+      const auto d = di.find(line.substr(0, std::min<std::size_t>(c1, 10))), k = ti.find(line.substr(c1 + 1, c2 - c1 - 1));
+      if (d != di.end() && k != ti.end()) ibDay[d->second * N + k->second] = 1;
+    }
+  }
   const auto uni = swing::universe(p, top, market == "US" ? 5.0 : 0.0);
   // Each slot's amount differs by N: one cost model per N (a trade's commission on budget / N).
   std::vector<swing::Costs> cost;
@@ -111,7 +129,7 @@ int main(int argc, char** argv) {
   for (std::size_t t = 1; t < T; ++t) {
     std::vector<std::pair<double, std::size_t>> cand;
     for (std::size_t i : uni[t - 1]) {  // tradable at the close before
-      if (!p.ok(t, i) || !p.ok(t - 1, i) || !(p.O[t * N + i] > 0)) continue;
+      if (!p.ok(t, i) || !p.ok(t - 1, i) || !(p.O[t * N + i] > 0) || !ibDay[t * N + i] || !ibDay[(t - 1) * N + i]) continue;
       const double s = sig[(t - 1) * N + i], m = ma[(t - 1) * N + i];
       if (!(s > 0) || !(m > 0) || !(p.O[t * N + i] > m)) continue;
       cand.emplace_back(std::log(p.O[t * N + i] / p.L[(t - 1) * N + i]) / s, i);
