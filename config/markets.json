@@ -1,5 +1,5 @@
 {
-  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record.",
+  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record. \"paper\": true (a paper account) gives every market an equal share whatever its record, to measure the broker's real fills.",
   "markets": {
     "UK": {
       "live": {
@@ -166,6 +166,7 @@
   },
   "account": {
     "daily_max": 50000,
-    "currency": "EUR"
+    "currency": "EUR",
+    "paper": true
   }
 }

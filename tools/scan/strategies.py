@@ -149,6 +149,12 @@ def account_of(config):
     return float(a.get('daily_max', 0)), a.get('currency', 'EUR')
 
 
+def paper_of(config):
+    """A paper account ("account": {"paper": true}): every market with a budget trades an equal share,
+    whatever its record, so the broker's real fills are measured in each (a paper account risks nothing)."""
+    return bool((json.load(open(config)).get('account') or {}).get('paper'))
+
+
 def days_of(path):
     """A run's daily results (X_TRADELOG.days: date,ret)."""
     out = {}
@@ -366,6 +372,8 @@ def main():
             others = other_scores(args.market, args.config)
             pos = max(0.0, score) + sum(max(0.0, v) for v in others.values())
             share = max(0.0, score) / pos if pos > 0 else 0.0
+            if paper_of(args.config):  # paper: an equal share for every market, to measure its real fills
+                share = 1.0 / (1 + len(other_shares(args.market, args.config)))
             # Growing only into its part of what is free: the markets run at the same time (UK and EU at 05:30)
             # each see the others' latest shares, so each may take at most its own last share plus the free
             # share split over the markets; together they never pass the limit, whoever runs when.
@@ -389,7 +397,7 @@ def main():
         if daily > 0:
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; its record {100 * score:+.3f}% a day shrunk, the others': "
                          + (', '.join(f'{m} {100 * v:+.3f}%' for m, v in sorted(other_scores(args.market, args.config).items())) or 'none yet') + ')')
-        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else ''))
+        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else '') + (' (paper account: an equal share, to measure the fills)' if paper_of(args.config) else ''))
         shutil.copy(f'data/budget/report-{nxt}.json', 'report/ofm.json')
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
