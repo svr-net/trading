@@ -413,6 +413,118 @@ def state(args):
                       'shares': sorted(rows.values(), key=lambda r: (not r['held'], not r['bought'], r['ticker']))}))
 
 
+def holds(args):
+    """The multi-day book (--holds place|close; the scan's shadow orders, e.g. the UK's exit on strength):
+    its own orders (orderRef ofm-<MARKET>H-<date>: the day's --close and the leftovers step never touch
+    them) and its positions kept in --hold-state (the bridge's history folder):
+      place  the positions no longer held are dropped (sold); each order for a share not held is placed:
+             a limit buy at its limit, or bought in the opening auction (open: true), for --capital (or
+             the order's own amount)
+      close  today's fills become positions (their entry price and day); today's unfilled buys are
+             cancelled; each position is offered in the closing auction: at its fifth close sold at any
+             price (MOC), before that only above its entry price (LOC at the entry and a tick: sold at
+             the first close above the entry, as the backtest)."""
+    from ib_async import IB, LimitOrder, MarketOrder
+    path = args.hold_state
+    st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
+    ref = f'ofm-{args.market}H-{date.today().isoformat()}'
+    ib = IB()
+    errors = {}
+    ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
+    connect(ib, args, args.client_id + 7)
+    lines = []
+    held = {p.contract.symbol: p for p in ib.reqPositions() if p.position > 0}
+    if args.holds == 'place':
+        for sym in [s_ for s_ in st['positions'] if s_ not in held]:
+            lines.append(f'{sym}: sold (no longer held)')
+            st['positions'].pop(sym)
+        st['pending'] = {}
+        book = json.load(open(args.orders)) if args.orders else {'orders': []}
+        # The day's own orders (the daily strategy) keep their shares: the book never buys one of them.
+        daily = {t.contract.symbol for t in ib.reqAllOpenOrders() if (t.order.orderRef or '').startswith(f'ofm-{args.market}-{date.today().isoformat()}')}
+        for o in book.get('orders', []):
+            sym = ib_symbol(o['ticker'].split(':')[-1], args.market)
+            if sym in held or sym in st['positions'] or sym in daily:
+                lines.append(f'{sym}: held already or in the day\'s orders, not bought')
+                continue
+            c = contract_of(o['ticker'], args.market)
+            if not qualified(ib, c):
+                lines.append(f'{sym}: not found at IBKR')
+                continue
+            px = o.get('limit') or o.get('close')
+            qty = math.floor(capital_of(o, args) / per_share(dict(o, limit=px), args.market)) if px and px > 0 else 0
+            if qty < 1:
+                lines.append(f'{sym}: the amount buys no share')
+                continue
+            if o.get('open') or not o.get('limit'):
+                order, how = MarketOrder('BUY', qty, orderRef=ref, tif='DAY'), 'in the opening auction'
+            else:  # the limit in IBKR's price scale (LSE: pence or pounds), as the day's orders are placed
+                ibkr_close = reference_close(ib, c)
+                r = ibkr_close / o['close'] if ibkr_close and o.get('close') else (None if args.market == 'UK' else 1.0)
+                scale = next((x for x in (1.0, 0.01, 100.0) if r and abs(math.log(r / x)) < 0.05), None)
+                c2, ticks = exit_contract(ib, c)
+                if scale is None or c2 is None:
+                    lines.append(f'{sym}: no IBKR price to check the price scale against; skipped')
+                    continue
+                lim = round_to(o['limit'] * scale, tick_at(ticks[0], ticks[1], o['limit'] * scale), 'down')
+                order, how = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY'), f'at {lim:g}'
+            fate, msgs = order_fate(ib, ib.placeOrder(c, order), errors)
+            st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up')}
+            lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
+    else:
+        today = date.today().isoformat()
+        got = {}
+        for f in ib.reqExecutions():
+            if f.execution.orderRef == ref and f.execution.side == 'BOT':
+                g = got.setdefault(f.contract.symbol, [0.0, 0.0, f.contract])
+                g[0] += f.execution.shares
+                g[1] += f.execution.shares * f.execution.price
+        for t in ib.reqAllOpenOrders():
+            if t.order.orderRef == ref and t.order.action == 'BUY' and t.orderStatus.status not in DEAD:
+                ib.cancelOrder(t.order)
+        for sym, (q, v, c) in got.items():
+            if st['positions'].get(sym, {}).get('since') == today:  # recorded by an earlier run today
+                continue
+            st['positions'][sym] = {'conId': c.conId, 'qty': q, 'entry': v / q, 'since': today, 'closes': 0}
+            lines.append(f'{sym}: bought {q:g} at {v / q:g}')
+        st['pending'] = {}
+        for sym, pos in st['positions'].items():
+            if sym not in held:
+                continue
+            p = held[sym]
+            qty = min(float(pos.get('qty', p.position)), p.position)  # its own shares only (never the day's trades in the same share)
+            if pos.get('offered') == today:  # a rerun the same day: never offered twice
+                lines.append(f'{sym}: already offered at this close')
+                continue
+            pos['closes'] = int(pos.get('closes', 0)) + 1  # this close counts (the fill's day is the first)
+            pos['offered'] = today
+            c, ticks = exit_contract(ib, p.contract)
+            if c is None:
+                lines.append(f'{sym}: not found at IBKR, NOT OFFERED')
+                continue
+            if pos['closes'] >= 5:
+                o = MarketOrder('SELL', qty, orderRef=ref + '-close', tif='DAY')
+                o.orderType = 'MOC'
+                how = 'at the close (its fifth)'
+            else:
+                tick = tick_at(ticks[0], ticks[1], pos['entry'])
+                lim = round_to(pos['entry'] + tick, tick, 'up')
+                o = LimitOrder('SELL', qty, lim, orderRef=ref + '-close', tif='DAY')
+                o.orderType = 'LOC'
+                how = f"in the closing auction only above its entry (LOC {lim:g}, close {pos['closes']} of 5)"
+            fate, msgs = order_fate(ib, ib.placeOrder(c, o), errors)
+            lines.append(f"{sym}: sell {qty:g} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
+    ib.sleep(2)
+    ib.disconnect()
+    if path:
+        with open(path + '.tmp', 'w') as f:
+            json.dump(st, f)
+        os.replace(path + '.tmp', path)
+    for line in lines:
+        print('  ' + line)
+    print(f"{args.market} multi-day book ({args.holds}): {len(st['positions'])} held" + (f": {'; '.join(lines)}" if lines else ''))
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC'], required=True)
@@ -439,6 +551,8 @@ def main():
     a.add_argument('--state', action='store_true', help="the live state of today's trades and the model's holdings (--tickers), as JSON")
     a.add_argument('--check', action='store_true', help='with --leftovers: only list them; exit 1 when there are any')
     a.add_argument('--ping', action='store_true', help="exit 0 when IB Gateway's API answers within 15 seconds, else 1")
+    a.add_argument('--holds', choices=['place', 'close'], help="the multi-day book: place its orders (--orders), or offer its positions at the close")
+    a.add_argument('--hold-state', help="with --holds: the book's positions (a JSON file the bridge keeps)")
     args = a.parse_args()
     # Each market its own API clients (IBKR allows one connection per client id): the orders' client
     # (place, buy-back watch, close, report) and its helpers (+1 auction, +2 bars, +3 diag, +4 paths)
@@ -449,6 +563,8 @@ def main():
 
     if args.ping:
         return ping(args)
+    if args.holds:
+        return holds(args)
     if args.leftovers:
         return leftovers(args)
     if args.state:

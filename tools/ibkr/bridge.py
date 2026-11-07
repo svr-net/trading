@@ -100,6 +100,11 @@ REPORT = {'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get(
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
 BARS_DAILY = os.environ.get('BARS_DAILY', '1') != '0'  # every trading day after the report: the latest month merged in
+# The multi-day books (HOLD_BOOKS, MARKET:SHADOW,...; empty: none): a shadow's orders (the store's
+# shadow/<MARKET>-<SHADOW>.json) placed after the day's orders and kept over the days (submit.py --holds):
+# offered at each close only above their entry price, sold at the fifth; the day's close and the
+# leftovers step never sell them (their own orderRef; their shares left out of the model's).
+HOLD_BOOKS = dict(x.split(':', 1) for x in os.environ.get('HOLD_BOOKS', 'UK:hold-up').split(',') if ':' in x)
 AUCTION = {'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
@@ -590,7 +595,7 @@ def diag():
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     for m in AUTO:
-        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report'))
+        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report') + (('hold-place', 'hold-close') if m in HOLD_BOOKS else ()))
             + f"; running: {', '.join(sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])) or 'nothing'}")
     g = GATEWAY
     add('IB Gateway watchdog', g['ok'], ('not checked yet' if g['ok'] is None else 'API answers' if g['ok'] else 'API does not answer')
@@ -782,9 +787,40 @@ def close_market(market):
     return code == 0, (f'ended {n} buy-back watch still connected; ' if n else '') + last
 
 
+def hold_state(market):
+    return os.path.join(HISTORY, f'holds-{market}.json')
+
+
+def hold_symbols(market):
+    """The multi-day book's shares held now (its state file): never the day's leftovers."""
+    try:
+        return set(json.load(open(hold_state(market))).get('positions', {}))
+    except (OSError, ValueError):
+        return set()
+
+
+def place_holds(market):
+    """The multi-day book's orders for the day (after the day's orders): submit.py --holds place."""
+    name = HOLD_BOOKS[market]
+    body = store_get(f'shadow/{market}-{name}.json')
+    if not body:
+        return False, f'no shadow/{market}-{name}.json in the store yet'
+    path = os.path.join(CACHE, f'{market}-{name}.json')
+    with open(path, 'wb') as f:
+        f.write(body)
+    code, out = run_submit(['--market', market, '--holds', 'place', '--orders', path, '--hold-state', hold_state(market)], timeout=900)
+    return code == 0, out.splitlines()[-1] if out else ''
+
+
+def close_holds(market):
+    """The multi-day book's positions offered in the closing auction: submit.py --holds close."""
+    code, out = run_submit(['--market', market, '--holds', 'close', '--hold-state', hold_state(market)], timeout=600)
+    return code == 0, out.splitlines()[-1] if out else ''
+
+
 def model_tickers(market, days=10):
     """The shares the model placed in this market lately (the bridge's history): the only holdings
-    the leftovers step may sell."""
+    the leftovers step may sell (never the multi-day book's)."""
     since = (date.today() - timedelta(days=days)).isoformat()
     out = set()
     try:
@@ -797,7 +833,8 @@ def model_tickers(market, days=10):
                 out |= {o['ticker'] for o in r.get('orders', []) if o.get('ticker')}
     except OSError:
         pass
-    return sorted(out)
+    keep = hold_symbols(market)
+    return sorted(t for t in out if t.split(':')[-1] not in keep)
 
 
 def sell_leftovers(market):
@@ -871,6 +908,11 @@ def scheduler():
                     job(m, 'auction', record_auction)
                 if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
                     job(m, 'close', close_market)
+                if m in HOLD_BOOKS and up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'hold-place') \
+                        and (m, 'place') not in RUNNING and may_try(m, 'hold-place', 5, 3):
+                    job(m, 'hold-place', place_holds)
+                if m in HOLD_BOOKS and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and may_try(m, 'hold-close', 2, 3):
+                    job(m, 'hold-close', close_holds)
                 if up and at(now, close, 30) <= now < at(now, close, 240) and not is_done(m, 'flat') and may_try(m, 'flat', 10):
                     job(m, 'flat', flat_check, done_on_ok=False)
                 if at(now, REPORT[m]) <= now < at(now, REPORT[m], 180) and not is_done(m, 'report') and may_try(m, 'report', 10):

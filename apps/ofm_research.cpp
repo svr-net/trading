@@ -506,11 +506,14 @@ int main(int argc, char** argv) {
     const std::size_t nK = aimCap ? 6 : 1, nR = nC * nB * nK, nV = nR * nE * nLv;
     const auto capOf = [&](double k) { return aimCap ? 2.0 * std::floor(std::floor(k + 0.5) / 2) : double(nPick); };
     const auto gateOf = [&](double) { return true; };
+    // X_MAXDEPTH (research): the deepest limit allowed, in daily sigmas below the close (default 2): an
+    // order that does not fill earns nothing, however much the rare deep fills return.
+    const double maxDepth = std::getenv("X_MAXDEPTH") ? std::atof(std::getenv("X_MAXDEPTH")) : 2.0;
     const auto axis = [&](std::size_t d, double x) {  // lattice coordinate -> setting
       if (d == 0) return 250.0 * std::exp2(x);
       if (d == 1) return x / double(nB - 1);
       if (d == 2) return 2.0 * x;  // the selection's code (capOf, gateOf)
-      if (d == 3) return -2.0 + 0.5 * x;  // the limit's depth d (standard deviations below the previous close)
+      if (d == 3) return -2.0 + (maxDepth + 2.0) * x / double(nE - 1);  // the limit's depth d (standard deviations below the previous close)
       if (d == 6) return safetyOnly ? 1.5 * std::pow(std::sqrt(2.0), x) : x / double(nA - 1);  // the SAR's weight; for a safety stop (no SAR) its learnt limit: at most this many of the share's own daily sigmas below the anchor
       if (d == 4 && safetyOnly) return 0.05 * std::pow(0.2, x / double(nP - 1));  // a safety stop's tail, 1/20 .. 1/100
       if (d == 5 && safetyOnly) return std::array<double, nP>{0, 40, 60, 120, 250, 500, 750}[std::min(nP - 1, std::size_t(x + 0.5))];  // the days its fading take-profit learns from (0: none; see fadeTake)
