@@ -167,7 +167,7 @@
   "account": {
     "daily_max": 50000,
     "currency": "EUR",
-    "paper": true,
+    "paper": false,
     "reserve": 12000
   }
 }
