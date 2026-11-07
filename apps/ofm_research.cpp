@@ -1248,7 +1248,14 @@ int main(int argc, char** argv) {
       }
       nDays += 1;
     }
-    if (tradeLog) std::fclose(tradeLog);
+    if (tradeLog) {  // and beside it the account's day by day (X_TRADELOG.days: date,ret), for apps/ofm_mc
+      std::fclose(tradeLog);
+      if (std::FILE* f = std::fopen((std::string(std::getenv("X_TRADELOG")) + ".days").c_str(), "w")) {
+        std::fprintf(f, "date,ret\n");
+        for (std::size_t q = 0; q < adaptiveLevels.size() && q < sd.size(); ++q) std::fprintf(f, "%s,%.8g\n", sd[q].c_str(), adaptiveLevels[q]);
+        std::fclose(f);
+      }
+    }
     // The calibration at the raw expectation's deciles (isotonic: what a filled trade returned net of costs).
     {
       std::vector<double> es;
