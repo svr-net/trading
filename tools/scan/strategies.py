@@ -361,8 +361,14 @@ def main():
             others = other_scores(args.market, args.config)
             pos = max(0.0, score) + sum(max(0.0, v) for v in others.values())
             share = max(0.0, score) / pos if pos > 0 else 0.0
-            # never more than the others leave free (their latest shares): the markets' shares never sum past 1
-            share = min(share, max(0.0, 1.0 - sum(other_shares(args.market, args.config).values())))
+            # Growing only into its part of what is free: the markets run at the same time (UK and EU at 05:30)
+            # each see the others' latest shares, so each may take at most its own last share plus the free
+            # share split over the markets; together they never pass the limit, whoever runs when.
+            others = other_shares(args.market, args.config)
+            mine = previous_share(args.market, args.config)
+            n = 1 + len(others)
+            free = max(0.0, 1.0 - mine - sum(others.values()))
+            share = min(share, mine + free / n, max(0.0, 1.0 - sum(others.values())))
             new_total = daily * share * fx_rates(args.fx)[CURRENCY[args.market]]
             scale = new_total / total if total > 0 else 0.0
             total = new_total
