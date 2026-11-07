@@ -105,7 +105,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single ofm_mc
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -183,6 +183,7 @@ jobs:
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
               size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
+              mc) export X_TRADELOG=data/tl.csv ;;  # the trade log and the days for the Monte Carlo below (local only)
             esac
           done
           STAMP=(--exit safety)
@@ -198,6 +199,9 @@ jobs:
           case "+$V+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && STAMP+=(--override "data/eoddata/ibkr/$MARKET/daily.csv") || echo "IBKR bars: none for $MARKET in the store" >> report0.txt;; esac
           ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
           [ -f report0.txt ] && cat report0.txt >> report.txt
+          # Token mc: the backtest through Monte Carlo (apps/ofm_mc): luck (probabilistic and deflated Sharpe, about
+          # 30 strategies tried), a year resampled in blocks, and fewer fills (IBKR filled 8 of the UK backtest's 18).
+          case "+$V+" in *+mc+*) ./build/ofm_mc --days data/tl.csv.days --trades data/tl.csv --trials 30 --keep 1,0.75,0.5 >> report.txt ;; esac
           # The next open's orders as the page shows them (share and limit from the last close; no prices).
           jq -r '"next open: " + ((.orders|length)|tostring) + " orders: " + ([.orders[] | "\(.ticker) \((.limit*1000|round)/10)%"] | join(", "))' data/r.json >> report.txt || true
-          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars|^mc:" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
