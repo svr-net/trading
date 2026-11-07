@@ -24,7 +24,7 @@ on:
     inputs:
       market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC], default: all }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
-      series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }
+      series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP,FOREX:EURAUD' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
       pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US, 300 each EU exchange, 500 ASX and SGX)', default: '' }
@@ -134,7 +134,7 @@ jobs:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
-          SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP' }}"
+          SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP,FOREX:EURAUD' }}"
           MODE=""
           if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; fi
           node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -191,7 +191,7 @@ jobs:
           # beside the live one's on the page. Every run checks the kernel's trades against the trade
           # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
           python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
-          grep -E "^strategies|self-adaptive pool|  orders:|before costs|^single: the account|^single: next" report/strategies.log || true  # each strategy's headline in the log
+          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next" report/strategies.log || true  # each strategy's headline in the log
           for f in report/shadow-*.txt; do
             if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs|^single: the account|^single: next" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
@@ -273,6 +273,8 @@ jobs:
               git add "web/data/$M-$n.json" "web/data/track-$M-$n.json"
             done
             python3 -c "import json,sys; p='web/data/strategies.json'; d=json.load(open(p)) if __import__('os').path.exists(p) else {'about':'Each market\'s strategies: the live one and its shadows (config/markets.json); results only.','markets':{}}; s=json.load(open('report/strategies.json')); d['markets'][s['market'].lower()]=[{'name':x['name'],'role':x['role'],'env':x['env'],'ref':x['ref']} for x in s['strategies']]; json.dump(d,open(p,'w'),indent=1)"
+            # The market's share of the account's daily limit and its record (results only), read by the other markets' scans.
+            if [ -f report/budget.json ]; then cp report/budget.json "web/data/budget-$M.json"; git add "web/data/budget-$M.json"; fi
             git add "web/data/$M.json" "$TRACK" web/data/strategies.json
             if git diff --cached --quiet; then echo "scan unchanged"; exit 0; fi
             git commit -q -m "$MARKET scan $(date -u +%Y-%m-%d) (results only)"

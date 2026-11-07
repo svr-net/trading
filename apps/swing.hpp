@@ -124,14 +124,16 @@ inline std::vector<std::vector<std::size_t>> universe(const Panel& p, std::size_
 struct Costs {
   int kind = 0;  // 1 UK, 2 US, 3 by venue
   double capital = 5000;
+  bool tiered = false;  // IBKR's tiered pricing (UK: 0.05%, at least GBP 1, with the exchange's and clearing fees; US: USD 0.0035 a share, at least 0.35, and about 0.0005 a share of fees)
   std::vector<std::array<double, 7>> venue;  // per share: amount rate minimum fee buy-tax both-tax overnight-buy-tax
   std::vector<char> stampFree;
   double side(std::size_t i, double price) const {  // the commission and fees of one side
     if (kind == 2) {
       const double shares = std::floor(capital / price);
+      if (tiered) return shares > 0 ? std::min(0.01, (std::max(0.35, 0.0035 * shares) + 0.0005 * shares) / capital) : 0.01;
       return shares > 0 ? std::min(0.01, std::max(1.0, 0.005 * shares) / capital) : 0.01;
     }
-    if (kind == 1) return std::max(3.0, 0.0005 * capital) / capital;
+    if (kind == 1) return tiered ? std::max(1.0, 0.0005 * capital) / capital + std::max(0.000045, 0.10 / capital) + 0.06 / capital : std::max(3.0, 0.0005 * capital) / capital;
     const auto& v = venue[i];
     return v[0] > 0 ? std::max(v[2], v[1] * v[0]) / v[0] + v[3] + v[5] : 0.0;
   }

@@ -39,55 +39,18 @@
 #include <thread>
 #include <vector>
 
+#include "ridge.hpp"
 #include "swing.hpp"
 
 namespace {
 using swing::kNaN;
+using ridge::Rec;
+using ridge::solve;
 
 constexpr std::size_t nDepth = 8;  // "open" and limits 0 .. 2 sigmas below the close
 const double kDepth[nDepth] = {-1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};  // -1: the opening auction
 constexpr std::size_t nRidge = 4;
 const double kRidge[nRidge] = {0.01, 0.1, 1.0, 10.0};  // times the mean diagonal of the inputs' sums
-
-// Cholesky solve of (G + add I) X = B for several right-hand sides (the intercept, 0, not shrunk).
-bool solve(std::vector<double> G, std::size_t n, double add, const std::vector<double>& B, std::size_t nb, std::vector<double>& X) {
-  for (std::size_t k = 1; k < n; ++k) G[k * n + k] += add;
-  for (std::size_t j = 0; j < n; ++j) {
-    double s = G[j * n + j];
-    for (std::size_t k = 0; k < j; ++k) s -= G[j * n + k] * G[j * n + k];
-    if (!(s > 1e-12)) return false;
-    G[j * n + j] = std::sqrt(s);
-    for (std::size_t r = j + 1; r < n; ++r) {
-      double v = G[r * n + j];
-      for (std::size_t k = 0; k < j; ++k) v -= G[r * n + k] * G[j * n + k];
-      G[r * n + j] = v / G[j * n + j];
-    }
-  }
-  X.assign(n * nb, 0.0);
-  std::vector<double> y(n);
-  for (std::size_t c = 0; c < nb; ++c) {
-    for (std::size_t r = 0; r < n; ++r) {
-      double v = B[r * nb + c];
-      for (std::size_t k = 0; k < r; ++k) v -= G[r * n + k] * y[k];
-      y[r] = v / G[r * n + r];
-    }
-    for (std::size_t r = n; r-- > 0;) {
-      double v = y[r];
-      for (std::size_t k = r + 1; k < n; ++k) v -= G[k * n + r] * X[k * nb + c];
-      X[r * nb + c] = v / G[r * n + r];
-    }
-  }
-  return true;
-}
-
-struct Rec {  // a record of results
-  double n = 0, s = 0, s2 = 0;
-  void add(double x) { n += 1, s += x, s2 += x * x; }
-  double mean() const { return n > 0 ? s / n : 0; }
-  double sd() const { return n > 1 ? std::sqrt(std::max(0.0, s2 / n - mean() * mean())) : 0; }
-  double t() const { const double d = sd(); return d > 0 ? mean() / d * std::sqrt(n) : 0; }
-  double shrunk() const { const double tt = t(); return n > 1 && tt != 0 ? mean() * std::max(0.0, 1.0 - 1.0 / (tt * tt)) : 0; }
-};
 
 struct ShareResult {
   Rec all, h1, h2;        // its traded orders' results (gated), whole and by half of the days
@@ -147,7 +110,9 @@ int main(int argc, char** argv) {
     }
   }
   const swing::Panel& p = panel;
-  const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
+  swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
+  for (int k = 1; k + 1 < argc; ++k)  // --pricing tiered: IBKR's tiered commissions (apps/swing.hpp)
+    if (std::string(argv[k]) == "--pricing") cost.tiered = std::string(argv[k + 1]) == "tiered";
   const auto uni = swing::universe(p, top, market == "US" ? 5.0 : 0.0);
   std::vector<char> tradable(T * N, 0);
   for (std::size_t t = 0; t < T; ++t)

@@ -7,7 +7,7 @@ name: Research (model variants)
 on:
   workflow_dispatch:
     inputs:
-      market: { description: 'Market', type: choice, options: [EU, UK, US, APAC], default: EU }
+      market: { description: 'Market', type: choice, options: [EU, UK, US, APAC, INDEX, FOREX], default: EU }
       variants: { description: 'Variants (comma separated; see the list in the workflow)', default: 'base,npick5,npick20,ridge,par,ams,no-osl,liquid' }
 
 permissions:
@@ -31,7 +31,9 @@ jobs:
         variant: ${{ fromJSON(needs.plan.outputs.variants) }}
     env:
       MARKET: ${{ inputs.market }}
-      EXCHANGES: ${{ inputs.market == 'US' && 'NYSE,NASDAQ' || inputs.market == 'APAC' && 'ASX,SGX' || inputs.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || 'LSE' }}
+      EXCHANGES: ${{ inputs.market == 'US' && 'NYSE,NASDAQ' || inputs.market == 'APAC' && 'ASX,SGX' || inputs.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || inputs.market == 'INDEX' && 'INDEX' || inputs.market == 'FOREX' && 'FOREX' || 'LSE' }}
+      # INDEX and FOREX: named series (EODData's codes), traded through an index fund (INDEX) or IBKR's spot FX.
+      SERIES: ${{ inputs.market == 'INDEX' && 'INDEX:DJI,INDEX:COMP,INDEX:OEX,INDEX:NYA,INDEX:SML,INDEX:SPXE,INDEX:CAC,INDEX:DAX,INDEX:AEX,INDEX:IBEX,INDEX:AXJO,INDEX:HSI' || inputs.market == 'FOREX' && 'FOREX:EURUSD,FOREX:GBPUSD,FOREX:USDJPY,FOREX:USDCHF,FOREX:AUDUSD,FOREX:USDCAD,FOREX:NZDUSD,FOREX:EURGBP,FOREX:EURJPY,FOREX:GBPJPY,FOREX:EURCHF,FOREX:AUDJPY,FOREX:EURAUD,FOREX:EURCAD,FOREX:GBPCHF,FOREX:CHFJPY,FOREX:CADJPY,FOREX:AUDNZD,FOREX:EURNZD,FOREX:GBPAUD' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -49,7 +51,7 @@ jobs:
           path: data/bars-all.csv
           key: research-bars-${{ inputs.market }}-${{ env.DAY }}-live
       - name: Check out the EOD store (svr-net/eod)
-        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr') || startsWith(matrix.variant, 'single')
+        if: steps.bars.outputs.cache-hit != 'true' || matrix.variant == 'delay' || matrix.variant == 'intraday' || matrix.variant == 'swing' || contains(matrix.variant, 'ibkr') || startsWith(matrix.variant, 'single') || startsWith(matrix.variant, 'hold')
         uses: actions/checkout@v4
         with:
           repository: svr-net/eod
@@ -64,7 +66,8 @@ jobs:
           set -o pipefail
           mkdir -p data
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
-          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
+          if [ -n "$SERIES" ]; then node tools/eoddata/fetch_series.mjs --symbols "$SERIES" --years 20 --out data/series.csv; tail -n +2 data/series.csv >> data/stocks.csv; fi
+          for EX in $( [ -n "$SERIES" ] || echo "$EXCHANGES" | tr ',' ' '); do
             case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
             node tools/eoddata/fetch.mjs --exchange "$EX" --universe "$([ "$MARKET" = US ] && echo 2000 || ([ "$MARKET" = EU ] && echo 300 || echo 500))" --years 9 --currency "$CUR" --out "data/$EX.csv" > /dev/null
             case "$MARKET" in EU|APAC) tail -n +2 "data/$EX.csv" | awk -F, -v OFS=, -v ex="$EX" '{$2=ex":"$2; print}' >> data/stocks.csv;; *) tail -n +2 "data/$EX.csv" >> data/stocks.csv;; esac
@@ -105,7 +108,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
           cmake -S . -B build -G Ninja
-          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single ofm_mc
+          cmake --build build --target ofm_research ofm_delay ofm_anatomy ofm_swing ofm_single ofm_mc ofm_hold ofm_intraday
       - name: Delayed entry on the stored 5-minute bars (variant delay; results only)
         if: matrix.variant == 'delay'
         run: |
@@ -113,6 +116,13 @@ jobs:
           node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
           ./build/ofm_delay --daily data/stocks.csv --bars data/intraday.csv --cost 0.004 | tee report.txt
           { echo "### $MARKET delay"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Intraday momentum on the stored 5-minute bars (variant intraday; results only)
+        if: matrix.variant == 'intraday'
+        run: |
+          set -o pipefail
+          node tools/eoddata/intraday_export.mjs --exchanges "$EXCHANGES" --out data/intraday.csv
+          { ./build/ofm_intraday --intraday data/intraday.csv --csv data/stocks.csv --capital 5000; ./build/ofm_intraday --intraday data/intraday.csv --csv data/stocks.csv --capital 5000 --tiered; } | tee report.txt
+          { echo "### $MARKET intraday"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Where the market's returns are and which kinds of strategy earn them (variant anatomy; results only)
         if: matrix.variant == 'anatomy'
         run: |
@@ -138,9 +148,9 @@ jobs:
         if: startsWith(matrix.variant, 'single')
         run: |
           set -o pipefail
-          CAPITAL=5000
+          CAPITAL=1000
           A=(--csv data/stocks.csv --costs "$MARKET" --capital "$CAPITAL")
-          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; INDEX|FOREX) A+=(--venues tools/venues-series.txt);; esac
           # The account (10 slots, as the live model), the store's bars against IBKR's own where the bridge fetched them.
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           # IBKR's file in numbers (no prices): its rows, days, shares, and the tickers' shape beside the store's.
@@ -157,12 +167,34 @@ jobs:
         if: matrix.variant == 'single'
         run: |
           set -o pipefail
-          A=(--csv data/stocks.csv --costs "$MARKET" --capital 5000 --top 300)
-          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; esac
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital 1000 --top 300)
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; INDEX|FOREX) A+=(--venues tools/venues-series.txt);; esac
           for K in 1 2 4; do ./build/ofm_single "${A[@]}" --through "$K" | grep -E "spreads through|filled|the account"; done | tee report.txt
           { echo "### $MARKET single, stricter fills"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Multi-day holds on the single-share model (variant hold[+tokens]; results only)
+        if: startsWith(matrix.variant, 'hold')
+        run: |
+          set -o pipefail
+          A=(--csv data/stocks.csv --costs "$MARKET" --capital 1000)
+          case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; INDEX|FOREX) A+=(--venues tools/venues-series.txt);; esac
+          # Token tiered: IBKR's tiered pricing (Europe: each venue's minimum at EUR 1.25, as in the backtest's token).
+          case "+${{ matrix.variant }}+" in *+tiered+*) A+=(--pricing tiered)
+            if [ "$MARKET" = EU ]; then awk '!/^#/ && NF >= 4 && $1 != "OSL" { $4 = ($4 > 1.25 ? 1.25 : $4) } { print }' tools/venues.txt > data/venues-tiered.txt; A+=(--venues data/venues-tiered.txt); fi;; esac
+          IB=data/eoddata/ibkr/$MARKET/daily.csv
+          [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ] && OV=(--override "$IB") || { OV=(); echo "hold: no IBKR bars for $MARKET in the store"; }
+          {
+            # The store's bars (IBKR's where it has them), the 300 and the 100 most traded; stricter fills;
+            # and only the share-days with IBKR's own bars (the prices that traded: the honest test).
+            for TOP in 300 100; do ./build/ofm_hold "${A[@]}" "${OV[@]}" --top "$TOP"; done
+            ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --through 2
+            if [ ${#OV[@]} -gt 0 ]; then ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --ibkr-only; fi
+            # Token up: only Connors's exit on strength (the first close above the entry, at most the fifth).
+            case "+${{ matrix.variant }}+" in *+up+*) for TOP in 300 100; do ./build/ofm_hold "${A[@]}" "${OV[@]}" --top "$TOP" --holds up; done
+              if [ ${#OV[@]} -gt 0 ]; then ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --holds up --ibkr-only; fi;; esac
+          } | tee report.txt
+          { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)
-        if: matrix.variant != 'delay' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single')
+        if: matrix.variant != 'delay' && matrix.variant != 'intraday' && matrix.variant != 'anatomy' && matrix.variant != 'swing' && !startsWith(matrix.variant, 'single') && !startsWith(matrix.variant, 'hold')
         run: |
           set -o pipefail
           V='${{ matrix.variant }}'
@@ -193,11 +225,17 @@ jobs:
           for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in amount[0-9]*)
             CAPITAL="${tok#amount}"; VENUES=data/venues.txt
             awk -v ex=",$EXCHANGES," -v k="$CAPITAL" '!/^#/ && index(ex, "," $1 ",") { $2 = k } { print }' tools/venues.txt > "$VENUES";; esac; done
+          # Token tiered: IBKR's tiered pricing (the UK: 0.05%, at least GBP 1, with the exchange's and clearing
+          # fees; the US: USD 0.0035 a share, at least 0.35; Europe: each venue's minimum lowered to EUR 1.25,
+          # IBKR's tiered minimum on Euronext, an approximation: check IBKR's page before trading on it).
+          PRICING=fixed
+          case "+$V+" in *+tiered+*) PRICING=tiered
+            awk '!/^#/ && NF >= 4 && $1 != "OSL" { $4 = ($4 > 1.25 ? 1.25 : $4) } { print }' "$VENUES" > data/venues-tiered.txt && VENUES=data/venues-tiered.txt;; esac
           case "$MARKET" in EU|APAC) STAMP+=(--venues "$VENUES");; esac
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           # Token ibkr: IBKR's own daily bars in place of the store's where the bridge fetched them.
           case "+$V+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && STAMP+=(--override "data/eoddata/ibkr/$MARKET/daily.csv") || echo "IBKR bars: none for $MARKET in the store" >> report0.txt;; esac
-          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing "$PRICING" --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
           [ -f report0.txt ] && cat report0.txt >> report.txt
           # Token mc: the backtest through Monte Carlo (apps/ofm_mc): luck (probabilistic and deflated Sharpe, about
           # 30 strategies tried), a year resampled in blocks, and fewer fills (IBKR filled 8 of the UK backtest's 18).
