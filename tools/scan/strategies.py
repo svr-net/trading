@@ -254,6 +254,38 @@ def previous_share(market, config):
     return 1.0 / max(1, n)
 
 
+def orders_of(path):
+    """Each day's orders of a run's trade log (X_TRADELOG): their net results, an unfilled order 0."""
+    out = {}
+    try:
+        with open(path) as f:
+            head = next(f).strip().split(',')
+            cd, cr, cf = head.index('date'), head.index('ret'), head.index('filled')
+            for line in f:
+                c = line.strip().split(',')
+                if len(c) > max(cd, cr, cf):
+                    out.setdefault(c[cd], []).append(float(c[cr]) if float(c[cf] or 0) > 0 else 0.0)
+    except (OSError, StopIteration, ValueError):
+        pass
+    return out
+
+
+def expected(days, picks, orders):
+    """The expected return as the user reads it: each day the mean of that day's recommended orders (an
+    unfilled order 0: it earns nothing), averaged over every trading day (a day without orders 0), and
+    that daily average compounded over a year of 252 days. Also the orders a day and their fill rate."""
+    per, n, filled = [], 0, 0
+    for d, k in zip(days, picks):
+        o = orders.get(k, {}).get(d, [])
+        per.append(sum(o) / len(o) if o else 0.0)
+        n += len(o)
+        filled += sum(1 for x in o if x != 0)
+    if not per:
+        return 0.0, 0.0, 0.0, 0.0
+    daily = sum(per) / len(per)
+    return daily, (1 + daily) ** 252 - 1, n / len(per), (filled / n if n else 0.0)
+
+
 def stats(x):
     n = len(x)
     if n < 2:
@@ -401,6 +433,11 @@ def main():
         a1, s1 = stats(meta[:h])
         a2, s2 = stats(meta[h:])
         lines.append(f"budget:   chosen day by day: {100 * a:+.1f}% a year, Sharpe {sh:.2f} | first half {100 * a1:+.1f}% {s1:.2f} | second half {100 * a2:+.1f}% {s2:.2f}")
+        orders = {k: orders_of(f'data/budget/trades-{k}.csv') for k in slots}
+        ed, ey, opd, fr = expected(days, picks, orders)
+        ed1, ey1, _, _ = expected(days[-252:], picks[-252:], orders)
+        lines.append(f"budget:   expected: a day's recommended orders {100 * ed:+.3f}% on average (an unfilled order 0; {opd:.1f} orders a day, {100 * fr:.0f}% filled), "
+                     f"compounded {100 * ey:+.1f}% a year | the last year: {100 * ed1:+.3f}% a day, {100 * ey1:+.1f}% a year")
         if daily > 0:
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; its record {100 * score:+.3f}% a day shrunk, the others': "
                          + (', '.join(f'{m} {100 * v:+.3f}%' for m, v in sorted(other_scores(args.market, args.config).items())) or 'none yet') + ')')
@@ -422,7 +459,14 @@ def main():
         with open('report/budget.json', 'w') as f:
             json.dump({'market': args.market, 'date': days[-1] if days else '', 'score': score, 'share': share, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
                        'chosen': {str(k): picks.count(k) for k in slots}, 'annual': {str(k): stats([series[k][d] for d in days])[0] for k in slots},
-                       'auto': {'annual': a, 'sharpe': sh}}, f, indent=1)
+                       'auto': {'annual': a, 'sharpe': sh},
+                       'expected': {'daily': ed, 'yearly': ey, 'ordersPerDay': opd, 'filled': fr, 'lastYearDaily': ed1, 'lastYearYearly': ey1}}, f, indent=1)
+        try:  # the page's live report carries the same expected return
+            rj = json.load(open('report/ofm.json'))
+            rj['expected'] = {'daily': ed, 'yearly': ey, 'ordersPerDay': opd, 'filled': fr, 'lastYearDaily': ed1, 'lastYearYearly': ey1}
+            json.dump(rj, open('report/ofm.json', 'w'))
+        except (OSError, ValueError):
+            pass
         print(f"strategies: {args.market} live {s['name']} (budget {total:g}, {nxt} trades of {total / nxt:g}): {' '.join(f'{x}={v}' for x, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
         sys.stdout.write(open('report/ofm.txt').read())
         index['strategies'].append({'name': s['name'], 'role': 'live', 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'),

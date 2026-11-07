@@ -188,11 +188,12 @@ function sideBySide(m) {
       return d.length ? [d.reduce((w, x) => w * (1 + x), 1) - 1, d.length] : [null, 0];
     };
     if (market !== m) return;
-    table(el, [['Strategy'], ['Backtest a year', 'num'], ['Sharpe', 'num'], ['Orders bought', 'num'], ['Tracked', 'num'], ['Next open', 'num']],
+    table(el, [['Strategy'], ['Expected a day', 'num'], ['Expected a year', 'num'], ['Backtest a year', 'num'], ['Sharpe', 'num'], ['Orders bought', 'num'], ['Tracked', 'num'], ['Next open', 'num']],
       rows.map(({ s, r, t }) => {
         const B = r?.backtest || {};
         const [rec, n] = record(t);
-        return [[`${s.name}${s.role === 'live' ? ' (live)' : ' (shadow)'}`], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
+        const E = r?.expected;  // a day's recommended orders on average (unfilled 0), and compounded over 252 days
+        return [[`${s.name}${s.role === 'live' ? ' (live)' : ' (shadow)'}`], E ? signed(E.daily, 3) : ['–', 'num'], E ? signed(E.yearly, 1) : ['–', 'num'], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
           [B.orders ? `${Math.round(100 * B.trades / B.orders)}%` : '–', 'num'], n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num'],
           [r ? String((r.orders || []).length) : '–', 'num']];
       }));
