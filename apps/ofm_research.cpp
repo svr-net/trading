@@ -747,10 +747,30 @@ int main(int argc, char** argv) {
     const bool byChance = std::getenv("X_BYCHANCE") != nullptr;
     double chanceDepth = 1.0;  // the learnt depth of the day before
     std::function<double(std::size_t, std::size_t, double)> chanceOf;
+    // X_TREND=<days> (research, Connors): a share is a candidate only while its close t is above its
+    // own average close of the last <days> days (buy dips in an uptrend only). Default: off.
+    const std::size_t trendDays = std::getenv("X_TREND") ? std::size_t(std::atol(std::getenv("X_TREND"))) : 0;
+    std::vector<char> upTrend(trendDays ? T * N : 0, 0);
+    if (trendDays)
+      for (std::size_t i = 0; i < N; ++i) {
+        double sm = 0;
+        std::size_t n = 0;
+        for (std::size_t t = 0; t < T; ++t) {
+          const double c = m.close(t, i);
+          const bool ok = std::isfinite(c) && c > 0;
+          if (ok) sm += c, ++n;
+          if (t >= trendDays) {
+            const double c0 = m.close(t - trendDays, i);
+            if (std::isfinite(c0) && c0 > 0) sm -= c0, --n;
+          }
+          upTrend[t * N + i] = ok && n * 10 >= trendDays * 8 && c > sm / double(n);  // at least 80% of the window with a close
+        }
+      }
     const auto ranked = [&](std::size_t t, double pool, double b, double code, bool gate = true, std::size_t upTo = 0) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i] || !affordable(t, i)) continue;
+        if (trendDays && !upTrend[t * N + i]) continue;
         v.emplace_back(byChance ? chanceOf(t, i, chanceDepth) : rankScore(t, i, b), i);
       }
       return capTo(t, v, capOf(code), gate && gateOf(code), upTo);
