@@ -52,8 +52,16 @@
   ],
   "uk": [
    {
-    "name": "aim-regime",
+    "name": "regime",
     "role": "live",
+    "env": {
+     "X_REGIME": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "aim-regime",
+    "role": "shadow",
     "env": {
      "X_REGIME": "1"
     },
