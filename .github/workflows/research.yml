@@ -177,6 +177,9 @@ jobs:
           set -o pipefail
           A=(--csv data/stocks.csv --costs "$MARKET" --capital 1000)
           case "$MARKET" in UK) A+=(--stamp-free tools/eoddata/aim.txt);; EU|APAC) A+=(--venues tools/venues.txt);; INDEX|FOREX) A+=(--venues tools/venues-series.txt);; esac
+          # Token tiered: IBKR's tiered pricing (Europe: each venue's minimum at EUR 1.25, as in the backtest's token).
+          case "+${{ matrix.variant }}+" in *+tiered+*) A+=(--pricing tiered)
+            if [ "$MARKET" = EU ]; then awk '!/^#/ && NF >= 4 && $1 != "OSL" { $4 = ($4 > 1.25 ? 1.25 : $4) } { print }' tools/venues.txt > data/venues-tiered.txt; A+=(--venues data/venues-tiered.txt); fi;; esac
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ] && OV=(--override "$IB") || { OV=(); echo "hold: no IBKR bars for $MARKET in the store"; }
           {

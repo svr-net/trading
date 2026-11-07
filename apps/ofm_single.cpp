@@ -110,7 +110,9 @@ int main(int argc, char** argv) {
     }
   }
   const swing::Panel& p = panel;
-  const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
+  swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
+  for (int k = 1; k + 1 < argc; ++k)  // --pricing tiered: IBKR's tiered commissions (apps/swing.hpp)
+    if (std::string(argv[k]) == "--pricing") cost.tiered = std::string(argv[k + 1]) == "tiered";
   const auto uni = swing::universe(p, top, market == "US" ? 5.0 : 0.0);
   std::vector<char> tradable(T * N, 0);
   for (std::size_t t = 0; t < T; ++t)
