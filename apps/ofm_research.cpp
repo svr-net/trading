@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -742,11 +743,15 @@ int main(int argc, char** argv) {
       const double px = m.close(t, i) * (costKind == 1 ? 0.01 : 1.0), cap = fee[i * 7] > 0 ? fee[i * 7 + 1] : capital;
       return px > 0 && std::floor(cap / px) >= 1;
     };
+    // X_BYCHANCE (see chanceAt below): the ranking's key, set once the share's chance is defined.
+    const bool byChance = std::getenv("X_BYCHANCE") != nullptr;
+    double chanceDepth = 1.0;  // the learnt depth of the day before
+    std::function<double(std::size_t, std::size_t, double)> chanceOf;
     const auto ranked = [&](std::size_t t, double pool, double b, double code, bool gate = true, std::size_t upTo = 0) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i] || !affordable(t, i)) continue;
-        v.emplace_back(rankScore(t, i, b), i);
+        v.emplace_back(byChance ? chanceOf(t, i, chanceDepth) : rankScore(t, i, b), i);
       }
       return capTo(t, v, capOf(code), gate && gateOf(code), upTo);
     };
@@ -791,6 +796,29 @@ int main(int argc, char** argv) {
     const auto dipUnit = [&](std::size_t t, std::size_t i) {
       return std::exp(ft[(t * N + i) * Km + 20]) * regime[t];
     };
+    // X_BYCHANCE (research): the day's orders chosen and sorted by their chance to buy, highest first
+    // (an order more likely to buy is more likely to reach its expected return), among those the gate
+    // expects to gain. A share's chance at a depth d: its next day's low under the last close, in its own
+    // dip units, as a normal fitted to its own past days (exponentially weighted, about a year), known
+    // at each close: the chance that low reaches -d. The depth: the learnt one of the day before.
+    std::vector<float> zMu(byChance ? T * N : 0, 0.0f), zSd(byChance ? T * N : 0, 0.0f);
+    if (byChance)
+      for (std::size_t i = 0; i < N; ++i) {
+        double w = 0, mu = 0, m2 = 0;
+        for (std::size_t t = 1; t < T; ++t) {
+          const double c0 = m.close(t - 1, i), l1 = m.low(t, i), u = dipUnit(t - 1, i);
+          if (c0 > 0 && l1 > 0 && u > 0 && std::isfinite(u)) {  // the pair (t - 1, t) is known at the close t
+            const double z = std::log(l1 / c0) / u, a = 1.0 / 250.0;
+            w = (1 - a) * w + a, mu += a * (z - mu) / std::max(w, a), m2 = (1 - a) * m2 + a * (z - mu) * (z - mu);
+          }
+          zMu[t * N + i] = float(mu), zSd[t * N + i] = float(w > 0.02 ? std::sqrt(std::max(1e-6, m2 / w)) : 0.0);
+        }
+      }
+    const auto chanceAt = [&](std::size_t t, std::size_t i, double d) {
+      const double sd = zSd[t * N + i];
+      return sd > 0 ? 0.5 * std::erfc(-((-d - zMu[t * N + i]) / sd) / std::sqrt(2.0)) : 0.0;
+    };
+    chanceOf = chanceAt;
     // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
     // the close t, known when the orders are made), the take-profit that would have paid the most on
     // average: each day sold at it once the high cleared it by a half-spread, else at the close (on
@@ -1141,6 +1169,7 @@ int main(int argc, char** argv) {
       byRank[1].push_back(rk);
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
+      chanceDepth = x[3];  // the next day's ranking by chance uses today's learnt depth
       const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
       adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
@@ -1345,7 +1374,7 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < N; ++i) {
           if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0) || !affordable(t, i)) continue;
           if (!tradable[t * N + i]) continue;
-          v.emplace_back(rankScore(t, i, fx[1]), i);
+          v.emplace_back(byChance ? chanceAt(t, i, fx[3]) : rankScore(t, i, fx[1]), i);
         }
       }
       constexpr std::size_t nCand = 60;
