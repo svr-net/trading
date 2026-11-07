@@ -145,8 +145,10 @@ def fx_rates(path):
 
 
 def account_of(config):
+    """The account's daily limit left for the markets' live strategies (less "reserve": what the
+    multi-day books the bridge places hold, e.g. the UK's exit on strength) and its currency."""
     a = json.load(open(config)).get('account') or {}
-    return float(a.get('daily_max', 0)), a.get('currency', 'EUR')
+    return max(0.0, float(a.get('daily_max', 0)) - float(a.get('reserve', 0))), a.get('currency', 'EUR')
 
 
 def paper_of(config):
