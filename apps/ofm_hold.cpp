@@ -62,12 +62,14 @@ struct Trade {
 struct ShareResult {
   std::vector<Trade> trades;  // the orders it placed (own gate open, not holding, tradable)
   std::vector<double> dec;    // each day's order forecast, settled or not (the look-ahead check)
+  double nextFc = kNaN, nextLimit = kNaN;  // the order for the next session, from the last close (none while holding or gated)
+  int nextDepth = -1, nextHold = -1;
   std::size_t depthUsed[nDepth] = {}, holdUsed[nHold] = {};
 };
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut, holdsArg;
+  std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut, holdsArg, jsonOut, ordersOut;
   double capital = 5000, through = 0.5;
   std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   bool ibkrOnly = false;
@@ -86,6 +88,8 @@ int main(int argc, char** argv) {
     else if (a == "--ibkr-days") ibkrDays = argv[++k];
     else if (a == "--through") through = std::atof(argv[++k]);
     else if (a == "--trace") traceOut = argv[++k];
+    else if (a == "--json") jsonOut = argv[++k];
+    else if (a == "--orders") ordersOut = argv[++k];
     else if (a == "--holds") holdsArg = argv[++k];  // the exits the shares may choose from (e.g. "up" or "1d,up"; default all)
   }
   for (int k = 1; k < argc; ++k)  // --ibkr-only: traded only on the share-days with IBKR's bars (learnt from every bar)
@@ -239,7 +243,7 @@ int main(int argc, char** argv) {
           for (std::size_t q = 0; q < nRidge; ++q)
             if (!solve(G, D, kRidge[q] * diag, B, nTarget, beta[q])) beta[q].clear();
         }
-        if (!has[t] || beta[0].empty() || t + 1 >= T) continue;
+        if (!has[t] || beta[0].empty()) continue;
         const double* a = &x[t * D];
         int pick[nRidge];
         double fcast[nRidge];
@@ -255,6 +259,14 @@ int main(int argc, char** argv) {
         std::size_t use = 0;
         for (std::size_t q = 1; q < nRidge; ++q)
           if (ridgeRec[q].shrunk() > ridgeRec[use].shrunk()) use = q;
+        if (t + 1 >= T) {  // the last close: the order for the next session (not while the share is held)
+          if (pick[use] >= 0 && tradable[t * N + i] && gate.shrunk() > 0 && holdUntil <= t) {
+            const std::size_t k = std::size_t(pick[use]) / nHold;
+            R.nextFc = fcast[use], R.nextDepth = int(k), R.nextHold = pick[use] % int(nHold);
+            R.nextLimit = kDepth[k] < 0 ? kNaN : p.C[t * N + i] * std::exp(-kDepth[k] * sigma[t]);
+          }
+          continue;
+        }
         // Paper: every ridge's decision is recorded once it settles (the records choose the ridge).
         Trade chosen;
         for (std::size_t q = 0; q < nRidge; ++q) {
@@ -317,6 +329,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < res[i].trades.size(); ++q) byDay[res[i].trades[q].order].push_back({res[i].trades[q].fc, {i, q}});
   struct Pos { std::size_t i, q; };
   std::vector<Pos> open;
+  std::vector<std::pair<std::size_t, double>> acctDays;  // the account's day by day (for --json)
   Rec acct, ah1, ah2, taken, hed, hh1, hh2;  // hed: less the market's day on the money held (equal-weighted, the day's tradable shares)
   double slotDays = 0, nd = 0;
   const std::size_t mid = (first + last) / 2;
@@ -349,7 +362,7 @@ int main(int argc, char** argv) {
       if (tradable[(u - 1) * N + i] && p.ok(u, i) && p.ok(u - 1, i)) ms += std::log(p.C[u * N + i] / p.C[(u - 1) * N + i]), mn += 1;
     const double h = r - (mn > 0 ? ms / mn : 0.0) * double(open.size()) / double(slots);
     slotDays += double(open.size()), nd += 1;
-    acct.add(r), (u < mid ? ah1 : ah2).add(r);
+    acct.add(r), (u < mid ? ah1 : ah2).add(r), acctDays.emplace_back(u, r);
     hed.add(h), (u < mid ? hh1 : hh2).add(h);
   }
   const auto yr = [](const Rec& r) { const double sd = r.sd(); return std::make_pair(25200 * r.mean(), sd > 0 ? r.mean() / sd * std::sqrt(252.0) : 0.0); };
@@ -372,5 +385,45 @@ int main(int argc, char** argv) {
       for (std::size_t i = 0; i < N; ++i)
         if (std::isfinite(res[i].dec[t])) std::snprintf(b, sizeof b, "%s %s %.12g\n", p.days[t].c_str(), p.tickers[i].c_str(), res[i].dec[t]), o << b;
   }
+  // The next session's orders (--orders: the private store) and the page's results (--json: results only):
+  // the slots the account's positions still hold at the last close are not ordered again.
+  std::size_t held = 0;
+  for (const Pos& z : open) held += res[z.i].trades[z.q].exit >= last;
+  std::vector<std::pair<double, std::size_t>> nxt;
+  for (std::size_t i = 0; i < N; ++i)
+    if (std::isfinite(res[i].nextFc)) nxt.emplace_back(res[i].nextFc, i);
+  std::sort(nxt.begin(), nxt.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+  if (nxt.size() > slots - std::min(slots, held)) nxt.resize(slots - std::min(slots, held));
+  char ob[512];
+  if (!ordersOut.empty()) {
+    std::ofstream o(ordersOut);
+    o << "{\"model\":\"hold\",\"asOf\":\"" << p.days[T - 1] << "\",\"slots\":" << slots << ",\"held\":" << held << ",\"orders\":[";
+    for (std::size_t q = 0; q < nxt.size(); ++q) {
+      const ShareResult& R = res[nxt[q].second];
+      std::snprintf(ob, sizeof ob, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%s,\"open\":%s,\"exit\":\"%s\",\"expected\":%.6g,\"capital\":%.6g}", q ? "," : "",
+                    p.tickers[nxt[q].second].c_str(), p.C[(T - 1) * N + nxt[q].second], std::isfinite(R.nextLimit) ? std::to_string(R.nextLimit).c_str() : "null",
+                    std::isfinite(R.nextLimit) ? "false" : "true", kHoldName[R.nextHold], R.nextFc, capital);
+      o << ob;
+    }
+    o << "]}\n";
+  }
+  if (!jsonOut.empty()) {
+    double w = 0, peak = 0, dd = 0;
+    for (const auto& d : acctDays) w += std::log1p(d.second), peak = std::max(peak, w), dd = std::max(dd, 1 - std::exp(w - peak));
+    const double years = double(acctDays.size()) / 252.0;
+    std::ofstream o(jsonOut);
+    o << "{\"model\":\"hold\",\"asOf\":\"" << p.days[T - 1] << "\",\"stocks\":" << N << ",\"top\":" << top << ",\"slots\":" << slots << ",\"held\":" << held;
+    std::snprintf(ob, sizeof ob, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g,\"orders\":%.0f,\"trades\":%.0f,\"days\":%.3g}",
+                  p.days[first].c_str(), p.days[last].c_str(), years > 0 ? std::expm1(w / years) : 0.0, s0, dd, taken.n, fills.n, days.mean());
+    o << ob << ",\"orders\":[";
+    for (std::size_t q = 0; q < nxt.size(); ++q)
+      o << (q ? "," : "") << "{\"ticker\":\"" << p.tickers[nxt[q].second] << "\",\"exit\":\"" << kHoldName[res[nxt[q].second].nextHold] << "\",\"expected\":" << nxt[q].first << "}";
+    o << "],\"recent\":[";
+    const std::size_t from = acctDays.size() > 20 ? acctDays.size() - 20 : 0;
+    for (std::size_t q = from; q < acctDays.size(); ++q)
+      std::snprintf(ob, sizeof ob, "%s{\"date\":\"%s\",\"day\":%.6g}", q > from ? "," : "", p.days[acctDays[q].first].c_str(), acctDays[q].second), o << ob;
+    o << "]}\n";
+  }
+  std::printf("hold: next session: %zu orders (%zu of %zu slots held)\n", nxt.size(), held, slots);
   return 0;
 }

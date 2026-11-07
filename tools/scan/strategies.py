@@ -10,7 +10,9 @@ and .txt for each shadow, and report/strategies.json (the market's strategies, r
 data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is built at that version
 first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
 tools/eoddata/aim.txt); one with "app": "single" is the single-share model (apps/ofm_single: every
-share learnt and backtested on its own bars only), given the same arguments.
+share learnt and backtested on its own bars only), given the same arguments; one with "app": "hold" the
+multi-day single-share model (apps/ofm_hold); "args" (a list) are added after the model's arguments
+(a later one wins: e.g. ["--holds", "up", "--pricing", "tiered", "--capital", "1000"]).
 
 The budget (a market's "budget": {"total": T, "slots": [2, 3, 5, 10]}): the live strategy runs once for
 each number of trades k, k trades a day of T/k each (--capital, and each venue's amount in --venues,
@@ -54,10 +56,13 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: a bad ref {s['ref']!r}")
         if s.get('only') not in (None, 'aim'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown share filter {s['only']!r}")
-        if s.get('app') not in (None, 'single'):
+        if s.get('app') not in (None, 'single', 'hold'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
         if s.get('app') and s['role'] == 'live':
             sys.exit(f"strategies: {market} {s['name']}: the single-share model runs as a shadow only (the bridge places the research model's orders)")
+        bad_args = [x for x in s.get('args', []) if not isinstance(x, str) or not re.match(r'^[A-Za-z0-9_.,:/=-]{1,64}$', x)]
+        if bad_args or not isinstance(s.get('args', []), list):
+            sys.exit(f"strategies: {market} {s['name']}: bad args {bad_args or s.get('args')!r}")
         if s.get('app') and 'ref' in s:
             sys.exit(f"strategies: {market} {s['name']}: a pinned version is for the research model only")
     return out
@@ -65,8 +70,8 @@ def strategies(config, market):
 
 def binary(ref, app=None):
     """The model's binary: this checkout's, or one built at ref."""
-    if app == 'single':
-        return './build/ofm_single'
+    if app in ('single', 'hold'):
+        return f'./build/ofm_{app}'
     if not ref:
         return './build/ofm_research'
     root = os.path.join('.pins', ref.replace('/', '_'))
@@ -307,7 +312,7 @@ def main():
                        '--orders', f'data/budget/orders-{k}.json']
                 pending_variants.append((k, cmd, env))
             continue
-        cmd = [binary(s.get('ref'), s.get('app')), *args_m, '--json', f'report/{stem}.json']
+        cmd = [binary(s.get('ref'), s.get('app')), *args_m, *s.get('args', []), '--json', f'report/{stem}.json']
         if args.publish_orders:
             path = f'data/eoddata/orders/{args.market}.json' if live else f"data/eoddata/shadow/{args.market}-{s['name']}.json"
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -410,7 +415,7 @@ def main():
     for s, live, stem, p, log in jobs:
         code = p.wait()
         log.close()
-        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + (' (single-share model)' if s.get('app') else '') + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + ({'single': ' (single-share model)', 'hold': ' (multi-day single-share model)'}.get(s.get('app'), '')) + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
         sys.stdout.write(open(f'report/{stem}.txt').read())
         if code:
             if live:
