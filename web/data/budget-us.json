@@ -2,8 +2,8 @@
  "market": "US",
  "date": "2026-11-06",
  "score": 0.0,
- "share": 0.25,
- "total": 10583.86336,
+ "share": 0.0,
+ "total": 0.0,
  "currency": "USD",
  "slots": [
   2,
@@ -12,7 +12,7 @@
   10
  ],
  "next": 10,
- "amount": 1058.386336,
+ "amount": 0.0,
  "chosen": {
   "2": 0,
   "3": 0,
