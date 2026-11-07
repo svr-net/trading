@@ -1,0 +1,8 @@
+# The costs of trading the INDEX and FOREX series (research; the same columns as tools/venues.txt:
+# EXCHANGE amount rate minimum fee buy-tax both-tax), at the account's 1,000 a trade:
+#   INDEX  through an index fund that tracks it (a US one: IBKR's USD 0.005 a share, at least USD 1,
+#          about 0.1% of 1,000; the fund's own spread is taken from the bars like a share's)
+#   FOREX  IBKR's spot FX: 0.2 basis points of the trade, at least USD 2 an order (0.2% of 1,000; an
+#          order under about USD 25,000 is an odd lot, filled at a wider price than the bars show)
+INDEX 1000 0.00005 1 0 0 0
+FOREX 1000 0.00002 2 0 0 0
