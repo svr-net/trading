@@ -1217,6 +1217,7 @@ int main(int argc, char** argv) {
       const auto x = learnt();
       chanceDepth = x[3];  // the next day's ranking by chance uses today's learnt depth
       const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
+      const auto zToday = sizes(t, today);  // X_SIZE: each trade's money, before the day's outcomes join the calibration (the log's ret carries it)
       adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
       // results are known now and used from the next day's decisions), so the gate never starves it.
@@ -1251,7 +1252,7 @@ int main(int argc, char** argv) {
         if (tradeLog)  // one line per trade, for the single-trade analysis (X_TRADELOG; local, not published)
           std::fprintf(tradeLog, "%s,%s,%zu,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%.6g,%.6g,%d\n", m.dates[t + 1].c_str(), m.tickers[i].c_str(), k,
                        pred[src * 4], std::exp(ft[src * Km + 20]), liqRank[i], spread[t * N + i], m.low(t + 1, i) / o - 1, m.high(t + 1, i) / o - 1,
-                       m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
+                       m.close(t + 1, i) / o - 1, tr.stop, tr.take, ms / mn, tr.exit, zToday[k] * tr.ret, m.close(t, i) > 0 ? o / m.close(t, i) - 1 : 0.0, tr.limit, tr.filled);
       }
       ordersMax = std::max(ordersMax, double(today.size())), fillsMax = std::max(fillsMax, dayFills);
       if (shareDepthOn)  // the day is over: every share with an outcome adds its result at each depth (used from the next day)
