@@ -215,7 +215,8 @@ jobs:
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
               size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
-              mc) export X_TRADELOG=data/tl.csv ;;  # the trade log and the days for the Monte Carlo below (local only)
+              mc) export X_TRADELOG=data/tl.csv ;;
+              maxd*) export X_MAXDEPTH="${tok#maxd}" ;;  # the deepest limit (sigmas below the close): maxd0, maxd0.5, maxd1  # the trade log and the days for the Monte Carlo below (local only)
             esac
           done
           STAMP=(--exit safety)
