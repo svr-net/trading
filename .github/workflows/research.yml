@@ -219,11 +219,17 @@ jobs:
           for tok in $(echo "$V" | tr '+' ' '); do case "$tok" in amount[0-9]*)
             CAPITAL="${tok#amount}"; VENUES=data/venues.txt
             awk -v ex=",$EXCHANGES," -v k="$CAPITAL" '!/^#/ && index(ex, "," $1 ",") { $2 = k } { print }' tools/venues.txt > "$VENUES";; esac; done
+          # Token tiered: IBKR's tiered pricing (the UK: 0.05%, at least GBP 1, with the exchange's and clearing
+          # fees; the US: USD 0.0035 a share, at least 0.35; Europe: each venue's minimum lowered to EUR 1.25,
+          # IBKR's tiered minimum on Euronext, an approximation: check IBKR's page before trading on it).
+          PRICING=fixed
+          case "+$V+" in *+tiered+*) PRICING=tiered
+            awk '!/^#/ && NF >= 4 && $1 != "OSL" { $4 = ($4 > 1.25 ? 1.25 : $4) } { print }' "$VENUES" > data/venues-tiered.txt && VENUES=data/venues-tiered.txt;; esac
           case "$MARKET" in EU|APAC) STAMP+=(--venues "$VENUES");; esac
           if [ "$MARKET" = UK ]; then STAMP+=(--stamp-free tools/eoddata/aim.txt --segments tools/eoddata/lse_segments.csv); fi
           # Token ibkr: IBKR's own daily bars in place of the store's where the bridge fetched them.
           case "+$V+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && STAMP+=(--override "data/eoddata/ibkr/$MARKET/daily.csv") || echo "IBKR bars: none for $MARKET in the store" >> report0.txt;; esac
-          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
+          ./build/ofm_research --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing "$PRICING" --capital "$CAPITAL" "${STAMP[@]}" --json data/r.json > report.txt
           [ -f report0.txt ] && cat report0.txt >> report.txt
           # Token mc: the backtest through Monte Carlo (apps/ofm_mc): luck (probabilistic and deflated Sharpe, about
           # 30 strategies tried), a year resampled in blocks, and fewer fills (IBKR filled 8 of the UK backtest's 18).
