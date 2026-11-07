@@ -976,12 +976,17 @@ int main(int argc, char** argv) {
     // empirical Bayes (weight tau2 / (tau2 + sigma2 / n): the spread between shares against the noise
     // of the share's own mean, both measured from the data each day). The depth with the highest total
     // is the share's; one with little history keeps the learnt depth.
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr;
+    // X_BALANCE (research): each share's depth where its chance to buy and its chance to gain once bought
+    // are closest (its own days at each depth so far: fills over days, gains over fills), among the
+    // depths whose mean result per order is a gain; none: no order; little history: the learnt depth.
+    const bool balance = std::getenv("X_BALANCE") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr || balance;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sfS1(shareDepthOn ? N * nE : 0, 0.0), sfS2(shareDepthOn ? N * nE : 0, 0.0), sfOff(shareDepthOn ? N * nE : 0, 0.0);  // filled trades' results
     sdF.assign(shareDepthOn ? N * nE : 0, 0.0);
+    std::vector<double> sdW(shareDepthOn ? N * nE : 0, 0.0);  // the filled trades that gained
     std::size_t sdDay = ~std::size_t(0);
     // A share's offset at each depth from all shares' mean, shrunk by empirical Bayes (weight tau2 /
     // (tau2 + sigma2 / n)): from its sums S1, S2 and count n per depth.
@@ -1089,6 +1094,20 @@ int main(int argc, char** argv) {
         }
         if (bq < nE) return best > 0 ? dvals[bq] : kNaN;
       }  // before any pick's outcome: the learnt depth, as below
+      if (balance) {
+        std::size_t bq = nE, seen = 0;
+        double best = 1e300;
+        for (std::size_t q = 0; q < nE; ++q) {
+          const double n = sdN[i * nE + q], f = sdF[i * nE + q];
+          if (n < 60 || f < 5) continue;
+          ++seen;
+          if (!(sdS1[i * nE + q] / n > 0)) continue;  // only depths whose orders gained on average (an unfilled order 0)
+          const double gap = std::fabs(f / n - sdW[i * nE + q] / f);
+          if (gap < best) best = gap, bq = q;
+        }
+        if (bq < nE) return dvals[bq];
+        if (seen) return kNaN;  // history, but no depth that gains: no order
+      }
       shareOffsets(t);
       const auto total = [&](std::size_t q) { return depthScore[q] + sdOff[i * nE + q]; };
       std::size_t bq = 0;
@@ -1216,7 +1235,7 @@ int main(int argc, char** argv) {
             const double r = tq.ret;
             sdS1[i * nE + q] += r, sdS2[i * nE + q] += r * r, sdN[i * nE + q] += 1;
             sdF[i * nE + q] += tq.filled > 0;
-            if (tq.filled > 0) sfS1[i * nE + q] += r, sfS2[i * nE + q] += r * r;
+            if (tq.filled > 0) sfS1[i * nE + q] += r, sfS2[i * nE + q] += r * r, sdW[i * nE + q] += r > 0;
             if (fillNet && t >= lag) {  // the share's day joins the depth's regression (used from the next close)
               double xv[64];
               fnX(t, i, q, xv);

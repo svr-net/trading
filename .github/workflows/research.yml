@@ -217,7 +217,8 @@ jobs:
               size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
               mc) export X_TRADELOG=data/tl.csv ;;
               maxd*) export X_MAXDEPTH="${tok#maxd}" ;;
-              bychance) export X_BYCHANCE=1 ;;  # the day's orders chosen and sorted by their chance to buy  # the deepest limit (sigmas below the close): maxd0, maxd0.5, maxd1  # the trade log and the days for the Monte Carlo below (local only)
+              bychance) export X_BYCHANCE=1 ;;  # the day's orders chosen and sorted by their chance to buy
+              balance) export X_BALANCE=1 ;;  # each share's depth where its chance to buy and to gain once bought are closest  # the deepest limit (sigmas below the close): maxd0, maxd0.5, maxd1  # the trade log and the days for the Monte Carlo below (local only)
             esac
           done
           STAMP=(--exit safety)
