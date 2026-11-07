@@ -355,6 +355,10 @@ int main(int argc, char** argv) {
       double limit;                 // the buy limit from the last close
       double rebuy, rebuyCost;      // the buy-back after a stop (its fraction back up to the entry; 0 none) and a round trip's costs (its sale at the entry and these)
       double fill = kNaN;           // its chance to buy: how often the share's own days would have filled an order this deep (all its days so far)
+      // Its expected return as an order: the chance to buy times the gain if it buys (an unfilled order
+      // earns nothing); without a chance, the calibration over every pick (an unfilled one 0).
+      double weighted(double overPicks) const { return std::isfinite(fill) ? fill * expected : overPicks; }
+      double order = kNaN;          // that order's expected return, set with the pick
     };
     std::vector<Pick> picks;
     std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
@@ -1368,6 +1372,7 @@ int main(int argc, char** argv) {
         lastRun.picks.push_back({i, calibrated(rawExpected(t, i), true), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1, fs > 0 ? fx[7] : 0.0,
                                  fee[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0,
                                  fillNet ? fnProb(t, i, std::size_t(std::find(dvals.begin(), dvals.end(), dq) - dvals.begin())) : days > 0 ? fills / days : kNaN});  // calibrated: the gain from the buy price if it buys, net of costs
+        lastRun.picks.back().order = lastRun.picks.back().weighted(calibrated(rawExpected(t, i)));
       }
     }
     return pred;
@@ -1431,8 +1436,8 @@ int main(int argc, char** argv) {
       const auto& pk = lastRun.picks[q];
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g}", q ? "," : "",
-                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost,
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"ifFilled\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g}", q ? "," : "",
+                    m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.order, pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost,
                     spread[(T - 1) * N + pk.stock]);
       o << b;
     }
@@ -1478,8 +1483,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
       auto lvl = [](double x) { return std::isfinite(x) ? std::to_string(x) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g,\"fill\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
-                    pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy, lvl(pk.fill).c_str());
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g,\"fill\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
+                    pk.order, pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy, lvl(pk.fill).c_str());
       o << b;
     }
     o << "],\"recent\":[";
