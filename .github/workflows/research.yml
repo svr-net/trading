@@ -242,7 +242,7 @@ jobs:
           [ -f report0.txt ] && cat report0.txt >> report.txt
           # Token mc: the backtest through Monte Carlo (apps/ofm_mc): luck (probabilistic and deflated Sharpe, about
           # 30 strategies tried), a year resampled in blocks, and fewer fills (IBKR filled 8 of the UK backtest's 18).
-          case "+$V+" in *+mc+*) ./build/ofm_mc --days data/tl.csv.days --trades data/tl.csv --trials 30 --keep 1,0.75,0.5,0.25 >> report.txt ;; esac
+          case "+$V+" in *+mc+*) ./build/ofm_mc --days data/tl.csv.days --trades data/tl.csv --trials 30 --slots "${X_NPICK:-10}" --keep 1,0.75,0.5,0.25 >> report.txt ;; esac
           # The next open's orders as the page shows them (share and limit from the last close; no prices).
           jq -r '"next open: " + ((.orders|length)|tostring) + " orders: " + ([.orders[] | "\(.ticker) \((.limit*1000|round)/10)%"] | join(", "))' data/r.json >> report.txt || true
           { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars|^mc:" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
