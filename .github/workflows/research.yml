@@ -181,7 +181,10 @@ jobs:
             # and only the share-days with IBKR's own bars (the prices that traded: the honest test).
             for TOP in 300 100; do ./build/ofm_hold "${A[@]}" "${OV[@]}" --top "$TOP"; done
             ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --through 2
-            [ ${#OV[@]} -gt 0 ] && ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --ibkr-only
+            if [ ${#OV[@]} -gt 0 ]; then ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --ibkr-only; fi
+            # Token up: only Connors's exit on strength (the first close above the entry, at most the fifth).
+            case "+${{ matrix.variant }}+" in *+up+*) for TOP in 300 100; do ./build/ofm_hold "${A[@]}" "${OV[@]}" --top "$TOP" --holds up; done
+              if [ ${#OV[@]} -gt 0 ]; then ./build/ofm_hold "${A[@]}" "${OV[@]}" --top 300 --holds up --ibkr-only; fi;; esac
           } | tee report.txt
           { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The backtest (results only)

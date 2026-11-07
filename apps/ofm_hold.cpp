@@ -23,7 +23,7 @@
 //
 //   ofm_hold --csv stocks.csv --costs UK|EU|US|APAC [--capital 5000] [--top 300] [--slots 10]
 //            [--venues tools/venues.txt] [--stamp-free aim.txt] [--override ibkr.csv | --ibkr-days ibkr.csv]
-//            [--ibkr-only] [--through 0.5] [--refit 5] [--warm 250] [--trace file]
+//            [--ibkr-only] [--holds up,1d,...] [--through 0.5] [--refit 5] [--warm 250] [--trace file]
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -67,7 +67,7 @@ struct ShareResult {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut;
+  std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut, holdsArg;
   double capital = 5000, through = 0.5;
   std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   bool ibkrOnly = false;
@@ -86,6 +86,7 @@ int main(int argc, char** argv) {
     else if (a == "--ibkr-days") ibkrDays = argv[++k];
     else if (a == "--through") through = std::atof(argv[++k]);
     else if (a == "--trace") traceOut = argv[++k];
+    else if (a == "--holds") holdsArg = argv[++k];  // the exits the shares may choose from (e.g. "up" or "1d,up"; default all)
   }
   for (int k = 1; k < argc; ++k)  // --ibkr-only: traded only on the share-days with IBKR's bars (learnt from every bar)
     if (std::string(argv[k]) == "--ibkr-only") ibkrOnly = true;
@@ -111,6 +112,8 @@ int main(int argc, char** argv) {
       if (d != di.end() && k != ti.end() && panel.C[d->second * N + k->second] > 0) ibDay[d->second * N + k->second] = 1;
     }
   }
+  bool holdOn[nHold];
+  for (std::size_t h = 0; h < nHold; ++h) holdOn[h] = holdsArg.empty() || ("," + holdsArg + ",").find("," + std::string(kHoldName[h]) + ",") != std::string::npos;
   const swing::Panel& p = panel;
   const swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
   const auto uni = swing::universe(p, top, market == "US" ? 5.0 : 0.0);
@@ -244,7 +247,7 @@ int main(int argc, char** argv) {
           for (std::size_t g = 0; g < nTarget; ++g) {
             double v = 0;
             for (std::size_t r = 0; r < D; ++r) v += a[r] * beta[q][r * nTarget + g];
-            if (v > fcast[q]) fcast[q] = v, pick[q] = int(g);
+            if (holdOn[g % nHold] && v > fcast[q]) fcast[q] = v, pick[q] = int(g);
           }
         }
         std::size_t use = 0;
