@@ -14,7 +14,7 @@ awk 'BEGIN{srand(11); print "date,ticker,open,high,low,close,volume"; for(s=0;s<
 awk -F, 'NR==1 || $1 < "D0900"' "$W/full.csv" > "$W/cut.csv"
 "$BIN" --csv "$W/full.csv" --costs US --top 60 --trace "$W/full.tr" > "$W/full.out"
 "$BIN" --csv "$W/cut.csv" --costs US --top 60 --trace "$W/cut.tr" > /dev/null
-sh=$(sed -n 's/^hold: the account.* a year, Sharpe \([-0-9.]*\) .*/\1/p' "$W/full.out")
+sh=$(sed -n 's/^hold: the account (.* a year, Sharpe \([-0-9.]*\) .*/\1/p' "$W/full.out")
 awk -v s="$sh" 'BEGIN { exit !(s > 2) }' || { cat "$W/full.out"; echo "FAIL: the planted effect was not found (the account's Sharpe $sh)"; exit 1; }
 n=$(wc -l < "$W/cut.tr")
 [ "$n" -gt 1000 ] || { echo "FAIL: only $n orders placed"; exit 1; }
