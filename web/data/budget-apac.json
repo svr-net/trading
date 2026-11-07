@@ -2,8 +2,8 @@
  "market": "APAC",
  "date": "2026-11-06",
  "score": 0.0,
- "share": 0.25,
- "total": 15416.6,
+ "share": 0.0,
+ "total": 0.0,
  "currency": "AUD",
  "slots": [
   2,
@@ -12,7 +12,7 @@
   10
  ],
  "next": 10,
- "amount": 1541.66,
+ "amount": 0.0,
  "chosen": {
   "2": 83,
   "3": 672,
