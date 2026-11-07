@@ -442,8 +442,12 @@ def holds(args):
         book = json.load(open(args.orders)) if args.orders else {'orders': []}
         # The day's own orders (the daily strategy) keep their shares: the book never buys one of them.
         daily = {t.contract.symbol for t in ib.reqAllOpenOrders() if (t.order.orderRef or '').startswith(f'ofm-{args.market}-{date.today().isoformat()}')}
+        free = max(0, int(book.get('slots', 10)) - len(st['positions']))  # the book's slots not held
         for o in book.get('orders', []):
             sym = ib_symbol(o['ticker'].split(':')[-1], args.market)
+            if free <= 0:
+                lines.append(f'{sym}: every slot of the book held, not bought')
+                continue
             if sym in held or sym in st['positions'] or sym in daily:
                 lines.append(f'{sym}: held already or in the day\'s orders, not bought')
                 continue
@@ -470,6 +474,7 @@ def holds(args):
                 order, how = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY'), f'at {lim:g}'
             fate, msgs = order_fate(ib, ib.placeOrder(c, order), errors)
             st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up')}
+            free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     else:
         today = date.today().isoformat()

@@ -393,7 +393,10 @@ int main(int argc, char** argv) {
   for (std::size_t i = 0; i < N; ++i)
     if (std::isfinite(res[i].nextFc)) nxt.emplace_back(res[i].nextFc, i);
   std::sort(nxt.begin(), nxt.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
-  if (nxt.size() > slots - std::min(slots, held)) nxt.resize(slots - std::min(slots, held));
+  // The orders list the best candidates for every slot: whoever places them (the bridge's multi-day book)
+  // keeps its own positions and buys only for its free slots; the page counts the free ones here.
+  const std::size_t freeSlots = slots - std::min(slots, held);
+  if (nxt.size() > slots) nxt.resize(slots);
   char ob[512];
   if (!ordersOut.empty()) {
     std::ofstream o(ordersOut);
@@ -424,6 +427,6 @@ int main(int argc, char** argv) {
       std::snprintf(ob, sizeof ob, "%s{\"date\":\"%s\",\"day\":%.6g}", q > from ? "," : "", p.days[acctDays[q].first].c_str(), acctDays[q].second), o << ob;
     o << "]}\n";
   }
-  std::printf("hold: next session: %zu orders (%zu of %zu slots held)\n", nxt.size(), held, slots);
+  std::printf("hold: next session: %zu candidates (the backtest's account holds %zu of %zu slots: %zu free)\n", nxt.size(), held, slots, freeSlots);
   return 0;
 }
