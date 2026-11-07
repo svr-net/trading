@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -742,11 +743,15 @@ int main(int argc, char** argv) {
       const double px = m.close(t, i) * (costKind == 1 ? 0.01 : 1.0), cap = fee[i * 7] > 0 ? fee[i * 7 + 1] : capital;
       return px > 0 && std::floor(cap / px) >= 1;
     };
+    // X_BYCHANCE (see chanceAt below): the ranking's key, set once the share's chance is defined.
+    const bool byChance = std::getenv("X_BYCHANCE") != nullptr;
+    double chanceDepth = 1.0;  // the learnt depth of the day before
+    std::function<double(std::size_t, std::size_t, double)> chanceOf;
     const auto ranked = [&](std::size_t t, double pool, double b, double code, bool gate = true, std::size_t upTo = 0) {
       std::vector<std::pair<double, std::size_t>> v;
       for (std::size_t i = 0; i < N; ++i) {
         if (!(liqRank[i] < pool) || !tradable[t * N + i] || !affordable(t, i)) continue;
-        v.emplace_back(rankScore(t, i, b), i);
+        v.emplace_back(byChance ? chanceOf(t, i, chanceDepth) : rankScore(t, i, b), i);
       }
       return capTo(t, v, capOf(code), gate && gateOf(code), upTo);
     };
@@ -791,6 +796,29 @@ int main(int argc, char** argv) {
     const auto dipUnit = [&](std::size_t t, std::size_t i) {
       return std::exp(ft[(t * N + i) * Km + 20]) * regime[t];
     };
+    // X_BYCHANCE (research): the day's orders chosen and sorted by their chance to buy, highest first
+    // (an order more likely to buy is more likely to reach its expected return), among those the gate
+    // expects to gain. A share's chance at a depth d: its next day's low under the last close, in its own
+    // dip units, as a normal fitted to its own past days (exponentially weighted, about a year), known
+    // at each close: the chance that low reaches -d. The depth: the learnt one of the day before.
+    std::vector<float> zMu(byChance ? T * N : 0, 0.0f), zSd(byChance ? T * N : 0, 0.0f);
+    if (byChance)
+      for (std::size_t i = 0; i < N; ++i) {
+        double w = 0, mu = 0, m2 = 0;
+        for (std::size_t t = 1; t < T; ++t) {
+          const double c0 = m.close(t - 1, i), l1 = m.low(t, i), u = dipUnit(t - 1, i);
+          if (c0 > 0 && l1 > 0 && u > 0 && std::isfinite(u)) {  // the pair (t - 1, t) is known at the close t
+            const double z = std::log(l1 / c0) / u, a = 1.0 / 250.0;
+            w = (1 - a) * w + a, mu += a * (z - mu) / std::max(w, a), m2 = (1 - a) * m2 + a * (z - mu) * (z - mu);
+          }
+          zMu[t * N + i] = float(mu), zSd[t * N + i] = float(w > 0.02 ? std::sqrt(std::max(1e-6, m2 / w)) : 0.0);
+        }
+      }
+    const auto chanceAt = [&](std::size_t t, std::size_t i, double d) {
+      const double sd = zSd[t * N + i];
+      return sd > 0 ? 0.5 * std::erfc(-((-d - zMu[t * N + i]) / sd) / std::sqrt(2.0)) : 0.0;
+    };
+    chanceOf = chanceAt;
     // A share's fading take-profit (with a safety stop; log from the open): over its last w days (to
     // the close t, known when the orders are made), the take-profit that would have paid the most on
     // average: each day sold at it once the high cleared it by a half-spread, else at the close (on
@@ -948,12 +976,17 @@ int main(int argc, char** argv) {
     // empirical Bayes (weight tau2 / (tau2 + sigma2 / n): the spread between shares against the noise
     // of the share's own mean, both measured from the data each day). The depth with the highest total
     // is the share's; one with little history keeps the learnt depth.
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr;
+    // X_BALANCE (research): each share's depth where its chance to buy and its chance to gain once bought
+    // are closest (its own days at each depth so far: fills over days, gains over fills), among the
+    // depths whose mean result per order is a gain; none: no order; little history: the learnt depth.
+    const bool balance = std::getenv("X_BALANCE") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr || balance;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sfS1(shareDepthOn ? N * nE : 0, 0.0), sfS2(shareDepthOn ? N * nE : 0, 0.0), sfOff(shareDepthOn ? N * nE : 0, 0.0);  // filled trades' results
     sdF.assign(shareDepthOn ? N * nE : 0, 0.0);
+    std::vector<double> sdW(shareDepthOn ? N * nE : 0, 0.0);  // the filled trades that gained
     std::size_t sdDay = ~std::size_t(0);
     // A share's offset at each depth from all shares' mean, shrunk by empirical Bayes (weight tau2 /
     // (tau2 + sigma2 / n)): from its sums S1, S2 and count n per depth.
@@ -1061,6 +1094,20 @@ int main(int argc, char** argv) {
         }
         if (bq < nE) return best > 0 ? dvals[bq] : kNaN;
       }  // before any pick's outcome: the learnt depth, as below
+      if (balance) {
+        std::size_t bq = nE, seen = 0;
+        double best = 1e300;
+        for (std::size_t q = 0; q < nE; ++q) {
+          const double n = sdN[i * nE + q], f = sdF[i * nE + q];
+          if (n < 60 || f < 5) continue;
+          ++seen;
+          if (!(sdS1[i * nE + q] / n > 0)) continue;  // only depths whose orders gained on average (an unfilled order 0)
+          const double gap = std::fabs(f / n - sdW[i * nE + q] / f);
+          if (gap < best) best = gap, bq = q;
+        }
+        if (bq < nE) return dvals[bq];
+        if (seen) return kNaN;  // history, but no depth that gains: no order
+      }
       shareOffsets(t);
       const auto total = [&](std::size_t q) { return depthScore[q] + sdOff[i * nE + q]; };
       std::size_t bq = 0;
@@ -1068,6 +1115,13 @@ int main(int argc, char** argv) {
         if (total(q) > total(bq)) bq = q;
       return dvals[bq];
     };
+    // With X_BALANCE, an order's chance is at the share's own balanced depth (the one it is placed at);
+    // a share with no depth that gains has none (ranked last, and the gate's order is not placed).
+    if (balance && byChance)
+      chanceOf = [&, chanceAt](std::size_t t, std::size_t i, double) {
+        const double d = shareDepth(t, i);
+        return std::isfinite(d) ? chanceAt(t, i, d) : -1.0;
+      };
     // The day's result: every trade one unit, a trade not filled stays in cash.
     // X_SIZE (research): each order's money by its calibrated expectation (meta-labeling's sizing,
     // Lopez de Prado): a filled trade's calibrated net return (calFill, walk-forward) over the mean of
@@ -1141,6 +1195,7 @@ int main(int argc, char** argv) {
       byRank[1].push_back(rk);
       // Today's trades with the settings learnt so far; then every lattice point's record takes today.
       const auto x = learnt();
+      chanceDepth = x[3];  // the next day's ranking by chance uses today's learnt depth
       const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
       adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
@@ -1187,7 +1242,7 @@ int main(int argc, char** argv) {
             const double r = tq.ret;
             sdS1[i * nE + q] += r, sdS2[i * nE + q] += r * r, sdN[i * nE + q] += 1;
             sdF[i * nE + q] += tq.filled > 0;
-            if (tq.filled > 0) sfS1[i * nE + q] += r, sfS2[i * nE + q] += r * r;
+            if (tq.filled > 0) sfS1[i * nE + q] += r, sfS2[i * nE + q] += r * r, sdW[i * nE + q] += r > 0;
             if (fillNet && t >= lag) {  // the share's day joins the depth's regression (used from the next close)
               double xv[64];
               fnX(t, i, q, xv);
@@ -1345,7 +1400,7 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < N; ++i) {
           if (!(liqRank[i] < fx[0]) || !std::isfinite(m.close(t, i)) || !(m.close(t, i) > 0) || !affordable(t, i)) continue;
           if (!tradable[t * N + i]) continue;
-          v.emplace_back(rankScore(t, i, fx[1]), i);
+          v.emplace_back(byChance ? chanceAt(t, i, fx[3]) : rankScore(t, i, fx[1]), i);
         }
       }
       constexpr std::size_t nCand = 60;

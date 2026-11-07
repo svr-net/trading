@@ -56,6 +56,13 @@
             "--capital",
             "1000"
           ]
+        },
+        {
+          "name": "regime-balance",
+          "env": {
+            "X_REGIME": "1",
+            "X_BALANCE": "1"
+          }
         }
       ],
       "budget": {
@@ -105,6 +112,12 @@
           "name": "single",
           "app": "single",
           "env": {}
+        },
+        {
+          "name": "balance",
+          "env": {
+            "X_BALANCE": "1"
+          }
         }
       ],
       "budget": {
