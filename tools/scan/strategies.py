@@ -383,7 +383,10 @@ def main():
             # share split over the markets; together they never pass the limit, whoever runs when.
             others = other_shares(args.market, args.config)
             mine = previous_share(args.market, args.config)
-            n = 1 + len(others)
+            # Only the markets that could grow at the same time share the free room: a market with no
+            # positive record takes none, so the one most needed takes it all at once.
+            growers = other_scores(args.market, args.config)
+            n = 1 + sum(1 for m in others if growers.get(m, 1.0) > 0)
             free = max(0.0, 1.0 - mine - sum(others.values()))
             share = min(share, mine + free / n, max(0.0, 1.0 - sum(others.values())))
             new_total = daily * share * fx_rates(args.fx)[CURRENCY[args.market]]
