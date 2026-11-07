@@ -239,6 +239,7 @@ jobs:
               mc|fills5) export X_TRADELOG=data/tl.csv ;;  # fills5: the log's fills replayed on 5-minute bars (the step below)
               maxd*) export X_MAXDEPTH="${tok#maxd}" ;;
               trend[0-9]*) export X_TREND="${tok#trend}" ;;  # Connors: only shares above their own <k>-day average close
+              depthtable) export X_DEPTHTABLE=1 ;;  # every candidate at every depth: fills, a fill's and an order's return (a diagnostic)
               bychance) export X_BYCHANCE=1 ;;  # the day's orders chosen and sorted by their chance to buy
               balance) export X_BALANCE=1 ;;  # each share's depth where its chance to buy and to gain once bought are closest  # the deepest limit (sigmas below the close): maxd0, maxd0.5, maxd1  # the trade log and the days for the Monte Carlo below (local only)
             esac
@@ -267,7 +268,7 @@ jobs:
           case "+$V+" in *+mc+*) ./build/ofm_mc --days data/tl.csv.days --trades data/tl.csv --trials 30 --slots "${X_NPICK:-10}" --keep 1,0.75,0.5,0.25 >> report.txt ;; esac
           # The next open's orders as the page shows them (share and limit from the last close; no prices).
           jq -r '"next open: " + ((.orders|length)|tostring) + " orders: " + ([.orders[] | "\(.ticker) \((.limit*1000|round)/10)%"] | join(", "))' data/r.json >> report.txt || true
-          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars|^mc:" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars|^mc:|depth table" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: The backtest's fills on 5-minute bars (token fills5; counts and results only)
         if: contains(matrix.variant, 'fills5')
         env:

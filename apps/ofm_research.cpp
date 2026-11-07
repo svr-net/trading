@@ -1190,6 +1190,12 @@ int main(int argc, char** argv) {
       return rg / std::max(double(nPick), fills);
     };
     double ordersMax = 0, fillsMax = 0;
+    // X_DEPTHTABLE (research; a diagnostic, never a decision): each day the gated candidates in their
+    // ranking (up to 3 nPick) traded at every depth of the lattice with the day's learnt exits; per
+    // depth and rank band (the top nPick, the next 2 nPick): orders, fills, the mean net return of a
+    // fill and of an order (an unfilled order 0) with its t statistic.
+    const bool depthTable = std::getenv("X_DEPTHTABLE") != nullptr;
+    std::vector<double> dtN(2 * nE, 0.0), dtF(2 * nE, 0.0), dtS(2 * nE, 0.0), dtS2(2 * nE, 0.0);
     for (std::size_t q = warm; q < days.size(); ++q) {
       const std::size_t t = days[q];
       if (t + 1 >= T || t < lag) continue;
@@ -1217,6 +1223,16 @@ int main(int argc, char** argv) {
       const auto x = learnt();
       chanceDepth = x[3];  // the next day's ranking by chance uses today's learnt depth
       const auto today = fillN ? fillOrders(t, ranked(t, x[0], x[1], x[2], true, N), x[3]) : ranked(t, x[0], x[1], x[2]);
+      if (depthTable) {
+        const auto cands = ranked(t, x[0], x[1], x[2], true, 3 * nPick);
+        for (std::size_t r = 0; r < cands.size() && r < 3 * nPick; ++r)
+          for (std::size_t e = 0; e < nE; ++e) {
+            const Trade tq = trade(t, cands[r].second, dvals[e], x[4], x[5], x[6], x[7]);
+            const std::size_t b = (r < nPick ? 0 : 1) * nE + e;
+            const double g = tq.filled > 0 ? tq.ret : 0.0;
+            dtN[b] += 1, dtF[b] += tq.filled > 0, dtS[b] += g, dtS2[b] += g * g;
+          }
+      }
       const auto zToday = sizes(t, today);  // X_SIZE: each trade's money, before the day's outcomes join the calibration (the log's ret carries it)
       adaptiveLevels.push_back(fillN ? dayResultN(t, today, x[3], x[4], x[5], x[6], x[7]) : dayResult(t, today, x[3], x[4], x[5], x[6], x[7])), used.push_back(x);
       // The day is over: the calibration learns from the top 10 before the gate (traded or not; their
@@ -1402,6 +1418,15 @@ int main(int argc, char** argv) {
                 tradeOrders > 0 ? 100 * tradeFilled / tradeOrders : 0.0, tradeOrders / double(std::max<std::size_t>(1, adaptiveLevels.size())),
                 tradeFilled / double(std::max<std::size_t>(1, adaptiveLevels.size())), ordersMax, fillsMax, fillN ? " (orders learnt from the fills)" : "");
     if (tradeFilled > 0)  // the costs' share: a filled trade's mean result before them, them, and after
+      if (depthTable)
+        for (std::size_t b = 0; b < 2; ++b)
+          for (std::size_t e = 0; e < nE; ++e) {
+            const std::size_t k = b * nE + e;
+            if (!(dtN[k] > 1)) continue;
+            const double mo = dtS[k] / dtN[k], v = (dtS2[k] - dtN[k] * mo * mo) / (dtN[k] - 1);
+            std::printf("  depth table: ranks %s, limit %+.1f sd: %.0f orders, filled %.1f%%, a fill %+.3f%%, an order %+.4f%% (t %.2f)\n", b == 0 ? "top" : "next",
+                        -dvals[e], dtN[k], 100 * dtF[k] / dtN[k], dtF[k] > 0 ? 100 * dtS[k] / dtF[k] : 0.0, 100 * mo, v > 0 ? mo / std::sqrt(v / dtN[k]) : 0.0);
+          }
       std::printf("  a filled trade on average: %+.3f%% before costs, costs %.3f%%, %+.3f%% after\n", 100 * (tradeSum + tradeCost) / tradeFilled, 100 * tradeCost / tradeFilled,
                   100 * tradeSum / tradeFilled);
     std::printf("  only days predicted to gain      %+7.1f%% a year (Sharpe %5.2f), %zu of %zu days\n", 100 * a2.first, a2.second, traded, gated.size());
