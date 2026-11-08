@@ -240,8 +240,6 @@ jobs:
               maxd*) export X_MAXDEPTH="${tok#maxd}" ;;
               trend[0-9]*) export X_TREND="${tok#trend}" ;;  # Connors: only shares above their own <k>-day average close
               depthtable) export X_DEPTHTABLE=1 ;;  # every candidate at every depth: fills, a fill's and an order's return (a diagnostic)
-              dnet) export X_DNET=1 ;;  # each order's depth from the differential network (values and slopes along the depth)
-              dnet0) export X_DNET=0 ;;  # the same network on the values alone (the control)
               bychance) export X_BYCHANCE=1 ;;  # the day's orders chosen and sorted by their chance to buy
               balance) export X_BALANCE=1 ;;  # each share's depth where its chance to buy and to gain once bought are closest  # the deepest limit (sigmas below the close): maxd0, maxd0.5, maxd1  # the trade log and the days for the Monte Carlo below (local only)
             esac

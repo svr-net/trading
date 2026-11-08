@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-#include "dnet.hpp"
 #include "net.hpp"
 #include "invoke.hpp"
 #include "ofm/data.hpp"
@@ -1001,7 +1000,7 @@ int main(int argc, char** argv) {
     // are closest (its own days at each depth so far: fills over days, gains over fills), among the
     // depths whose mean result per order is a gain; none: no order; little history: the learnt depth.
     const bool balance = std::getenv("X_BALANCE") != nullptr;
-    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr || balance || std::getenv("X_DNET") != nullptr;
+    const bool shareDepthOn = std::getenv("X_SHAREDEPTH") != nullptr || std::getenv("X_FILLNET") != nullptr || balance;
     std::vector<double> sdF;
     std::vector<double> sdS1(shareDepthOn ? N * nE : 0, 0.0), sdS2(shareDepthOn ? N * nE : 0, 0.0), sdN(shareDepthOn ? N * nE : 0, 0.0);
     std::vector<double> sdOff(shareDepthOn ? N * nE : 0, 0.0);
@@ -1102,54 +1101,7 @@ int main(int argc, char** argv) {
       return std::clamp(v, 0.0, 1.0);
     };
     const auto fnProb = [&](std::size_t t, std::size_t i, std::size_t q) { return std::clamp(calNet.at(fnRaw(t, i, q)), 0.0, 1.0); };
-    // X_DNET (research): each order's depth from a differential network (apps/dnet.hpp) of the order's
-    // expected net return f(x, d) (an unfilled order 0), x the share's standardised inputs and its own
-    // record of dips (both known at the close, neither depending on d), d the depth. Trained on every
-    // day's ranked candidates (3 nPick, before the gate) at random depths, once their day is over: the
-    // label the backtest's own trade at that depth (net of costs, its learnt exits), smoothed over half
-    // the share's spread (a fill is all or nothing), and the label's slope along d from the same path.
-    // The order's depth: the best of f on a fine grid; no order when the best is not a gain. Before 250
-    // days of samples, the learnt depth. X_DNET=0: the value alone (lambda 0), the control.
-    const char* dnetEnv = std::getenv("X_DNET");
-    const bool dnetOn = dnetEnv != nullptr;
-    const std::size_t dnF = std::min<std::size_t>(Fm, 40), dnIn = dnF + 5 + 1;
-    dnet::Net dn(dnIn, 16, dnIn - 1);
-    dn.lr = 1e-3;
-    std::vector<double> dnX, dnY, dnDY;
-    std::size_t dnDays = 0;
-    std::uint64_t dnRng = 0xD1B54A32D192ED03ull;
-    const auto dnU = [&] { dnRng ^= dnRng << 13, dnRng ^= dnRng >> 7, dnRng ^= dnRng << 17; return double(dnRng >> 11) * 0x1.0p-53; };
-    const auto dnInputs = [&](std::size_t t, std::size_t i, double* x) {
-      rawFill(t, i, 0.0);  // the share's dips up to the close t
-      const auto& h = dipHist[i];
-      if (h.size() < 20) return false;
-      const std::size_t src = (t - lag) * N + i;
-      for (std::size_t f = 0; f < dnF; ++f) {
-        const double sd = zs[((t - lag) * Fm + f) * 2 + 1], v = ft[src * Km + f];
-        x[f] = std::isfinite(v) && sd > 0 ? std::clamp((v - zs[((t - lag) * Fm + f) * 2]) / sd, -4.0, 4.0) : 0.0;
-      }
-      const double qs[5] = {0.5, 0.75, 0.9, 0.95, 0.98};
-      for (std::size_t k = 0; k < 5; ++k) x[dnF + k] = std::clamp(h[std::min(h.size() - 1, std::size_t(qs[k] * double(h.size())))], -4.0, 8.0);
-      return true;
-    };
-    std::vector<std::size_t> dnDay(N, ~std::size_t(0));
-    std::vector<double> dnDepth(N, kNaN);
-    const auto dnetDepth = [&](std::size_t t, std::size_t i) {
-      if (dnDay[i] == t) return dnDepth[i];
-      dnDay[i] = t, dnDepth[i] = kNaN;
-      std::vector<double> x(dnIn);
-      if (!dnInputs(t, i, x.data())) return kNaN;
-      double best = 0;
-      for (double d = dvals.front(); d <= dvals.back() + 1e-9; d += 0.1) {
-        x[dnIn - 1] = d;
-        double f, g;
-        dn.eval(x.data(), f, g);
-        if (f > best) best = f, dnDepth[i] = d;
-      }
-      return dnDepth[i];
-    };
     const auto shareDepth = [&](std::size_t t, std::size_t i) {
-      if (dnetOn) return dnDays >= 250 ? dnetDepth(t, i) : chanceDepth;  // before its samples: the learnt depth
       if (fillNet) {
         if (fnOffDay != t) fnOffDay = t, ebOffsets(sfS1, sfS2, sdF, sfOff);  // each share's filled trades against all shares'
         std::size_t bq = nE;
@@ -1288,51 +1240,6 @@ int main(int argc, char** argv) {
       for (const auto& e : ranked(t, x[0], x[1], x[2], false)) {
         const Trade tr = trade(t, e.second, x[3], x[4], x[5], x[6], x[7]);
         calAdd(rawExpected(t, e.second), tr.ret, tr.filled > 0);
-      }
-      if (dnetOn) {  // the day is over: its candidates at random depths join the network's samples
-        const double lo = dvals.front(), hi = dvals.back();
-        std::vector<double> xs(dnIn);
-        for (const auto& e : ranked(t, x[0], x[1], x[2], false, 3 * nPick)) {
-          const std::size_t i = e.second;
-          if (!dnInputs(t, i, xs.data())) continue;
-          const double un = dipUnit(t, i);
-          if (!(un > 0) || !std::isfinite(un)) continue;
-          const double w = std::max(0.05, 0.5 * spread[t * N + i] / un);  // half the spread, in the depth's unit
-          const auto smooth = [&](double d) {
-            double sm = 0;
-            for (int k = -2; k <= 2; ++k) {
-              const Trade tq = trade(t, i, d + 0.5 * k * w, x[4], x[5], x[6], x[7]);
-              sm += (tq.filled > 0 ? tq.ret : 0.0) / 5;
-            }
-            return sm;
-          };
-          for (int r = 0; r < 4; ++r) {
-            const double d = lo + (hi - lo) * dnU();
-            xs[dnIn - 1] = d;
-            dnX.insert(dnX.end(), xs.begin(), xs.end());
-            dnY.push_back(100 * smooth(d)), dnDY.push_back(100 * (smooth(d + w) - smooth(d - w)) / (2 * w));
-          }
-        }
-        const std::size_t cap = 300000, n = dnY.size();
-        if (n > cap) {  // the oldest out
-          const std::size_t cut = n - cap;
-          dnX.erase(dnX.begin(), dnX.begin() + std::ptrdiff_t(cut * dnIn)), dnY.erase(dnY.begin(), dnY.begin() + std::ptrdiff_t(cut)), dnDY.erase(dnDY.begin(), dnDY.begin() + std::ptrdiff_t(cut));
-        }
-        if (!dnY.empty()) {
-          ++dnDays;
-          double sy = 0, sd2 = 0;  // lambda: the slopes weighted to the values' scale (Huge and Savine)
-          for (std::size_t k = 0; k < dnY.size(); ++k) sy += dnY[k] * dnY[k], sd2 += dnDY[k] * dnDY[k];
-          dn.lambda = std::string(dnetEnv) == "0" || !(sd2 > 0) ? 0.0 : sy / sd2;
-          std::vector<double> bx(128 * dnIn), by(128), bd(128);
-          for (int it = 0; it < 8; ++it) {
-            for (std::size_t r = 0; r < 128; ++r) {
-              const std::size_t k = std::min(dnY.size() - 1, std::size_t(dnU() * double(dnY.size())));
-              std::copy(dnX.begin() + std::ptrdiff_t(k * dnIn), dnX.begin() + std::ptrdiff_t((k + 1) * dnIn), bx.begin() + std::ptrdiff_t(r * dnIn));
-              by[r] = dnY[k], bd[r] = dnDY[k];
-            }
-            dn.step(bx, by, bd, 128);
-          }
-        }
       }
       double dayFills = 0;
       for (std::size_t k = 0; k < today.size(); ++k) {  // the trades, for the diagnostics and the log

@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "../apps/dnet.hpp"
 #include "invoke.hpp"
 #include "net.hpp"
 #include "ofm/data.hpp"
@@ -180,53 +179,6 @@ TEST(network_learns_a_simple_relation) {
   }
   const auto p = net.predict({0.8, -0.5}, 1);
   CHECK(std::fabs(p[0] - (0.5 * 0.8 + 0.3 * 0.5)) < 0.08);
-}
-
-TEST(differential_network_gradients_match_finite_differences) {
-  dnet::Net net(4, 6, 2, 12345);
-  net.lambda = 0.7;
-  const double x[4] = {0.3, -1.1, 0.8, 0.5}, y = 0.2, dy = -0.4;
-  std::vector<double> g(net.size(), 0.0);
-  net.gradient(x, y, dy, 1.0, g);
-  const auto loss = [&] { double f, s; net.eval(x, f, s); return (f - y) * (f - y) + net.lambda * (s - dy) * (s - dy); };
-  for (std::size_t k = 0; k < net.size(); ++k) {
-    const double w0 = net.w[k], h = 1e-6;
-    net.w[k] = w0 + h; const double up = loss();
-    net.w[k] = w0 - h; const double dn = loss();
-    net.w[k] = w0;
-    CHECK(std::fabs((up - dn) / (2 * h) - g[k]) < 1e-6 * (1 + std::fabs(g[k])));
-  }
-  // The slope it reports is the value's derivative along its differential input.
-  double f0, s0, f1, f2, sd;
-  net.eval(x, f0, s0);
-  double xa[4] = {x[0], x[1], x[2] + 1e-6, x[3]}, xb[4] = {x[0], x[1], x[2] - 1e-6, x[3]};
-  net.eval(xa, f1, sd), net.eval(xb, f2, sd);
-  CHECK(std::fabs((f1 - f2) / 2e-6 - s0) < 1e-6);
-}
-
-TEST(differential_network_learns_a_curve_and_its_peak) {
-  // y = a * d * exp(-d) (the peak at d = 1, whatever a), learnt from values and slopes of noisy samples.
-  dnet::Net net(2, 16, 1, 7);
-  net.lr = 3e-3, net.lambda = 1.0;
-  std::uint64_t s = 99;
-  const auto u = [&] { s ^= s << 13, s ^= s >> 7, s ^= s << 17; return double(s >> 11) * 0x1.0p-53; };
-  for (int it = 0; it < 3000; ++it) {
-    std::vector<double> x, y, dy;
-    for (int r = 0; r < 32; ++r) {
-      const double a = 0.5 + u(), d = 3 * u();
-      x.push_back(a), x.push_back(d);
-      y.push_back(a * d * std::exp(-d) + 0.05 * (u() - 0.5)), dy.push_back(a * (1 - d) * std::exp(-d));
-    }
-    net.step(x, y, dy, 32);
-  }
-  double best = -1e9, bd = 0;
-  for (double d = 0; d <= 3; d += 0.05) {
-    const double in[2] = {1.0, d};
-    double f, g;
-    net.eval(in, f, g);
-    if (f > best) best = f, bd = d;
-  }
-  CHECK(std::fabs(bd - 1.0) < 0.2);
 }
 
 TEST(csv_round_trip) {
