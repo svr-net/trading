@@ -70,7 +70,7 @@ struct ShareResult {
 
 int main(int argc, char** argv) {
   std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut, holdsArg, jsonOut, ordersOut;
-  double capital = 5000, through = 0.5, stopK = 0, rebuyF = 0, openLimit = -1;
+  double capital = 5000, through = 0.5, stopK = 0, rebuyF = 0;
   std::string depthsArg;
   std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   bool ibkrOnly = false;
@@ -93,7 +93,6 @@ int main(int argc, char** argv) {
     else if (a == "--orders") ordersOut = argv[++k];
     else if (a == "--depths") depthsArg = argv[++k];  // the entries the shares may choose from ("open", or depths in sigmas, e.g. "open,1.5"; default all)
     else if (a == "--stop") stopK = std::atof(argv[++k]);  // a stop-loss this many of the share's daily sigmas under the entry (0: none)
-    else if (a == "--open-limit") openLimit = std::atof(argv[++k]);  // the "open" entry as a limit this many of the share's spreads under the open, placed once the open is known
     else if (a == "--rebuy") rebuyF = std::atof(argv[++k]);  // after a stop, a buy-stop this fraction of the way back up to the entry (0: none)
     else if (a == "--holds") holdsArg = argv[++k];  // the exits the shares may choose from (e.g. "up" or "1d,up"; default all)
   }
@@ -189,11 +188,7 @@ int main(int argc, char** argv) {
         if (t + 1 >= T || !has[t] || !p.ok(t + 1, i) || !(p.O[(t + 1) * N + i] > 0)) return tr;
         const double c0 = p.C[t * N + i], o = p.O[(t + 1) * N + i], lo = p.L[(t + 1) * N + i];
         double entry;
-        if (kDepth[k] < 0 && openLimit >= 0) {  // a limit under the open, placed after the auction: filled when the day's low trades --through spreads under it
-          const double lim = o * std::exp(-openLimit * spread[t]);
-          if (lo <= lim * std::exp(-through * spread[t])) entry = lim;
-          else return tr.ret = 0.0, tr.entry = tr.exit = t + 1, tr;
-        } else if (kDepth[k] < 0) entry = o;
+        if (kDepth[k] < 0) entry = o;
         else {
           const double lim = c0 * std::exp(-kDepth[k] * sigma[t]);
           if (o <= lim) entry = o;

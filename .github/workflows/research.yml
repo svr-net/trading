@@ -204,7 +204,7 @@ jobs:
           # Tokens open (bought in the opening auction only: every order fills), stop<k> (a stop-loss k of the
           # share's daily sigmas under the entry), rebuy<f> (after a stop, a buy-stop f of the way back up).
           for tok in $(echo "${{ matrix.variant }}" | tr '+' ' '); do case "$tok" in
-            open) A+=(--depths open);; openhalf) A+=(--depths open --open-limit 0.5);; stop[0-9]*) A+=(--stop "${tok#stop}");; rebuy[0-9]*) A+=(--rebuy "${tok#rebuy}");; esac; done
+            open) A+=(--depths open);; stop[0-9]*) A+=(--stop "${tok#stop}");; rebuy[0-9]*) A+=(--rebuy "${tok#rebuy}");; esac; done
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ] && OV=(--override "$IB") || { OV=(); echo "hold: no IBKR bars for $MARKET in the store"; }
           {
