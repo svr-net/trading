@@ -104,14 +104,6 @@ jobs:
           # Token aim (UK): only AIM shares (no stamp duty), from tools/eoddata/aim.txt.
           case "+$V+" in *+aim+*) { head -1 data/stocks.csv; tail -n +2 data/stocks.csv | awk -F, 'NR==FNR {k[$1]=1; next} k[$2]' tools/eoddata/aim.txt -; } > data/v.csv && mv data/v.csv data/stocks.csv ;; esac
           echo "shares: $(tail -n +2 data/stocks.csv | cut -d, -f2 | sort -u | wc -l), days: $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort -u | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Survivorship probe (variant survivors; counts only)
-        if: matrix.variant == 'survivors'
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: |
-          set -o pipefail
-          for EX in $(echo "$EXCHANGES" | tr ',' ' '); do node tools/check/survivors.mjs --exchange "$EX" --top "$([ "$MARKET" = US ] && echo 2000 || ([ "$MARKET" = EU ] && echo 300 || echo 500))"; done | tee report.txt
-          { echo "### $MARKET survivors"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Build the model
         run: |
           sudo apt-get install -y --no-install-recommends ninja-build >/dev/null
