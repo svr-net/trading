@@ -132,9 +132,7 @@ jobs:
           case "+${{ matrix.variant }}+" in *+tiered+*) A+=(--pricing tiered);; esac
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           [ -s "$IB" ] && A+=(--override "$IB")
-          { for TOP in 300 100; do ./build/ofm_gap "${A[@]}" --top "$TOP" --trades data/gap-$TOP.csv; ./build/ofm_mc --days data/gap-$TOP.csv.days --trades data/gap-$TOP.csv --trials 30 --keep 1 | grep -E "luck|a year"; done
-            # Only the share-days with IBKR's own bars (their opens the auctions'): the honest test where the store's opens are wrong.
-            if [ -s "$IB" ]; then ./build/ofm_gap "${A[@]}" --top 300 --ibkr-only --trades data/gap-ib.csv; ./build/ofm_mc --days data/gap-ib.csv.days --trades data/gap-ib.csv --trials 30 --keep 1 | grep -E "luck|a year"; fi; } | tee report.txt
+          { for TOP in 300 100; do ./build/ofm_gap "${A[@]}" --top "$TOP" --trades data/gap-$TOP.csv; ./build/ofm_mc --days data/gap-$TOP.csv.days --trades data/gap-$TOP.csv --trials 30 --keep 1 | grep -E "luck|a year"; done; } | tee report.txt
           { echo "### $MARKET ${{ matrix.variant }}"; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Where the market's returns are and which kinds of strategy earn them (variant anatomy; results only)
         if: matrix.variant == 'anatomy'
