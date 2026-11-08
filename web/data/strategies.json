@@ -105,6 +105,15 @@
     "role": "shadow",
     "env": {},
     "ref": null
+   },
+   {
+    "name": "regime-balance",
+    "role": "shadow",
+    "env": {
+     "X_REGIME": "1",
+     "X_BALANCE": "1"
+    },
+    "ref": null
    }
   ],
   "us": [
