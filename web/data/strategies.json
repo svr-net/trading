@@ -48,6 +48,14 @@
     "role": "shadow",
     "env": {},
     "ref": null
+   },
+   {
+    "name": "balance",
+    "role": "shadow",
+    "env": {
+     "X_BALANCE": "1"
+    },
+    "ref": null
    }
   ],
   "uk": [
