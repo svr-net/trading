@@ -201,10 +201,6 @@ jobs:
           # Token tiered: IBKR's tiered pricing (Europe: each venue's minimum at EUR 1.25, as in the backtest's token).
           case "+${{ matrix.variant }}+" in *+tiered+*) A+=(--pricing tiered)
             if [ "$MARKET" = EU ]; then awk '!/^#/ && NF >= 4 && $1 != "OSL" { $4 = ($4 > 1.25 ? 1.25 : $4) } { print }' tools/venues.txt > data/venues-tiered.txt; A+=(--venues data/venues-tiered.txt); fi;; esac
-          # Tokens open (bought in the opening auction only: every order fills), stop<k> (a stop-loss k of the
-          # share's daily sigmas under the entry), rebuy<f> (after a stop, a buy-stop f of the way back up).
-          for tok in $(echo "${{ matrix.variant }}" | tr '+' ' '); do case "$tok" in
-            open) A+=(--depths open);; stop[0-9]*) A+=(--stop "${tok#stop}");; rebuy[0-9]*) A+=(--rebuy "${tok#rebuy}");; esac; done
           IB=data/eoddata/ibkr/$MARKET/daily.csv
           [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ] && OV=(--override "$IB") || { OV=(); echo "hold: no IBKR bars for $MARKET in the store"; }
           {

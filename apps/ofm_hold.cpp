@@ -70,8 +70,7 @@ struct ShareResult {
 
 int main(int argc, char** argv) {
   std::string csv, market, venues, stampFree, overrideCsv, ibkrDays, traceOut, holdsArg, jsonOut, ordersOut;
-  double capital = 5000, through = 0.5, stopK = 0, rebuyF = 0;
-  std::string depthsArg;
+  double capital = 5000, through = 0.5;
   std::size_t top = 300, refit = 5, warm = 250, slots = 10;
   bool ibkrOnly = false;
   for (int k = 1; k + 1 < argc; ++k) {
@@ -91,9 +90,6 @@ int main(int argc, char** argv) {
     else if (a == "--trace") traceOut = argv[++k];
     else if (a == "--json") jsonOut = argv[++k];
     else if (a == "--orders") ordersOut = argv[++k];
-    else if (a == "--depths") depthsArg = argv[++k];  // the entries the shares may choose from ("open", or depths in sigmas, e.g. "open,1.5"; default all)
-    else if (a == "--stop") stopK = std::atof(argv[++k]);  // a stop-loss this many of the share's daily sigmas under the entry (0: none)
-    else if (a == "--rebuy") rebuyF = std::atof(argv[++k]);  // after a stop, a buy-stop this fraction of the way back up to the entry (0: none)
     else if (a == "--holds") holdsArg = argv[++k];  // the exits the shares may choose from (e.g. "up" or "1d,up"; default all)
   }
   for (int k = 1; k < argc; ++k)  // --ibkr-only: traded only on the share-days with IBKR's bars (learnt from every bar)
@@ -121,12 +117,6 @@ int main(int argc, char** argv) {
     }
   }
   bool holdOn[nHold];
-  bool depthOn[nDepth];
-  for (std::size_t k = 0; k < nDepth; ++k) {
-    char b[16];
-    std::snprintf(b, sizeof b, "%g", kDepth[k]);
-    depthOn[k] = depthsArg.empty() || ("," + depthsArg + ",").find("," + std::string(kDepth[k] < 0 ? "open" : b) + ",") != std::string::npos;
-  }
   for (std::size_t h = 0; h < nHold; ++h) holdOn[h] = holdsArg.empty() || ("," + holdsArg + ",").find("," + std::string(kHoldName[h]) + ",") != std::string::npos;
   const swing::Panel& p = panel;
   swing::Costs cost = swing::costs(p, market, capital, venues, stampFree);
@@ -211,46 +201,9 @@ int main(int argc, char** argv) {
           if (seen < maxHold && !(p.C[xd * N + i] > entry)) xd = 0;  // not settled yet
         }
         if (!xd) return tr;
-        const double c = p.C[xd * N + i], hs = 0.5 * spread[t];
+        const double c = p.C[xd * N + i];
         tr.exit = xd;
-        if (!(stopK > 0)) {
-          tr.ret = std::log(c / entry) - cost.roundTrip(i, entry, c, xd > e0);
-          return tr;
-        }
-        // --stop: from the fill to the planned exit, sold at the stop (at the open when it opens under
-        // it) less half the spread. --rebuy: from the day after the stop, a buy-stop rebuy of the way
-        // back up to the entry, bought at it (or the open, when it opens over it) and half the spread,
-        // held to the planned exit under the same stop. Each leg pays its own costs.
-        const double stopPx = entry * std::exp(-stopK * sigma[t]), backPx = stopPx + rebuyF * (entry - stopPx);
-        double ret = 0, held = entry;
-        std::size_t from = e0, legStart = e0;
-        bool in = true, rebought = false;
-        for (std::size_t u = e0; u <= xd; ++u) {
-          if (!p.ok(u, i)) continue;
-          const double o2 = p.O[u * N + i], h2 = p.H[u * N + i], l2 = p.L[u * N + i];
-          if (in) {
-            const bool fresh = u == from;  // the fill's own day: only the low after it counts (an open fill: all of it)
-            double px = 0;
-            if (!fresh && o2 > 0 && o2 <= stopPx) px = o2;
-            else if (l2 > 0 && l2 <= stopPx) px = stopPx;
-            if (px > 0) {
-              px *= std::exp(-hs);
-              ret += std::log(px / held) - cost.roundTrip(i, held, px, u > legStart);
-              in = false;
-              if (rebuyF > 0 && !rebought) from = u + 1; else break;
-            }
-          } else if (u >= from && !rebought && h2 >= backPx) {
-            held = std::max(o2 > 0 ? o2 : backPx, backPx) * std::exp(hs), legStart = u, rebought = true;
-            if (l2 > 0 && l2 <= stopPx) {  // the buy-back's own day reached the stop too: which came first is unknown, so stopped again
-              const double px = stopPx * std::exp(-hs);
-              ret += std::log(px / held) - cost.roundTrip(i, held, px, false);
-              break;
-            }
-            in = true, from = u;  // from the next day its open counts too (a gap under the stop: sold at the open)
-          }
-        }
-        if (in) ret += std::log(c / held) - cost.roundTrip(i, held, c, xd > legStart);
-        tr.ret = ret;
+        tr.ret = std::log(c / entry) - cost.roundTrip(i, entry, c, xd > e0);
         return tr;
       };
       std::vector<double> G(D * D, 0.0), B(D * nTarget, 0.0), beta[nRidge];
@@ -300,7 +253,7 @@ int main(int argc, char** argv) {
           for (std::size_t g = 0; g < nTarget; ++g) {
             double v = 0;
             for (std::size_t r = 0; r < D; ++r) v += a[r] * beta[q][r * nTarget + g];
-            if (holdOn[g % nHold] && depthOn[g / nHold] && v > fcast[q]) fcast[q] = v, pick[q] = int(g);
+            if (holdOn[g % nHold] && v > fcast[q]) fcast[q] = v, pick[q] = int(g);
           }
         }
         std::size_t use = 0;
