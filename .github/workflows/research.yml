@@ -236,7 +236,7 @@ jobs:
               fillnet) export X_FILLNET=1 ;;
               fullspread) export X_FULLSPREAD=1 ;;  # every share buys and sells across half the spread (none uncross at one price)
               size) export X_SIZE=1 ;;  # each order's money by its calibrated expectation (meta-labeling's sizing)
-              mc|fills5) export X_TRADELOG=data/tl.csv ;;  # fills5: the log's fills replayed on 5-minute bars (the step below)
+              mc) export X_TRADELOG=data/tl.csv ;;
               maxd*) export X_MAXDEPTH="${tok#maxd}" ;;
               trend[0-9]*) export X_TREND="${tok#trend}" ;;  # Connors: only shares above their own <k>-day average close
               depthtable) export X_DEPTHTABLE=1 ;;  # every candidate at every depth: fills, a fill's and an order's return (a diagnostic)
@@ -269,15 +269,3 @@ jobs:
           # The next open's orders as the page shows them (share and limit from the last close; no prices).
           jq -r '"next open: " + ((.orders|length)|tostring) + " orders: " + ([.orders[] | "\(.ticker) \((.limit*1000|round)/10)%"] | join(", "))' data/r.json >> report.txt || true
           { echo "### $MARKET $V"; echo '```'; grep -E "a year|  orders:|before costs|next open|candidate trades|calibration|filled|verify|dip network|IBKR bars|^mc:|depth table" report.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: The backtest's fills on 5-minute bars (token fills5; counts and results only)
-        if: contains(matrix.variant, 'fills5')
-        env:
-          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: |
-          set -o pipefail
-          OV=()
-          case "+${{ matrix.variant }}+" in *+ibkr+*) [ -f "data/eoddata/ibkr/$MARKET/daily.csv" ] && OV=(--override "data/eoddata/ibkr/$MARKET/daily.csv");; esac
-          cmake --build build --target ofm_fills
-          { node tools/eoddata/fills_bars.mjs --log data/tl.csv --exchange "${EXCHANGES%%,*}" --out data/bars5.csv
-            ./build/ofm_fills --csv data/stocks.csv "${OV[@]}" --log data/tl.csv --bars data/bars5.csv; } | tee fills.txt
-          { echo "### $MARKET ${{ matrix.variant }}: fills on 5-minute bars"; echo '```'; cat fills.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
