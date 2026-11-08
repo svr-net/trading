@@ -2,7 +2,11 @@
 # Results only: returns and counts, no prices, keys or account numbers.
 name: Backtest vs IBKR
 on:
+  schedule:
+    - cron: '47 22 * * 1-5'  # every weekday after the last close (the paper measurement, day by day)
   workflow_dispatch:
+    inputs:
+      since: { description: 'Only the days from (YYYY-MM-DD; empty: every day)', default: '2026-11-09' }
 permissions:
   contents: read
 jobs:
@@ -18,4 +22,5 @@ jobs:
         env:
           BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
           BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+          SINCE: ${{ github.event_name == 'schedule' && '2026-11-09' || inputs.since }}
         run: node tools/ibkr/compare.mjs | tee -a "$GITHUB_STEP_SUMMARY"

@@ -3,12 +3,16 @@
 // own result for the day's orders (the orders file's check: filled or not, entry, exit, net return)
 // and IBKR's fills (the report), it compares them: how many orders filled in each, which agree, and
 // the gross return (exit over entry) of the trades both filled, plus the model's net.
-//   BRIDGE_URL=https://name:8765 BRIDGE_KEY=... node tools/ibkr/compare.mjs
+// Per order (the measure that decides): each placed order's result, an unfilled one 0, for the backtest
+// (net) and for IBKR (gross, before costs). SINCE=YYYY-MM-DD: only the days from then (the paper
+// measurement from its first day).
+//   BRIDGE_URL=https://name:8765 BRIDGE_KEY=... [SINCE=2026-11-09] node tools/ibkr/compare.mjs
 const base = (process.env.BRIDGE_URL || '').replace(/\/+$/, '');
 const key = process.env.BRIDGE_KEY || '';
 if (!base || !key) { console.log('BRIDGE_URL and BRIDGE_KEY needed'); process.exit(1); }
 const r = await fetch(`${base}/history`, { headers: { Origin: 'https://svr-net.github.io', 'X-Bridge-Key': key }, signal: AbortSignal.timeout(60000) });
-const days = (await r.json()).days || [];
+const since = process.env.SINCE || '';
+const days = ((await r.json()).days || []).filter((d) => !since || String(d.date) >= since);
 const sym = (t) => String(t || '').split(':').pop().replace('.', ' ').toUpperCase();
 const pct = (x) => (x == null || !Number.isFinite(x) ? '-' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(2)}%`);
 const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
@@ -18,7 +22,7 @@ for (const d of days.slice().reverse()) {
   if (!d.model || !d.trades) continue;
   const live = new Map(d.trades.map((t) => [sym(t.ticker), t]));
   const placed = new Map((d.orders || []).map((o) => [sym(o.ticker), o]));
-  const T = (tot[d.market] ||= { days: 0, orders: 0, mFill: 0, lFill: 0, both: 0, mOnly: 0, lOnly: 0, mGross: [], lGross: [], mNet: [], lAll: [] });
+  const T = (tot[d.market] ||= { days: 0, orders: 0, mFill: 0, lFill: 0, both: 0, mOnly: 0, lOnly: 0, mGross: [], lGross: [], mNet: [], lAll: [], mOrder: [], lOrder: [] });
   let both = 0, mOnly = 0, lOnly = 0;
   const mg = [], lg = [];
   for (const m of d.model) {
@@ -34,6 +38,8 @@ for (const d of days.slice().reverse()) {
     } else if (mf) mOnly += 1;
     else if (lf) lOnly += 1;
     if (lf && Number.isFinite(l.ret)) T.lAll.push(l.ret);
+    T.mOrder.push(mf && Number.isFinite(m.ret) ? m.ret : 0);  // per order: an unfilled order 0
+    if (!lf || Number.isFinite(l.ret)) T.lOrder.push(lf ? l.ret : 0);
     if (mf || lf) {  // each disagreement and each shared fill, as ratios only (no prices)
       const r = (a, b) => (a > 0 && b > 0 ? pct(a / b - 1) : '-');
       const lim = (placed.get(sym(m.ticker)) || {}).limit;
@@ -51,5 +57,6 @@ for (const [m, T] of Object.entries(tot)) {
     + `both ${T.both}, only backtest ${T.mOnly}, only IBKR ${T.lOnly}`);
   console.log(`${m}: trades both filled: gross backtest ${pct(mean(T.mGross))}, IBKR ${pct(mean(T.lGross))} (difference ${pct(mean(T.mGross) - mean(T.lGross))}); `
     + `backtest net ${pct(mean(T.mNet))}; every IBKR fill gross ${pct(mean(T.lAll))}`);
+  console.log(`${m}: per order (an unfilled order 0): backtest net ${pct(mean(T.mOrder))}, IBKR gross ${pct(mean(T.lOrder))} (${T.lOrder.length} orders)`);
 }
-if (!Object.keys(tot).length) console.log('no day with both the model\'s check and IBKR\'s report yet');
+if (!Object.keys(tot).length) console.log(`no day with both the model's check and IBKR's report yet${since ? ` since ${since}` : ''}`);
