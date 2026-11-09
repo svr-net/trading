@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
   std::string stampFree, venuesFile, costMarket, segmentsFile, overrideFile;
   double rebuyWeight = 0.35;  // how a day daily bars cannot settle counts in a buy-back (--rebuy-weight; measured by ofm_paths)
   bool fixedPricing = true;  // --pricing fixed (the default: IBKR's fixed commissions) or tiered  // --venues: each exchange's costs (see fee below)
+  bool netCosts = false;  // --net: the model and backtest charge the broker's costs (default: gross; the orders list each one's cost)
   double costKind = 0, capital = 5000, stamp = 0.005;  // --exit close: no stop-loss or take-profit, every trade sold at the close
   for (int k = 1; k + 1 < argc; ++k) {
     if (std::string(argv[k]) == "--csv") csv = argv[k + 1];
@@ -53,6 +54,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
+    if (std::string(argv[k]) == "--net") netCosts = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
     if (std::string(argv[k]) == "--costs") {
       costMarket = argv[k + 1];
@@ -191,6 +193,24 @@ int main(int argc, char** argv) {
     }
     std::printf("venues: %zu of %zu stocks priced by their exchange's line (%s)\n", hit, N, venuesFile.c_str());
   }
+  // The costs as a share of a trade's value, by a cost table's line f (as kernels/v2/levels.wgsl's costOf).
+  const auto costFrom = [](const double* f, double entry, double r) {
+    const double cap = f[1];
+    if (f[0] == 1) {
+      const double sell = cap * (1 + r);
+      return (std::max(f[3], f[2] * cap) + f[4] * cap + std::max(f[3], f[2] * sell) + f[4] * sell) / cap + f[5] + f[6] * (2 + r);
+    }
+    if (f[0] == 2) {
+      const double n = std::max(1.0, std::floor(cap / entry)), v = n * entry, sell = v * (1 + r);
+      const double cb = std::min(std::max(f[3], f[2] * n), 0.01 * v) + f[4] * n, cs = std::min(std::max(f[3], f[2] * n), 0.01 * sell) + f[4] * n;
+      return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
+    }
+    return 0.0;
+  };
+  // What the ranking, the gate, the calibration and the backtest charge: nothing, unless --net (kind 0).
+  std::vector<double> feeModel = fee;
+  if (!netCosts)
+    for (std::size_t i = 0; i < N; ++i) feeModel[i * 7] = 0.0;
   std::vector<double> bars(5 * T * N, 0.0), feat(T * N * K, 0.0), ic(T * F * 4, 0.0);
   const ofm::Panel* pn[5] = {&m.open, &m.high, &m.low, &m.close, &m.volume};
   for (std::size_t f = 0; f < 5; ++f)
@@ -640,20 +660,7 @@ int main(int argc, char** argv) {
       for (std::size_t r = 0; r < l.size(); ++r) liqRank[l[r].second] = double(r);
     };
     // A filled trade's costs as a share of its value (as kernels/v2/levels.wgsl's costOf), stock i's.
-    const auto costOf = [&](double entry, double r, std::size_t i) {
-      const double* f = &fee[i * 7];
-      const double cap = f[1];
-      if (f[0] == 1) {
-        const double sell = cap * (1 + r);
-        return (std::max(f[3], f[2] * cap) + f[4] * cap + std::max(f[3], f[2] * sell) + f[4] * sell) / cap + f[5] + f[6] * (2 + r);
-      }
-      if (f[0] == 2) {
-        const double n = std::max(1.0, std::floor(cap / entry)), v = n * entry, sell = v * (1 + r);
-        const double cb = std::min(std::max(f[3], f[2] * n), 0.01 * v) + f[4] * n, cs = std::min(std::max(f[3], f[2] * n), 0.01 * sell) + f[4] * n;
-        return (cb + cs + 0.0000278 * sell + std::min(0.000166 * n, 8.3)) / v;
-      }
-      return 0.0;
-    };
+    const auto costOf = [&](double entry, double r, std::size_t i) { return costFrom(&feeModel[i * 7], entry, r); };
     // The ranking's score: the expected open-to-close net of the share's own costs (at its last close;
     // the commissions per share make cheap shares dearer in the US, the stamp duty non-AIM shares in
     // the UK), in units of its volatility to the power beta - 1 (beta 1: the expected net return,
@@ -674,7 +681,7 @@ int main(int argc, char** argv) {
     std::size_t verifyN = 0, verifyBad = 0;
     const auto rankScore = [&](std::size_t t, std::size_t i, double b) {
       const std::size_t src = (t - lag) * N + i;
-      const double ls = ft[src * Km + 20], c = netRank ? (fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0) : 0.0;
+      const double ls = ft[src * Km + 20], c = netRank ? (feeModel[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0) : 0.0;
       return (pred[src * 4] * std::exp(ls) - c) * std::exp((b - 1) * ls);
     };
     // The expected return, calibrated walk-forward without settings: the model's raw expectation (its
@@ -712,7 +719,7 @@ int main(int argc, char** argv) {
     Iso calPick, calFill;
     const auto rawExpected = [&](std::size_t t, std::size_t i) {
       const std::size_t src = (t - lag) * N + i;
-      const double c = (fee[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0);
+      const double c = (feeModel[i * 7] > 0 ? costOf(m.close(t, i), 0.0, i) : 0.0) + (quoted[i] ? spread[t * N + i] : 0.0);
       return std::expm1(pred[src * 4] * std::exp(ft[src * Km + 20])) - c;
     };
     const auto calibrated = [&](double e, bool filled = false) { return filled ? calFill.at(e) : calPick.at(e); };
@@ -1287,7 +1294,7 @@ int main(int argc, char** argv) {
               const bool ok = tails(t, i);
               st.insert(st.end(), {m.open(t + 1, i), m.high(t + 1, i), m.low(t + 1, i), m.close(t + 1, i), m.close(t, i), std::exp(ft[(t * N + i) * Km + 20]),
                                    std::exp(0.5 * spread[t * N + i]), std::isfinite(sar[t * N + i]) ? sar[t * N + i] : 0.0, ok ? (fullSpread || quoted[i] ? 3.0 : 1.0) : 0.0});
-              st.insert(st.end(), &fee[i * 7], &fee[i * 7] + 7);
+              st.insert(st.end(), &feeModel[i * 7], &feeModel[i * 7] + 7);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? quantile(falls[i], axis(4, double(q))) : 0.0);
               for (std::size_t q = 0; q < nP; ++q) st.push_back(ok ? (safetyOnly ? fadeTake(t, i, axis(5, double(q))) : quantile(rises[i], 1 - axis(5, double(q)))) : 0.0);  // 50: no take-profit
               st.insert(st.end(), rbvals.begin(), rbvals.end());  // the buy-back's fractions, then how an unclear day counts
@@ -1451,7 +1458,7 @@ int main(int argc, char** argv) {
           days += 1, fills += trade(u, i, dq, fx[4], fx[5], fx[6], fx[7]).filled > 0;
         }
         lastRun.picks.push_back({i, calibrated(rawExpected(t, i), true), fs > 0 ? fs - 1 : kNaN, fk < 1e300 ? fk - 1 : kNaN, limit - 1, fs > 0 ? fx[7] : 0.0,
-                                 fee[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0,
+                                 feeModel[i * 7] > 0 ? costOf(m.close(t, i) * std::min(limit, 1.0), 0.0, i) : 0.0,
                                  fillNet ? fnProb(t, i, std::size_t(std::find(dvals.begin(), dvals.end(), dq) - dvals.begin())) : days > 0 ? fills / days : kNaN});  // calibrated: the gain from the buy price if it buys, net of costs
         lastRun.picks.back().order = lastRun.picks.back().weighted(calibrated(rawExpected(t, i)));
       }
@@ -1512,14 +1519,16 @@ int main(int argc, char** argv) {
     // slots: the trades the money pays for; when there are more orders (X_FILLN), the bridge holds the
     // ones after the first slots out of the opening auction and cancels the rest once slots have filled.
     o << "{\"asOf\":\"" << m.dates[T - 1] << "\",\"slots\":" << nPick << ",\"orders\":[";
-    char b[512];
+    char b[768];
     for (std::size_t q = 0; q < lastRun.picks.size(); ++q) {
       const auto& pk = lastRun.picks[q];
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
+      // the broker's round-trip costs on this order if it fills at its entry and sells there (a share of its value, and in the market's currency)
+      const double cap = fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, cost = costFrom(&fee[pk.stock * 7], ref, 0.0);
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"ifFilled\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g}", q ? "," : "",
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"ifFilled\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g,\"cost\":%.6g,\"costAmount\":%.6g}", q ? "," : "",
                     m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.order, pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost,
-                    spread[(T - 1) * N + pk.stock]);
+                    spread[(T - 1) * N + pk.stock], cost, cost * cap);
       o << b;
     }
     o << "],\"candidates\":[";
