@@ -54,7 +54,6 @@ int main(int argc, char** argv) {
     if (std::string(argv[k]) == "--json") jsonOut = argv[k + 1];
     if (std::string(argv[k]) == "--orders") ordersOut = argv[k + 1];
     if (std::string(argv[k]) == "--scan") scanOnly = true;
-    if (std::string(argv[k]) == "--net") netCosts = true;
     if (std::string(argv[k]) == "--exit") closeOnly = std::string(argv[k + 1]) == "close", safetyOnly = std::string(argv[k + 1]) == "safety";
     if (std::string(argv[k]) == "--costs") {
       costMarket = argv[k + 1];
@@ -71,6 +70,7 @@ int main(int argc, char** argv) {
   }
   for (int k = 1; k < argc; ++k)
     if (std::string(argv[k]) == "--scan") scanOnly = true;
+    else if (std::string(argv[k]) == "--net") netCosts = true;
   ofm::Market mk = ofm::parseMarketCsv(readFile(csv));
   // --override (IBKR's own daily bars, the same format): where it has a share's day, its open, high,
   // low and close replace the store's (the volume stays: the pool's ranks are the store's). Reported:
@@ -1525,10 +1525,11 @@ int main(int argc, char** argv) {
       const double c = m.close(T - 1, pk.stock), lim = c * (1 + pk.limit), ref = std::min(lim, c);  // the levels from the expected entry
       // the broker's round-trip costs on this order if it fills at its entry and sells there (a share of its value, and in the market's currency)
       const double cap = fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, cost = costFrom(&fee[pk.stock * 7], ref, 0.0);
+      const double tradeValue = fee[pk.stock * 7] == 2 ? std::max(1.0, std::floor(cap / ref)) * ref : cap;  // the value costFrom divides by
       auto px = [&](double x) { return std::isfinite(x) ? std::to_string(ref * (1 + x)) : std::string("null"); };
       std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"expected\":%.6g,\"ifFilled\":%.6g,\"capital\":%.6g,\"rebuy\":%.4g,\"rebuyCost\":%.6g,\"spread\":%.6g,\"cost\":%.6g,\"costAmount\":%.6g}", q ? "," : "",
                     m.tickers[pk.stock].c_str(), c, lim, px(pk.stop).c_str(), px(pk.take).c_str(), pk.order, pk.expected, fee[pk.stock * 7 + 1] > 0 ? fee[pk.stock * 7 + 1] : capital, pk.rebuy, pk.rebuyCost,
-                    spread[(T - 1) * N + pk.stock], cost, cost * cap);
+                    spread[(T - 1) * N + pk.stock], cost, cost * tradeValue);
       o << b;
     }
     o << "],\"candidates\":[";
@@ -1563,7 +1564,7 @@ int main(int argc, char** argv) {
     std::ofstream o(jsonOut);
     char b[256];
     o << "{\"model\":\"v2\",\"asOf\":\"" << m.dates[T - 1] << "\",\"stocks\":" << N << ",\"lag\":" << lag << ",\"top\":" << topN;
-    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << costMarket << "\",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
+    if (costKind > 0) o << ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"" << costMarket << "\",\"net\":" << (netCosts ? "true" : "false") << ",\"capital\":" << capital << ",\"stamp\":" << (costKind == 1 ? stamp : 0.0)
                       << ",\"stampFree\":" << std::count(stampOf.begin(), stampOf.end(), 0.0) * (costKind == 1) << ",\"venues\":" << (venuesFile.empty() ? "false" : "true") << "}";
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g,"
                   "\"orders\":%.0f,\"trades\":%.0f,\"avgTrade\":%.6g,\"winRate\":%.6g}", R.dates.front().c_str(), R.dates.back().c_str(), ms[0], ms[1], ms[2],

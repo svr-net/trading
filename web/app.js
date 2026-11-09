@@ -29,6 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
+  if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
@@ -61,7 +62,7 @@ function render(r, source) {
   $('summary').innerHTML = isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; anything bought is sold by the close.`
     : (r.backtest?.sharpe ?? 0) < 1
-      ? `<strong>Research only: not traded.</strong> After costs the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
+      ? `<strong>Research only: not traded.</strong> ${c?.net === false ? 'Before costs' : 'After costs'} the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
       : `<strong>Not traded automatically:</strong> the bridge does not trade this market (AUTO_MARKETS)${n ? '; the orders below are what it would place' : ''}.`;
   const buys = r.orders.reduce((a, o) => a + (o.fill ?? 0), 0);  // the orders' chances added up: the buys to expect
   $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`
@@ -86,7 +87,7 @@ function render(r, source) {
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num'] : signed(o.ifFilled, 2));
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
-    }) : [{ gap: 'No orders: none is expected to gain after costs, so the money stays in cash.' }]);
+    }) : [{ gap: `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
   const B = r.backtest;
   // The same trades in the expected gain's terms: per trade that bought, from its buy price.
   const perTrade = B.trades ? `
