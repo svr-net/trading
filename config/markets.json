@@ -3,12 +3,19 @@
   "markets": {
     "UK": {
       "live": {
-        "name": "regime",
+        "name": "regime-trend50",
         "env": {
-          "X_REGIME": "1"
+          "X_REGIME": "1",
+          "X_TREND": "50"
         }
       },
       "shadows": [
+        {
+          "name": "regime",
+          "env": {
+            "X_REGIME": "1"
+          }
+        },
         {
           "name": "aim-regime",
           "env": {
@@ -123,9 +130,6 @@
       "budget": {
         "total": 10000,
         "slots": [
-          2,
-          3,
-          5,
           10
         ]
       }
