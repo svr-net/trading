@@ -342,6 +342,11 @@ def place_and_watch(market):
     as_of = json.load(open(path)).get('asOf', '')
     if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
         return False, f'orders from {as_of or "?"} are too old: not placed'
+    book = json.load(open(path))
+    if book.get('book') == 'hold':  # a multi-day book (apps/ofm_uk --hold): the hold book places it (hold-place), nothing within the day
+        LIVE_HOLD[market] = (datetime.now(ZoneInfo(ZONE[market])).date().isoformat(), True)
+        mark_done(market, 'place')
+        return True, f"a multi-day book ({len(book.get('orders', []))} orders, held up to {book.get('days', 5)} days): placed by hold-place"
     code, out = run_submit(['--market', market, '--orders', path, '--capital', str(CAPITAL)], timeout=1800)
     lines = out.splitlines()
     placed_n = sum(1 for x in lines if ': buy ' in x)
@@ -595,7 +600,7 @@ def diag():
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     for m in AUTO:
-        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report') + (('hold-place', 'hold-close') if m in HOLD_BOOKS else ()))
+        add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report') + (('hold-place', 'hold-close') if hold_book(m) else ()))
             + f"; running: {', '.join(sorted(a for (mk, a) in RUNNING if mk == m) + (['rebuy'] if m in REBUY_RUNNING else [])) or 'nothing'}")
     g = GATEWAY
     add('IB Gateway watchdog', g['ok'], ('not checked yet' if g['ok'] is None else 'API answers' if g['ok'] else 'API does not answer')
@@ -799,15 +804,43 @@ def hold_symbols(market):
         return set()
 
 
+LIVE_HOLD = {}  # market -> (day, whether its live orders are a multi-day book)
+
+
+def live_is_hold(market):
+    """Whether the market's live orders (orders/<MARKET>.json) are a multi-day book ("book": "hold",
+    apps/ofm_uk --hold): then the hold book places them (submit.py --holds), not the day's placing.
+    Read once a day (a failed read is tried again later)."""
+    day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
+    c = LIVE_HOLD.get(market)
+    if c and c[0] == day:
+        return c[1]
+    try:
+        v = json.load(open(fetch_orders(market))).get('book') == 'hold'
+    except Exception:  # noqa: BLE001
+        return False
+    LIVE_HOLD[market] = (day, v)
+    return v
+
+
+def hold_book(market):
+    """Whether the market runs a multi-day book: its live orders (a hold book), or a shadow's (HOLD_BOOKS)."""
+    return live_is_hold(market) or market in HOLD_BOOKS
+
+
 def place_holds(market):
-    """The multi-day book's orders for the day (after the day's orders): submit.py --holds place."""
-    name = HOLD_BOOKS[market]
-    body = store_get(f'shadow/{market}-{name}.json')
-    if not body:
-        return False, f'no shadow/{market}-{name}.json in the store yet'
-    path = os.path.join(CACHE, f'{market}-{name}.json')
-    with open(path, 'wb') as f:
-        f.write(body)
+    """The multi-day book's orders for the day (after the day's orders): submit.py --holds place. The
+    live orders when they are a hold book, else the shadow's named in HOLD_BOOKS."""
+    if live_is_hold(market):
+        path = fetch_orders(market)
+    else:
+        name = HOLD_BOOKS[market]
+        body = store_get(f'shadow/{market}-{name}.json')
+        if not body:
+            return False, f'no shadow/{market}-{name}.json in the store yet'
+        path = os.path.join(CACHE, f'{market}-{name}.json')
+        with open(path, 'wb') as f:
+            f.write(body)
     code, out = run_submit(['--market', market, '--holds', 'place', '--orders', path, '--hold-state', hold_state(market)], timeout=900)
     return code == 0, out.splitlines()[-1] if out else ''
 
@@ -892,7 +925,7 @@ def scheduler():
                 settled = is_done(m, 'leftovers') or (tried and (m, 'leftovers') not in RUNNING)  # the placing waits for it to finish
                 if up and settled and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
                     job(m, 'place', place_and_watch, done_on_ok=False)  # place_and_watch marks it and starts the watch
-                if up and is_done(m, 'place') and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
+                if up and is_done(m, 'place') and not live_is_hold(m) and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
                         and (m, 'replace') not in RUNNING and may_try(m, 'rebuy', 5):
                     job(m, 'rebuy', watch_rebuy, done_on_ok=False)
                 # A newer orders file during the session (the scan run again): placed too, without anyone pressing anything.
@@ -908,10 +941,10 @@ def scheduler():
                     job(m, 'auction', record_auction)
                 if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
                     job(m, 'close', close_market)
-                if m in HOLD_BOOKS and up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'hold-place') \
+                if hold_book(m) and up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'hold-place') \
                         and (m, 'place') not in RUNNING and may_try(m, 'hold-place', 5, 3):
                     job(m, 'hold-place', place_holds)
-                if m in HOLD_BOOKS and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and may_try(m, 'hold-close', 2, 3):
+                if hold_book(m) and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and may_try(m, 'hold-close', 2, 3):
                     job(m, 'hold-close', close_holds)
                 if up and at(now, close, 30) <= now < at(now, close, 240) and not is_done(m, 'flat') and may_try(m, 'flat', 10):
                     job(m, 'flat', flat_check, done_on_ok=False)

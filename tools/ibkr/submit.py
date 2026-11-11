@@ -449,9 +449,12 @@ def holds(args):
              a limit buy at its limit, or bought in the opening auction (open: true), for --capital (or
              the order's own amount)
       close  today's fills become positions (their entry price and day); today's unfilled buys are
-             cancelled; each position is offered in the closing auction: at its fifth close sold at any
-             price (MOC), before that only above its entry price (LOC at the entry and a tick: sold at
-             the first close above the entry, as the backtest)."""
+             cancelled; each position is offered in the closing auction: at its last close (the order's
+             days, else the fifth) sold at any price (MOC), before that only at or above its exit level
+             (LOC at the entry times 1 + exitAbove, at least the entry and a tick: sold at the first close
+             that reaches it, as the backtest).
+    An order with "entry": "open" (apps/ofm_uk --hold) is a limit good only through the opening auction
+    (GTD a few minutes after the open; a day order if IBKR refuses that), so it never buys a dip later."""
     from ib_async import IB, LimitOrder, MarketOrder
     path = args.hold_state
     st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
@@ -488,7 +491,19 @@ def holds(args):
             if qty < 1:
                 lines.append(f'{sym}: the amount buys no share')
                 continue
-            if o.get('open') or not o.get('limit'):
+            if o.get('entry') == 'open' and o.get('limit') and o.get('close'):  # the auction only, at most its limit
+                ibkr_close = reference_close(ib, c)
+                r = ibkr_close / o['close'] if ibkr_close else (None if args.market == 'UK' else 1.0)
+                scale = next((x for x in (1.0, 0.01, 100.0) if r and abs(math.log(r / x)) < 0.05), None)
+                c2, ticks = exit_contract(ib, c)
+                if scale is None or c2 is None:
+                    lines.append(f'{sym}: no IBKR price to check the price scale against; skipped')
+                    continue
+                lim = round_to(o['limit'] * scale, tick_at(ticks[0], ticks[1], o['limit'] * scale), 'down')
+                order = LimitOrder('BUY', qty, lim, orderRef=ref, tif='GTD')
+                order.goodTillDate = auction_end_utc(args.market)
+                how = f'in the opening auction, at most {lim:g}'
+            elif o.get('open') or not o.get('limit'):
                 order, how = MarketOrder('BUY', qty, orderRef=ref, tif='DAY'), 'in the opening auction'
             else:  # the limit in IBKR's price scale (LSE: pence or pounds), as the day's orders are placed
                 ibkr_close = reference_close(ib, c)
@@ -501,7 +516,11 @@ def holds(args):
                 lim = round_to(o['limit'] * scale, tick_at(ticks[0], ticks[1], o['limit'] * scale), 'down')
                 order, how = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY'), f'at {lim:g}'
             fate, msgs = order_fate(ib, ib.placeOrder(c, order), errors)
-            st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up')}
+            if fate == 'dead' and order.tif == 'GTD' and any('GTD' in m or 'time in force' in m.lower() or 'TIF' in m for m in msgs):
+                order = LimitOrder('BUY', qty, order.lmtPrice, orderRef=ref, tif='DAY')  # GTD refused: a day order (the close cancels it if unfilled)
+                fate, msgs = order_fate(ib, ib.placeOrder(c, order), errors)
+                how += ' (a day order: IBKR refused the good-till time)'
+            st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up'), 'exitAbove': float(o.get('exitAbove') or 0), 'days': int(o.get('days') or 5)}
             free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     else:
@@ -515,10 +534,13 @@ def holds(args):
         for t in ib.reqAllOpenOrders():
             if t.order.orderRef == ref and t.order.action == 'BUY' and t.orderStatus.status not in DEAD:
                 ib.cancelOrder(t.order)
+        pend = st.get('pending', {})  # the day's orders' exit plans (exitAbove, days), for the positions they opened
         for sym, (q, v, c) in got.items():
             if st['positions'].get(sym, {}).get('since') == today:  # recorded by an earlier run today
                 continue
-            st['positions'][sym] = {'conId': c.conId, 'qty': q, 'entry': v / q, 'since': today, 'closes': 0}
+            plan = pend.get(sym, {})
+            st['positions'][sym] = {'conId': c.conId, 'qty': q, 'entry': v / q, 'since': today, 'closes': 0,
+                                    'exitAbove': float(plan.get('exitAbove') or 0), 'days': int(plan.get('days') or 5)}
             lines.append(f'{sym}: bought {q:g} at {v / q:g}')
         st['pending'] = {}
         for sym, pos in st['positions'].items():
@@ -535,16 +557,18 @@ def holds(args):
             if c is None:
                 lines.append(f'{sym}: not found at IBKR, NOT OFFERED')
                 continue
-            if pos['closes'] >= 5:
+            last = int(pos.get('days') or 5)
+            if pos['closes'] >= last:
                 o = MarketOrder('SELL', qty, orderRef=ref + '-close', tif='DAY')
                 o.orderType = 'MOC'
-                how = 'at the close (its fifth)'
+                how = f'at the close (its last, {last})'
             else:
                 tick = tick_at(ticks[0], ticks[1], pos['entry'])
-                lim = round_to(pos['entry'] + tick, tick, 'up')
+                level = pos['entry'] * (1 + float(pos.get('exitAbove') or 0))
+                lim = max(round_to(pos['entry'] + tick, tick, 'up'), round_to(level, tick_at(ticks[0], ticks[1], level), 'up'))
                 o = LimitOrder('SELL', qty, lim, orderRef=ref + '-close', tif='DAY')
                 o.orderType = 'LOC'
-                how = f"in the closing auction only above its entry (LOC {lim:g}, close {pos['closes']} of 5)"
+                how = f"in the closing auction only at or above {lim:g} (LOC, close {pos['closes']} of {last})"
             fate, msgs = order_fate(ib, ib.placeOrder(c, o), errors)
             lines.append(f"{sym}: sell {qty:g} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     ib.sleep(2)

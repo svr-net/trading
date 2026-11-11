@@ -7,8 +7,8 @@
         "app": "uk",
         "env": {},
         "args": [
-          "--bars",
-          "data/intraday-uk.csv"
+          "--hold",
+          "5"
         ]
       },
       "shadows": [

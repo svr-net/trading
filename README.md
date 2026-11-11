@@ -21,6 +21,16 @@ order is one a person would place, and whose backtest trades exactly those order
   placed (the last 500 sessions' top fifth of forecasts, bought at the open and sold at the day's stop,
   take-profit or close: a triple barrier, López de Prado 2018), the slope shrunk by its t statistic.
   No record, or no skill in it, means no orders.
+- **Held up to 5 days, as few as it needs (the live setting, `--hold 5`)**: each share is bought in the
+  opening auction and sold in the closing auction of the first day it closes at or above its exit level
+  (a learnt 0 to 1.5 daily volatilities above the price paid: the level with the best return per day
+  held over the last 250 sessions, so short holds win unless a longer one clearly pays), else at the
+  close of day 5. The 0.5% stamp duty is paid once a trade, not once a day. The expected return is
+  calibrated on the whole trade (before costs); each final order's costs come off it. The order file is a
+  multi-day book (`"book": "hold"`): the bridge places it with its hold book (`submit.py --holds`: the buy
+  good only through the opening auction, each close a LOC sale at the exit level, a MOC sale on the last
+  day), never within the day, and the evening's close and leftover checks leave its positions alone.
+  Without `--hold`, the same-day trades below.
 - **Bought at the open, never on a dip**: a limit at the last close plus 0.5 of the share's daily
   volatility (it does not chase a big gap up), good only until 2 minutes after the open (IBKR's GTD;
   if refused, a day order the watch cancels then), so it buys in the opening auction or not at all.
