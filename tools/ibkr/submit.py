@@ -1393,6 +1393,12 @@ def daily_bars(args):
         sys.exit('--out is required with --bars')
     book = json.load(open(args.orders))
     pool = book.get('pool') or [c['ticker'] for c in book.get('candidates', book['orders'])]
+    if args.pause:  # a step holds the gateway already: wait before even connecting
+        while os.path.exists(args.pause):
+            open(args.pause + '.ack', 'w').close()
+            time.sleep(2)
+        if os.path.exists(args.pause + '.ack'):
+            os.remove(args.pause + '.ack')
     ib = IB()
     connect(ib, args, args.client_id + 2)
     last_error = {}
