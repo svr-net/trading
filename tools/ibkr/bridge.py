@@ -169,7 +169,57 @@ def record_check(market, path):
     open(mark, 'w').close()
 
 
+# A daily-bars fetch (hundreds of historical-data requests, an hour or more) slowed the gateway's other
+# answers past their time limit: on 11 Nov the US report (21:10 UTC) timed out during the EU's fetch. So
+# every other step's run pauses the fetch first: the bridge writes BARS_PAUSE, the fetch (submit.py --bars
+# --pause) stops between two shares and answers with BARS_PAUSE.ack, and the step runs on a quiet gateway;
+# the fetch goes on when no step needs the gateway. The all-day watches (--rebuy, --paths) do not pause it.
+BARS_PAUSE = os.path.join(CACHE, 'bars.pause')
+QUIET = {'n': 0}
+QUIET_LOCK = threading.Lock()
+LONG_RUNS = ('--bars', '--rebuy', '--paths')
+
+
+def bars_quiet(wait=150):
+    """Pauses a running bars fetch (one more step needs the gateway) and waits, at most `wait` seconds,
+    for it to confirm it stopped between shares (its own request then done). True when quiet."""
+    with QUIET_LOCK:
+        QUIET['n'] += 1
+        os.makedirs(CACHE, exist_ok=True)
+        open(BARS_PAUSE, 'w').close()
+    if not BARS_RUNNING:
+        return True
+    for _ in range(wait):
+        if os.path.exists(BARS_PAUSE + '.ack'):
+            return True
+        time.sleep(1)
+    sys.stderr.write('bridge: the bars fetch did not confirm its pause in time; the step runs anyway\n')
+    return False
+
+
+def bars_resume():
+    """One step less needs the gateway: with none left, the bars fetch goes on."""
+    with QUIET_LOCK:
+        QUIET['n'] = max(0, QUIET['n'] - 1)
+        if QUIET['n'] == 0:
+            for p in (BARS_PAUSE, BARS_PAUSE + '.ack'):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
 def run_submit(args, timeout=300):
+    if not any(a in args for a in LONG_RUNS):  # a step: the bars fetch waits for it
+        bars_quiet()
+        try:
+            return run_submit_now(args, timeout)
+        finally:
+            bars_resume()
+    return run_submit_now(args, timeout)
+
+
+def run_submit_now(args, timeout=300):
     p = subprocess.run([sys.executable, os.path.join(HERE, 'submit.py'), *args, '--host', IB_HOST, '--port', str(IB_PORT)],
                        capture_output=True, text=True, timeout=timeout)
     # The summaries read the last line: the script's own result (its standard output), success or
@@ -459,7 +509,12 @@ def fetch_bars(market, daily=False):
                     f.write(kept)
         have = os.path.exists(out_file) and os.path.getsize(out_file) > 100
         target = out_file + '.new'
-        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', target,
+        with QUIET_LOCK:  # a pause no step holds (one left by a restart) would hold the fetch for good
+            if QUIET['n'] == 0:
+                for p in (BARS_PAUSE, BARS_PAUSE + '.ack'):
+                    if os.path.exists(p):
+                        os.remove(p)
+        code, out = run_submit(['--market', market, '--orders', fetch_orders(market), '--bars', '--out', target, '--pause', BARS_PAUSE,
                                 *(['--duration', '1 M'] if daily and have else [])], timeout=6 * 3600)
         summary = out.splitlines()[-1] if out else ''
         if code != 0:

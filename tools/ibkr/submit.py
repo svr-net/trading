@@ -631,6 +631,8 @@ def main():
     a.add_argument('--auction', action='store_true', help="record the candidates' opening auction (places nothing)")
     a.add_argument('--bars', action='store_true', help="fetch the pool's daily bars from IBKR into --out")
     a.add_argument('--out', help='the CSV file for --bars or --paths')
+    a.add_argument('--pause', help="with --bars: while this file exists the fetch waits between shares (the bridge's other steps need the gateway), "
+                   "and says so with the file .ack")
     a.add_argument('--rebuy', action='store_true', help="watch the day's stops and place their buy-backs")
     a.add_argument('--until', help='HH:MM, the exchange clock: --rebuy stops watching then')
     a.add_argument('--paths', action='store_true', help="record the candidates' prices through the day (places nothing)")
@@ -1411,7 +1413,19 @@ def daily_bars(args):
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['date', 'ticker', 'open', 'high', 'low', 'close', 'volume'])
+        paused_for = 0.0
         for k, t in enumerate(pool):
+            if args.pause and os.path.exists(args.pause):  # another step needs the gateway: wait, quiet, between two shares
+                f.flush()
+                t0 = time.monotonic()
+                open(args.pause + '.ack', 'w').close()
+                while os.path.exists(args.pause):
+                    ib.sleep(2)
+                try:
+                    os.remove(args.pause + '.ack')
+                except OSError:
+                    pass
+                paused_for += time.monotonic() - t0
             start = time.monotonic()
             contract = contract_of(t, args.market)
             bars = []
@@ -1442,6 +1456,7 @@ def daily_bars(args):
                 time.sleep(max(0.0, 10.5 - (time.monotonic() - start)))
     ib.disconnect()
     print(f'{args.market} bars: {got} shares from IBKR ({via_smart} through SMART), {missing} without bars'
+          + (f'; paused {paused_for / 60:.0f} minutes for the bridge\'s other steps' if paused_for >= 30 else '')
           + (': ' + '; '.join(f'{n} {k}' for k, n in why.most_common(4)) if why else ''))
 
 
