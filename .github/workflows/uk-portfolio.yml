@@ -56,7 +56,7 @@ jobs:
       # the data downloads; the model step waits for them, and nothing is published if they fail.
       - name: Build the model and run its checks (in the background)
         run: |
-          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_hold ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
+          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_hold ofm_uk ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research && sh tools/check/uk_leak.sh build/ofm_uk; echo $? > build.rc' > build.log 2>&1 &
       # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
       # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
@@ -170,6 +170,10 @@ jobs:
           # UK: which shares trade through the opening and closing auctions (the exchange's monthly
           # instrument list; the committed one if that fails): the others pay a half-spread each way.
           if [ "$MARKET" = UK ]; then node tools/eoddata/lse_segments.mjs tools/eoddata/lse_segments.csv || true; STAMP+=(--segments tools/eoddata/lse_segments.csv); fi
+          # UK: the 5-minute paths the UK model replays its stops and take-profits on (fixed, trailing, break-even;
+          # apps/ofm_uk --bars, in markets.json): the store's LSE bars and the bridge's recordings of each day's
+          # candidates (paths/UK); none: the model uses the daily bars, the worse of their two orders.
+          if [ "$MARKET" = UK ]; then node tools/eoddata/intraday_export.mjs --exchanges LSE --paths UK --out data/intraday-uk.csv || echo 'date,ticker,time,high,low,close,volume' > data/intraday-uk.csv; fi
           # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
           # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
@@ -191,7 +195,7 @@ jobs:
           # beside the live one's on the page. Every run checks the kernel's trades against the trade
           # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
           python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
-          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next" report/strategies.log || true  # each strategy's headline in the log
+          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next|^uk: the account|^uk: next|^uk:   [A-Z]" report/strategies.log || true  # each strategy's headline in the log
           for f in report/shadow-*.txt; do
             if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done

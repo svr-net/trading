@@ -11,7 +11,9 @@ data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is bui
 first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
 tools/eoddata/aim.txt); one with "app": "single" is the single-share model (apps/ofm_single: every
 share learnt and backtested on its own bars only), given the same arguments; one with "app": "hold" the
-multi-day single-share model (apps/ofm_hold); "args" (a list) are added after the model's arguments
+multi-day single-share model (apps/ofm_hold); one with "app": "uk" the UK model (apps/ofm_uk: orders
+sized to each share's liquidity, made only when its out-of-sample record clears the costs; it may be
+the UK's live strategy); "args" (a list) are added after the model's arguments
 (a later one wins: e.g. ["--holds", "up", "--pricing", "tiered", "--capital", "1000"]).
 
 The budget (a market's "budget": {"total": T, "slots": [2, 3, 5, 10]}): the live strategy runs once for
@@ -56,10 +58,12 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: a bad ref {s['ref']!r}")
         if s.get('only') not in (None, 'aim'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown share filter {s['only']!r}")
-        if s.get('app') not in (None, 'single', 'hold'):
+        if s.get('app') not in (None, 'single', 'hold', 'uk'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
-        if s.get('app') and s['role'] == 'live':
-            sys.exit(f"strategies: {market} {s['name']}: the single-share model runs as a shadow only (the bridge places the research model's orders)")
+        if s.get('app') in ('single', 'hold') and s['role'] == 'live':
+            sys.exit(f"strategies: {market} {s['name']}: the single-share models run as shadows only (the bridge places the research model's or the UK model's orders)")
+        if s.get('app') == 'uk' and market != 'UK':
+            sys.exit(f"strategies: {market} {s['name']}: the UK model (apps/ofm_uk) is for the UK only")
         bad_args = [x for x in s.get('args', []) if not isinstance(x, str) or not re.match(r'^[A-Za-z0-9_.,:/=-]{1,64}$', x)]
         if bad_args or not isinstance(s.get('args', []), list):
             sys.exit(f"strategies: {market} {s['name']}: bad args {bad_args or s.get('args')!r}")
@@ -70,7 +74,7 @@ def strategies(config, market):
 
 def binary(ref, app=None):
     """The model's binary: this checkout's, or one built at ref."""
-    if app in ('single', 'hold'):
+    if app in ('single', 'hold', 'uk'):
         return f'./build/ofm_{app}'
     if not ref:
         return './build/ofm_research'
@@ -350,7 +354,7 @@ def main():
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
-                cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m, total / k, k), '--json', f'data/budget/report-{k}.json',
+                cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m + list(s.get('args', [])), total / k, k), '--json', f'data/budget/report-{k}.json',
                        '--orders', f'data/budget/orders-{k}.json']
                 pending_variants.append((k, cmd, env))
             continue
@@ -446,8 +450,8 @@ def main():
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
         book = json.load(open(f'data/budget/orders-{nxt}.json'))  # each order's amount: the market's share over the trades
-        for o in book.get('orders', []):
-            o['capital'] = total / nxt
+        for o in book.get('orders', []):  # never more than the model's own cap (apps/ofm_uk: the share's liquidity)
+            o['capital'] = min(total / nxt, float(o.get('maxCapital') or float('inf')))
         if total <= 0:
             book['orders'] = []
         book['budget'] = {'total': total, 'trades': nxt, 'amount': total / nxt, 'share': share}
@@ -474,7 +478,7 @@ def main():
     for s, live, stem, p, log in jobs:
         code = p.wait()
         log.close()
-        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + ({'single': ' (single-share model)', 'hold': ' (multi-day single-share model)'}.get(s.get('app'), '')) + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + ({'single': ' (single-share model)', 'hold': ' (multi-day single-share model)', 'uk': ' (UK model)'}.get(s.get('app'), '')) + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
         sys.stdout.write(open(f'report/{stem}.txt').read())
         if code:
             if live:
