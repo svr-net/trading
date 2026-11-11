@@ -80,7 +80,7 @@ namespace {
 using swing::kNaN;
 
 struct Opt {
-  std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv;
+  std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv, venues;
   double capital = 5000, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
   std::size_t slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
@@ -128,6 +128,7 @@ struct Fill {
 
 int main(int argc, char** argv) {
   Opt o;
+  bool minPriceSet = false;
   if (const char* e = std::getenv("X_NPICK")) o.slots = std::max<std::size_t>(1, std::size_t(std::atol(e)));
   for (int k = 1; k < argc; ++k) {  // unknown arguments (the research model's) are ignored
     const std::string a = argv[k];
@@ -139,6 +140,7 @@ int main(int argc, char** argv) {
     else if (a == "--slots") o.slots = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
     else if (a == "--top") o.top = std::size_t(std::atol(argv[++k]));
     else if (a == "--stamp-free") o.stampFree = argv[++k];
+    else if (a == "--venues") o.venues = argv[++k];
     else if (a == "--segments") o.segments = argv[++k];
     else if (a == "--override") o.overrideCsv = argv[++k];
     else if (a == "--pricing") o.tiered = std::string(argv[++k]) == "tiered";
@@ -152,13 +154,13 @@ int main(int argc, char** argv) {
     else if (a == "--min-order") o.minOrder = std::atof(argv[++k]);
     else if (a == "--hurdle") o.hurdle = std::atof(argv[++k]);
     else if (a == "--cap-sd") o.capSd = std::atof(argv[++k]);
-    else if (a == "--min-price") o.minPrice = std::atof(argv[++k]);
+    else if (a == "--min-price") o.minPrice = std::atof(argv[++k]), minPriceSet = true;
     else if (a == "--lambda") o.lambda = std::atof(argv[++k]);
     else if (a == "--refit") o.refit = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
     else if (a == "--window") o.window = std::size_t(std::atol(argv[++k]));
     else if (a == "--warm") o.warm = std::size_t(std::atol(argv[++k]));
   }
-  if (o.csv.empty() || o.market != "UK") {
+  if (o.csv.empty() || (o.market != "UK" && o.market != "EU") || (o.market == "EU" && o.venues.empty())) {
     std::fprintf(stderr, "usage: ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free f] [--segments f] [--override f] [--json f] [--orders f]\n");
     return 2;
   }
@@ -170,6 +172,14 @@ int main(int argc, char** argv) {
     return 2;
   }
   const auto at = [N](std::size_t t, std::size_t i) { return t * N + i; };
+  // The market: the UK's prices in pence (traded value in pounds: / 100), stamp duty and the LSE's segments;
+  // Europe's (--costs EU, tickers EXCHANGE:CODE) in euros, each exchange's commission, fees and taxes from
+  // --venues (tools/venues.txt: the tax on buying a share held past the day, as these are, for the holds).
+  const bool uk = o.market == "UK";
+  const char* cur = uk ? "GBP" : "EUR";
+  const double priceUnit = uk ? 100.0 : 1.0;
+  if (!uk && !minPriceSet) o.minPrice = 1.0;  // EUR 1
+  const swing::Costs venueCosts = uk ? swing::Costs{} : swing::costs(p, o.market, o.capital, o.venues, "");
 
   // Stamp duty (AIM shares are exempt) and the order book's segments.
   std::vector<char> stampFree(N, 0), segOk(N, 1);
@@ -223,7 +233,7 @@ int main(int argc, char** argv) {
             e += (4 * a * b - e) / 64, w += (1 - w) / 64;
           }
           spread[at(t, i)] = std::min(0.2, w > 0 ? std::sqrt(std::max(0.0, e / w)) : 0.0);
-          vals.push_back(p.C[at(t, i)] * p.V[at(t, i)] / 100.0);  // pence to pounds
+          vals.push_back(p.C[at(t, i)] * p.V[at(t, i)] / priceUnit);  // the UK's pence to pounds
           if (vals.size() > 20) vals.erase(vals.begin());
           barDays.push_back(t);
           if (barDays.size() > 18) barDays.erase(barDays.begin());
@@ -620,15 +630,27 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  // The broker's costs of an order of `value` pounds: on the final orders only.
-  const auto commission = [&](double value) {
+  // The broker's costs of one side of an order of `value` (pounds; euros in Europe): on the final orders only.
+  // Europe: the exchange's line (a rate, at least a minimum, a further fee's rate, a tax on both sides).
+  const auto commission = [&](double value, std::size_t i) {
     if (!(value > 0)) return 0.0;
+    if (!uk) {
+      const auto& v = venueCosts.venue[i];
+      return std::max(v[2], v[1] * value) + (v[3] + v[5]) * value;
+    }
     return o.tiered ? std::max(1.0, 0.0005 * value) + std::max(0.10, 0.000045 * value) + 0.06 : std::max(3.0, 0.0005 * value);
   };
-  const auto stamp = [&](std::size_t i) { return stampFree[i] ? 0.0 : 0.005; };
-  // Both sides' commission and the stamp duty. No spread: the orders buy in the opening auction and sell in
+  // The tax on buying: the UK's stamp duty (none on AIM shares); Europe's on a share held past the day
+  // (the French and Spanish FTT, the Portuguese) or, within the day, its same-day one.
+  const auto stamp = [&](std::size_t i) { return uk ? (stampFree[i] ? 0.0 : 0.005) : venueCosts.venue[i][o.hold ? 6 : 4]; };
+  const auto exchangeOf = [&](std::size_t i) {
+    if (uk) return std::string(stampFree[i] ? "AIM" : "main");
+    const auto k = p.tickers[i].find(':');
+    return k == std::string::npos ? std::string("?") : p.tickers[i].substr(0, k);
+  };
+  // Both sides' commission and the taxes. No spread: the orders buy in the opening auction and sell in
   // the closing auction (or the opening one), where buyers and sellers trade at one price, so none is crossed.
-  const auto costOf = [&](const Order& r) { return 2 * commission(r.value) / r.value + stamp(r.i); };
+  const auto costOf = [&](const Order& r) { return 2 * commission(r.value, r.i) / r.value + stamp(r.i); };
 
   // The orders for the session after the close t, before costs (the model and its backtest), or with
   // the broker's costs applied (withCosts: the final orders): each order's expected return less its own
@@ -869,14 +891,14 @@ int main(int argc, char** argv) {
   for (const auto& u : uni) uniMean += u.size();
   std::printf("uk: %zu shares, %zu sessions (%s .. %s); %zu in the exchange's list, %zu of them outside the order book's auctions (funds, ETFs, SETSqx): left out\n", N, T,
               p.days.front().c_str(), p.days.back().c_str(), segKnown, segOut);
-  std::printf("uk: the day's list: %.0f shares on average (at most %zu; at least GBP %.0f traded a day); %zu fits of %zu inputs (the last on %.0f share-days)\n",
-              double(uniMean) / double(T), o.top, o.minValue, fits, F, fitted);
+  std::printf("uk: the day's list: %.0f shares on average (at most %zu; at least %s %.0f traded a day); %zu fits of %zu inputs (the last on %.0f share-days)\n",
+              double(uniMean) / double(T), o.top, cur, o.minValue, fits, F, fitted);
   if (ret.empty()) {
     std::printf("uk: no out-of-sample record yet (at least %zu sessions to fit and %zu to calibrate): no orders\n", o.warm, o.calMin);
   } else {
-    std::printf("uk: the account (%s .. %s, %zu slots of GBP %.0f): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, before the broker's costs; "
+    std::printf("uk: the account (%s .. %s, %zu slots of %s %.0f): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, before the broker's costs; "
                 "the chance its true Sharpe is above 0: %.1f%% (probabilistic Sharpe ratio, Bailey and Lopez de Prado 2012; %zu %s tried)\n",
-                days.front().c_str(), days.back().c_str(), o.slots, o.capital, 100 * all.annual, all.sharpe, 100 * all.dd, 100 * psr(ret), o.hold ? nTh : nL,
+                days.front().c_str(), days.back().c_str(), o.slots, cur, o.capital, 100 * all.annual, all.sharpe, 100 * all.dd, 100 * psr(ret), o.hold ? nTh : nL,
                 o.hold ? "exit levels" : "stop / take-profit pairs");
     std::printf("uk:   for scale: every share of the day's list bought at the open and sold at the close %+.1f%% a year (Sharpe %.2f), before costs\n", 100 * base.annual, base.sharpe);
     if (o.hold) {
@@ -937,9 +959,9 @@ int main(int argc, char** argv) {
     }
     }  // not --hold
     if (nFilled > 0)
-      std::printf("uk:   a %s trade on average: GBP %.0f, %+.3f%%, %.1f%% gained; expected per order %+.3f%%, realised per order %+.3f%% (before costs); "
+      std::printf("uk:   a %s trade on average: %s %.0f, %+.3f%%, %.1f%% gained; expected per order %+.3f%%, realised per order %+.3f%% (before costs); "
                   "the broker's costs would have been %.3f%% a trade (not charged here: they come off the final orders)\n",
-                  o.hold ? "completed" : "filled", sumValue / nFilled, 100 * sumNet / nFilled, 100 * nWin / nFilled, 100 * sumExpected / std::max(1.0, nOrders), 100 * sumNet / std::max(1.0, nOrders), 100 * sumCost / nFilled);
+                  o.hold ? "completed" : "filled", cur, sumValue / nFilled, 100 * sumNet / nFilled, 100 * nWin / nFilled, 100 * sumExpected / std::max(1.0, nOrders), 100 * sumNet / std::max(1.0, nOrders), 100 * sumCost / nFilled);
     for (const auto& [yr, v] : byYear) {
       const Stats s = stats(v.first);
       std::printf("uk:   %s: %+6.1f%% (Sharpe %5.2f, %3zu sessions), the forecast's mean daily rank correlation %+.3f\n", yr.c_str(), 100 * s.annual, s.sharpe, v.first.size(),
@@ -956,24 +978,24 @@ int main(int argc, char** argv) {
     const bool cal = !pred[T - 1].empty() && (o.hold ? calibrationH(T - 1, holdAt(T - 1, ab), ab, bb, dh) : calibration(T - 1, levelsAt(T - 1, ab), ab, bb));
     if (!cal) std::printf("uk:   no calibrated record at the last close: no candidates\n");
     for (const auto& r : best) {
-      const double cm = 2 * commission(r.value) / r.value, st = stamp(r.i);
-      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, stamp duty %.2f%%: %+.2f%% after (its spread %.2f%%, not paid in the auctions); GBP %.0f%s\n",
-                  p.tickers[r.i].c_str(), stampFree[r.i] ? "AIM" : "main", 100 * r.expected, 100 * cm, 100 * st, 100 * (r.expected - cm - st), 100 * r.spread, r.value,
+      const double cm = 2 * commission(r.value, r.i) / r.value, st = stamp(r.i);
+      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, %s %.2f%%: %+.2f%% after (its spread %.2f%%, not paid in the auctions); %s %.0f%s\n",
+                  p.tickers[r.i].c_str(), exchangeOf(r.i).c_str(), 100 * r.expected, 100 * cm, uk ? "stamp duty" : "tax", 100 * st, 100 * (r.expected - cm - st), 100 * r.spread, cur, r.value,
                   r.expected - cm - st > 0 ? " (gains after costs)" : "");
     }
   }
   for (const auto& r : next)
     if (o.hold)
-      std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); sold at the first close %+.2f%% above the price paid, else at the close of day %zu "
+      std::printf("uk:   %-6s buy %s %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); sold at the first close %+.2f%% above the price paid, else at the close of day %zu "
                   "(such trades held %.1f days); expected %+.2f%% before costs, its costs %.2f%%, %+.2f%% after%s\n",
-                  p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1), 100 * r.exitAbove, H, r.holdDays, 100 * r.expected,
-                  100 * r.cost, 100 * r.net, stampFree[r.i] ? " (AIM: no stamp duty)" : "");
+                  p.tickers[r.i].c_str(), cur, r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1), 100 * r.exitAbove, H, r.holdDays, 100 * r.expected,
+                  100 * r.cost, 100 * r.net, uk && stampFree[r.i] ? " (AIM: no stamp duty)" : "");
     else
-    std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); a %s stop %.1f%% and %s from the price bought at; expected %+.2f%% before costs (levels %+.2f%%), its costs %.2f%%, %+.2f%% after; "
+    std::printf("uk:   %-6s buy %s %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); a %s stop %.1f%% and %s from the price bought at; expected %+.2f%% before costs (levels %+.2f%%), its costs %.2f%%, %+.2f%% after; "
                 "the auction under the limit on %.0f%% of its last sessions%s\n",
-                p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1),
+                p.tickers[r.i].c_str(), cur, r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1),
                 r.mode == 1 ? "trailing" : r.mode == 2 ? "break-even (to the entry once up 1 volatility)" : "fixed", -100 * r.stopSd * r.sigma, std::isfinite(r.takeSd) ? ("take-profit +" + std::to_string(100 * r.takeSd * r.sigma).substr(0, 4) + "%").c_str() : "no take-profit", 100 * r.expected, 100 * r.adj, 100 * r.cost,
-                100 * r.net, 100 * (std::isfinite(r.fill) ? r.fill : 0.0), stampFree[r.i] ? " (AIM: no stamp duty)" : "");
+                100 * r.net, 100 * (std::isfinite(r.fill) ? r.fill : 0.0), uk && stampFree[r.i] ? " (AIM: no stamp duty)" : "");
 
   // The orders for the bridge (prices: to the private store, never the page): each carries its amount
   // (capital, at most maxCapital, the share's liquidity), its auction-only limit ("entry": "open"), and
@@ -1047,8 +1069,8 @@ int main(int argc, char** argv) {
     std::ofstream f(o.jsonOut);
     char b[512];
     f << "{\"model\":\"uk\",\"asOf\":\"" << p.days.back() << "\",\"stocks\":" << N << ",\"lag\":0,\"top\":" << o.top << (o.hold ? ",\"book\":\"hold\",\"days\":" + std::to_string(H) : std::string());
-    std::snprintf(b, sizeof b, ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"UK\",\"net\":false,\"capital\":%.6g,\"stamp\":0.005,\"stampFree\":%ld,\"venues\":false}", o.capital,
-                  long(std::count(stampFree.begin(), stampFree.end(), 1)));
+    std::snprintf(b, sizeof b, ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"%s\",\"net\":false,\"capital\":%.6g,\"stamp\":%g,\"stampFree\":%ld,\"venues\":%s}", o.market.c_str(), o.capital,
+                  uk ? 0.005 : 0.0, long(std::count(stampFree.begin(), stampFree.end(), 1)), uk ? "false" : "true");
     f << b;
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g,\"orders\":%.0f,\"trades\":%.0f,\"avgTrade\":%.6g,\"winRate\":%.6g}",
                   days.empty() ? "" : days.front().c_str(), days.empty() ? "" : days.back().c_str(), all.annual, all.sharpe, all.dd, nOrders, nFilled, nFilled > 0 ? sumNet / nFilled : 0.0,
@@ -1101,7 +1123,14 @@ int main(int argc, char** argv) {
       if (j == 0 || days[q].substr(0, 4) != days[q - step].substr(0, 4))
         std::snprintf(b, sizeof b, "%s{\"label\":\"%s\",\"x\":%.4f}", lead ? "" : ",", days[q].substr(0, 4).c_str(), lv.size() > 1 ? double(j) / double(lv.size() - 1) : 0.0), f << b,
             lead = false;
-    f << "]},\"exchanges\":[\"LSE\"]}\n";
+    std::set<std::string> exs;
+    if (uk) exs.insert("LSE");
+    else
+      for (const auto& tk : p.tickers)
+        if (tk.find(':') != std::string::npos) exs.insert(tk.substr(0, tk.find(':')));
+    f << "]},\"exchanges\":[";
+    for (auto it = exs.begin(); it != exs.end(); ++it) f << (it == exs.begin() ? "\"" : ",\"") << *it << '"';
+    f << "]}\n";
   }
   (void)firstDay;
   return 0;

@@ -6,6 +6,13 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
 
 ## The UK model (`apps/ofm_uk`): the London orders
 
+**Europe too**: the same model is Europe's live strategy (`--costs EU --venues tools/venues.txt --hold 5`:
+Paris, Amsterdam, Brussels, Lisbon, Madrid and Frankfurt; tickers `EXCHANGE:CODE`, prices in euros). Its
+orders pay each exchange's commission and taxes on a share held past the day (`tools/venues.txt`: the
+French FTT 0.4% and the Spanish 0.2% on buying, the Portuguese 0.3%, the Belgian TOB 0.35% each side;
+none in Amsterdam or Frankfurt), applied to the final orders only. The research model (`base`) runs on
+as Europe's shadow. What follows is said of the UK; Europe is the same but for prices, segments and taxes.
+
 The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every
 order is one a person would place, and whose backtest trades exactly those orders:
 

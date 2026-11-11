@@ -582,10 +582,10 @@ def holds(args):
                 lines.append(f'{sym}: not found at IBKR, NOT OFFERED')
                 continue
             last = int(pos.get('days') or 5)
-            if pos['closes'] >= last:
-                o = MarketOrder('SELL', qty, orderRef=ref + '-close', tif='DAY')
-                o.orderType = 'MOC'
-                how = f'at the close (its last, {last})'
+            if pos['closes'] >= last:  # its last day: sold at the close whatever the price (a limit at the 20-day low if the exchange refuses a MOC)
+                ok, line = sell_out(ib, c, qty, ref + '-close', errors, at_close=True)
+                lines.append(f'{sym}: its last day ({last}): {line}')
+                continue
             else:
                 tick = tick_at(ticks[0], ticks[1], pos['entry'])
                 level = pos['entry'] * (1 + float(pos.get('exitAbove') or 0))

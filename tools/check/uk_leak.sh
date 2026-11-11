@@ -129,4 +129,23 @@ for r in rows:  # each trade, within its 5 days: at its exit level's close (the 
         assert r['exit'] == '0' and abs(x - closes[(span[-1], r['ticker'])]) < 1e-3 * x, (r, span)
 assert how['3'] > 0, f'no trade sold by the daily update: {how}'
 PY
-echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day"
+# Europe (--costs EU --venues, tickers EXCHANGE:CODE, prices in euros): no order changed by later data, each
+# order's costs its exchange's (Paris: the 0.4% French FTT on a share held), and still a gain after them.
+for f in full cut; do awk -F, -v OFS=, 'NR == 1 { print; next } { n = substr($2, 2) + 0; $2 = (n % 3 == 0 ? "PAR" : n % 3 == 1 ? "AMS" : "FRA") ":" $2; for (k = 3; k <= 6; k++) $k = $k / 100; print }' "$W/$f.csv" > "$W/eu-$f.csv"; done
+printf 'PAR 5000 0.0005 3 0 0 0 0.004\nAMS 5000 0.0005 3 0 0 0\nFRA 5000 0.0005 3 0 0 0\n' > "$W/venues.txt"
+"$BIN" --csv "$W/eu-full.csv" --costs EU --venues "$W/venues.txt" --top 60 --hold 5 --trace "$W/eu.tr" --orders "$W/eu.json" > "$W/eu.out"
+"$BIN" --csv "$W/eu-cut.csv" --costs EU --venues "$W/venues.txt" --top 60 --hold 5 --trace "$W/eu-cut.tr" > /dev/null
+en=$(wc -l < "$W/eu-cut.tr")
+[ "$en" -gt 200 ] || { cat "$W/eu.out"; echo "FAIL: Europe, only $en orders"; exit 1; }
+head -n "$en" "$W/eu.tr" | cmp -s - "$W/eu-cut.tr" || { echo 'FAIL: Europe, an order changed with later data (look-ahead)'; exit 1; }
+python3 - "$W/eu.json" <<'PY'
+import json, sys
+book = json.load(open(sys.argv[1]))
+assert book.get('book') == 'hold' and book['orders'], 'Europe: no orders'
+for o in book['orders']:
+    ex = o['ticker'].split(':')[0]
+    assert ex in ('PAR', 'AMS', 'FRA') and o['ifFilled'] > 0, o
+    fee = 2 * max(3, 0.0005 * o['capital']) / o['capital']
+    assert abs(o['cost'] - fee - (0.004 if ex == 'PAR' else 0)) < 1e-4, o
+PY
+echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs"
