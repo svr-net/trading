@@ -17,9 +17,10 @@ order is one a person would place, and whose backtest trades exactly those order
 - **Forecast**: one walk-forward ridge regression across the shares of the next open-to-close (in
   each share's own volatilities) on the signals of `apps/swing.hpp`, the share's volatility, liquidity
   and stamp duty, each ranked across the day's shares; refitted every 21 sessions on the 750 before.
-- **Expected return**: the forecast calibrated on the model's own out-of-sample record (the last 500
-  sessions' top fifth of forecasts against what those shares then did, the slope shrunk by its t
-  statistic). No record, or no skill in it, means no orders.
+- **Expected return**: the forecast calibrated on the model's own out-of-sample record of the trade as
+  placed (the last 500 sessions' top fifth of forecasts, bought at the open and sold at the day's stop,
+  take-profit or close: a triple barrier, López de Prado 2018), the slope shrunk by its t statistic.
+  No record, or no skill in it, means no orders.
 - **Bought at the open, never on a dip**: a limit at the last close plus 0.5 of the share's daily
   volatility (it does not chase a big gap up), good only until 2 minutes after the open (IBKR's GTD;
   if refused, a day order the watch cancels then), so it buys in the opening auction or not at all.
@@ -35,9 +36,14 @@ order is one a person would place, and whose backtest trades exactly those order
   statistic: levels are tightened only where they have paid. The daily bar cannot tell which came
   first, so a day that touched both counts as stopped; a stop sells half a spread below its level, a
   take-profit fills only when the high clears it by half a spread.
-- **Only orders that pay**: the expected return must clear IBKR's commission on the order's own
-  amount, the 0.5% stamp duty (not AIM shares), a quarter-spread at each auction, plus 0.05%. Many
-  days have fewer orders than slots, some none.
+- **Costs only on the final orders**: the model learns and its backtest trades before the broker's
+  costs (the report shows what they would have been, never charges them). The next session's orders
+  then have them applied, each on its own amount: IBKR's commission, the 0.5% stamp duty (not AIM
+  shares) and a quarter-spread at each auction; the expected return after them is what the order file
+  carries (`ifFilled`, and `expected` times the chance to buy), and an order whose costs take all of it
+  is not placed. Many days have fewer orders than slots, some none.
+- **Ideas from the literature**: [docs/uk-research.md](docs/uk-research.md) (what the 2025-2026 reading lists' books suggest, what
+  is applied, what is next).
 - **Checks**: `tools/check/uk_leak.sh` (CI and the daily run): on a generated market it must find a
   planted effect, learn a take-profit where the day's highs spike and fade and none on a random walk,
   every order must be sensible (bought at the open only, levels around the entry, an amount within the

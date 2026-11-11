@@ -61,14 +61,15 @@ book = json.load(open(sys.argv[1]))
 for o in book['orders']:
     assert o['entry'] == 'open' and o['close'] < o['limit'] <= o['close'] * 1.02, o
     assert -0.2 < o['stopRel'] < 0 and (o['takeRel'] is None or o['takeRel'] > 0) and o['stop'] < o['close'], o
-    assert 500 <= o['capital'] <= min(5000, o['maxCapital']) + 1e-6 and o['ifFilled'] >= 0.0005 and o['exit'] == 'close', o
+    assert 500 <= o['capital'] <= min(5000, o['maxCapital']) + 1e-6 and o['exit'] == 'close', o
+    assert o['cost'] > 0 and o['ifFilled'] > 0, o  # the final orders: the broker's costs applied, each still expected to gain
 rows = list(csv.DictReader(open(sys.argv[2])))
 assert len(rows) > 200, f'only {len(rows)} orders in the backtest'
 for o in rows:
     c, lim, v = float(o['close']), float(o['limit']), float(o['value'])
     assert o['ticker'] >= 'S010', f'an order in a share that trades too little: {o}'
     assert c < lim <= c * 1.02 and float(o['stopRel']) < 0 and float(o['takeRel']) >= 0 and 500 <= v <= 5000, o
-    assert float(o['expected']) - float(o['cost']) >= 0.0005, o
+    assert float(o['expected']) >= 0.0005, o  # the backtest: before costs
     if o['filled'] != '0':  # bought at the open, under its limit; out at its stop, its take-profit or the close
         e, x = float(o['entry']), float(o['exitPrice'])
         assert e <= lim, o
