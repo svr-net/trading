@@ -74,30 +74,31 @@ function render(r, source) {
     + (r.orders.some((o) => o.fill != null) ? ` · about ${buys.toFixed(1)} of these orders expected to buy` : '');
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
   const holds = r.orders.some((o) => o.days != null);  // a multi-day book: sold at the first close at its exit level, else on its last day
-  const head = [['Share'], ['Buy at', 'num']];
+  const atOpen = r.orders.length > 0 && r.orders.every((o) => o.entry === 'open');  // bought in the opening auction only: the column is the most it pays
+  const head = [['Share'], [atOpen ? 'Buy at open' : 'Buy at', 'num']];
   if (levels) head.push(['Stop', 'num'], ['Target', 'num']);
-  if (holds) head.push(['Sold at', 'num']);
+  if (holds) head.push(['Sell at', 'num']);
   const rebuys = r.orders.some((o) => o.rebuy > 0);  // a buy-back after a stop (learnt; none on most days)
   if (rebuys) head.push(['Buy-back', 'num']);
   const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
-  if (chances) head.push(['Chance to buy', 'num']);
+  if (chances) head.push(['Chance to buy', 'num opt']);
   const ifs = r.orders.some((o) => o.ifFilled != null);  // the gain if it buys; expected = the chance to buy times it
   const costed = r.orders.some((o) => o.cost != null);  // the UK model: each order's own costs, already off its expected return
-  if (costed) head.push(['Costs', 'num']);
-  if (ifs) head.push(['If it buys', 'num']);
+  if (costed) head.push(['Costs', 'num opt']);
+  if (ifs) head.push(['If it buys', 'num opt']);
   head.push(['Expected', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
-      const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? `open, at most ${pct(o.limit, 1)}` : pct(o.limit, 1), 'num']];
+      const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? (atOpen ? `≤ ${pct(o.limit, 1)}` : `open, ≤ ${pct(o.limit, 1)}`) : pct(o.limit, 1), 'num']];
       // The stop from the price bought at: fixed, trailing under the day's high, or to the price paid once up `breakeven`.
       const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + how, o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
-      if (holds) row.push([`first close ${pct(o.exitAbove, 2)} or more, else day ${o.days}${o.holdDays ? ` (about ${o.holdDays.toFixed(1)} days)` : ''}`, 'num pos']);
+      if (holds) row.push([`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
-      if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num']);
-      if (costed) row.push(o.cost == null ? ['–', 'num'] : [pct(-o.cost, 2), 'num neg']);
-      if (ifs) row.push(o.ifFilled == null ? ['–', 'num'] : signed(o.ifFilled, 2));
+      if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
+      if (costed) row.push(o.cost == null ? ['–', 'num opt'] : [pct(-o.cost, 2), 'num neg opt']);
+      if (ifs) row.push(o.ifFilled == null ? ['–', 'num opt'] : [signed(o.ifFilled, 2)[0], `${signed(o.ifFilled, 2)[1]} opt`]);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
     }) : [{ gap: `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
@@ -106,8 +107,10 @@ function render(r, source) {
   if (hint) {
     hint.dataset.base ??= hint.innerHTML;
     hint.innerHTML = r.model === 'uk' && r.book === 'hold'
-      ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later. '
-        + `<b>Sold at</b>: in the closing auction of the first day the share closes this far above the price paid, else at the close of day ${r.days}: held as few days as it needs. `
+      ? '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later. '
+        + `<b>Sell at</b>: in the closing auction of the first day the share closes this far above the price paid, else at the close of day ${r.days} (≤ ${r.days} d): held as few days as it needs`
+        + (r.orders.some((o) => o.holdDays) ? `, about ${(r.orders.reduce((a, o) => a + (o.holdDays || 0), 0) / r.orders.length).toFixed(1)} days on average. ` : '. ')
+        + 'Each morning a share held is looked at again: one the model no longer wants is sold at the open. '
         + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares), already taken off; it trades in the auctions, so it pays no spread. '
         + '<b>If it buys</b>: what similar past trades made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
       : r.model === 'uk'
