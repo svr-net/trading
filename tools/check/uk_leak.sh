@@ -166,7 +166,25 @@ for o in book['orders']:
     want = (2 * min(0.01 * v, max(1.0, 0.005 * sh)) + 0.0000278 * v + min(8.30, 0.000166 * sh)) / v
     assert ':' not in o['ticker'] and o['ifFilled'] > 0 and abs(o['cost'] - want) < 1e-6, (o, want)
 PY
+# Asia-Pacific (--costs APAC --venues: ASX and SGX, their commission and fees, no tax): no order changed by
+# later data, each order's costs its exchange's line.
+for f in full cut; do awk -F, -v OFS=, 'NR == 1 { print; next } { n = substr($2, 2) + 0; $2 = (n % 2 ? "ASX" : "SGX") ":" $2; for (k = 3; k <= 6; k++) $k = $k / 100; print }' "$W/$f.csv" > "$W/ap-$f.csv"; done
+printf 'ASX 5000 0.0008 6 0 0 0\nSGX 5000 0.0008 2.5 0.0004 0 0\n' > "$W/venues-ap.txt"
+"$BIN" --csv "$W/ap-full.csv" --costs APAC --venues "$W/venues-ap.txt" --top 60 --hold 5 --trace "$W/ap.tr" --orders "$W/ap.json" > "$W/ap.out"
+"$BIN" --csv "$W/ap-cut.csv" --costs APAC --venues "$W/venues-ap.txt" --top 60 --hold 5 --trace "$W/ap-cut.tr" > /dev/null
+an=$(wc -l < "$W/ap-cut.tr")
+[ "$an" -gt 200 ] || { cat "$W/ap.out"; echo "FAIL: Asia-Pacific, only $an orders"; exit 1; }
+head -n "$an" "$W/ap.tr" | cmp -s - "$W/ap-cut.tr" || { echo 'FAIL: Asia-Pacific, an order changed with later data (look-ahead)'; exit 1; }
+python3 - "$W/ap.json" <<'PY'
+import json, sys
+book = json.load(open(sys.argv[1]))
+assert book.get('book') == 'hold' and book['orders'], 'Asia-Pacific: no orders'
+for o in book['orders']:
+    ex, v = o['ticker'].split(':')[0], o['capital']
+    side = max(6, 0.0008 * v) if ex == 'ASX' else max(2.5, 0.0008 * v) + 0.0004 * v
+    assert ex in ('ASX', 'SGX') and o['ifFilled'] > 0 and abs(o['cost'] - 2 * side / v) < 1e-6, o
+PY
 # The volatility cap (--max-vol): with a cap under every share's daily volatility, no share is listed and no order made.
 "$BIN" --csv "$W/full.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --max-vol 0.001 > "$W/novol.out"
 grep -q "orders 0 on 0 of\|no out-of-sample record yet" "$W/novol.out" || { grep -E "the day's list|orders" "$W/novol.out"; echo 'FAIL: orders in shares over the volatility cap'; exit 1; }
-echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs; the US: $un orders unchanged by later data, each with its commission and fees"
+echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs; the US: $un orders unchanged by later data, each with its commission and fees; Asia-Pacific: $an orders unchanged by later data, each with its exchange's costs"

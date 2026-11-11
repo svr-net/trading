@@ -79,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7, 'BRK B': 8}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0, 'BRK B': 480.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7, 'BRK B': 8, 'BHP': 9, 'D05': 10}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0, 'BRK B': 480.0, 'BHP': 45.0, 'D05': 50.0}
 
 
 class Event:
@@ -462,6 +462,29 @@ def us_book():
     return placed
 
 
+def apac_book():
+    """Asia-Pacific's hold book: each order good only through its own exchange's opening auction: the ASX's
+    (alphabetical groups from 10:00 Sydney: until 10:12), the SGX's (09:00 Singapore: until 09:02)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(9, 45), ZoneInfo('Australia/Sydney'))
+    d = tempfile.mkdtemp()
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'ASX:BHP', 'close': 45.0, 'entry': 'open', 'open': True, 'limit': 45.5, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5, 'capital': 5000.0, 'maxCapital': 9000.0},
+        {'ticker': 'SGX:D05', 'close': 50.0, 'entry': 'open', 'open': True, 'limit': 50.4, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5, 'capital': 5000.0, 'maxCapital': 9000.0}]}
+    path, state = os.path.join(d, 'APAC.json'), os.path.join(d, 'holds-APAC.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'APAC', '--holds', 'place', '--orders', path, '--hold-state', state])
+    ends = {}
+    for sym, tz in (('BHP', 'Australia/Sydney'), ('D05', 'Asia/Singapore')):
+        buy = next(t for t in SHARED[0]._trades if t.contract.symbol == sym and t.order.action == 'BUY')
+        u = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo(tz))
+        ends[sym] = (u.hour, u.minute)
+        assert buy.order.tif == 'GTD', vars(buy.order)
+    assert ends == {'BHP': (10, 12), 'D05': (9, 2)}, (ends, placed)
+    return placed
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -474,3 +497,5 @@ if __name__ == '__main__':
     print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
     print(us_book())
     print('US: BRK.B as BRK B, routed SMART, in dollars, good only through New York\'s opening auction; OK')
+    print(apac_book())
+    print('Asia-Pacific: each order good only through its own exchange\'s opening auction (ASX until 10:12 Sydney, SGX until 09:02 Singapore); OK')

@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
     else if (a == "--window") o.window = std::size_t(std::atol(argv[++k]));
     else if (a == "--warm") o.warm = std::size_t(std::atol(argv[++k]));
   }
-  if (o.csv.empty() || (o.market != "UK" && o.market != "EU" && o.market != "US") || (o.market == "EU" && o.venues.empty())) {
+  if (o.csv.empty() || (o.market != "UK" && o.market != "EU" && o.market != "US" && o.market != "APAC") || ((o.market == "EU" || o.market == "APAC") && o.venues.empty())) {
     std::fprintf(stderr, "usage: ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free f] [--segments f] [--override f] [--json f] [--orders f]\n");
     return 2;
   }
@@ -176,12 +176,13 @@ int main(int argc, char** argv) {
   }
   const auto at = [N](std::size_t t, std::size_t i) { return t * N + i; };
   // The market: the UK's prices in pence (traded value in pounds: / 100), stamp duty and the LSE's segments;
-  // Europe's (--costs EU, tickers EXCHANGE:CODE) in euros, each exchange's commission, fees and taxes from
-  // --venues (tools/venues.txt: the tax on buying a share held past the day, as these are, for the holds).
+  // Europe's and Asia-Pacific's (--costs EU|APAC, tickers EXCHANGE:CODE) in their exchanges' currencies, each
+  // exchange's commission, fees and taxes from --venues (tools/venues.txt: the tax on buying a share held past
+  // the day, as these are, for the holds); the US's in dollars (IBKR's commission a share).
   const bool uk = o.market == "UK", us = o.market == "US";
-  const char* cur = uk ? "GBP" : us ? "USD" : "EUR";
+  const char* cur = uk ? "GBP" : us ? "USD" : o.market == "APAC" ? "AUD" : "EUR";  // APAC: the ASX's AUD (an SGX order's amount in SGD)
   const double priceUnit = uk ? 100.0 : 1.0;
-  if (!uk && !minPriceSet) o.minPrice = us ? 5.0 : 1.0;  // EUR 1; USD 5 (no penny stocks)
+  if (!uk && !minPriceSet) o.minPrice = us ? 5.0 : o.market == "APAC" ? 0.5 : 1.0;  // EUR 1; USD 5 (no penny stocks); AUD/SGD 0.50
   const swing::Costs venueCosts = uk || us ? swing::Costs{} : swing::costs(p, o.market, o.capital, o.venues, "");
 
   // Stamp duty (AIM shares are exempt) and the order book's segments.
