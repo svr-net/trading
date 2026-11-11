@@ -1462,6 +1462,16 @@ int main(int argc, char** argv) {
                                  fillNet ? fnProb(t, i, std::size_t(std::find(dvals.begin(), dvals.end(), dq) - dvals.begin())) : days > 0 ? fills / days : kNaN});  // calibrated: the gain from the buy price if it buys, net of costs
         lastRun.picks.back().order = lastRun.picks.back().weighted(calibrated(rawExpected(t, i)));
       }
+      // The final list: the model and the backtest ran gross of the broker's costs, so each order's
+      // costs (a round trip at its entry) come off here: off its gain if it buys, and off its expected
+      // return by its chance to buy (an unfilled order costs nothing); then the highest expected first.
+      if (!netCosts) {
+        for (auto& pk : lastRun.picks) {
+          const double c = costFrom(&fee[pk.stock * 7], m.close(t, pk.stock) * std::min(1 + pk.limit, 1.0), 0.0);
+          pk.expected -= c, pk.order -= (std::isfinite(pk.fill) ? pk.fill : 1.0) * c;
+        }
+        std::stable_sort(lastRun.picks.begin(), lastRun.picks.end(), [](const auto& a, const auto& b) { return a.order > b.order; });
+      }
     }
     return pred;
   };
