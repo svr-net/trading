@@ -28,7 +28,7 @@ open's trades and the model's backtest, for the London Stock Exchange and for NY
   missing; each day a share more than 3 robust standard deviations from the day's median on its
   last 60 days' traded value (low side), unmoved closes (stale prices) or daily range (wide) is
   left out of the trades.
-- **Costs**: the model, its gate and the backtest run gross of the broker's costs (commission, fees, stamp duty; the spread stays). Each order in `--orders` carries its round-trip `cost` (a share of its value) and `costAmount`; `--net` charges them in the model and backtest as before.
+- **Costs**: the model, its gate and the backtest run gross of the broker's costs (commission, fees, stamp duty; the spread stays). The final order list is net: each order's cost comes off its gain if it buys and (times its chance to buy) off its expected return, and the orders are sorted by that expected return, highest first. Each order in `--orders` carries its round-trip `cost` (a share of its value) and `costAmount`; `--net` charges them in the model and backtest as before.
 - **Trades**: the next open's 10 highest predictions, each a buy limit d standard deviations below
   the last close: filled at the open when the share opens at or below it, during the day when its
   low trades half a bid-ask spread through it, otherwise not traded (cash). Sold at the
