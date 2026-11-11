@@ -29,6 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
+  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission, stamp duty, the auction spread)`;
   if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
@@ -75,19 +76,36 @@ function render(r, source) {
   const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
   if (chances) head.push(['Chance to buy', 'num']);
   const ifs = r.orders.some((o) => o.ifFilled != null);  // the gain if it buys; expected = the chance to buy times it
+  const costed = r.orders.some((o) => o.cost != null);  // the UK model: each order's own costs, already off its expected return
+  if (costed) head.push(['Costs', 'num']);
   if (ifs) head.push(['If it buys', 'num']);
   head.push(['Expected', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
-      const row = [[o.ticker], [o.limit == null ? 'open' : pct(o.limit, 1), 'num']];
-      if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1), o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
+      const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? `open, at most ${pct(o.limit, 1)}` : pct(o.limit, 1), 'num']];
+      // The stop from the price bought at: fixed, trailing under the day's high, or to the price paid once up `breakeven`.
+      const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
+      if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + how, o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num']);
+      if (costed) row.push(o.cost == null ? ['–', 'num'] : [pct(-o.cost, 2), 'num neg']);
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num'] : signed(o.ifFilled, 2));
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
     }) : [{ gap: `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
+  // The notes under the orders: the research model's (in the page), or the UK model's.
+  const hint = $('planhint');
+  if (hint) {
+    hint.dataset.base ??= hint.innerHTML;
+    hint.innerHTML = r.model === 'uk'
+      ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later in the day. '
+        + '<b>Stop</b>: from the price bought at; <i>trailing</i> follows the day\'s high at that distance; <i>to 0 once +x%</i> moves to the price paid once the share is up that much. '
+        + '<b>Target</b>: sold if it rises that far. Whatever is still held is sold at the close, so nothing is held overnight. '
+        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares) and the auction spread, already taken off. '
+        + '<b>If it buys</b>: what similar past orders made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
+      : hint.dataset.base;
+  }
   const B = r.backtest;
   // The same trades in the expected gain's terms: per trade that bought, from its buy price.
   const perTrade = B.trades ? `

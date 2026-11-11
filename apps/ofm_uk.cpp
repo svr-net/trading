@@ -801,8 +801,10 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < next.size(); ++q) {
       const auto& r = next[q];
       // the levels from the entry (the open), the limit from the close
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%.6g,\"take\":%s,\"rebuy\":0,\"fill\":%.4g,\"amount\":%.0f}", q ? "," : "",
-                    p.tickers[r.i].c_str(), (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.limit / r.close - 1, -r.stopSd * r.sigma,
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"gross\":%.6g,\"cost\":%.6g,\"entry\":\"open\",\"limit\":%.6g,\"stop\":%.6g,\"stopMode\":\"%s\",\"breakeven\":%s,"
+                    "\"take\":%s,\"rebuy\":0,\"fill\":%.4g,\"amount\":%.0f}", q ? "," : "",
+                    p.tickers[r.i].c_str(), (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.expected, r.cost, r.limit / r.close - 1, -r.stopSd * r.sigma,
+                    r.mode == 1 ? "trail" : r.mode == 2 ? "breakeven" : "fixed", r.mode == 2 ? std::to_string(r.sigma).c_str() : "null",
                     std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", std::isfinite(r.fill) ? r.fill : 0.0, r.value);
       f << b;
     }
