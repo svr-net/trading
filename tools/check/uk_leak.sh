@@ -166,4 +166,7 @@ for o in book['orders']:
     want = (2 * min(0.01 * v, max(1.0, 0.005 * sh)) + 0.0000278 * v + min(8.30, 0.000166 * sh)) / v
     assert ':' not in o['ticker'] and o['ifFilled'] > 0 and abs(o['cost'] - want) < 1e-6, (o, want)
 PY
+# The volatility cap (--max-vol): with a cap under every share's daily volatility, no share is listed and no order made.
+"$BIN" --csv "$W/full.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --max-vol 0.001 > "$W/novol.out"
+grep -q "orders 0 on 0 of\|no out-of-sample record yet" "$W/novol.out" || { grep -E "the day's list|orders" "$W/novol.out"; echo 'FAIL: orders in shares over the volatility cap'; exit 1; }
 echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs; the US: $un orders unchanged by later data, each with its commission and fees"

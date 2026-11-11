@@ -24,7 +24,8 @@ order is one a person would place, and whose backtest trades exactly those order
 - **Shares**: ordinary shares in the order book's auctions only (SET1, SET3, AMSM, SSMM in
   `tools/eoddata/lse_segments.csv`): no closed-end funds (STMM), ETFs/ETPs or quote-driven SETSqx
   shares. At least 20p, 250 days of history, a bar on 18 of the last 20 sessions, a median of GBP
-  250,000 traded a day, no 30% move on the day (a bid, a placing, bad data); the 300 most traded.
+  250,000 traded a day, no 30% move on the day (a bid, a placing, bad data), a daily volatility of at
+  most 4% (`--max-vol`: the most volatile shares' falls took most of a small book); the 300 most traded.
   Delisted shares stay in the backtest (no survivorship bias from today's list).
 - **Forecast**: one walk-forward ridge regression across the shares of the next open-to-close (in
   each share's own volatilities) on the signals of `apps/swing.hpp`, the share's volatility, liquidity
