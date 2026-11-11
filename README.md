@@ -21,6 +21,14 @@ FINRA's fees on the sale; there is no tax on buying. The research model (`base`)
 own exchange's opening auction: the ASX opens in alphabetical groups from 10:00 to about 10:09 Sydney time
 (good until 10:12), the SGX at 09:00 Singapore time (good until 09:02). An order's amount is in the ASX's AUD
 (an SGX order's taken as SGD, about the same). The research model (`base`) runs on as its shadow.
+**The account's split over the markets** (`tools/scan/strategies.py`): the daily limit goes where it does the
+most for the whole account. Each market's record is its last year of daily results after its orders' broker
+costs (the model and backtests run before costs; the money is decided on what they would have kept); the
+split is the mean-variance one (each market's mean shrunk by its t statistic, the markets' covariance shrunk
+halfway to its diagonal, so markets that move together share), no money for a market with no edge left, at
+most `market_cap` (50%) a market, and on a paper account at least `paper_floor` (5%) each so every market's
+fills keep being measured. Each market publishes its record (results only) for the others' scans.
+
 **INDEX and FOREX**: INDEX trades index ETFs listed in New York (`tools/eoddata/index.txt`: the S&P 500,
 Nasdaq 100, Dow, Russell 2000 and world indices, about 25 MSCI country indices and the 11 S&P sectors), with
 the US's costs, on New York's clock (placed at 09:21, the bridge's `AUTO_MARKETS` naming INDEX). FOREX models

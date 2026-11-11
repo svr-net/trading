@@ -258,6 +258,112 @@ def previous_share(market, config):
     return 1.0 / max(1, n)
 
 
+def costs_of(path, total):
+    """Each day's broker costs of a run's filled orders (X_TRADELOG: date, value, cost, filled) as a share of
+    the money the run traded (its slots times their amount): to take off its record before costs."""
+    out = {}
+    try:
+        with open(path) as f:
+            head = next(f).strip().split(',')
+            cd, cv, cc, cf = (head.index(k) for k in ('date', 'value', 'cost', 'filled'))
+            for line in f:
+                c = line.strip().split(',')
+                if len(c) > max(cd, cv, cc, cf) and float(c[cf] or 0) > 0 and total > 0:
+                    out[c[cd]] = out.get(c[cd], 0.0) + float(c[cc]) * float(c[cv]) / total
+    except (OSError, StopIteration, ValueError):
+        pass
+    return out
+
+
+def solve(a, b):
+    """x with a x = b (Gauss-Jordan with pivoting; a small, symmetric positive definite matrix)."""
+    n = len(b)
+    m = [list(a[i]) + [b[i]] for i in range(n)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(m[r][c]))
+        m[c], m[p] = m[p], m[c]
+        if abs(m[c][c]) < 1e-18:
+            return [0.0] * n
+        for r in range(n):
+            if r != c:
+                f = m[r][c] / m[c][c]
+                m[r] = [x - f * y for x, y in zip(m[r], m[c])]
+    return [m[i][n] / m[i][i] for i in range(n)]
+
+
+def allocate(records, cap=0.5, floor=0.0):
+    """The account's daily limit split over the markets to maximise its risk-adjusted return: each market's
+    record (its daily results after its orders' costs over the last year, on the same days) gives its mean,
+    shrunk by its t statistic, and the markets' covariance, shrunk halfway to its diagonal; the weights are
+    the mean-variance ones (the covariance's inverse times the means), none negative (a market with no edge
+    left gets none), adding up to the whole limit, none over `cap`; with `floor` (a paper account), every
+    market at least that much (its real fills keep being measured). Returns {market: share}."""
+    names = sorted(records)
+    if not names:
+        return {}
+    dates = sorted(set().union(*(records[m].keys() for m in names)))[-250:]
+    x = {m: [records[m].get(d, 0.0) for d in dates] for m in names}
+    n = len(dates)
+    mu = {m: shrunk(x[m]) for m in names}
+    mean = {m: sum(x[m]) / n if n else 0.0 for m in names}
+    cov = {(a, b): (sum((p - mean[a]) * (q - mean[b]) for p, q in zip(x[a], x[b])) / n if n > 1 else 0.0) for a in names for b in names}
+    active = [m for m in names if mu[m] > 0 and cov[(m, m)] > 0]
+    w = {m: 0.0 for m in names}
+    while active:  # the positive solution: drop a market the solve gives a negative weight, solve again
+        a = [[cov[(p, q)] * (1.0 if p == q else 0.5) for q in active] for p in active]
+        sol = solve(a, [mu[m] for m in active])
+        neg = [m for m, v in zip(active, sol) if v <= 0]
+        if not neg:
+            w.update(dict(zip(active, sol)))
+            break
+        active = [m for m in active if m not in neg]
+    total = sum(w.values())
+    if total > 0:
+        w = {m: v / total for m, v in w.items()}
+    for _ in range(len(names)):  # none over the cap: the excess to the others in proportion
+        over = {m: v - cap for m, v in w.items() if v > cap + 1e-12}
+        if not over:
+            break
+        rest = {m: v for m, v in w.items() if v < cap - 1e-12 and v > 0}
+        for m in over:
+            w[m] = cap
+        spare = sum(over.values())
+        if not rest:
+            break
+        t = sum(rest.values())
+        for m, v in rest.items():
+            w[m] = v + spare * v / t
+    if floor > 0:
+        lift = {m: max(0.0, floor - v) for m, v in w.items()}
+        need = sum(lift.values())
+        if need > 0:
+            big = {m: v for m, v in w.items() if v > floor}
+            t = sum(big.values())
+            for m in w:
+                w[m] = floor if lift[m] > 0 else (v := w[m]) - need * (v / t if t > 0 else 0)
+    return w
+
+
+def published_records(market, config, fresh_days=10):
+    """The other markets' records after costs (their latest web/data/budget-<market>.json 'record', at most
+    fresh_days old), and the shares of those without one yet (kept as they are)."""
+    from datetime import date
+    rec, held = {}, {}
+    for m, b in published_budgets(config).items():
+        if m == market:
+            continue
+        try:
+            if (date.today() - date.fromisoformat(b.get('date', '')[:10])).days > fresh_days:
+                continue
+        except ValueError:
+            continue
+        if isinstance(b.get('record'), dict) and b['record']:
+            rec[m] = {d: float(v) for d, v in b['record'].items()}
+        else:
+            held[m] = float(b.get('share', 0))
+    return rec, held
+
+
 def orders_of(path):
     """Each day's orders of a run's trade log (X_TRADELOG): their net results, an unfilled order 0."""
     out = {}
@@ -404,16 +510,24 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} with {k} trades failed ({code})")
         series = {k: days_of(f'data/budget/trades-{k}.csv.days') for k, _, _ in variants}
         days, picks, meta, nxt = choose(series)
-        score = shrunk(meta[-250:])
         run_total = total  # the amount the runs traded (their costs)
+        # The record after costs: each day's chosen run less its filled orders' broker costs (the model and its
+        # backtest run before costs; the money it gets is decided on what it would have made after them).
+        costs = {k: costs_of(f'data/budget/trades-{k}.csv', run_total) for k in slots}
+        net = [r - costs.get(k, {}).get(d, 0.0) for d, k, r in zip(days, picks, meta)]
+        record = dict(zip(days[-250:], net[-250:]))
+        score = shrunk(net[-250:])
         daily, cur = account_of(args.config)
         share, scale = 1.0, 1.0
-        if daily > 0:  # this market's share of the account's daily limit, from every market's record
-            others = other_scores(args.market, args.config)
-            pos = max(0.0, score) + sum(max(0.0, v) for v in others.values())
-            share = max(0.0, score) / pos if pos > 0 else 0.0
-            if paper_of(args.config):  # paper: an equal share for every market, to measure its real fills
-                share = 1.0 / (1 + len(other_shares(args.market, args.config)))
+        alloc = {}
+        if daily > 0:  # this market's share of the account's daily limit: the split that maximises the account's risk-adjusted return
+            recs, held = published_records(args.market, args.config)
+            recs[args.market] = record
+            room = max(0.0, 1.0 - sum(held.values()))  # markets without a published record yet keep their share
+            acc = json.load(open(args.config)).get('account') or {}
+            floor = float(acc.get('paper_floor', 0.05)) if paper_of(args.config) else 0.0
+            alloc = {m: v * room for m, v in allocate(recs, cap=float(acc.get('market_cap', 0.5)), floor=floor).items()}
+            share = alloc.get(args.market, 0.0)
             # Growing only into its part of what is free: the markets run at the same time (UK and EU at 05:30)
             # each see the others' latest shares, so each may take at most its own last share plus the free
             # share split over the markets; together they never pass the limit, whoever runs when.
@@ -447,9 +561,13 @@ def main():
         lines.append(f"budget:   expected: a day's recommended orders {100 * ed:+.3f}% on average (an unfilled order 0; {opd:.1f} orders a day, {100 * fr:.0f}% filled), "
                      f"compounded {100 * ey:+.1f}% a year | the last year: {100 * ed1:+.3f}% a day, {100 * ey1:+.1f}% a year")
         if daily > 0:
-            lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; its record {100 * score:+.3f}% a day shrunk, the others': "
-                         + (', '.join(f'{m} {100 * v:+.3f}%' for m, v in sorted(other_scores(args.market, args.config).items())) or 'none yet') + ')')
-        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else '') + (' (paper account: an equal share, to measure the fills)' if paper_of(args.config) else ''))
+            lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; "
+                         f"its record after costs {100 * score:+.3f}% a day shrunk)")
+            lines.append("budget:   the split that maximises the account's risk-adjusted return (records after costs, the markets' covariance; "
+                         f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
+                         + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
+                         + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
+        lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else '') + (' (paper account)' if paper_of(args.config) else ''))
         shutil.copy(f'data/budget/report-{nxt}.json', 'report/ofm.json')
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
@@ -465,7 +583,8 @@ def main():
             os.makedirs(f'data/eoddata/orders', exist_ok=True)
             shutil.copy(f'data/budget/orders-{nxt}.json', f'data/eoddata/orders/{args.market}.json')
         with open('report/budget.json', 'w') as f:
-            json.dump({'market': args.market, 'date': days[-1] if days else '', 'score': score, 'share': share, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
+            json.dump({'market': args.market, 'date': days[-1] if days else '', 'score': score, 'share': share, 'allocation': alloc,
+                       'record': {d: round(v, 8) for d, v in record.items()}, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
                        'chosen': {str(k): picks.count(k) for k in slots}, 'annual': {str(k): stats([series[k][d] for d in days])[0] for k in slots},
                        'auto': {'annual': a, 'sharpe': sh},
                        'expected': {'daily': ed, 'yearly': ey, 'ordersPerDay': opd, 'filled': fr, 'lastYearDaily': ed1, 'lastYearYearly': ey1}}, f, indent=1)
