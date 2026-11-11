@@ -62,8 +62,8 @@ order is one a person would place, and whose backtest trades exactly those order
   how many trades were replayed on paths and each kind of stop's best record.
 - **Costs only on the final orders**: the model learns and its backtest trades before the broker's
   costs (the report shows what they would have been, never charges them). The next session's orders
-  then have them applied, each on its own amount: IBKR's commission, the 0.5% stamp duty (not AIM
-  shares) and a quarter-spread at each auction; the expected return after them is what the order file
+  then have them applied, each on its own amount: IBKR's commission and the 0.5% stamp duty (not AIM
+  shares); no spread, as they trade in the opening and closing auctions (one price for all); the expected return after them is what the order file
   carries (`ifFilled`, and `expected` times the chance to buy), and an order whose costs take all of it
   is not placed. Many days have fewer orders than slots, some none.
 - **Ideas from the literature**: [docs/uk-research.md](docs/uk-research.md) (what the 2025-2026 reading lists' books suggest, what

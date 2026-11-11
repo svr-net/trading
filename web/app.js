@@ -29,7 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission, stamp duty, the auction spread)`;
+  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and stamp duty; the auctions cross no spread)`;
   if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
@@ -105,13 +105,13 @@ function render(r, source) {
     hint.innerHTML = r.model === 'uk' && r.book === 'hold'
       ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later. '
         + `<b>Sold at</b>: in the closing auction of the first day the share closes this far above the price paid, else at the close of day ${r.days}: held as few days as it needs. `
-        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares) and the auction spread, already taken off. '
+        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares), already taken off; it trades in the auctions, so it pays no spread. '
         + '<b>If it buys</b>: what similar past trades made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
       : r.model === 'uk'
       ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later in the day. '
         + '<b>Stop</b>: from the price bought at; <i>trailing</i> follows the day\'s high at that distance; <i>to 0 once +x%</i> moves to the price paid once the share is up that much. '
         + '<b>Target</b>: sold if it rises that far. Whatever is still held is sold at the close, so nothing is held overnight. '
-        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares) and the auction spread, already taken off. '
+        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares), already taken off; it trades in the auctions, so it pays no spread. '
         + '<b>If it buys</b>: what similar past orders made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
       : hint.dataset.base;
   }
