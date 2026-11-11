@@ -38,6 +38,8 @@ jobs:
         run: python3 tools/ibkr/test/levels.py
       - name: The daily-bars fetch gives way to the bridge's other steps (tools/ibkr/test/pause.py)
         run: python3 tools/ibkr/test/pause.py
+      - name: The account's split over the markets (tools/scan/test_allocate.py)
+        run: python3 tools/scan/test_allocate.py
 
   bridge-update:
     # The restarter replacing the bridge with GitHub's newest image, on a stand-in NAS.
