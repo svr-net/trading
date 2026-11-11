@@ -424,7 +424,11 @@ def main():
             growers = other_scores(args.market, args.config)
             n = 1 + sum(1 for m in others if growers.get(m, 1.0) > 0)
             free = max(0.0, 1.0 - mine - sum(others.values()))
-            share = min(share, mine + free / n, max(0.0, 1.0 - sum(others.values())))
+            # Paper: the equal share at once. Growing into the free room left a new market (INDEX, 11 Nov) at
+            # 0 while the others still held their older, larger equal shares; they take their new one at their
+            # next runs, and until then the paper account is only briefly over its limit.
+            if not paper_of(args.config):
+                share = min(share, mine + free / n, max(0.0, 1.0 - sum(others.values())))
             new_total = daily * share * fx_rates(args.fx)[CURRENCY[args.market]]
             scale = new_total / total if total > 0 else 0.0
             total = new_total
