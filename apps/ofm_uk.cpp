@@ -734,6 +734,21 @@ int main(int argc, char** argv) {
     }
   }
   std::printf("uk: next session (after the close of %s): %zu orders\n", p.days.back().c_str(), next.size());
+  {  // the best before costs and what each would cost: why an order was or was not placed
+    const std::size_t keep = o.slots;
+    o.slots = 10;
+    const auto best = ordersAt(T - 1, false);
+    o.slots = keep;
+    double ab = 0, bb = 0;
+    const bool cal = !pred[T - 1].empty() && calibration(T - 1, levelsAt(T - 1, ab), ab, bb);
+    if (!cal) std::printf("uk:   no calibrated record at the last close: no candidates\n");
+    for (const auto& r : best) {
+      const double cm = 2 * commission(r.value) / r.value, st = stamp(r.i), sp = 0.5 * r.spread;
+      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, stamp duty %.2f%%, auction spread %.2f%% (its spread %.2f%%): %+.2f%% after; GBP %.0f%s\n",
+                  p.tickers[r.i].c_str(), stampFree[r.i] ? "AIM" : "main", 100 * r.expected, 100 * cm, 100 * st, 100 * sp, 100 * r.spread, 100 * (r.expected - cm - st - sp), r.value,
+                  r.expected - cm - st - sp > 0 ? " (placed)" : "");
+    }
+  }
   for (const auto& r : next)
     std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); a %s stop %.1f%% and %s from the price bought at; expected %+.2f%% before costs (levels %+.2f%%), its costs %.2f%%, %+.2f%% after; "
                 "the auction under the limit on %.0f%% of its last sessions%s\n",
