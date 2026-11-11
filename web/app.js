@@ -59,8 +59,11 @@ function render(r, source) {
   const n = r.orders.length, c = r.costs;
   const isLive = live.has(source);
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-  $('summary').className = `summary ${isLive ? 'live' : 'research'}`;
-  $('summary').innerHTML = isLive
+  const unfunded = isLive && r.budget && !(r.budget.total > 0);  // the account gives this market no money today: nothing is placed
+  $('summary').className = `summary ${isLive && !unfunded ? 'live' : 'research'}`;
+  $('summary').innerHTML = unfunded
+    ? `<strong>No orders placed for the next trading day:</strong> this market's share of the account is 0 today (its record over the last year is not reliably positive)${n ? `; the ${n} order${n === 1 ? '' : 's'} below ${n === 1 ? 'is' : 'are'} what the model would place` : ''}.`
+    : isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; `
       + (r.book === 'hold' ? `each held until its first close at its exit level, at most ${r.days} days.` : 'anything bought is sold by the close.')
     : (r.backtest?.sharpe ?? 0) < 1

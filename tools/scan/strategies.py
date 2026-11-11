@@ -468,6 +468,9 @@ def main():
         try:  # the page's live report carries the same expected return
             rj = json.load(open('report/ofm.json'))
             rj['expected'] = {'daily': ed, 'yearly': ey, 'ordersPerDay': opd, 'filled': fr, 'lastYearDaily': ed1, 'lastYearYearly': ey1}
+            # the money the market has for the next session (its share of the account's daily limit): with
+            # none, the bridge places nothing, and the page says the orders are only what the model would place
+            rj['budget'] = {'total': total, 'trades': nxt, 'amount': total / nxt, 'share': share, 'currency': CURRENCY.get(args.market)}
             json.dump(rj, open('report/ofm.json', 'w'))
         except (OSError, ValueError):
             pass
