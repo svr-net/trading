@@ -10,8 +10,10 @@
 //             bars show quotes more than trades). A share missing from the list (delisted since) stays
 //             in the backtest, so it is not built on today's survivors only. At least 20p, 250 days of
 //             history, a bar on 18 of its last 20 sessions, a median of at least GBP 250,000 traded a
-//             day over its last 20 bars, no move of over 30% on the day (a bid, a placing, bad data);
-//             the --top (300) most traded of those each day.
+//             day over its last 20 bars, no move of over 30% on the day (a bid, a placing, bad data),
+//             a daily volatility (60 bars) of at most --max-vol (4%: the most volatile shares, a few
+//             of whose falls took most of a small book, are left out); the --top (300) most traded of
+//             those each day.
 //   inputs    the signals of apps/swing.hpp known at the close (reversal over 1, 5 and 20 days,
 //             momentum, the 52-week high, low volatility, the tug of war, ...), the share's volatility,
 //             its liquidity and whether it pays stamp duty; each day ranked across the shares (-0.5 ..
@@ -81,7 +83,7 @@ using swing::kNaN;
 
 struct Opt {
   std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv, venues;
-  double capital = 5000, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
+  double capital = 5000, maxVol = 0.04, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
   std::size_t slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
   std::size_t hold = 0;  // --hold H: held up to H sessions (sold at the first close above its exit level), 0: within the day
@@ -150,6 +152,7 @@ int main(int argc, char** argv) {
     else if (a == "--bars") o.barsCsv = argv[++k];
     else if (a == "--hold") o.hold = std::min<std::size_t>(5, std::size_t(std::atol(argv[++k])));
     else if (a == "--min-value") o.minValue = std::atof(argv[++k]);
+    else if (a == "--max-vol") o.maxVol = std::atof(argv[++k]);
     else if (a == "--adv-share") o.advShare = std::atof(argv[++k]);
     else if (a == "--min-order") o.minOrder = std::atof(argv[++k]);
     else if (a == "--hurdle") o.hurdle = std::atof(argv[++k]);
@@ -250,7 +253,7 @@ int main(int argc, char** argv) {
             adv[at(t, i)] = v[10];
           }
           const bool recent = barDays.size() == 18 && t - barDays.front() < 20;  // 18 bars within the last 20 sessions
-          eligible[at(t, i)] = segOk[i] && recent && !jump && hist >= 250 && p.C[at(t, i)] >= o.minPrice && sigma[at(t, i)] > 0 && adv[at(t, i)] >= o.minValue &&
+          eligible[at(t, i)] = segOk[i] && recent && !jump && hist >= 250 && p.C[at(t, i)] >= o.minPrice && sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol && adv[at(t, i)] >= o.minValue &&
                                p.H[at(t, i)] > p.L[at(t, i)];
         }
       }
