@@ -20,22 +20,36 @@ order is one a person would place, and whose backtest trades exactly those order
 - **Expected return**: the forecast calibrated on the model's own out-of-sample record (the last 500
   sessions' top fifth of forecasts against what those shares then did, the slope shrunk by its t
   statistic). No record, or no skill in it, means no orders.
-- **Orders**: a day limit buy at the last close plus 0.2 of the share's daily volatility, so it buys
-  in the opening auction unless the share gaps up past it (then only if it trades back down through
-  it); it never chases. The amount is the slot's capital, **at most 1% of the share's median day's
-  value** (`maxCapital`, which the budget and `tools/ibkr/submit.py` respect), at least GBP 500. A
-  protective stop 4 daily volatilities below; no take-profit; sold in the closing auction.
+- **Bought at the open, never on a dip**: a limit at the last close plus 0.5 of the share's daily
+  volatility (it does not chase a big gap up), good only until 2 minutes after the open (IBKR's GTD;
+  if refused, a day order the watch cancels then), so it buys in the opening auction or not at all.
+  The amount is the slot's capital, **at most 1% of the share's median day's value** (`maxCapital`,
+  which the budget and `tools/ibkr/submit.py` respect), at least GBP 500.
+- **Stop-loss and take-profit from the fill**: the order file carries them as fractions of the price
+  bought at (`stopRel`, `takeRel`); the bridge's watch (`submit.py --rebuy`) places them once the
+  auction has filled, from the fill's own price, one cancelling the other (reduced together on a part
+  fill, placed again when more is bought, never twice), so a gap down never leaves the stop above the
+  entry. Whatever is still held is sold in the closing auction. The pair is chosen each day from a
+  grid (stop 1 to 4 daily volatilities, take-profit 1 to 3 or none) by what it added to the model's
+  top forecasts over the last 250 sessions against the 4-volatility stop alone, shrunk by its t
+  statistic: levels are tightened only where they have paid. The daily bar cannot tell which came
+  first, so a day that touched both counts as stopped; a stop sells half a spread below its level, a
+  take-profit fills only when the high clears it by half a spread.
 - **Only orders that pay**: the expected return must clear IBKR's commission on the order's own
   amount, the 0.5% stamp duty (not AIM shares), a quarter-spread at each auction, plus 0.05%. Many
   days have fewer orders than slots, some none.
 - **Checks**: `tools/check/uk_leak.sh` (CI and the daily run): on a generated market it must find a
-  planted effect, every order must be sensible (limit, stop, amount within the share's liquidity) and
-  unchanged by later data; on a market with no effect it places none.
+  planted effect, learn a take-profit where the day's highs spike and fade and none on a random walk,
+  every order must be sensible (bought at the open only, levels around the entry, an amount within the
+  share's liquidity) and unchanged by later data. `tools/ibkr/test/levels.py` (CI) runs the orders
+  through `submit.py` against a stand-in IBKR: the auction-only buy, the levels from the fill, a part
+  fill, a refused good-till time, the stop cancelling the take-profit.
 
 `ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free aim.txt] [--segments
 lse_segments.csv] [--override ibkr.csv] [--json scan.json] [--orders orders.json]` prints the
-backtest by year (with the forecast's daily rank correlation), the fill rate, the average trade before
-and after costs and the next session's orders. The previous UK live strategy (`regime-trend50`, the
+backtest by year (with the forecast's daily rank correlation), the fill rate, how often trades were
+stopped or took profit, every stop / take-profit pair's record, the average trade before and after
+costs and the next session's orders. The previous UK live strategy (`regime-trend50`, the
 research model below) runs on as a shadow for comparison; EU, US and APAC keep the research model.
 
 ## The model (`apps/ofm_research`, `kernels/v2`, `kernels/net`)

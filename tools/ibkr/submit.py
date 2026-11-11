@@ -121,6 +121,32 @@ def capital_of(o, args):
     return min(c, float(o['maxCapital'])) if o.get('maxCapital') else c
 
 
+AUCTION_MINUTES = 2  # an order for the open ("entry": "open") works until this long after the open: the opening auction only
+
+
+def auction_end_utc(market):
+    """The end of an order for the open (IBKR's good-till time, UTC, yyyymmdd-hh:mm:ss): a few minutes
+    after the market's open, so it buys in the opening auction or not at all (never on a dip later)."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    tz_name, oh, om = OPEN[market]
+    opens = datetime.now(ZoneInfo(tz_name)).replace(hour=oh, minute=om, second=0, microsecond=0)
+    return (opens + timedelta(minutes=AUCTION_MINUTES)).astimezone(timezone.utc).strftime('%Y%m%d-%H:%M:%S')
+
+
+def levels_from_fill(paid, o, ticks):
+    """An order's stop-loss and take-profit from the price it was bought at (its stopRel and takeRel,
+    fractions of that price), on the share's price increments: the stop rounded down, the take-profit up."""
+    stop = take = None
+    if o.get('stopRel') is not None:
+        x = paid * (1 + float(o['stopRel']))
+        stop = round_to(x, tick_at(ticks[0], ticks[1], x), 'down')
+    if o.get('takeRel') is not None:
+        x = paid * (1 + float(o['takeRel']))
+        take = round_to(x, tick_at(ticks[0], ticks[1], x), 'up')
+    return stop, take
+
+
 def ib_symbol(ticker, market):
     # EODData's class shares (BRK.B) are "BRK B" at IBKR in the US; LSE keeps the dot (BT.A).
     return ticker.replace('.', ' ') if market == 'US' else ticker
@@ -342,7 +368,7 @@ def state(args):
             r['ordered'] = (r['ordered'] or 0) + float(o.totalQuantity or 0)  # partial fills show against it
         elif o.action == 'SELL' and o.orderType == 'STP':
             r['stop'] = num(o.auxPrice)
-        elif o.action == 'SELL' and o.orderType == 'LMT' and o.parentId:
+        elif o.action == 'SELL' and o.orderType == 'LMT' and (o.parentId or o.ocaGroup):
             r['take'] = r['take'] or num(o.lmtPrice)
     bv = {}
     for f in ib.reqExecutions():
@@ -594,6 +620,11 @@ def main():
         if args.dry_run:
             for o in book['orders']:
                 q = math.floor(capital_of(o, args) / per_share(o, args.market)) if o['limit'] > 0 else 0
+                if o.get('entry') == 'open':
+                    print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} at the open, at most {o['limit']:.4f} (until {AUCTION_MINUTES} minutes after the open); then "
+                          f"stop {100 * o['stopRel']:+.2f}%" + (f", take-profit {100 * o['takeRel']:+.2f}%" if o.get('takeRel') is not None else ', no take-profit')
+                          + ' from the price bought at, one cancelling the other; the rest sold at the close')
+                    continue
                 print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}"
                       + (f"  buy-back {100 * o['rebuy']:.0f}% back after a stop" if (o.get('rebuy') or 0) > 0 else ''))
             return
@@ -714,6 +745,17 @@ def main():
             parent.transmit = True
             ib.placeOrder(contract, parent)
         print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
+    def open_buy(contract, sym, qty, lim, tif='GTD'):
+        """A buy for the open: a limit (no higher than lim) good only through the opening auction (GTD a
+        few minutes after the open; with DAY, the watch cancels it then). No levels attached: the watch
+        (--rebuy) places the stop-loss and take-profit from the price it was bought at, so a gap never
+        sets them from the wrong price."""
+        parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif=tif, transmit=True)
+        if tif == 'GTD':
+            parent.goodTillDate = auction_end_utc(args.market)
+        ib.placeOrder(contract, parent)
+        print(f'  {sym}: buy {qty} at the open, at most {lim} ({tif}' + (f' until {parent.goodTillDate} UTC' if tif == 'GTD' else '') + '); its stop and take-profit from its fill')
+
     # More orders than the money pays for (the orders' slots; the model places more when few fill):
     # the first slots go into the opening auction, the rest only from a minute after the open (IBKR's
     # good-after time), and the watch (--rebuy) cancels whatever is still open once slots have filled.
@@ -781,6 +823,9 @@ def main():
                 ib.placeOrder(x.contract, x.order)
             print(f'  {sym}: moved to buy {t0.order.totalQuantity:g} limit {lim}' + (f', take {take}' if take else '') + (f', stop {stop}' if stop else ''))
             continue
+        if o.get('entry') == 'open':
+            open_buy(contract, sym, qty, lim)
+            continue
         bracket(contract, sym, qty, lim, take, stop, after if after and k_order >= slots else None)
     # IBKR's answer to each order (a rejection comes after placeOrder returns). An order refused only
     # for being routed directly to the exchange (10311: the gateway's API precautions; BYPASS_WARNING
@@ -821,6 +866,11 @@ def main():
             take = next((k.lmtPrice for k in kids if k.orderType == 'LMT'), None)
             stop = next((k.auxPrice for k in kids if k.orderType == 'STP'), None)
             qty, lim = int(o2.totalQuantity), o2.lmtPrice
+            if o2.tif == 'GTD' and not kids and any('GTD' in e or 'time in force' in e.lower() or 'TIF' in e for e in errs):
+                superseded.add(o2.orderId)  # the open's buy refused for its expiry: a day order, which the watch cancels after the auction
+                open_buy(t.contract, f'{t.contract.symbol} (again)', qty, lim, tif='DAY')
+                again += 1
+                continue
             size = next((re.search(r'exceeding\s+([0-9]+)', e) for e in errs if e.startswith('201') and 'exceeding' in e), None)
             if size and 0 < int(size.group(1)) < qty:
                 qty = int(size.group(1))
@@ -988,15 +1038,17 @@ def rebuy(args, ref):
     and its orders are the ones --close cancels; it stops at --until (set before the close's time) and
     then cancels its own buy-backs still open, so nothing it placed outlives the day. Each stop is
     handled once (the handled shares kept in --out, so a restart does not buy back twice)."""
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
-    from ib_async import IB, LimitOrder, StopLimitOrder
+    from ib_async import IB, LimitOrder, StopLimitOrder, StopOrder
 
     book = json.load(open(args.orders))
     plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
     slots = int(book.get('slots') or 0)
     capped = bool(slots) and len(book['orders']) > slots  # more orders than the money pays for: watch the fills
-    if not plan and not capped:
+    # Orders for the open: their stop-loss and take-profit placed from the price each was bought at.
+    at_open = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if o.get('entry') == 'open'}
+    if not plan and not capped and not at_open:
         print(f'{args.market} buy-back: none in the orders')
         return
     tz = ZoneInfo(OPEN[args.market][0])
@@ -1026,12 +1078,70 @@ def rebuy(args, ref):
                 ib.cancelOrder(o)
                 n += 1
         print(f'  {len(bought)} of {slots} trades filled: {n} buy orders still open cancelled')
+    _, oh, om = OPEN[args.market]
+    auction_over = datetime.now(tz).replace(hour=oh, minute=om, second=0, microsecond=0) + timedelta(minutes=AUCTION_MINUTES + 1)
+    ticks_of = {}
+
+    def set_levels(fills):
+        """Each order for the open that has bought: its stop-loss and take-profit (one cancelling the
+        other, reduced together on a part fill) for the shares still held, from the price it was bought
+        at. Placed once; placed again only when more shares were bought (a part fill growing), so a
+        restarted watch never doubles them."""
+        live = [t for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.orderStatus.status not in DEAD + ('Filled', 'PendingCancel')]
+        for sym, o in at_open.items():
+            buys = [x for x in fills if x.execution.orderRef == ref and x.execution.side == 'BOT' and x.contract.symbol == sym]
+            n = sum(x.execution.shares for x in buys)
+            if not n:
+                continue
+            con = buys[0].contract.conId
+            sold = sum(x.execution.shares for x in fills if x.execution.orderRef == ref and x.execution.side == 'SLD' and x.contract.conId == con)
+            left = n - sold
+            sells = [t for t in live if t.order.action == 'SELL' and t.contract.conId == con]
+            have = max((float(t.order.totalQuantity) - float(t.orderStatus.filled or 0) for t in sells), default=0.0)
+            if left <= 0 or (sells and abs(have - left) < 1e-9):
+                continue
+            if any(t.order.action == 'BUY' and t.contract.conId == con for t in live) and sells:
+                continue  # still buying in the auction: set once it is done
+            for t in sells:
+                ib.cancelOrder(t.order)
+            if sells:
+                ib.sleep(1)
+            if con not in ticks_of:
+                ticks_of[con] = exit_contract(ib, buys[0].contract)
+            c, ticks = ticks_of[con]
+            if c is None:
+                print(f'  {sym}: not found at IBKR for its levels: NO STOP (sold at the close)')
+                continue
+            paid = sum(x.execution.shares * x.execution.price for x in buys) / n
+            stop, take = levels_from_fill(paid, o, ticks)
+            group = f'{ref}-{con}-{int(n)}'
+            qty = int(left)
+            kids = ([StopOrder('SELL', qty, stop, orderRef=ref, tif='DAY')] if stop else []) + ([LimitOrder('SELL', qty, take, orderRef=ref, tif='DAY')] if take else [])
+            for k in kids:
+                k.ocaGroup, k.ocaType, k.transmit = group, 2, True
+                ib.placeOrder(c, k)
+            print(f'  {sym}: bought {n:g} at {paid:.4f}: stop {stop}' + (f', take-profit {take}' if take else ', no take-profit') + f' for {qty} (one cancelling the other)')
+
+    def expire_open_buys():
+        """After the opening auction, an order for the open still working (a day order: its good-till
+        time refused) is cancelled: it buys in the auction or not at all."""
+        if datetime.now(tz) < auction_over:
+            return
+        for t in ib.reqAllOpenOrders():
+            o = t.order
+            if o.orderRef == ref and o.action == 'BUY' and not o.parentId and t.contract.symbol in at_open and t.orderStatus.status not in DEAD + ('Filled', 'PendingCancel'):
+                ib.cancelOrder(o)
+                print(f'  {t.contract.symbol}: the opening auction is over: its buy order cancelled ({float(t.orderStatus.filled or 0):g} bought)')
+
     if capped:
         ib.execDetailsEvent += cap_check  # at once on each fill, and each round below
         ib.reqAllOpenOrders()
     while datetime.now(tz) < until:
         cap_check()
         fills = ib.reqExecutions()
+        if at_open:
+            expire_open_buys()
+            set_levels(fills)
         for tr in ib.reqCompletedOrders(True):
             o, c = tr.order, tr.contract
             # A completed order's status is all IBKR sends with it: its quantity comes from its fills.
@@ -1071,7 +1181,8 @@ def rebuy(args, ref):
             mine.append(parent)
             placed += 1
             print(f'  {c.symbol}: stopped at {level} (paid {paid:.4f}): buy-back {qty} from {back} (at most {cap}), sale at {out}')
-        ib.sleep(20)
+        # every 5 seconds around the open (the auction's fills get their levels at once), else every 20
+        ib.sleep(5 if at_open and datetime.now(tz) < auction_over + timedelta(minutes=10) else 20)
     for t in ib.openTrades():  # its buy-backs not triggered: cancelled before the close
         if t.order.orderRef == ref and any(t.order.orderId == p.orderId for p in mine):
             ib.cancelOrder(t.order)

@@ -27,14 +27,24 @@
 //             --pricing tiered), the 0.5% stamp duty on buying (not AIM shares, --stamp-free), a
 //             quarter of the share's spread (Abdi and Ranaldo 2017) at each auction and half of it on a
 //             stop's sale in the day.
-//   order     limit buy at the last close plus --cap-sd (0.2) of its daily volatility: it buys in the
-//             opening auction unless the share opens above that, then only if it trades back down
-//             through the limit by half a spread during the day; it never chases a gap. The amount is
-//             the slot's capital, at most --adv-share (1%) of the share's median day's value (at least
-//             --min-order, GBP 500). A protective stop --stop-sd (4) daily volatilities below the entry;
-//             no take-profit; whatever is held is sold in the closing auction.
-//   choice    the orders whose expected return after costs is at least --hurdle (0.05%), the largest
-//             expected gain in pounds first, at most --slots (X_NPICK, 5) a day. Some days none.
+//   order     bought in the opening auction and only there: a limit at the last close plus --cap-sd
+//             (0.5) of its daily volatility (it never chases a gap up), good only until the auction
+//             is over, so it never buys a dip later in the day. The amount is the slot's capital, at
+//             most --adv-share (1%) of the share's median day's value (at least --min-order, GBP 500).
+//   levels    a stop-loss and a take-profit set from the price it was bought at (the bridge places
+//             them once the auction has filled, so a gap down never sets the stop above the entry), one
+//             cancelling the other; whatever is still held is sold in the closing auction. Each day
+//             the pair is chosen from a grid (stop 1, 1.5, 2, 3 or 4 daily volatilities below the
+//             entry; take-profit 1, 1.5, 2 or 3 above, or none) by the record of the last 250 sessions:
+//             what each pair added, per session, to the day's highest fifth of forecasts bought at the
+//             open, against the 4-volatility stop alone, shrunk by its t statistic (a pair must have
+//             added about two standard errors to be chosen; otherwise the 4-volatility stop alone).
+//             A day's bar cannot tell which came first: a share that touched both is taken as stopped.
+//             A stop sells half a spread below its level; a take-profit fills only when the high
+//             clears it by half a spread.
+//   choice    the orders whose expected return after costs (the forecast, plus what the chosen levels
+//             added) is at least --hurdle (0.05%), the largest expected gain in pounds first, at most
+//             --slots (X_NPICK, 5) a day. Some days none.
 // The backtest trades exactly these orders day by day; an unfilled order and an unused slot earn 0.
 //
 //   ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free aim.txt]
@@ -64,7 +74,7 @@ using swing::kNaN;
 
 struct Opt {
   std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut;
-  double capital = 5000, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.2, stopSd = 4, minPrice = 20, lambda = 0.5;
+  double capital = 5000, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
   std::size_t slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
 };
@@ -89,16 +99,19 @@ void rankInPlace(std::vector<double>& x) {
 struct Order {
   std::size_t i = 0;
   double close = 0, limit = 0, stop = 0, value = 0, sigma = 0, spread = 0;
-  double expected = 0;  // the calibrated return from the entry to the close, before costs
+  double stopSd = 4, takeSd = kNaN;  // the levels from the entry, in daily volatilities (take NaN: none)
+  double adj = 0;       // what the chosen levels added over the last 250 sessions (per trade)
+  std::size_t level = 0;
+  double expected = 0;  // the calibrated return from the entry to the close (with the levels), before costs
   double cost = 0;      // the round trip's costs if it buys in the auction and sells at the close
   double net = 0;       // expected - cost: the return if it buys
-  double fill = kNaN;   // how often an order this high would have bought over the share's last 250 sessions
+  double fill = kNaN;   // how often its opening auction would have bought over the share's last 250 sessions
   bool capped = false;  // its amount cut to the share's liquidity
 };
 
 struct Fill {
-  int filled = 0;  // 1 in the opening auction, 2 in the day at the limit
-  int exit = 0;    // 0 the closing auction, 1 the stop
+  int filled = 0;  // 1 in the opening auction
+  int exit = 0;    // 0 the closing auction, 1 the stop, 2 the take-profit
   double entry = 0, exitPx = 0, gross = 0, cost = 0, ret = 0;
 };
 }  // namespace
@@ -127,7 +140,6 @@ int main(int argc, char** argv) {
     else if (a == "--min-order") o.minOrder = std::atof(argv[++k]);
     else if (a == "--hurdle") o.hurdle = std::atof(argv[++k]);
     else if (a == "--cap-sd") o.capSd = std::atof(argv[++k]);
-    else if (a == "--stop-sd") o.stopSd = std::atof(argv[++k]);
     else if (a == "--min-price") o.minPrice = std::atof(argv[++k]);
     else if (a == "--lambda") o.lambda = std::atof(argv[++k]);
     else if (a == "--refit") o.refit = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
@@ -356,6 +368,63 @@ int main(int argc, char** argv) {
     return true;
   };
 
+  // The levels' grid and the exit of a share bought at `entry` in the opening auction of session d.
+  static const double kStop[] = {1, 1.5, 2, 3, 4}, kTake[] = {1, 1.5, 2, 3, kNaN};
+  constexpr std::size_t nS = 5, nK = 5, nL = nS * nK, kBase = 4 * nK + 4;  // the base: the 4-volatility stop alone
+  struct Exit { int code; double px, slip; };
+  const auto exitOf = [&](std::size_t d, std::size_t i, double entry, double sg, double spr, double sSd, double kSd) {
+    const double L = p.L[at(d, i)], H = p.H[at(d, i)], C = p.C[at(d, i)], hs = 0.5 * spr;
+    const double stop = entry * (1 - sSd * sg), take = std::isfinite(kSd) ? entry * (1 + kSd * sg) : kNaN;
+    if (L <= stop) return Exit{1, stop, hs};                               // touched: stopped (first, if the take-profit was touched too)
+    if (std::isfinite(take) && H >= take * (1 + hs)) return Exit{2, take, 0.0};  // a resting limit sell: no spread
+    return Exit{0, C, 0.25 * spr};                                          // the closing auction
+  };
+  // Each session's record of every pair: the day's highest fifth of forecasts bought at the open (when
+  // the auction was under the limit), each pair's mean result that day and its difference from the base.
+  std::vector<double> lvD(T + 1, 0.0);
+  std::vector<double> lvS((T + 1) * nL, 0.0), lvS2((T + 1) * nL, 0.0), lvR((T + 1) * nL, 0.0);
+  for (std::size_t u = 0; u < T; ++u) {
+    lvD[u + 1] = lvD[u];
+    for (std::size_t g = 0; g < nL; ++g) lvS[(u + 1) * nL + g] = lvS[u * nL + g], lvS2[(u + 1) * nL + g] = lvS2[u * nL + g], lvR[(u + 1) * nL + g] = lvR[u * nL + g];
+    if (pred[u].empty() || u + 1 >= T) continue;
+    std::vector<std::pair<double, std::size_t>> v;
+    for (std::size_t j = 0; j < pred[u].size(); ++j) v.emplace_back(pred[u][j], j);
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+    double sum[nL] = {}, n = 0;
+    for (std::size_t q = 0; q < v.size() / 5; ++q) {
+      const std::size_t i = uni[u][v[q].second];
+      if (!p.ok(u + 1, i) || !p.hasOpen(u + 1, i)) continue;
+      const double O = p.O[at(u + 1, i)], sg = sigma[at(u, i)], spr = spread[at(u, i)];
+      if (!(O <= p.C[at(u, i)] * (1 + o.capSd * sg))) continue;
+      for (std::size_t g = 0; g < nL; ++g) {
+        const Exit e = exitOf(u + 1, i, O, sg, spr, kStop[g / nK], kTake[g % nK]);
+        sum[g] += e.px / O - 1 - e.slip;
+      }
+      n += 1;
+    }
+    if (n < 3) continue;
+    lvD[u + 1] += 1;
+    for (std::size_t g = 0; g < nL; ++g) {
+      const double r = sum[g] / n, dlt = r - sum[kBase] / n;
+      lvS[(u + 1) * nL + g] += dlt, lvS2[(u + 1) * nL + g] += dlt * dlt, lvR[(u + 1) * nL + g] += r;
+    }
+  }
+  // The pair for the session after the close t (the sessions settled by then) and what it added a trade.
+  const auto levelsAt = [&](std::size_t t, double& adj) {
+    adj = 0;
+    const std::size_t hi = t, lo = t > 250 ? t - 250 : 0;
+    const double n = lvD[hi] - lvD[lo];
+    if (n < 60) return kBase;
+    std::size_t best = kBase;
+    for (std::size_t g = 0; g < nL; ++g) {
+      const double m = (lvS[hi * nL + g] - lvS[lo * nL + g]) / n, v = (lvS2[hi * nL + g] - lvS2[lo * nL + g]) / n - m * m;
+      if (!(m > 0) || !(v > 0)) continue;
+      const double ts = m / std::sqrt(v / n), sc = m * std::max(0.0, 1.0 - 4.0 / (ts * ts));
+      if (sc > adj) adj = sc, best = g;
+    }
+    return best;
+  };
+
   // The costs of an order of `value` pounds.
   const auto commission = [&](double value) {
     if (!(value > 0)) return 0.0;
@@ -368,6 +437,8 @@ int main(int argc, char** argv) {
     std::vector<Order> out;
     double a = 0, b = 0;
     if (pred[t].empty() || !calibration(t, a, b)) return out;
+    double lvAdj = 0;
+    const std::size_t lv = levelsAt(t, lvAdj);
     const auto& u = uni[t];
     for (std::size_t j = 0; j < u.size(); ++j) {
       const std::size_t i = u[j];
@@ -378,19 +449,20 @@ int main(int argc, char** argv) {
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder) continue;
       r.limit = r.close * (1 + o.capSd * r.sigma);
-      r.stop = r.close * (1 - o.stopSd * r.sigma);  // from the expected entry: the lower of the limit and the close
-      r.cost = 2 * commission(r.value) / r.value + stamp(i) + 0.5 * r.spread;
+      r.level = lv, r.adj = lvAdj, r.stopSd = kStop[lv / nK], r.takeSd = kTake[lv % nK], r.expected += lvAdj;
+      r.stop = r.close * (1 - r.stopSd * r.sigma);  // shown from the close; placed from the price bought at
+      r.cost = 2 * commission(r.value) / r.value + stamp(i) + 0.5 * r.spread;  // a quarter-spread at each auction (the levels' own slippage is in what they added)
       r.net = r.expected - r.cost;
       if (r.net >= o.hurdle) out.push_back(r);
     }
     std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.net * x.value > y.net * y.value || (x.net * x.value == y.net * y.value && x.i < y.i); });
     if (out.size() > o.slots) out.resize(o.slots);
-    for (auto& r : out) {  // how often an order this high would have bought over the share's last 250 sessions
+    for (auto& r : out) {  // how often its opening auction would have bought over the share's last 250 sessions
       double n = 0, f = 0;
       for (std::size_t q = t > 250 ? t - 250 : 0; q < t; ++q) {
         if (!p.ok(q, r.i) || !p.ok(q + 1, r.i) || !(sigma[at(q, r.i)] > 0)) continue;
         const double lim = p.C[at(q, r.i)] * (1 + o.capSd * sigma[at(q, r.i)]);
-        n += 1, f += p.O[at(q + 1, r.i)] <= lim || p.L[at(q + 1, r.i)] < lim * (1 - 0.5 * spread[at(q, r.i)]);
+        n += 1, f += p.hasOpen(q + 1, r.i) && p.O[at(q + 1, r.i)] <= lim;
       }
       r.fill = n > 0 ? f / n : kNaN;
     }
@@ -401,17 +473,12 @@ int main(int argc, char** argv) {
     Fill f;
     const std::size_t i = r.i, d = t + 1;
     if (d >= T || !p.ok(d, i) || !p.hasOpen(d, i)) return f;
-    const double O = p.O[at(d, i)], H = p.H[at(d, i)], L = p.L[at(d, i)], C = p.C[at(d, i)], hs = 0.5 * r.spread;
-    (void)H;
-    if (O <= r.limit) f.filled = 1, f.entry = O;
-    else if (L < r.limit * (1 - hs)) f.filled = 2, f.entry = r.limit;
-    else return f;
-    double slip = f.filled == 1 ? 0.25 * r.spread : 0.0;  // the auction's price against the book's (a passive limit in the day pays none)
-    if (L <= r.stop) {  // bought in the auction: stopped on the way down; bought in the day: the low may have come first, so taken as stopped
-      f.exit = 1, f.exitPx = std::min(O, r.stop), slip += hs;
-    } else {
-      f.exit = 0, f.exitPx = C, slip += 0.25 * r.spread;
-    }
+    const double O = p.O[at(d, i)];
+    if (!(O <= r.limit)) return f;  // the auction above the limit: not bought (the order expires with the auction)
+    f.filled = 1, f.entry = O;
+    const Exit e = exitOf(d, i, O, r.sigma, r.spread, r.stopSd, r.takeSd);
+    f.exit = e.code, f.exitPx = e.px;
+    const double slip = 0.25 * r.spread + e.slip;  // the auction's price against the book's, and the exit's
     f.gross = f.exitPx / f.entry - 1;
     f.cost = 2 * commission(r.value) / r.value + stamp(i) + slip;
     f.ret = f.gross - f.cost;
@@ -421,15 +488,15 @@ int main(int argc, char** argv) {
   // The backtest: every session's orders from the close before, traded on the session's bars.
   std::FILE* trace = o.traceOut.empty() ? nullptr : std::fopen(o.traceOut.c_str(), "w");
   std::FILE* tlog = std::getenv("X_TRADELOG") ? std::fopen(std::getenv("X_TRADELOG"), "w") : nullptr;
-  if (tlog) std::fprintf(tlog, "date,ticker,close,limit,stop,value,expected,cost,filled,entry,exit,exitPrice,gross,ret\n");
+  if (tlog) std::fprintf(tlog, "date,ticker,close,limit,stopRel,takeRel,value,expected,cost,filled,entry,exit,exitPrice,gross,ret\n");
   std::vector<double> ret;
   std::vector<std::string> days;
-  double nOrders = 0, nFilled = 0, nAuction = 0, nStopped = 0, nCapped = 0, sumGross = 0, sumCost = 0, sumNet = 0, nWin = 0, sumValue = 0, sumExpected = 0;
-  std::size_t daysWithOrders = 0, firstDay = T;
+  double nOrders = 0, nFilled = 0, nAuction = 0, nStopped = 0, nTaken = 0, nCapped = 0, sumGross = 0, sumCost = 0, sumNet = 0, nWin = 0, sumValue = 0, sumExpected = 0;
+  std::size_t daysWithOrders = 0, firstDay = T, levelDays[nL] = {};
   std::map<std::string, std::pair<std::vector<double>, double>> byYear;  // each year's daily returns, IC sum
   std::vector<double> baseline;  // every share of the day's list, bought at the open and sold at the close (gross): the market the orders come from
   const auto traceOrder = [&](std::size_t t, const Order& r) {
-    if (trace) std::fprintf(trace, "%s,%s,%.6g,%.6g,%.6g,%.6g\n", p.days[t].c_str(), p.tickers[r.i].c_str(), r.limit, r.stop, r.value, r.net);
+    if (trace) std::fprintf(trace, "%s,%s,%.6g,%.6g,%.6g,%.6g,%.6g\n", p.days[t].c_str(), p.tickers[r.i].c_str(), r.limit, r.stopSd, r.takeSd, r.value, r.net);
   };
   struct Check { std::size_t i; Order r; Fill f; };
   std::vector<Check> lastCheck;
@@ -439,6 +506,10 @@ int main(int argc, char** argv) {
     const bool live = !pred[t].empty() && calibration(t, a, b);
     if (!live) continue;
     if (firstDay == T) firstDay = t + 1;
+    {
+      double adj = 0;
+      ++levelDays[levelsAt(t, adj)];
+    }
     double day = 0;
     lastCheck.clear();
     for (const auto& r : ords) {
@@ -446,11 +517,12 @@ int main(int argc, char** argv) {
       const Fill f = play(t, r);
       nOrders += 1, nCapped += r.capped, sumExpected += (std::isfinite(r.fill) ? r.fill : 1.0) * r.net;
       if (f.filled) {
-        nFilled += 1, nAuction += f.filled == 1, nStopped += f.exit == 1, sumGross += f.gross, sumCost += f.cost, sumNet += f.ret, nWin += f.ret > 0, sumValue += r.value;
+        nFilled += 1, nAuction += f.filled == 1, nStopped += f.exit == 1, nTaken += f.exit == 2, sumGross += f.gross, sumCost += f.cost, sumNet += f.ret, nWin += f.ret > 0, sumValue += r.value;
         day += r.value * f.ret / (double(o.slots) * o.capital);
       }
       if (tlog)
-        std::fprintf(tlog, "%s,%s,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%d,%.6g,%.6g,%.6g\n", p.days[t + 1].c_str(), p.tickers[r.i].c_str(), r.close, r.limit, r.stop, r.value, r.expected,
+        std::fprintf(tlog, "%s,%s,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%d,%.6g,%d,%.6g,%.6g,%.6g\n", p.days[t + 1].c_str(), p.tickers[r.i].c_str(), r.close, r.limit, -r.stopSd * r.sigma,
+                     std::isfinite(r.takeSd) ? r.takeSd * r.sigma : 0.0, r.value, r.expected,
                      r.cost, f.filled, f.entry, f.exit, f.exitPx, f.gross, f.ret);
       lastCheck.push_back({r.i, r, f});
     }
@@ -503,9 +575,34 @@ int main(int argc, char** argv) {
     std::printf("uk: the account (%s .. %s, %zu slots of GBP %.0f): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, net of costs\n", days.front().c_str(), days.back().c_str(),
                 o.slots, o.capital, 100 * all.annual, all.sharpe, 100 * all.dd);
     std::printf("uk:   for scale: every share of the day's list bought at the open and sold at the close %+.1f%% a year (Sharpe %.2f), before costs\n", 100 * base.annual, base.sharpe);
-    std::printf("uk:   orders: %.0f on %zu of %zu sessions (%.2f a day); filled %.1f%% (%.1f%% of the fills in the opening auction), stopped %.1f%% of fills; %.0f%% cut to the share's liquidity\n",
-                nOrders, daysWithOrders, ret.size(), nOrders / double(ret.size()), nOrders > 0 ? 100 * nFilled / nOrders : 0.0, nFilled > 0 ? 100 * nAuction / nFilled : 0.0,
-                nFilled > 0 ? 100 * nStopped / nFilled : 0.0, nOrders > 0 ? 100 * nCapped / nOrders : 0.0);
+    std::printf("uk:   orders: %.0f on %zu of %zu sessions (%.2f a day); bought in the opening auction %.1f%%; of the trades %.1f%% stopped, %.1f%% took profit, the rest sold at the close; %.0f%% cut to the share's liquidity\n",
+                nOrders, daysWithOrders, ret.size(), nOrders / double(ret.size()), nOrders > 0 ? 100 * nFilled / nOrders : 0.0, nFilled > 0 ? 100 * nStopped / nFilled : 0.0,
+                nFilled > 0 ? 100 * nTaken / nFilled : 0.0, nOrders > 0 ? 100 * nCapped / nOrders : 0.0);
+    // The levels: which pair each session used (chosen walk-forward), and every pair's record over the
+    // whole period (for reading only: the choice each day saw only the 250 sessions before it).
+    std::printf("uk:   levels used (stop / take-profit, daily volatilities from the entry):");
+    for (std::size_t g = 0; g < nL; ++g)
+      if (levelDays[g]) {
+        char k[16];
+        std::snprintf(k, sizeof k, std::isfinite(kTake[g % nK]) ? "%g" : "none", kTake[g % nK]);
+        std::printf(" %g/%s on %zu sessions;", kStop[g / nK], k, levelDays[g]);
+      }
+    std::printf("\n");
+    {
+      const std::size_t lo = firstDay > 0 ? firstDay - 1 : 0;
+      const double n = lvD[T] - lvD[lo];
+      if (n > 1) {
+        std::printf("uk:   each pair over the backtest, added a trade against the %g-volatility stop alone (t):", kStop[kBase / nK]);
+        for (std::size_t g = 0; g < nL; ++g) {
+          if (g == kBase) continue;
+          const double m = (lvS[T * nL + g] - lvS[lo * nL + g]) / n, v = (lvS2[T * nL + g] - lvS2[lo * nL + g]) / n - m * m;
+          char k[16];
+          std::snprintf(k, sizeof k, std::isfinite(kTake[g % nK]) ? "%g" : "none", kTake[g % nK]);
+          std::printf("%s %g/%s %+.3f%% (%+.1f)", g % nK ? "," : "\nuk:    ", kStop[g / nK], k, 100 * m, v > 0 ? m / std::sqrt(v / n) : 0.0);
+        }
+        std::printf("\n");
+      }
+    }
     if (nFilled > 0)
       std::printf("uk:   a filled trade on average: GBP %.0f, %+.3f%% before costs, costs %.3f%%, %+.3f%% after; %.1f%% gained; expected per order %+.3f%%, realised per order %+.3f%%\n",
                   sumValue / nFilled, 100 * sumGross / nFilled, 100 * sumCost / nFilled, 100 * sumNet / nFilled, 100 * nWin / nFilled, 100 * sumExpected / std::max(1.0, nOrders),
@@ -518,12 +615,16 @@ int main(int argc, char** argv) {
   }
   std::printf("uk: next session (after the close of %s): %zu orders\n", p.days.back().c_str(), next.size());
   for (const auto& r : next)
-    std::printf("uk:   %-6s buy GBP %5.0f%s, limit %.4g (close %.4g %+.2f%%), stop %.4g (%+.1f%%); expected %+.2f%%, costs %.2f%%, net %+.2f%%; bought on %.0f%% of its last sessions%s\n",
-                p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1), r.stop, 100 * (r.stop / std::min(r.limit, r.close) - 1),
-                100 * r.expected, 100 * r.cost, 100 * r.net, 100 * (std::isfinite(r.fill) ? r.fill : 0.0), stampFree[r.i] ? " (AIM: no stamp duty)" : "");
+    std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); stop %.1f%% and %s from the price bought at; expected %+.2f%% (levels %+.2f%%), costs %.2f%%, net %+.2f%%; "
+                "the auction under the limit on %.0f%% of its last sessions%s\n",
+                p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1), -100 * r.stopSd * r.sigma,
+                std::isfinite(r.takeSd) ? ("take-profit +" + std::to_string(100 * r.takeSd * r.sigma).substr(0, 4) + "%").c_str() : "no take-profit", 100 * r.expected, 100 * r.adj, 100 * r.cost,
+                100 * r.net, 100 * (std::isfinite(r.fill) ? r.fill : 0.0), stampFree[r.i] ? " (AIM: no stamp duty)" : "");
 
   // The orders for the bridge (prices: to the private store, never the page): each carries its amount
-  // (capital, at most maxCapital, the share's liquidity), its limit, stop and no take-profit.
+  // (capital, at most maxCapital, the share's liquidity), its auction-only limit ("entry": "open"), and
+  // its levels as fractions of the price it is bought at (stopRel, takeRel: the bridge sets them from the
+  // fill); stop and take are the same levels from the last close, for reading.
   if (!o.ordersOut.empty()) {
     std::ofstream f(o.ordersOut);
     char b[1024];
@@ -531,9 +632,11 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < next.size(); ++q) {
       const auto& r = next[q];
       std::snprintf(b, sizeof b,
-                    "%s{\"ticker\":\"%s\",\"close\":%.6g,\"limit\":%.6g,\"stop\":%.6g,\"take\":null,\"exit\":\"close\",\"expected\":%.6g,\"ifFilled\":%.6g,\"fill\":%.4g,\"capital\":%.2f,"
+                    "%s{\"ticker\":\"%s\",\"close\":%.6g,\"entry\":\"open\",\"limit\":%.6g,\"stop\":%.6g,\"take\":%s,\"stopRel\":%.6g,\"takeRel\":%s,\"exit\":\"close\",\"expected\":%.6g,\"ifFilled\":%.6g,\"fill\":%.4g,\"capital\":%.2f,"
                     "\"maxCapital\":%.2f,\"rebuy\":0,\"rebuyCost\":0,\"spread\":%.6g,\"cost\":%.6g,\"costAmount\":%.4g,\"stampFree\":%s}",
-                    q ? "," : "", p.tickers[r.i].c_str(), r.close, r.limit, r.stop, (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, std::isfinite(r.fill) ? r.fill : 0.0, r.value,
+                    q ? "," : "", p.tickers[r.i].c_str(), r.close, r.limit, r.stop,
+                    std::isfinite(r.takeSd) ? std::to_string(r.close * (1 + r.takeSd * r.sigma)).c_str() : "null", -r.stopSd * r.sigma,
+                    std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, std::isfinite(r.fill) ? r.fill : 0.0, r.value,
                     o.advShare * adv[at(T - 1, r.i)], r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
       f << b;
     }
@@ -574,9 +677,10 @@ int main(int argc, char** argv) {
     f << b << ",\"orders\":[";
     for (std::size_t q = 0; q < next.size(); ++q) {
       const auto& r = next[q];
-      const double ref = std::min(r.limit, r.close);
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%.6g,\"take\":null,\"rebuy\":0,\"fill\":%.4g,\"amount\":%.0f}", q ? "," : "",
-                    p.tickers[r.i].c_str(), (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.limit / r.close - 1, r.stop / ref - 1, std::isfinite(r.fill) ? r.fill : 0.0, r.value);
+      // the levels from the entry (the open), the limit from the close
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%.6g,\"take\":%s,\"rebuy\":0,\"fill\":%.4g,\"amount\":%.0f}", q ? "," : "",
+                    p.tickers[r.i].c_str(), (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.limit / r.close - 1, -r.stopSd * r.sigma,
+                    std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", std::isfinite(r.fill) ? r.fill : 0.0, r.value);
       f << b;
     }
     f << "],\"recent\":[";
