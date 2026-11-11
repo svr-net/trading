@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
     else if (a == "--window") o.window = std::size_t(std::atol(argv[++k]));
     else if (a == "--warm") o.warm = std::size_t(std::atol(argv[++k]));
   }
-  if (o.csv.empty() || (o.market != "UK" && o.market != "EU") || (o.market == "EU" && o.venues.empty())) {
+  if (o.csv.empty() || (o.market != "UK" && o.market != "EU" && o.market != "US") || (o.market == "EU" && o.venues.empty())) {
     std::fprintf(stderr, "usage: ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free f] [--segments f] [--override f] [--json f] [--orders f]\n");
     return 2;
   }
@@ -175,11 +175,11 @@ int main(int argc, char** argv) {
   // The market: the UK's prices in pence (traded value in pounds: / 100), stamp duty and the LSE's segments;
   // Europe's (--costs EU, tickers EXCHANGE:CODE) in euros, each exchange's commission, fees and taxes from
   // --venues (tools/venues.txt: the tax on buying a share held past the day, as these are, for the holds).
-  const bool uk = o.market == "UK";
-  const char* cur = uk ? "GBP" : "EUR";
+  const bool uk = o.market == "UK", us = o.market == "US";
+  const char* cur = uk ? "GBP" : us ? "USD" : "EUR";
   const double priceUnit = uk ? 100.0 : 1.0;
-  if (!uk && !minPriceSet) o.minPrice = 1.0;  // EUR 1
-  const swing::Costs venueCosts = uk ? swing::Costs{} : swing::costs(p, o.market, o.capital, o.venues, "");
+  if (!uk && !minPriceSet) o.minPrice = us ? 5.0 : 1.0;  // EUR 1; USD 5 (no penny stocks)
+  const swing::Costs venueCosts = uk || us ? swing::Costs{} : swing::costs(p, o.market, o.capital, o.venues, "");
 
   // Stamp duty (AIM shares are exempt) and the order book's segments.
   std::vector<char> stampFree(N, 0), segOk(N, 1);
@@ -630,10 +630,16 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  // The broker's costs of one side of an order of `value` (pounds; euros in Europe): on the final orders only.
-  // Europe: the exchange's line (a rate, at least a minimum, a further fee's rate, a tax on both sides).
-  const auto commission = [&](double value, std::size_t i) {
+  // The broker's costs of one side of an order of `value` (pounds; euros in Europe; dollars in the US) at
+  // `price` a share: on the final orders only. Europe: the exchange's line (a rate, at least a minimum, a
+  // further fee's rate, a tax on both sides). The US: IBKR's fixed USD 0.005 a share, at least USD 1, at
+  // most 1% (tiered: USD 0.0035, at least 0.35, and about 0.0005 a share of exchange and clearing fees).
+  const auto commission = [&](double value, std::size_t i, double price) {
     if (!(value > 0)) return 0.0;
+    if (us) {
+      const double shares = price > 0 ? std::max(1.0, std::floor(value / price)) : 1.0;
+      return o.tiered ? std::max(0.35, 0.0035 * shares) + 0.0005 * shares : std::min(0.01 * value, std::max(1.0, 0.005 * shares));
+    }
     if (!uk) {
       const auto& v = venueCosts.venue[i];
       return std::max(v[2], v[1] * value) + (v[3] + v[5]) * value;
@@ -642,15 +648,22 @@ int main(int argc, char** argv) {
   };
   // The tax on buying: the UK's stamp duty (none on AIM shares); Europe's on a share held past the day
   // (the French and Spanish FTT, the Portuguese) or, within the day, its same-day one.
-  const auto stamp = [&](std::size_t i) { return uk ? (stampFree[i] ? 0.0 : 0.005) : venueCosts.venue[i][o.hold ? 6 : 4]; };
+  const auto stamp = [&](std::size_t i) { return uk ? (stampFree[i] ? 0.0 : 0.005) : us ? 0.0 : venueCosts.venue[i][o.hold ? 6 : 4]; };
+  // The US regulators' fees on a sale (the SEC's USD 27.80 a million, FINRA's USD 0.000166 a share up to USD 8.30).
+  const auto saleFees = [&](double value, double price) {
+    if (!us || !(value > 0)) return 0.0;
+    const double shares = price > 0 ? std::floor(value / price) : 0.0;
+    return 0.0000278 * value + std::min(8.30, 0.000166 * shares);
+  };
   const auto exchangeOf = [&](std::size_t i) {
     if (uk) return std::string(stampFree[i] ? "AIM" : "main");
+    if (us) return std::string("US");
     const auto k = p.tickers[i].find(':');
     return k == std::string::npos ? std::string("?") : p.tickers[i].substr(0, k);
   };
   // Both sides' commission and the taxes. No spread: the orders buy in the opening auction and sell in
   // the closing auction (or the opening one), where buyers and sellers trade at one price, so none is crossed.
-  const auto costOf = [&](const Order& r) { return 2 * commission(r.value, r.i) / r.value + stamp(r.i); };
+  const auto costOf = [&](const Order& r) { return (2 * commission(r.value, r.i, r.close) + saleFees(r.value, r.close)) / r.value + stamp(r.i); };
 
   // The orders for the session after the close t, before costs (the model and its backtest), or with
   // the broker's costs applied (withCosts: the final orders): each order's expected return less its own
@@ -978,9 +991,9 @@ int main(int argc, char** argv) {
     const bool cal = !pred[T - 1].empty() && (o.hold ? calibrationH(T - 1, holdAt(T - 1, ab), ab, bb, dh) : calibration(T - 1, levelsAt(T - 1, ab), ab, bb));
     if (!cal) std::printf("uk:   no calibrated record at the last close: no candidates\n");
     for (const auto& r : best) {
-      const double cm = 2 * commission(r.value, r.i) / r.value, st = stamp(r.i);
-      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, %s %.2f%%: %+.2f%% after (its spread %.2f%%, not paid in the auctions); %s %.0f%s\n",
-                  p.tickers[r.i].c_str(), exchangeOf(r.i).c_str(), 100 * r.expected, 100 * cm, uk ? "stamp duty" : "tax", 100 * st, 100 * (r.expected - cm - st), 100 * r.spread, cur, r.value,
+      const double cm = (2 * commission(r.value, r.i, r.close) + saleFees(r.value, r.close)) / r.value, st = stamp(r.i);
+      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission%s %.2f%%, %s %.2f%%: %+.2f%% after (its spread %.2f%%, not paid in the auctions); %s %.0f%s\n",
+                  p.tickers[r.i].c_str(), exchangeOf(r.i).c_str(), 100 * r.expected, us ? " and fees" : "", 100 * cm, uk ? "stamp duty" : "tax", 100 * st, 100 * (r.expected - cm - st), 100 * r.spread, cur, r.value,
                   r.expected - cm - st > 0 ? " (gains after costs)" : "");
     }
   }
@@ -1070,7 +1083,7 @@ int main(int argc, char** argv) {
     char b[512];
     f << "{\"model\":\"uk\",\"asOf\":\"" << p.days.back() << "\",\"stocks\":" << N << ",\"lag\":0,\"top\":" << o.top << (o.hold ? ",\"book\":\"hold\",\"days\":" + std::to_string(H) : std::string());
     std::snprintf(b, sizeof b, ",\"costs\":{\"broker\":\"IBKR\",\"market\":\"%s\",\"net\":false,\"capital\":%.6g,\"stamp\":%g,\"stampFree\":%ld,\"venues\":%s}", o.market.c_str(), o.capital,
-                  uk ? 0.005 : 0.0, long(std::count(stampFree.begin(), stampFree.end(), 1)), uk ? "false" : "true");
+                  uk ? 0.005 : 0.0, long(std::count(stampFree.begin(), stampFree.end(), 1)), uk || us ? "false" : "true");
     f << b;
     std::snprintf(b, sizeof b, ",\"backtest\":{\"from\":\"%s\",\"to\":\"%s\",\"annualReturn\":%.6g,\"sharpe\":%.6g,\"maxDrawdown\":%.6g,\"orders\":%.0f,\"trades\":%.0f,\"avgTrade\":%.6g,\"winRate\":%.6g}",
                   days.empty() ? "" : days.front().c_str(), days.empty() ? "" : days.back().c_str(), all.annual, all.sharpe, all.dd, nOrders, nFilled, nFilled > 0 ? sumNet / nFilled : 0.0,
@@ -1125,6 +1138,7 @@ int main(int argc, char** argv) {
             lead = false;
     std::set<std::string> exs;
     if (uk) exs.insert("LSE");
+    else if (us) exs.insert("NYSE"), exs.insert("NASDAQ");
     else
       for (const auto& tk : p.tickers)
         if (tk.find(':') != std::string::npos) exs.insert(tk.substr(0, tk.find(':')));
