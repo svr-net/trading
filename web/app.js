@@ -75,8 +75,10 @@ function render(r, source) {
   const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
   if (chances) head.push(['Chance to buy', 'num']);
   const ifs = r.orders.some((o) => o.ifFilled != null);  // the gain if it buys; expected = the chance to buy times it
-  if (ifs) head.push(['If it buys', 'num']);
-  head.push(['Expected', 'num']);
+  const costs = r.orders.some((o) => o.cost != null);  // the broker's round-trip costs, already taken off the two columns after it
+  if (costs) head.push(['Costs', 'num']);
+  if (ifs) head.push([costs ? 'If it buys, after costs' : 'If it buys', 'num']);
+  head.push([costs ? 'Expected, after costs' : 'Expected', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
       const row = [[o.ticker], [o.limit == null ? 'open' : pct(o.limit, 1), 'num']];
@@ -84,6 +86,7 @@ function render(r, source) {
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num']);
+      if (costs) row.push([o.cost == null ? '–' : `${(100 * o.cost).toFixed(2)}%`, 'num']);
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num'] : signed(o.ifFilled, 2));
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
