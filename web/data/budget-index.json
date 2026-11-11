@@ -2,8 +2,8 @@
  "market": "INDEX",
  "date": "2026-11-11",
  "score": 0.0007272422557184636,
- "share": 0.0,
- "total": 0.0,
+ "share": 0.2,
+ "total": 8532.444228,
  "currency": "USD",
  "slots": [
   2,
@@ -11,7 +11,7 @@
   5
  ],
  "next": 2,
- "amount": 0.0,
+ "amount": 4266.222114,
  "chosen": {
   "2": 693,
   "3": 117,
