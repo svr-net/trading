@@ -36,6 +36,8 @@ jobs:
         run: sh tools/check/uk_leak.sh build/ofm_uk
       - name: The UK model's orders through submit.py on a stand-in IBKR (tools/ibkr/test/levels.py)
         run: python3 tools/ibkr/test/levels.py
+      - name: The daily-bars fetch gives way to the bridge's other steps (tools/ibkr/test/pause.py)
+        run: python3 tools/ibkr/test/pause.py
 
   bridge-update:
     # The restarter replacing the bridge with GitHub's newest image, on a stand-in NAS.
