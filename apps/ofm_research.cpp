@@ -380,6 +380,7 @@ int main(int argc, char** argv) {
       // earns nothing); without a chance, the calibration over every pick (an unfilled one 0).
       double weighted(double overPicks) const { return std::isfinite(fill) ? fill * expected : overPicks; }
       double order = kNaN;          // that order's expected return, set with the pick
+      double cost = kNaN;           // the broker's round-trip costs taken off the final list (a share of the trade; NaN: none taken off)
     };
     std::vector<Pick> picks;
     std::vector<std::pair<std::size_t, double>> candidates;  // the pool's highest ranked for the next open (stock, score), for recording their opening auctions
@@ -1484,12 +1485,15 @@ int main(int argc, char** argv) {
       }
       // The final list: the model and the backtest ran gross of the broker's costs, so each order's
       // costs (a round trip at its entry) come off here: off its gain if it buys, and off its expected
-      // return by its chance to buy (an unfilled order costs nothing); then the highest expected first.
+      // return by its chance to buy (an unfilled order costs nothing); an order left without an expected
+      // gain is dropped; then the highest expected first.
       if (!netCosts) {
         for (auto& pk : lastRun.picks) {
           const double c = costFrom(&fee[pk.stock * 7], m.close(t, pk.stock) * std::min(1 + pk.limit, 1.0), 0.0);
-          pk.expected -= c, pk.order -= (std::isfinite(pk.fill) ? pk.fill : 1.0) * c;
+          pk.cost = c, pk.expected -= c, pk.order -= (std::isfinite(pk.fill) ? pk.fill : 1.0) * c;
         }
+        // An order whose costs leave no expected gain is not proposed.
+        lastRun.picks.erase(std::remove_if(lastRun.picks.begin(), lastRun.picks.end(), [](const auto& pk) { return !(pk.order > 0); }), lastRun.picks.end());
         std::stable_sort(lastRun.picks.begin(), lastRun.picks.end(), [](const auto& a, const auto& b) { return a.order > b.order; });
       }
     }
@@ -1604,8 +1608,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < R.picks.size(); ++q) {
       const auto& pk = R.picks[q];
       auto lvl = [](double x) { return std::isfinite(x) ? std::to_string(x) : std::string("null"); };
-      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g,\"fill\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
-                    pk.order, pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy, lvl(pk.fill).c_str());
+      std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"limit\":%.6g,\"stop\":%s,\"take\":%s,\"rebuy\":%.4g,\"fill\":%s,\"cost\":%s}", q ? "," : "", m.tickers[pk.stock].c_str(),
+                    pk.order, pk.expected, pk.limit, lvl(pk.stop).c_str(), lvl(pk.take).c_str(), pk.rebuy, lvl(pk.fill).c_str(), lvl(pk.cost).c_str());
       o << b;
     }
     o << "],\"recent\":[";
