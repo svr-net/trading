@@ -32,4 +32,6 @@ wp = s.allocate(rec, cap=0.5, floor=0.05)
 print('paper:', {m: round(v, 3) for m, v in wp.items()})
 assert min(wp.values()) >= 0.05 - 1e-9 and abs(sum(wp.values()) - 1) < 1e-9, wp
 assert s.allocate({'UK': {d: -0.001 for d in days}}) == {'UK': 0.0}, 'no edge anywhere: nothing'
+one = s.allocate({'INDEX': rec['US'], 'UK': rec['APAC'], 'EU': rec['APAC']}, cap=0.5, floor=0.05)
+assert abs(one['INDEX'] - 0.5) < 1e-9 and abs(one['UK'] - 0.05) < 1e-9, f'the floors came out of the capped market, not the unused limit: {one}'
 print('allocate: the split maximises the risk-adjusted return, no money without an edge, capped, floored on paper; OK')
