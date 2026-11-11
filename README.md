@@ -30,6 +30,11 @@ order is one a person would place, and whose backtest trades exactly those order
   multi-day book (`"book": "hold"`): the bridge places it with its hold book (`submit.py --holds`: the buy
   good only through the opening auction, each close a LOC sale at the exit level, a MOC sale on the last
   day), never within the day, and the evening's close and leftover checks leave its positions alone.
+  **Updated every day**: each morning every position held is looked at again with the last close's
+  forecast: one the model would no longer buy (its expected return as a new trade, before costs; the
+  costs paid are spent) is sold in the opening auction; the others keep, their exit level set again from
+  the day's. The order file carries the update for every share on the day's list (`"updates"`); the
+  bridge's hold book applies it before the open; the backtest makes the same decisions.
   Without `--hold`, the same-day trades below.
 - **Bought at the open, never on a dip**: a limit at the last close plus 0.5 of the share's daily
   volatility (it does not chase a big gap up), good only until 2 minutes after the open (IBKR's GTD;

@@ -471,6 +471,27 @@ def holds(args):
             st['positions'].pop(sym)
         st['pending'] = {}
         book = json.load(open(args.orders)) if args.orders else {'orders': []}
+        # The daily update (apps/ofm_uk --hold: "updates", every share on the day's list): each position the
+        # model would no longer buy is sold now (before the open: in the opening auction); the others keep,
+        # their exit level set again from the day's. A share without an update keeps its plan.
+        today = date.today().isoformat()
+        upd = {ib_symbol(u['ticker'].split(':')[-1], args.market): u for u in book.get('updates', []) if u.get('ticker')}
+        for sym, pos in st['positions'].items():
+            u = upd.get(sym)
+            if not u or sym not in held:
+                continue
+            if not u.get('keep', True):
+                if pos.get('exiting') == today:
+                    lines.append(f'{sym}: already sold at the open today')
+                    continue
+                qty = min(float(pos.get('qty', held[sym].position)), held[sym].position)
+                ok, line = sell_out(ib, held[sym].contract, qty, ref + '-exit', errors, at_close=False)
+                if ok:
+                    pos['exiting'] = today
+                lines.append(f"{sym}: the model no longer holds it ({100 * float(u.get('expected') or 0):+.2f}% expected), sold at the open: {line}")
+            elif u.get('exitAbove') is not None and abs(float(u['exitAbove']) - float(pos.get('exitAbove') or 0)) > 1e-9:
+                lines.append(f"{sym}: kept; its exit level {100 * float(pos.get('exitAbove') or 0):+.2f}% -> {100 * float(u['exitAbove']):+.2f}% above the price paid")
+                pos['exitAbove'] = float(u['exitAbove'])
         # The day's own orders (the daily strategy) keep their shares: the book never buys one of them.
         daily = {t.contract.symbol for t in ib.reqAllOpenOrders() if (t.order.orderRef or '').startswith(f'ofm-{args.market}-{date.today().isoformat()}')}
         free = max(0, int(book.get('slots', 10)) - len(st['positions']))  # the book's slots not held
@@ -550,6 +571,9 @@ def holds(args):
             qty = min(float(pos.get('qty', p.position)), p.position)  # its own shares only (never the day's trades in the same share)
             if pos.get('offered') == today:  # a rerun the same day: never offered twice
                 lines.append(f'{sym}: already offered at this close')
+                continue
+            if pos.get('exiting') == today:  # sold at the open by the daily update (still held: its sale is working)
+                lines.append(f'{sym}: being sold since the open (the daily update): not offered at the close')
                 continue
             pos['closes'] = int(pos.get('closes', 0)) + 1  # this close counts (the fill's day is the first)
             pos['offered'] = today

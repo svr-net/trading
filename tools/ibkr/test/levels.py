@@ -396,7 +396,28 @@ def hold_book():
     last = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
     moc = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderType == 'MOC']
     assert len(moc) == 1 and moc[0].order.totalQuantity == 990 and 'its last, 5' in last, (last, [vars(t.order) for t in b._trades if t.order.action == 'SELL'])
-    return placed + closed + last
+    # The daily update (the next morning's orders file): kept, its exit level set again; then, a morning
+    # later, no longer wanted: sold at the open, and not offered again at that close.
+    moc[0].orderStatus.status = 'Cancelled'
+    st = json.load(open(state))
+    st['positions']['XXX'].update(closes=2, offered='2000-01-01')
+    json.dump(st, open(state, 'w'))
+    book['orders'] = []
+    book['updates'] = [{'ticker': 'XXX', 'keep': True, 'exitAbove': 0.02, 'expected': 0.004}]
+    json.dump(book, open(path, 'w'))
+    kept = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    assert json.load(open(state))['positions']['XXX']['exitAbove'] == 0.02 and '+1.20% -> +2.00%' in kept, kept
+    book['updates'] = [{'ticker': 'XXX', 'keep': False, 'exitAbove': 0.02, 'expected': -0.001}]
+    json.dump(book, open(path, 'w'))
+    dropped = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    out = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderRef.endswith('-exit')]
+    assert len(out) == 1 and out[0].order.orderType == 'MKT' and out[0].order.totalQuantity == 990 and 'no longer holds it' in dropped, (dropped, [vars(t.order) for t in out])
+    again = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    assert 'already sold at the open today' in again and len([t for t in b._trades if t.order.orderRef.endswith('-exit')]) == 1, again
+    n = len([t for t in b._trades if t.order.action == 'SELL'])
+    closed2 = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    assert len([t for t in b._trades if t.order.action == 'SELL']) == n and 'being sold since the open' in closed2, closed2
+    return placed + closed + last + kept + dropped + closed2
 
 
 if __name__ == '__main__':
@@ -405,4 +426,5 @@ if __name__ == '__main__':
     print('levels: orders for the open placed for the auction only; stop and take-profit from the fill, one cancelling the other; '
           'a trailing stop at IBKR (a fixed one where refused); a break-even stop moved by the watch; OK')
     print(hold_book())
-    print('hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; OK')
+    print('hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; '
+          'updated every morning (kept with its new exit level, or sold at the open); OK')
