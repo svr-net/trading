@@ -95,7 +95,7 @@ assert filled > 0.6 * len(rows), f'only {filled} of {len(rows)} orders bought at
 PY
 # Held up to 5 days (--hold 5, the UK's live setting): the planted effect found, no order changed by later
 # data, every order a buy for the opening auction with its exit level and its last day, every trade held
-# 1 to 5 days and sold at its exit level's first close or on its last day.
+# 1 to 5 days and sold at its exit level's close, at an open by the daily update, or on its last day.
 X_TRADELOG="$W/hold.log" "$BIN" --csv "$W/full.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/hold.tr" --orders "$W/hold.json" > "$W/hold.out"
 "$BIN" --csv "$W/cut.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/hold-cut.tr" > /dev/null
 hs=$(sed -n 's/^uk: the account.* a year, Sharpe \([-0-9.]*\),.*/\1/p' "$W/hold.out")
@@ -115,12 +115,18 @@ ix = {d: k for k, d in enumerate(days)}
 closes = {(r['date'], r['ticker']): float(r['close']) for r in csv.DictReader(open(sys.argv[3]))}
 rows = [r for r in csv.DictReader(open(sys.argv[2])) if r['filled'] == '1']
 assert len(rows) > 100, f'only {len(rows)} trades'
-for r in rows:  # each trade: sold at the first close at or above its exit level, else at its fifth close
-    e, x, lvl = float(r['entry']), float(r['exitPrice']), float(r['takeRel'])
-    k0 = ix[r['date']]
-    seq = [closes[(days[k], r['ticker'])] for k in range(k0, min(k0 + 5, len(days)))]
-    hit = next((c for c in seq if c >= e * (1 + lvl)), None)
-    want = hit if hit is not None else seq[-1]
-    assert abs(x - want) < 1e-3 * want, (r, seq)
+opens = {(r['date'], r['ticker']): float(r['open']) for r in csv.DictReader(open(sys.argv[3]))}
+how = {'0': 0, '2': 0, '3': 0}
+for r in rows:  # each trade, within its 5 days: at its exit level's close (the level in force then), at an open (the daily update), or at its last close
+    e, x, lvl, k0 = float(r['entry']), float(r['exitPrice']), float(r['takeRel']), ix[r['date']]
+    span = [days[k] for k in range(k0, min(k0 + 5, len(days)))]
+    how[r['exit']] += 1
+    if r['exit'] == '2':
+        assert any(abs(x - closes[(d, r['ticker'])]) < 1e-3 * x for d in span) and x >= e * (1 + lvl) * (1 - 1e-6), r
+    elif r['exit'] == '3':
+        assert any(abs(x - opens[(d, r['ticker'])]) < 1e-3 * x for d in span[1:]), r
+    else:
+        assert r['exit'] == '0' and abs(x - closes[(span[-1], r['ticker'])]) < 1e-3 * x, (r, span)
+assert how['3'] > 0, f'no trade sold by the daily update: {how}'
 PY
-echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level or on its last day"
+echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day"
