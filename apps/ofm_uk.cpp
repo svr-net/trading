@@ -27,9 +27,9 @@
 //   costs     the model learns and its backtest trades before the broker's costs: nothing it learns
 //             or reports is shaped by them. They come off the final orders only (the next session's):
 //             IBKR's commission on the order's own amount (fixed: GBP 3 or 0.05% a side; tiered with
-//             --pricing tiered), the 0.5% stamp duty on buying (not AIM shares, --stamp-free) and a
-//             quarter of the share's spread (Abdi and Ranaldo 2017) at each auction; an order whose
-//             costs take all it is expected to gain is not placed. (The prices the trades see stay
+//             --pricing tiered) and the 0.5% stamp duty on buying (not AIM shares, --stamp-free); no
+//             spread, as the orders trade in the auctions (one price for buyers and sellers); an order
+//             whose costs take all it is expected to gain is not placed. (The prices the trades see stay
 //             realistic: a stop sells half a spread below its level, a take-profit fills only when the
 //             high trades through it.)
 //   order     bought in the opening auction and only there: a limit at the last close plus --cap-sd
@@ -626,7 +626,9 @@ int main(int argc, char** argv) {
     return o.tiered ? std::max(1.0, 0.0005 * value) + std::max(0.10, 0.000045 * value) + 0.06 : std::max(3.0, 0.0005 * value);
   };
   const auto stamp = [&](std::size_t i) { return stampFree[i] ? 0.0 : 0.005; };
-  const auto costOf = [&](const Order& r) { return 2 * commission(r.value) / r.value + stamp(r.i) + 0.5 * r.spread; };  // both sides' commission, the stamp duty, a quarter-spread at each auction
+  // Both sides' commission and the stamp duty. No spread: the orders buy in the opening auction and sell in
+  // the closing auction (or the opening one), where buyers and sellers trade at one price, so none is crossed.
+  const auto costOf = [&](const Order& r) { return 2 * commission(r.value) / r.value + stamp(r.i); };
 
   // The orders for the session after the close t, before costs (the model and its backtest), or with
   // the broker's costs applied (withCosts: the final orders): each order's expected return less its own
@@ -954,10 +956,10 @@ int main(int argc, char** argv) {
     const bool cal = !pred[T - 1].empty() && (o.hold ? calibrationH(T - 1, holdAt(T - 1, ab), ab, bb, dh) : calibration(T - 1, levelsAt(T - 1, ab), ab, bb));
     if (!cal) std::printf("uk:   no calibrated record at the last close: no candidates\n");
     for (const auto& r : best) {
-      const double cm = 2 * commission(r.value) / r.value, st = stamp(r.i), sp = 0.5 * r.spread;
-      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, stamp duty %.2f%%, auction spread %.2f%% (its spread %.2f%%): %+.2f%% after; GBP %.0f%s\n",
-                  p.tickers[r.i].c_str(), stampFree[r.i] ? "AIM" : "main", 100 * r.expected, 100 * cm, 100 * st, 100 * sp, 100 * r.spread, 100 * (r.expected - cm - st - sp), r.value,
-                  r.expected - cm - st - sp > 0 ? " (placed)" : "");
+      const double cm = 2 * commission(r.value) / r.value, st = stamp(r.i);
+      std::printf("uk:   candidate %-6s %s: expected %+.2f%% before costs; commission %.2f%%, stamp duty %.2f%%: %+.2f%% after (its spread %.2f%%, not paid in the auctions); GBP %.0f%s\n",
+                  p.tickers[r.i].c_str(), stampFree[r.i] ? "AIM" : "main", 100 * r.expected, 100 * cm, 100 * st, 100 * (r.expected - cm - st), 100 * r.spread, r.value,
+                  r.expected - cm - st > 0 ? " (gains after costs)" : "");
     }
   }
   for (const auto& r : next)
