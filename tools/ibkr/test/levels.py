@@ -79,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7, 'BRK B': 8, 'BHP': 9, 'D05': 10}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0, 'BRK B': 480.0, 'BHP': 45.0, 'D05': 50.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7, 'BRK B': 8, 'BHP': 9, 'D05': 10, 'SPY': 11}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0, 'BRK B': 480.0, 'BHP': 45.0, 'D05': 50.0, 'SPY': 600.0}
 
 
 class Event:
@@ -494,6 +494,32 @@ def apac_book():
     return placed
 
 
+def index_book():
+    """The INDEX market's hold book: an index ETF (AMEX:SPY) routed SMART in dollars, good only through New
+    York's opening auction, on the INDEX market's own IBKR client (57)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(9, 21), ZoneInfo('America/New_York'))
+    d = tempfile.mkdtemp()
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'AMEX:SPY', 'close': 600.0, 'entry': 'open', 'open': True, 'limit': 603.0, 'stop': None, 'take': None, 'exitAbove': 0.003, 'days': 5,
+         'capital': 7000.0, 'maxCapital': 1e9}]}
+    path, state = os.path.join(d, 'INDEX.json'), os.path.join(d, 'holds-INDEX.json')
+    json.dump(book, open(path, 'w'))
+    b = _broker(Broker)
+    b.events = []
+    ids = []
+    real = b.connect
+    b.connect = lambda *a, **k: (ids.append(k.get('clientId')), real(*a, **k))[1]
+    placed = run(['--market', 'INDEX', '--holds', 'place', '--orders', path, '--hold-state', state])
+    del b.connect
+    buy = next(t for t in SHARED[0]._trades if t.contract.symbol == 'SPY' and t.order.action == 'BUY')
+    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('America/New_York'))
+    # USD 7,000 at USD 603: 11 shares; SMART; until 09:32 New York; the INDEX client (17 + 40 + 7 for the hold book)
+    assert buy.contract.exchange == 'SMART' and buy.order.totalQuantity == 11 and (until.hour, until.minute) == (9, 32), (vars(buy.order), placed)
+    assert ids and ids[0] == 17 + 40 + 7, ids
+    return placed
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -508,3 +534,5 @@ if __name__ == '__main__':
     print('US: BRK.B as BRK B, routed SMART, in dollars, good only through New York\'s opening auction; OK')
     print(apac_book())
     print('Asia-Pacific: each order good only through its own exchange\'s opening auction (ASX until 10:12 Sydney, SGX until 09:02 Singapore); OK')
+    print(index_book())
+    print('INDEX: AMEX:SPY routed SMART in dollars, its own client, good only through New York\'s opening auction; OK')

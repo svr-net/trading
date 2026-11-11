@@ -62,7 +62,7 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
         if s.get('app') in ('single', 'hold') and s['role'] == 'live':
             sys.exit(f"strategies: {market} {s['name']}: the single-share models run as shadows only (the bridge places the research model's or the UK model's orders)")
-        if s.get('app') == 'uk' and market not in ('UK', 'EU', 'US', 'APAC'):
+        if s.get('app') == 'uk' and market not in ('UK', 'EU', 'US', 'APAC', 'INDEX', 'FOREX'):
             sys.exit(f"strategies: {market} {s['name']}: the auction model (apps/ofm_uk) is for the UK, Europe, the US and Asia-Pacific only")
         bad_args = [x for x in s.get('args', []) if not isinstance(x, str) or not re.match(r'^[A-Za-z0-9_.,:/=-]{1,64}$', x)]
         if bad_args or not isinstance(s.get('args', []), list):
@@ -123,7 +123,7 @@ def with_capital(args_m, amount, tag):
     return a
 
 
-CURRENCY = {'UK': 'GBP', 'EU': 'EUR', 'US': 'USD', 'APAC': 'AUD'}
+CURRENCY = {'UK': 'GBP', 'EU': 'EUR', 'US': 'USD', 'APAC': 'AUD', 'INDEX': 'USD', 'FOREX': 'USD'}
 
 
 def fx_rates(path):

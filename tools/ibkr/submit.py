@@ -48,8 +48,9 @@ from datetime import date
 
 # Each market's exchange and currency at IBKR (US shares routed SMART); in markets of several
 # exchanges (EU, APAC) a ticker is EXCHANGE:CODE, EODData's exchange, and takes that exchange's.
-VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD'), 'EU': ('SBF', 'EUR')}
-EXCHANGE = {'PAR': ('SBF', 'EUR'), 'AMS': ('AEB', 'EUR'), 'BRU': ('ENEXT.BE', 'EUR'), 'LIS': ('BVL', 'EUR'), 'MSE': ('BM', 'EUR'),
+VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD'), 'EU': ('SBF', 'EUR'), 'INDEX': ('SMART', 'USD')}
+EXCHANGE = {'AMEX': ('SMART', 'USD'), 'ARCA': ('SMART', 'USD'), 'NYSE': ('SMART', 'USD'), 'NASDAQ': ('SMART', 'USD'), 'BATS': ('SMART', 'USD'),  # INDEX: US-listed index ETFs
+            'PAR': ('SBF', 'EUR'), 'AMS': ('AEB', 'EUR'), 'BRU': ('ENEXT.BE', 'EUR'), 'LIS': ('BVL', 'EUR'), 'MSE': ('BM', 'EUR'),
             'FRA': ('IBIS', 'EUR'), 'OSL': ('OSE', 'NOK'), 'ASX': ('ASX', 'AUD'), 'SGX': ('SGX', 'SGD')}
 
 
@@ -173,7 +174,7 @@ def completed_orders(ib, api_only=False, wait=20):
 
 def ib_symbol(ticker, market):
     # EODData's class shares (BRK.B) are "BRK B" at IBKR in the US; LSE keeps the dot (BT.A).
-    return ticker.replace('.', ' ') if market == 'US' else ticker
+    return ticker.replace('.', ' ') if market in ('US', 'INDEX') else ticker
 
 
 def per_share(o, market):
@@ -325,7 +326,7 @@ def leftovers(args):
     from ib_async import IB
 
     mine = {ib_symbol(t.split(':')[-1], args.market) for t in (args.tickers or '').split(',') if t}
-    cur = {'UK': {'GBP'}, 'US': {'USD'}, 'EU': {'EUR', 'NOK'}, 'APAC': {'AUD', 'SGD'}}[args.market]
+    cur = {'UK': {'GBP'}, 'US': {'USD'}, 'EU': {'EUR', 'NOK'}, 'APAC': {'AUD', 'SGD'}, 'INDEX': {'USD'}}[args.market]
     ib = IB()
     errors = {}
     ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
@@ -632,7 +633,7 @@ def holds(args):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC'], required=True)
+    a.add_argument('--market', choices=['UK', 'EU', 'US', 'APAC', 'INDEX'], required=True)
     a.add_argument('--orders', help='the orders file (orders/<MARKET>.json from svr-net/eod)')
     a.add_argument('--capital', type=float, default=1000.0, help='amount per trade, in the account currency')
     a.add_argument('--host', default='127.0.0.1')
@@ -665,7 +666,7 @@ def main():
     # (place, buy-back watch, close, report) and its helpers (+1 auction, +2 bars, +3 diag, +4 paths)
     # are 17.. for the UK, 27.. for the EU, 37.. for the US, 47.. for Asia-Pacific, so one market's
     # all-day buy-back watch never blocks another market's orders.
-    args.client_id += 10 * ['UK', 'EU', 'US', 'APAC'].index(args.market)
+    args.client_id += 10 * ['UK', 'EU', 'US', 'APAC', 'INDEX'].index(args.market)
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
 
     if args.ping:
@@ -991,7 +992,7 @@ def main():
         sys.exit(3)
 
 
-OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0)}
+OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0), 'INDEX': ('America/New_York', 9, 30)}
 
 
 def streamed(book, lines):
@@ -1052,7 +1053,7 @@ def auction(args):
     print(json.dumps({'date': opens.date().isoformat(), 'market': args.market, 'asOf': book.get('asOf'), 'shares': list(rows.values())}))
 
 
-CLOSE = {'UK': ('Europe/London', 16, 35), 'EU': ('Europe/Paris', 17, 35), 'US': ('America/New_York', 16, 0), 'APAC': ('Australia/Sydney', 16, 10)}
+CLOSE = {'UK': ('Europe/London', 16, 35), 'EU': ('Europe/Paris', 17, 35), 'US': ('America/New_York', 16, 0), 'APAC': ('Australia/Sydney', 16, 10), 'INDEX': ('America/New_York', 16, 0)}
 
 
 def paths(args):
@@ -1347,7 +1348,7 @@ def diag(args):
     accounts = ib.managedAccounts()
     out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
                serverTime=ib.reqCurrentTime().isoformat())
-    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR'}[args.market], *VENUE[args.market])
+    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR', 'INDEX': 'SPY'}[args.market], *VENUE[args.market])
     if qualified(ib, contract):
         ib.reqMarketDataType(1)
         k = ib.reqMktData(contract, '', False, False)

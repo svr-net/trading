@@ -29,10 +29,10 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' ? "the regulators' fees" : c.market === 'APAC' ? "its exchange's fees" : "its exchange's taxes"}; the auctions cross no spread)`;
-  if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
+  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' || c.market === 'INDEX' ? "the regulators' fees" : c.market === 'FOREX' ? "IBKR's FX commission" : c.market === 'APAC' ? "its exchange's fees" : "its exchange's taxes"}; the auctions cross no spread)`;
+  if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€', INDEX: '$', FOREX: '$' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
-  const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
+  const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€', INDEX: '$', FOREX: '$' }[c.market] || '';
   return `after ${c.broker} costs (${cur}${c.capital.toLocaleString('en-GB')} a trade${c.stamp ? `, ${(100 * c.stamp).toFixed(1)}% stamp duty on buying${c.stampFree ? ', none on AIM shares' : ''}` : ''})`;
 };
 
@@ -40,6 +40,8 @@ const costs = (r) => {
 const EXCHANGE = { LSE: 'London Stock Exchange', NYSE: 'NYSE', NASDAQ: 'NASDAQ', PAR: 'Paris', AMS: 'Amsterdam', BRU: 'Brussels', LIS: 'Lisbon', MSE: 'Madrid', FRA: 'Frankfurt', OSL: 'Oslo', ASX: 'Australia (ASX)', SGX: 'Singapore (SGX)' };
 const places = (r, source) => {
   const ex = r.exchanges;
+  if (source === 'INDEX') return 'Index ETFs listed in New York (world, country and sector indices)';
+  if (source === 'FOREX') return 'Currency pairs (each with its inverse)';
   if (!ex?.length) return { UK: 'London Stock Exchange', US: 'New York (NYSE and NASDAQ)', EU: 'Europe', APAC: 'Australia (ASX) and Singapore (SGX)' }[source] || source;
   const names = ex.map((e) => EXCHANGE[e] || e);
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
@@ -50,7 +52,7 @@ const places = (r, source) => {
 const LIVE_KEY = 'trading.live';
 let live = new Set(['UK', 'EU']);
 try { const v = JSON.parse(localStorage.getItem(LIVE_KEY)); if (Array.isArray(v) && v.length) live = new Set(v); } catch { /* none kept */ }
-const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')}${c.venues ? ' (each exchange\'s currency)' : ''}` : '');
+const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€', INDEX: '$', FOREX: '$' }[c.market] || ''}${c.capital.toLocaleString('en-GB')}${c.venues ? ' (each exchange\'s currency)' : ''}` : '');
 
 // The plan in plain words, the orders, and the backtest (folded away).
 function render(r, source) {
@@ -61,7 +63,12 @@ function render(r, source) {
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   const unfunded = isLive && r.budget && !(r.budget.total > 0);  // the account gives this market no money today: nothing is placed
   $('summary').className = `summary ${isLive && !unfunded ? 'live' : 'research'}`;
-  $('summary').innerHTML = unfunded
+  if (source === 'FOREX') {  // research only: modelled, never traded
+    $('summary').className = 'summary research';
+  }
+  $('summary').innerHTML = source === 'FOREX'
+    ? `<strong>Research only: currency pairs are modelled, never traded.</strong>${n ? ` The ${n} order${n === 1 ? '' : 's'} below ${n === 1 ? 'is' : 'are'} what the model would place (a pair ending in “-” is its inverse: selling the pair).` : ''}`
+    : unfunded
     ? `<strong>No orders placed for the next trading day:</strong> this market's share of the account is 0 today (its record over the last year is not reliably positive)${n ? `; the ${n} order${n === 1 ? '' : 's'} below ${n === 1 ? 'is' : 'are'} what the model would place` : ''}.`
     : isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; `
@@ -105,7 +112,8 @@ function render(r, source) {
   // The notes under the orders: the research model's (in the page), or the UK model's.
   const hint = $('planhint');
   const taxes = c?.market === 'UK' ? 'stamp duty (none on AIM shares)'
-    : c?.market === 'US' ? "the regulators' fees on the sale (no tax on buying)"
+    : c?.market === 'US' || c?.market === 'INDEX' ? "the regulators' fees on the sale (no tax on buying)"
+    : c?.market === 'FOREX' ? "IBKR's FX commission (0.2 basis points, at least USD 2 an order)"
     : c?.market === 'APAC' ? "its exchange's fees (no tax on buying in Sydney or Singapore)"
     : "its exchange's taxes on a share held (the French FTT 0.4% and the Spanish 0.2% on buying, the Portuguese 0.3%, the Belgian TOB 0.35% each side; none in Amsterdam or Frankfurt)"
   if (hint) {
@@ -191,7 +199,7 @@ function showView(v) {
 for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => showView(b.dataset.view));
 document.addEventListener('click', (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); showView(a.dataset.go); } });
 
-const MARKETS = { uk: 'UK', eu: 'EU', us: 'US', apac: 'APAC' };
+const MARKETS = { uk: 'UK', eu: 'EU', us: 'US', apac: 'APAC', index: 'INDEX', forex: 'FOREX' };
 let market = 'uk';
 try { market = new URLSearchParams(location.search).get('market') || localStorage.getItem('market') || 'uk'; } catch { /* no storage */ }
 if (!MARKETS[market]) market = 'uk';

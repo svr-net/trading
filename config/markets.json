@@ -1,5 +1,5 @@
 {
-  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only; \"uk\": the auction model, apps/ofm_uk (every market), whose orders are sized to each share's liquidity and made only when its out-of-sample record clears the costs: it may be the UK's live strategy), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record. \"paper\": true (a paper account) gives every market an equal share whatever its record, to measure the broker's real fills. \"reserve\" (EUR) is kept out of the markets' shares for the multi-day books the bridge places (HOLD_BOOKS: the UK's hold-up, 10 trades of GBP 1,000).",
+  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only; \"uk\": the auction model, apps/ofm_uk (every market), whose orders are sized to each share's liquidity and made only when its out-of-sample record clears the costs: it may be the UK's live strategy), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record. \"paper\": true (a paper account) gives every market an equal share whatever its record, to measure the broker's real fills. \"reserve\" (EUR) is kept out of the markets' shares for the multi-day books the bridge places (HOLD_BOOKS: the UK's hold-up, 10 trades of GBP 1,000). INDEX: US-listed index ETFs (tools/eoddata/index.txt), traded like the share markets. FOREX: currency pairs (tools/eoddata/forex.txt), research only: no budget, so the bridge never places them (and does not trade FOREX).",
   "markets": {
     "UK": {
       "live": {
@@ -214,6 +214,38 @@
           5
         ]
       }
+    },
+    "INDEX": {
+      "live": {
+        "name": "hold5",
+        "app": "uk",
+        "env": {},
+        "args": [
+          "--hold",
+          "5"
+        ]
+      },
+      "shadows": [],
+      "budget": {
+        "total": 10000,
+        "slots": [
+          2,
+          3,
+          5
+        ]
+      }
+    },
+    "FOREX": {
+      "live": {
+        "name": "hold5",
+        "app": "uk",
+        "env": {},
+        "args": [
+          "--hold",
+          "5"
+        ]
+      },
+      "shadows": []
     }
   },
   "account": {

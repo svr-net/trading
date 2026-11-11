@@ -21,6 +21,13 @@ FINRA's fees on the sale; there is no tax on buying. The research model (`base`)
 own exchange's opening auction: the ASX opens in alphabetical groups from 10:00 to about 10:09 Sydney time
 (good until 10:12), the SGX at 09:00 Singapore time (good until 09:02). An order's amount is in the ASX's AUD
 (an SGX order's taken as SGD, about the same). The research model (`base`) runs on as its shadow.
+**INDEX and FOREX**: INDEX trades index ETFs listed in New York (`tools/eoddata/index.txt`: the S&P 500,
+Nasdaq 100, Dow, Russell 2000 and world indices, about 25 MSCI country indices and the 11 S&P sectors), with
+the US's costs, on New York's clock (placed at 09:21, the bridge's `AUTO_MARKETS` naming INDEX). FOREX models
+currency pairs (`tools/eoddata/forex.txt`, each with its inverse, `CODE-`, so the model can take either side;
+IBKR's FX commission; no volume, so no liquidity cap) as research only: it has no budget, and the bridge does
+not trade it. Both are fetched as named series (`tools/eoddata/series_list.py`: each from the first of its
+EODData exchanges with bars) and scanned with the US's evening run.
 What follows is said of the UK; the other markets are the same but for prices, segments and costs.
 
 The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every
