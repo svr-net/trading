@@ -79,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0}
 
 
 class Event:
@@ -200,7 +200,13 @@ class Broker:
         return list(self.fills)
 
     def reqPositions(self):
-        return []
+        held = {}
+        for f in self.fills:
+            c = f.contract
+            q = held.get(c.conId, (c, 0.0))[1] + (f.execution.shares if f.execution.side == 'BOT' else -f.execution.shares)
+            held[c.conId] = (c, q)
+        return [NS(contract=c, position=q) for c, q in held.values() if q > 0]
+
 
     # the market
     def fill(self, t, qty, price):
@@ -353,8 +359,50 @@ def day_on_one_broker():
         return placed, watched
 
 
+def hold_book():
+    """The UK model's multi-day book (apps/ofm_uk --hold: "book": "hold") through submit.py --holds: the
+    buy good only through the opening auction (GTD), the position offered at each close only at or above
+    its exit level (LOC at the entry times 1 + exitAbove, on the price step), and at its last day's close
+    sold at any price (MOC)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(7, 50), LONDON)
+    d = tempfile.mkdtemp()
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'XXX', 'close': 100.0, 'entry': 'open', 'open': True, 'limit': 101.0, 'stop': None, 'take': None, 'exitAbove': 0.012, 'days': 5,
+         'capital': 1000.0, 'maxCapital': 1000.0}]}
+    path, state = os.path.join(d, 'UK.json'), os.path.join(d, 'holds-UK.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []  # this day's events are the test's own
+    placed = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    b = SHARED[0]
+    buy = next(t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY')
+    # GBP 1,000 at 1.01 a share (pence): 990 shares, at most 101, the opening auction only
+    assert buy.order.orderType == 'LMT' and buy.order.tif == 'GTD' and buy.order.lmtPrice == 101.0 and buy.order.totalQuantity == 990, (vars(buy.order), placed)
+    b.fill(buy, 990, 100.0)  # the auction at 100
+    CLOCK[0] = CLOCK[0].replace(hour=16, minute=30)
+    closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    sells = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL']
+    assert sells, closed
+    sell = sells[0]
+    # its first close: only at or above 100 x 1.012 = 101.2, on the 0.5 price step: 101.5
+    assert sell.order.orderType == 'LOC' and sell.order.lmtPrice == 101.5 and sell.order.totalQuantity == 990, (vars(sell.order), closed)
+    st = json.load(open(state))
+    pos = st['positions']['XXX']
+    assert pos['entry'] == 100.0 and pos['exitAbove'] == 0.012 and pos['days'] == 5 and pos['closes'] == 1, pos
+    # its fifth close (four closes later, not reached its level): sold at any price
+    sell.orderStatus.status = 'Cancelled'  # the LOC did not trade (the close under 101.5)
+    pos['closes'], pos['offered'] = 4, '2000-01-01'
+    json.dump(st, open(state, 'w'))
+    last = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    moc = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderType == 'MOC']
+    assert len(moc) == 1 and moc[0].order.totalQuantity == 990 and 'its last, 5' in last, (last, [vars(t.order) for t in b._trades if t.order.action == 'SELL'])
+    return placed + closed + last
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
     print('levels: orders for the open placed for the auction only; stop and take-profit from the fill, one cancelling the other; '
           'a trailing stop at IBKR (a fixed one where refused); a break-even stop moved by the watch; OK')
+    print(hold_book())
+    print('hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; OK')

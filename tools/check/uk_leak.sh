@@ -93,4 +93,34 @@ for o in rows:
 filled = sum(1 for o in rows if o['filled'] != '0')
 assert filled > 0.6 * len(rows), f'only {filled} of {len(rows)} orders bought at the open'
 PY
-echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible"
+# Held up to 5 days (--hold 5, the UK's live setting): the planted effect found, no order changed by later
+# data, every order a buy for the opening auction with its exit level and its last day, every trade held
+# 1 to 5 days and sold at its exit level's first close or on its last day.
+X_TRADELOG="$W/hold.log" "$BIN" --csv "$W/full.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/hold.tr" --orders "$W/hold.json" > "$W/hold.out"
+"$BIN" --csv "$W/cut.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/hold-cut.tr" > /dev/null
+hs=$(sed -n 's/^uk: the account.* a year, Sharpe \([-0-9.]*\),.*/\1/p' "$W/hold.out")
+awk -v s="$hs" 'BEGIN { exit !(s > 2) }' || { cat "$W/hold.out"; echo "FAIL: held up to 5 days, the planted effect was not found (the account's Sharpe $hs)"; exit 1; }
+hn=$(wc -l < "$W/hold-cut.tr")
+[ "$hn" -gt 200 ] || { cat "$W/hold.out"; echo "FAIL: held up to 5 days, only $hn orders"; exit 1; }
+head -n "$hn" "$W/hold.tr" | cmp -s - "$W/hold-cut.tr" || { echo 'FAIL: held up to 5 days, an order changed with later data (look-ahead)'; exit 1; }
+python3 - "$W/hold.json" "$W/hold.log" "$W/full.csv" <<'PY'
+import csv, json, sys
+book = json.load(open(sys.argv[1]))
+assert book.get('book') == 'hold' and book.get('days') == 5, {k: v for k, v in book.items() if k != 'orders'}
+for o in book['orders']:
+    assert o['entry'] == 'open' and o['close'] < o['limit'] <= o['close'] * 1.02 and o['stop'] is None and o['take'] is None, o
+    assert o['exitAbove'] >= 0 and o['days'] == 5 and o['cost'] > 0 and o['ifFilled'] > 0 and 500 <= o['capital'] <= min(5000, o['maxCapital']) + 1e-6, o
+days = sorted({r['date'] for r in csv.DictReader(open(sys.argv[3]))})
+ix = {d: k for k, d in enumerate(days)}
+closes = {(r['date'], r['ticker']): float(r['close']) for r in csv.DictReader(open(sys.argv[3]))}
+rows = [r for r in csv.DictReader(open(sys.argv[2])) if r['filled'] == '1']
+assert len(rows) > 100, f'only {len(rows)} trades'
+for r in rows:  # each trade: sold at the first close at or above its exit level, else at its fifth close
+    e, x, lvl = float(r['entry']), float(r['exitPrice']), float(r['takeRel'])
+    k0 = ix[r['date']]
+    seq = [closes[(days[k], r['ticker'])] for k in range(k0, min(k0 + 5, len(days)))]
+    hit = next((c for c in seq if c >= e * (1 + lvl)), None)
+    want = hit if hit is not None else seq[-1]
+    assert abs(x - want) < 1e-3 * want, (r, seq)
+PY
+echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level or on its last day"

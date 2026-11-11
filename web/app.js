@@ -61,7 +61,8 @@ function render(r, source) {
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   $('summary').className = `summary ${isLive ? 'live' : 'research'}`;
   $('summary').innerHTML = isLive
-    ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; anything bought is sold by the close.`
+    ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; `
+      + (r.book === 'hold' ? `each held until its first close at its exit level, at most ${r.days} days.` : 'anything bought is sold by the close.')
     : (r.backtest?.sharpe ?? 0) < 1
       ? `<strong>Research only: not traded.</strong> ${c?.net === false ? 'Before costs' : 'After costs'} the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
       : `<strong>Not traded automatically:</strong> the bridge does not trade this market (AUTO_MARKETS)${n ? '; the orders below are what it would place' : ''}.`;
@@ -69,8 +70,10 @@ function render(r, source) {
   $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`
     + (r.orders.some((o) => o.fill != null) ? ` · about ${buys.toFixed(1)} of these orders expected to buy` : '');
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
+  const holds = r.orders.some((o) => o.days != null);  // a multi-day book: sold at the first close at its exit level, else on its last day
   const head = [['Share'], ['Buy at', 'num']];
   if (levels) head.push(['Stop', 'num'], ['Target', 'num']);
+  if (holds) head.push(['Sold at', 'num']);
   const rebuys = r.orders.some((o) => o.rebuy > 0);  // a buy-back after a stop (learnt; none on most days)
   if (rebuys) head.push(['Buy-back', 'num']);
   const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
@@ -86,6 +89,7 @@ function render(r, source) {
       // The stop from the price bought at: fixed, trailing under the day's high, or to the price paid once up `breakeven`.
       const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + how, o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
+      if (holds) row.push([`first close ${pct(o.exitAbove, 2)} or more, else day ${o.days}${o.holdDays ? ` (about ${o.holdDays.toFixed(1)} days)` : ''}`, 'num pos']);
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num']);
@@ -98,7 +102,12 @@ function render(r, source) {
   const hint = $('planhint');
   if (hint) {
     hint.dataset.base ??= hint.innerHTML;
-    hint.innerHTML = r.model === 'uk'
+    hint.innerHTML = r.model === 'uk' && r.book === 'hold'
+      ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later. '
+        + `<b>Sold at</b>: in the closing auction of the first day the share closes this far above the price paid, else at the close of day ${r.days}: held as few days as it needs. `
+        + '<b>Costs</b>: the order\'s own commission, stamp duty (none on AIM shares) and the auction spread, already taken off. '
+        + '<b>If it buys</b>: what similar past trades made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
+      : r.model === 'uk'
       ? '<b>Buy at</b>: in the opening auction only, at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later in the day. '
         + '<b>Stop</b>: from the price bought at; <i>trailing</i> follows the day\'s high at that distance; <i>to 0 once +x%</i> moves to the price paid once the share is up that much. '
         + '<b>Target</b>: sold if it rises that far. Whatever is still held is sold at the close, so nothing is held overnight. '
