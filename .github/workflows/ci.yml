@@ -32,6 +32,8 @@ jobs:
         run: sh tools/check/single_leak.sh build/ofm_single
       - name: The multi-day single-share model on a generated market (tools/check/hold_leak.sh)
         run: sh tools/check/hold_leak.sh build/ofm_hold
+      - name: The UK model on a generated market (tools/check/uk_leak.sh)
+        run: sh tools/check/uk_leak.sh build/ofm_uk
 
   bridge-update:
     # The restarter replacing the bridge with GitHub's newest image, on a stand-in NAS.

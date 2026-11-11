@@ -115,8 +115,10 @@ def tick_at(rule, min_tick, price):
 
 
 def capital_of(o, args):
-    # The order's own amount (the model's, in its exchange's currency), else --capital.
-    return float(o.get('capital') or args.capital)
+    # The order's own amount (the model's, in its exchange's currency), else --capital; never more than
+    # its maxCapital (apps/ofm_uk: a share of what the share trades in a day).
+    c = float(o.get('capital') or args.capital)
+    return min(c, float(o['maxCapital'])) if o.get('maxCapital') else c
 
 
 def ib_symbol(ticker, market):

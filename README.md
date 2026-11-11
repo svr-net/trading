@@ -4,6 +4,40 @@ A walk-forward predictive model of every share's daily OHLCV, in C++ with fused 
 translated to C++ by `tools/wgsl2cpp.py` and run on every CPU thread), and a page with the next
 open's trades and the model's backtest, for the London Stock Exchange and for NYSE and NASDAQ.
 
+## The UK model (`apps/ofm_uk`): the London orders
+
+The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every
+order is one a person would place, and whose backtest trades exactly those orders:
+
+- **Shares**: ordinary shares in the order book's auctions only (SET1, SET3, AMSM, SSMM in
+  `tools/eoddata/lse_segments.csv`): no closed-end funds (STMM), ETFs/ETPs or quote-driven SETSqx
+  shares. At least 20p, 250 days of history, a bar on 18 of the last 20 sessions, a median of GBP
+  250,000 traded a day, no 30% move on the day (a bid, a placing, bad data); the 300 most traded.
+  Delisted shares stay in the backtest (no survivorship bias from today's list).
+- **Forecast**: one walk-forward ridge regression across the shares of the next open-to-close (in
+  each share's own volatilities) on the signals of `apps/swing.hpp`, the share's volatility, liquidity
+  and stamp duty, each ranked across the day's shares; refitted every 21 sessions on the 750 before.
+- **Expected return**: the forecast calibrated on the model's own out-of-sample record (the last 500
+  sessions' top fifth of forecasts against what those shares then did, the slope shrunk by its t
+  statistic). No record, or no skill in it, means no orders.
+- **Orders**: a day limit buy at the last close plus 0.2 of the share's daily volatility, so it buys
+  in the opening auction unless the share gaps up past it (then only if it trades back down through
+  it); it never chases. The amount is the slot's capital, **at most 1% of the share's median day's
+  value** (`maxCapital`, which the budget and `tools/ibkr/submit.py` respect), at least GBP 500. A
+  protective stop 4 daily volatilities below; no take-profit; sold in the closing auction.
+- **Only orders that pay**: the expected return must clear IBKR's commission on the order's own
+  amount, the 0.5% stamp duty (not AIM shares), a quarter-spread at each auction, plus 0.05%. Many
+  days have fewer orders than slots, some none.
+- **Checks**: `tools/check/uk_leak.sh` (CI and the daily run): on a generated market it must find a
+  planted effect, every order must be sensible (limit, stop, amount within the share's liquidity) and
+  unchanged by later data; on a market with no effect it places none.
+
+`ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free aim.txt] [--segments
+lse_segments.csv] [--override ibkr.csv] [--json scan.json] [--orders orders.json]` prints the
+backtest by year (with the forecast's daily rank correlation), the fill rate, the average trade before
+and after costs and the next session's orders. The previous UK live strategy (`regime-trend50`, the
+research model below) runs on as a shadow for comparison; EU, US and APAC keep the research model.
+
 ## The model (`apps/ofm_research`, `kernels/v2`, `kernels/net`)
 
 - **Features** (`features.wgsl`): 27 per share and day from its own daily open, high, low, close
