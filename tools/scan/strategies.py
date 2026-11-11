@@ -333,14 +333,12 @@ def allocate(records, cap=0.5, floor=0.0):
         t = sum(rest.values())
         for m, v in rest.items():
             w[m] = v + spare * v / t
-    if floor > 0:
+    if floor > 0:  # the floors from the limit left unused first (a capped market keeps its share), then from the others
         lift = {m: max(0.0, floor - v) for m, v in w.items()}
-        need = sum(lift.values())
-        if need > 0:
-            big = {m: v for m, v in w.items() if v > floor}
-            t = sum(big.values())
-            for m in w:
-                w[m] = floor if lift[m] > 0 else (v := w[m]) - need * (v / t if t > 0 else 0)
+        need = max(0.0, sum(lift.values()) - max(0.0, 1.0 - sum(w.values())))
+        big = {m: v for m, v in w.items() if v > floor}
+        t = sum(big.values())
+        w = {m: floor if lift[m] > 0 else v - need * (v / t if t > 0 else 0) for m, v in w.items()}
     return w
 
 
