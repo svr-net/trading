@@ -6,7 +6,7 @@
    nothing, says so with the .ack file, and goes on (every share fetched) once the file is gone.
 2. bridge.py's run_submit: a step (here --report) pauses a running fetch and waits for its .ack before it
    runs, and lets it go on after; an all-day watch (--rebuy) never pauses it; two steps at once keep the
-   pause until the last one ends.
+   pause until the last one ends; and no fetch starts while a step runs (steps_pending).
 """
 import json
 import os
@@ -97,7 +97,14 @@ def bridge_waits():
     bridge.bars_resume()
     assert not os.path.exists(bridge.BARS_PAUSE)
     stop.set()
-    return 'bridge: a step pauses the fetch and waits for it; a watch does not; the last step lets it go on'
+    # a fetch does not start while a step runs (here a market's report)
+    bridge.RUNNING.add(('US', 'report'))
+    assert bridge.steps_pending(), 'a fetch could start during a report'
+    bridge.RUNNING.discard(('US', 'report'))
+    bridge.RUNNING.add(('US', 'bars'))
+    assert not bridge.steps_pending() or any(True for _ in bridge.AUTO), 'a fetch held up by another fetch'
+    bridge.RUNNING.discard(('US', 'bars'))
+    return 'bridge: a step pauses the fetch and waits for it; a watch does not; the last step lets it go on; no fetch starts during a step'
 
 
 if __name__ == '__main__':

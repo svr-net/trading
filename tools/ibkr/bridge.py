@@ -180,6 +180,22 @@ QUIET_LOCK = threading.Lock()
 LONG_RUNS = ('--bars', '--rebuy', '--paths')
 
 
+STEPS = ('leftovers', 'place', 'close', 'flat', 'report', 'hold-place', 'hold-close')
+
+
+def steps_pending():
+    """Whether a step that needs the gateway is running, or a market's report is due and not done yet (a
+    fetch started now would run into it: on 11 Nov the US report and the US fetch started in the same
+    minute after a restart, the report before the fetch could be paused). The fetch waits for them."""
+    if any(a in STEPS for _, a in RUNNING):
+        return True
+    for m in AUTO:
+        now = datetime.now(ZoneInfo(ZONE[m]))
+        if now.weekday() < 5 and at(now, REPORT[m]) <= now < at(now, REPORT[m], 180) and not is_done(m, 'report'):
+            return True
+    return False
+
+
 def bars_quiet(wait=150):
     """Pauses a running bars fetch (one more step needs the gateway) and waits, at most `wait` seconds,
     for it to confirm it stopped between shares (its own request then done). True when quiet."""
@@ -972,7 +988,7 @@ def scheduler():
                 up = GATEWAY['ok'] is not False
                 # IBKR's daily bars, the latest month merged in, after the day's report (one market at a time).
                 if BARS_DAILY and up and at(now, REPORT[m], 15) <= now < at(now, REPORT[m], 360) and not is_done(m, 'bars') and not BARS_RUNNING \
-                        and may_try(m, 'bars', 20, 4):
+                        and not steps_pending() and may_try(m, 'bars', 20, 4):
                     job(m, 'bars', lambda mk: fetch_bars(mk, daily=True))
                 if up and at(now, place, -30) <= now < at(now, close, -15) and not is_done(m, 'leftovers') and may_try(m, 'leftovers', 5, 3):
                     job(m, 'leftovers', sell_leftovers)
