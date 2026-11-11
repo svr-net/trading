@@ -22,7 +22,7 @@ on:
     - cron: '30 5 * * 1-5'
   workflow_dispatch:
     inputs:
-      market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC], default: all }
+      market: { description: 'Market', type: choice, options: [all, UK, EU, US, APAC, INDEX, FOREX], default: all }
       years: { description: 'Years of history (the plan serves about 9)', default: '9' }
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP,FOREX:EURAUD' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
@@ -41,12 +41,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU"]' || '["US"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || '["UK","EU","US","APAC"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU"]' || '["US","INDEX","FOREX"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || inputs.market == 'INDEX' && '["INDEX"]' || inputs.market == 'FOREX' && '["FOREX"]' || '["UK","EU","US","APAC","INDEX","FOREX"]')) }}
     env:
       MARKET: ${{ matrix.market }}
       # EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
       # fills and costs, 8-year walk-forward): 8.4% a year, Sharpe 1.38 -> 18.2%, Sharpe 1.71.
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || 'LSE' }}
+      # INDEX: US-listed index ETFs (tools/eoddata/index.txt); FOREX: currency pairs (forex.txt; research only).
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || matrix.market == 'INDEX' && 'NYSE Arca,NASDAQ' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -109,6 +110,12 @@ jobs:
           set -o pipefail
           mkdir -p data
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+          # INDEX and FOREX: named series (each from the first of its EODData exchanges with bars; FOREX's
+          # pairs each with its inverse, so the model can take either side), not an exchange's shares.
+          case "$MARKET" in
+            INDEX) python3 tools/eoddata/series_list.py tools/eoddata/index.txt data/stocks.csv --years "${{ inputs.years || '9' }}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
+            FOREX) python3 tools/eoddata/series_list.py tools/eoddata/forex.txt data/stocks.csv --years "${{ inputs.years || '9' }}" --inverse | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
+          esac
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
             ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || matrix.market == 'EU' && '300' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
@@ -128,7 +135,8 @@ jobs:
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         # In the background (the model does not read them): the push step waits for it.
-        run: nohup sh -c 'node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals; echo $? > profiles.rc' > profiles.log 2>&1 &
+        # Not for INDEX or FOREX (ETFs and currency pairs: no company fundamentals).
+        run: case "$MARKET" in INDEX|FOREX) exit 0;; esac; nohup sh -c 'node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals; echo $? > profiles.rc' > profiles.log 2>&1 &
       - name: Update futures, index and currency series (only the days missing)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
