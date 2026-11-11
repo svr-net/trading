@@ -79,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7, 'BRK B': 8}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0, 'BRK B': 480.0}
 
 
 class Event:
@@ -441,6 +441,27 @@ def eu_book():
     return placed
 
 
+def us_book():
+    """The US hold book (apps/ofm_uk --costs US --hold 5): EODData's BRK.B is IBKR's "BRK B", routed SMART,
+    priced in dollars, its buy good only through the opening auction (09:30 New York, GTD two minutes later)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(9, 20), ZoneInfo('America/New_York'))
+    d = tempfile.mkdtemp()
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'BRK.B', 'close': 480.0, 'entry': 'open', 'open': True, 'limit': 484.0, 'stop': None, 'take': None, 'exitAbove': 0.004, 'days': 5,
+         'capital': 10000.0, 'maxCapital': 20000.0}]}
+    path, state = os.path.join(d, 'US.json'), os.path.join(d, 'holds-US.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'US', '--holds', 'place', '--orders', path, '--hold-state', state])
+    buy = next(t for t in SHARED[0]._trades if t.contract.symbol == 'BRK B' and t.order.action == 'BUY')
+    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('America/New_York'))
+    # USD 10,000 at USD 484 a share: 20 shares; routed SMART; until 09:32 New York
+    assert buy.order.tif == 'GTD' and buy.order.lmtPrice == 484.0 and buy.order.totalQuantity == 20 and buy.contract.exchange == 'SMART', (vars(buy.order), placed)
+    assert (until.hour, until.minute) == (9, 32), until
+    return placed
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -451,3 +472,5 @@ if __name__ == '__main__':
           'updated every morning (kept with its new exit level, or sold at the open); OK')
     print(eu_book())
     print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
+    print(us_book())
+    print('US: BRK.B as BRK B, routed SMART, in dollars, good only through New York\'s opening auction; OK')

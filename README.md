@@ -11,7 +11,12 @@ Paris, Amsterdam, Brussels, Lisbon, Madrid and Frankfurt; tickers `EXCHANGE:CODE
 orders pay each exchange's commission and taxes on a share held past the day (`tools/venues.txt`: the
 French FTT 0.4% and the Spanish 0.2% on buying, the Portuguese 0.3%, the Belgian TOB 0.35% each side;
 none in Amsterdam or Frankfurt), applied to the final orders only. The research model (`base`) runs on
-as Europe's shadow. What follows is said of the UK; Europe is the same but for prices, segments and taxes.
+as Europe's shadow.
+
+**And the US**: the US's live strategy too (`--costs US --hold 5`: NYSE and NASDAQ, dollars, shares of USD 5
+or more). Its orders pay IBKR's USD 0.005 a share (at least USD 1, at most 1%) each way and the SEC's and
+FINRA's fees on the sale; there is no tax on buying. The research model (`base`) runs on as its shadow.
+What follows is said of the UK; Europe and the US are the same but for prices, segments and costs.
 
 The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every
 order is one a person would place, and whose backtest trades exactly those orders:

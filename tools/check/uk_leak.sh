@@ -148,4 +148,22 @@ for o in book['orders']:
     fee = 2 * max(3, 0.0005 * o['capital']) / o['capital']
     assert abs(o['cost'] - fee - (0.004 if ex == 'PAR' else 0)) < 1e-4, o
 PY
-echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs"
+# The US (--costs US: dollars, IBKR's USD 0.005 a share, at least USD 1, the SEC's and FINRA's fees on the
+# sale, no tax): no order changed by later data, each order's costs the commission and fees, a gain after them.
+for f in full cut; do awk -F, -v OFS=, 'NR == 1 { print; next } { for (k = 3; k <= 6; k++) $k = $k / 10; print }' "$W/$f.csv" > "$W/us-$f.csv"; done
+"$BIN" --csv "$W/us-full.csv" --costs US --top 60 --hold 5 --trace "$W/us.tr" --orders "$W/us.json" > "$W/us.out"
+"$BIN" --csv "$W/us-cut.csv" --costs US --top 60 --hold 5 --trace "$W/us-cut.tr" > /dev/null
+un=$(wc -l < "$W/us-cut.tr")
+[ "$un" -gt 200 ] || { cat "$W/us.out"; echo "FAIL: the US, only $un orders"; exit 1; }
+head -n "$un" "$W/us.tr" | cmp -s - "$W/us-cut.tr" || { echo 'FAIL: the US, an order changed with later data (look-ahead)'; exit 1; }
+python3 - "$W/us.json" <<'PY'
+import json, math, sys
+book = json.load(open(sys.argv[1]))
+assert book.get('book') == 'hold' and book['orders'], 'the US: no orders'
+for o in book['orders']:
+    v, px = o['capital'], o['close']
+    sh = max(1, math.floor(v / px))
+    want = (2 * min(0.01 * v, max(1.0, 0.005 * sh)) + 0.0000278 * v + min(8.30, 0.000166 * sh)) / v
+    assert ':' not in o['ticker'] and o['ifFilled'] > 0 and abs(o['cost'] - want) < 1e-6, (o, want)
+PY
+echo "uk: the planted effect found (the account's Sharpe $sh); $n orders unchanged by later data; the levels (fixed, trailing, break-even) learnt where they pay; every order sensible; held up to 5 days, Sharpe $hs, $hn orders unchanged by later data, every trade sold at its exit level, by the daily update at an open, or on its last day; Europe: $en orders unchanged by later data, each with its exchange's costs; the US: $un orders unchanged by later data, each with its commission and fees"
