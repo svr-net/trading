@@ -170,6 +170,10 @@ jobs:
           # UK: which shares trade through the opening and closing auctions (the exchange's monthly
           # instrument list; the committed one if that fails): the others pay a half-spread each way.
           if [ "$MARKET" = UK ]; then node tools/eoddata/lse_segments.mjs tools/eoddata/lse_segments.csv || true; STAMP+=(--segments tools/eoddata/lse_segments.csv); fi
+          # UK: the 5-minute paths the UK model replays its stops and take-profits on (fixed, trailing, break-even;
+          # apps/ofm_uk --bars, in markets.json): the store's LSE bars and the bridge's recordings of each day's
+          # candidates (paths/UK); none: the model uses the daily bars, the worse of their two orders.
+          if [ "$MARKET" = UK ]; then node tools/eoddata/intraday_export.mjs --exchanges LSE --paths UK --out data/intraday-uk.csv || echo 'date,ticker,time,high,low,close,volume' > data/intraday-uk.csv; fi
           # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
           # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;

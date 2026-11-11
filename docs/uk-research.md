@@ -23,6 +23,6 @@ this model. (These lists are largely marketing pages; the books themselves are t
 1. **Meta-labelling**: a second ridge on the top forecasts that predicts whether the triple-barrier trade ends above 0, from the
    inputs plus the day's market state; act only where it says so.
 2. **Intraday momentum exit**: from the 5-minute bars, sell at 08:30 instead of holding to the close when the first half-hour fell.
-3. **Resolve the stop / take-profit order from 5-minute bars**: the daily bar cannot tell which level came first (taken as stopped);
-   the intraday paths can, which makes the levels' record exact rather than conservative.
+3. ~~Resolve the stop / take-profit order from 5-minute bars~~: done, with trailing and break-even stops (`--bars`); the more
+   LSE paths the store and the bridge's recordings hold, the more of the record is exact rather than the daily bar's worse case.
 4. **Deflated Sharpe ratio**: deflate for the 25 level pairs (and the budget's 4 trade counts) with the variance of their Sharpe ratios.

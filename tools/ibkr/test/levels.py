@@ -8,7 +8,10 @@ auction is over (GTD), with no levels attached; the watch places its stop-loss a
 the price it was bought at (not the last close), one cancelling the other, for the shares bought,
 placed again only when more were bought, never twice; a buy whose good-till time IBKR refuses goes
 again as a day order and is cancelled once the auction is over; a stop that sells cancels the
-take-profit; a share never bought gets no levels.
+take-profit; a share never bought gets no levels; a trailing stop goes to IBKR as its own trailing
+order (TRAIL, its percent and starting level from the fill), a fixed stop where IBKR refuses it; a
+break-even stop stays put until the share is up its trigger since the fill, then moves to the price
+paid (and sells there when the price falls back).
 """
 import datetime as _dt
 import io
@@ -41,9 +44,9 @@ ib_async = types.ModuleType('ib_async')
 
 
 class Order:
-    def __init__(self, action, qty, orderType, **kw):
+    def __init__(self, action='', qty=0, orderType='', **kw):
         self.action, self.totalQuantity, self.orderType = action, qty, orderType
-        self.lmtPrice = self.auxPrice = 0.0
+        self.lmtPrice = self.auxPrice = self.trailingPercent = self.trailStopPrice = 0.0
         self.orderRef = self.tif = self.ocaGroup = self.goodTillDate = self.goodAfterTime = ''
         self.transmit, self.parentId, self.ocaType, self.orderId, self.permId = True, 0, 0, 0, 0
         for k, v in kw.items():
@@ -76,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0}
 
 
 class Event:
@@ -108,7 +111,10 @@ class Broker:
     def __init__(self):
         self._trades, self.fills, self.next_id = [], [], 100
         self.errorEvent, self.execDetailsEvent = Event(), Event()
-        self.events = [((8, 0, 30), self.auction), ((8, 0, 40), self.auction_rest), ((8, 2, 0), self.gtd_expiry), ((9, 0, 0), self.fall)]
+        self.quotes = {}
+        self.seen = {}  # what the test checks along the day
+        self.events = [((8, 0, 30), self.auction), ((8, 0, 40), self.auction_rest), ((8, 2, 0), self.gtd_expiry), ((9, 0, 0), self.fall),
+                       ((9, 29, 0), self.before_rise), ((9, 30, 0), self.rise), ((11, 0, 0), self.drop)]
 
     # connection
     def connect(self, *a, **k):
@@ -141,6 +147,15 @@ class Broker:
     def reqMarketRule(self, rid):
         return []
 
+    def reqMarketDataType(self, *_):
+        pass
+
+    def reqMktData(self, c, *a):
+        return self.quotes.setdefault(c.symbol, NS(contract=c, high=float('nan'), last=float('nan'), bid=float('nan'), close=CLOSES[c.symbol]))
+
+    def cancelMktData(self, c):
+        pass
+
     def reqHistoricalData(self, c, *a, **k):
         return [NS(close=CLOSES[c.symbol], low=CLOSES[c.symbol] * 0.97)]
 
@@ -153,6 +168,9 @@ class Broker:
         if t is None:
             t = Trade(contract, order)
             self._trades.append(t)
+        if contract.symbol == 'EEE' and order.orderType == 'TRAIL':  # a share where IBKR takes no trailing stop
+            t.orderStatus.status = 'Cancelled'
+            self.errorEvent.emit(order.orderId, 387, 'Unsupported order type for this exchange and security type', contract)
         if contract.symbol == 'CCC' and order.tif == 'GTD':
             t.orderStatus.status = 'Cancelled'
             self.errorEvent.emit(order.orderId, 10052, 'Invalid time in force: GTD is not allowed for this order', contract)
@@ -203,6 +221,10 @@ class Broker:
         t = self.buy('AAA')
         assert t.order.lmtPrice >= 351, t.order.lmtPrice
         self.fill(t, 60, 351.0)
+        d = self.buy('DDD')
+        self.fill(d, d.order.totalQuantity, 100.5)
+        e = self.buy('EEE')
+        self.fill(e, e.order.totalQuantity, 50.0)
 
     def auction_rest(self):
         self.fill(self.buy('AAA'), 39, 351.0)
@@ -212,13 +234,34 @@ class Broker:
             if t.order.tif == 'GTD':
                 t.orderStatus.status = 'Cancelled'
 
-    def fall(self):  # AAA trades down through its stop
+    def fall(self):  # AAA trades down through its trailing stop
         for t in self.live():
-            if t.contract.symbol == 'AAA' and t.order.orderType == 'STP':
-                self.fill(t, t.order.totalQuantity, t.order.auxPrice)
+            if t.contract.symbol == 'AAA' and t.order.orderType in ('STP', 'TRAIL'):
+                self.fill(t, t.order.totalQuantity, t.order.trailStopPrice if t.order.orderType == 'TRAIL' else t.order.auxPrice)
+
+    def stop_of(self, sym):
+        return next(t for t in self._trades if t.contract.symbol == sym and t.order.action == 'SELL' and t.order.orderType == 'STP')
+
+    def before_rise(self):  # DDD only up 1%: its stop not moved yet
+        q = self.reqMktData(self.stop_of('DDD').contract)
+        q.high, q.last, q.bid = 101.5, 101.4, 101.3
+        self.seen['before'] = self.stop_of('DDD').order.auxPrice
+
+    def rise(self):  # DDD up 2.5% since bought at 100.5: past its break-even trigger (2%)
+        q = self.quotes['DDD']
+        q.high, q.last, q.bid = 103.0, 102.8, 102.7
+        self.seen['rise'] = self.stop_of('DDD').order.auxPrice
+
+    def drop(self):  # DDD falls back through the entry: the moved stop sells it there
+        self.seen['before-drop'] = self.stop_of('DDD').order.auxPrice
+        q = self.quotes['DDD']
+        q.last, q.bid = 100.0, 99.5
+        t = self.stop_of('DDD')
+        if t.orderStatus.status not in ('Filled', 'Cancelled') and t.order.auxPrice >= 100.0:
+            self.fill(t, t.order.totalQuantity, t.order.auxPrice)
 
 
-ib_async.__dict__.update(IB=Broker, LimitOrder=LimitOrder, StopOrder=StopOrder, StopLimitOrder=StopLimitOrder, MarketOrder=MarketOrder, Stock=Stock, Contract=Contract)
+ib_async.__dict__.update(IB=Broker, Order=Order, LimitOrder=LimitOrder, StopOrder=StopOrder, StopLimitOrder=StopLimitOrder, MarketOrder=MarketOrder, Stock=Stock, Contract=Contract)
 sys.modules['ib_async'] = ib_async
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -257,7 +300,12 @@ def day_on_one_broker():
     if True:
         d = tempfile.mkdtemp()
         book = {'model': 'uk', 'asOf': _dt.date.today().isoformat(), 'slots': 5, 'orders': [
-            {'ticker': 'AAA', 'close': 350.0, 'entry': 'open', 'limit': 353.5, 'stop': 339.5, 'take': 364.0, 'stopRel': -0.03, 'takeRel': 0.04, 'capital': 350.0, 'maxCapital': 400.0},
+            {'ticker': 'AAA', 'close': 350.0, 'entry': 'open', 'limit': 353.5, 'stop': 339.5, 'take': 364.0, 'stopRel': -0.03, 'takeRel': 0.04, 'stopMode': 'trail', 'trailRel': 0.03,
+             'capital': 350.0, 'maxCapital': 400.0},
+            {'ticker': 'EEE', 'close': 50.0, 'entry': 'open', 'limit': 50.5, 'stop': 48.0, 'take': None, 'stopRel': -0.04, 'takeRel': None, 'stopMode': 'trail', 'trailRel': 0.04,
+             'capital': 200.0, 'maxCapital': 200.0},
+            {'ticker': 'DDD', 'close': 100.0, 'entry': 'open', 'limit': 101.0, 'stop': 96.0, 'take': None, 'stopRel': -0.04, 'takeRel': None, 'stopMode': 'breakeven', 'breakevenRel': 0.02,
+             'capital': 300.0, 'maxCapital': 300.0},
             {'ticker': 'BBB', 'close': 120.0, 'entry': 'open', 'limit': 121.0, 'stop': 115.0, 'take': None, 'stopRel': -0.04, 'takeRel': None, 'capital': 300.0, 'maxCapital': 300.0},
             {'ticker': 'CCC', 'close': 80.0, 'entry': 'open', 'limit': 80.5, 'stop': 77.0, 'take': None, 'stopRel': -0.04, 'takeRel': None, 'capital': 200.0, 'maxCapital': 200.0},
         ]}
@@ -280,13 +328,25 @@ def day_on_one_broker():
         groups = sorted({t.order.ocaGroup for t in sells})
         assert len(groups) == 2 and all(t.orderStatus.status == 'Cancelled' for t in sells if t.order.ocaGroup.endswith('-60')), (groups, watched)
         last = [t for t in sells if t.order.ocaGroup.endswith('-99')]
-        stop = next(t for t in last if t.order.orderType == 'STP')
+        stop = next(t for t in last if t.order.orderType == 'TRAIL')
         take = next(t for t in last if t.order.orderType == 'LMT')
-        # from the fill at 351 (not the close at 350): 351 x 0.97 = 340.47 -> 340.0; 351 x 1.04 = 365.04 -> 365.5
-        assert stop.order.auxPrice == 340.0 and take.order.lmtPrice == 365.5, (stop.order.auxPrice, take.order.lmtPrice)
+        # IBKR's trailing stop, 3% under the high, from the fill at 351 (not the close at 350): 351 x 0.97 = 340.47 -> 340.0;
+        # the take-profit 351 x 1.04 = 365.04 -> 365.5
+        assert stop.order.trailingPercent == 3.0 and stop.order.trailStopPrice == 340.0 and take.order.lmtPrice == 365.5, (vars(stop.order), take.order.lmtPrice)
         assert stop.order.totalQuantity == 99 and take.order.totalQuantity == 99 and stop.order.ocaType == 2, vars(stop.order)
         assert stop.orderStatus.status == 'Filled' and take.orderStatus.status == 'Cancelled', (stop.orderStatus.status, take.orderStatus.status)
         assert not [t for t in T if t.order.action == 'SELL' and t.contract.symbol in ('BBB', 'CCC')], 'levels for a share never bought'
+        # DDD: a fixed stop from the fill at 100.5 (100.5 x 0.96 = 96.48 -> 96.0), left there while up only 1%, moved to the
+        # entry (100.5) once up 2.5% (past its 2%), and sold there when the price fell back; no take-profit
+        b = SHARED[0]
+        dstops = [t for t in T if t.contract.symbol == 'DDD' and t.order.action == 'SELL']
+        assert len(dstops) == 1 and dstops[0].order.orderType == 'STP', [vars(t.order) for t in dstops]
+        assert b.seen == {'before': 96.0, 'rise': 96.0, 'before-drop': 100.5}, b.seen
+        assert dstops[0].orderStatus.status == 'Filled' and 'stop moved to 100.5 (break-even)' in watched, watched
+        # EEE: IBKR refused its trailing stop: a fixed stop from the fill (50 x 0.96 = 48.0) instead, placed once
+        estops = [t for t in T if t.contract.symbol == 'EEE' and t.order.action == 'SELL']
+        assert [t.order.orderType for t in estops] == ['TRAIL', 'STP'] and estops[1].order.auxPrice == 48.0, [vars(t.order) for t in estops]
+        assert estops[1].orderStatus.status not in ('Cancelled',) and 'refused the trailing stop' in watched, watched
         assert all(t.orderStatus.status == 'Cancelled' for t in c), 'the day order for the open outlived the auction'
         live_sells = [t for t in sells if t.orderStatus.status not in ('Filled', 'Cancelled')]
         assert not live_sells, 'levels left after the stop sold'
@@ -296,4 +356,5 @@ def day_on_one_broker():
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
-    print('levels: orders for the open placed for the auction only; stop and take-profit from the fill, one cancelling the other; OK')
+    print('levels: orders for the open placed for the auction only; stop and take-profit from the fill, one cancelling the other; '
+          'a trailing stop at IBKR (a fixed one where refused); a break-even stop moved by the watch; OK')

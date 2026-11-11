@@ -5,7 +5,11 @@
       "live": {
         "name": "uk",
         "app": "uk",
-        "env": {}
+        "env": {},
+        "args": [
+          "--bars",
+          "data/intraday-uk.csv"
+        ]
       },
       "shadows": [
         {

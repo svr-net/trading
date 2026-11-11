@@ -354,7 +354,7 @@ def main():
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
-                cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m, total / k, k), '--json', f'data/budget/report-{k}.json',
+                cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m + list(s.get('args', [])), total / k, k), '--json', f'data/budget/report-{k}.json',
                        '--orders', f'data/budget/orders-{k}.json']
                 pending_variants.append((k, cmd, env))
             continue

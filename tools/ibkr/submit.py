@@ -366,8 +366,8 @@ def state(args):
         if o.action == 'BUY' and not o.parentId and o.orderType == 'LMT':
             r['limit'], r['buyStatus'] = num(o.lmtPrice), t.orderStatus.status
             r['ordered'] = (r['ordered'] or 0) + float(o.totalQuantity or 0)  # partial fills show against it
-        elif o.action == 'SELL' and o.orderType == 'STP':
-            r['stop'] = num(o.auxPrice)
+        elif o.action == 'SELL' and o.orderType in ('STP', 'TRAIL'):
+            r['stop'] = num(o.auxPrice) if o.orderType == 'STP' else num(getattr(o, 'trailStopPrice', None))
         elif o.action == 'SELL' and o.orderType == 'LMT' and (o.parentId or o.ocaGroup):
             r['take'] = r['take'] or num(o.lmtPrice)
     bv = {}
@@ -381,7 +381,7 @@ def state(args):
         bv[(r['ticker'], k)] = bv.get((r['ticker'], k), 0.0) + e.shares * e.price
         if k == 'sold':
             o = orders.get(e.permId, (None, None, None))[1]
-            by = 'close' if (e.orderRef or '').endswith('-close') else {'STP': 'stop', 'LMT': 'take-profit'}.get(getattr(o, 'orderType', ''), 'sale')
+            by = 'close' if (e.orderRef or '').endswith('-close') else {'STP': 'stop', 'TRAIL': 'stop', 'LMT': 'take-profit'}.get(getattr(o, 'orderType', ''), 'sale')
             r['soldBy'] = ', '.join(sorted(set(filter(None, r['soldBy'].split(', '))) | {by}))
         cr = f.commissionReport
         if cr is not None and num(cr.commission) is not None:
@@ -621,9 +621,11 @@ def main():
             for o in book['orders']:
                 q = math.floor(capital_of(o, args) / per_share(o, args.market)) if o['limit'] > 0 else 0
                 if o.get('entry') == 'open':
+                    kind = {'trail': f"a trailing stop {100 * float(o.get('trailRel') or 0):.2f}% under the high, from ",
+                            'breakeven': f"a break-even stop (to the entry once up {100 * float(o.get('breakevenRel') or 0):.2f}%), from "}.get(o.get('stopMode'), 'a fixed ')
+                    take = f", take-profit {100 * o['takeRel']:+.2f}%" if o.get('takeRel') is not None else ', no take-profit'
                     print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} at the open, at most {o['limit']:.4f} (until {AUCTION_MINUTES} minutes after the open); then "
-                          f"stop {100 * o['stopRel']:+.2f}%" + (f", take-profit {100 * o['takeRel']:+.2f}%" if o.get('takeRel') is not None else ', no take-profit')
-                          + ' from the price bought at, one cancelling the other; the rest sold at the close')
+                          f"{kind}stop {100 * o['stopRel']:+.2f}%{take} from the price bought at, one cancelling the other; the rest sold at the close")
                     continue
                 print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}"
                       + (f"  buy-back {100 * o['rebuy']:.0f}% back after a stop" if (o.get('rebuy') or 0) > 0 else ''))
@@ -652,7 +654,7 @@ def main():
             e[side] += f.execution.shares
             if side == 'sold':  # how and when it was sold: the close's sale, else the bracket's stop or take-profit
                 ot = kinds.get(f.execution.permId, '')
-                e['soldBy'] = 'close' if f.execution.orderRef.endswith('-close') else {'STP': 'stop', 'LMT': 'take-profit'}.get(ot, 'bracket')
+                e['soldBy'] = 'close' if f.execution.orderRef.endswith('-close') else {'STP': 'stop', 'TRAIL': 'stop', 'LMT': 'take-profit'}.get(ot, 'bracket')
                 e['soldAt'] = f.time.astimezone(timezone.utc).strftime('%H:%M') if f.time else None
             e['buy_value' if side == 'bought' else 'sell_value'] += f.execution.shares * f.execution.price
             cr = f.commissionReport
@@ -1040,7 +1042,7 @@ def rebuy(args, ref):
     handled once (the handled shares kept in --out, so a restart does not buy back twice)."""
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
-    from ib_async import IB, LimitOrder, StopLimitOrder, StopOrder
+    from ib_async import IB, LimitOrder, Order, StopLimitOrder, StopOrder
 
     book = json.load(open(args.orders))
     plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
@@ -1082,11 +1084,20 @@ def rebuy(args, ref):
     auction_over = datetime.now(tz).replace(hour=oh, minute=om, second=0, microsecond=0) + timedelta(minutes=AUCTION_MINUTES + 1)
     ticks_of = {}
 
+    entries = {}       # conId -> (symbol, contract, price paid, the order, ticks): the orders for the open that bought
+    mine_cancel = set()  # level orders this watch cancelled itself (re-placed for a grown fill)
+    trail_ids = {}     # conId -> the trailing stop's order id
+    no_trail = set()   # shares whose trailing stop IBKR refused: a fixed stop instead (the watch does not trail it)
+    moved = set()      # break-even stops moved to the entry
+    quotes = {}        # conId -> IBKR's quote (delayed where the account has no real-time data)
+
     def set_levels(fills):
         """Each order for the open that has bought: its stop-loss and take-profit (one cancelling the
         other, reduced together on a part fill) for the shares still held, from the price it was bought
-        at. Placed once; placed again only when more shares were bought (a part fill growing), so a
-        restarted watch never doubles them."""
+        at. The stop is fixed, IBKR's own trailing stop (stopMode trail: trailRel below the highest price
+        since it was placed, moved by IBKR, the watch or not), or fixed until the break-even move
+        (stopMode breakeven: move_to_breakeven). Placed once; placed again only when more shares were
+        bought (a part fill growing), so a restarted watch never doubles them."""
         live = [t for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.orderStatus.status not in DEAD + ('Filled', 'PendingCancel')]
         for sym, o in at_open.items():
             buys = [x for x in fills if x.execution.orderRef == ref and x.execution.side == 'BOT' and x.contract.symbol == sym]
@@ -1094,18 +1105,6 @@ def rebuy(args, ref):
             if not n:
                 continue
             con = buys[0].contract.conId
-            sold = sum(x.execution.shares for x in fills if x.execution.orderRef == ref and x.execution.side == 'SLD' and x.contract.conId == con)
-            left = n - sold
-            sells = [t for t in live if t.order.action == 'SELL' and t.contract.conId == con]
-            have = max((float(t.order.totalQuantity) - float(t.orderStatus.filled or 0) for t in sells), default=0.0)
-            if left <= 0 or (sells and abs(have - left) < 1e-9):
-                continue
-            if any(t.order.action == 'BUY' and t.contract.conId == con for t in live) and sells:
-                continue  # still buying in the auction: set once it is done
-            for t in sells:
-                ib.cancelOrder(t.order)
-            if sells:
-                ib.sleep(1)
             if con not in ticks_of:
                 ticks_of[con] = exit_contract(ib, buys[0].contract)
             c, ticks = ticks_of[con]
@@ -1113,14 +1112,74 @@ def rebuy(args, ref):
                 print(f'  {sym}: not found at IBKR for its levels: NO STOP (sold at the close)')
                 continue
             paid = sum(x.execution.shares * x.execution.price for x in buys) / n
+            entries[con] = (sym, c, paid, o, ticks)
+            sold = sum(x.execution.shares for x in fills if x.execution.orderRef == ref and x.execution.side == 'SLD' and x.contract.conId == con)
+            left = n - sold
+            sells = [t for t in live if t.order.action == 'SELL' and t.contract.conId == con]
+            if con in trail_ids and con not in no_trail and not any(t.order.orderId == trail_ids[con] for t in sells) and trail_ids[con] not in mine_cancel and left > 0:
+                dead = next((t for t in ib.trades() if t.order.orderId == trail_ids[con]), None)
+                if dead is not None and dead.orderStatus.status in DEAD:
+                    no_trail.add(con)  # refused (not filled, not cancelled by this watch): a fixed stop
+                    print(f'  {sym}: IBKR refused the trailing stop; a fixed stop instead')
+            have = max((float(t.order.totalQuantity) - float(t.orderStatus.filled or 0) for t in sells), default=0.0)
+            if left <= 0 or (sells and abs(have - left) < 1e-9):
+                continue
+            if any(t.order.action == 'BUY' and t.contract.conId == con for t in live) and sells:
+                continue  # still buying in the auction: set once it is done
+            for t in sells:
+                mine_cancel.add(t.order.orderId)
+                ib.cancelOrder(t.order)
+            if sells:
+                ib.sleep(1)
             stop, take = levels_from_fill(paid, o, ticks)
             group = f'{ref}-{con}-{int(n)}'
             qty = int(left)
-            kids = ([StopOrder('SELL', qty, stop, orderRef=ref, tif='DAY')] if stop else []) + ([LimitOrder('SELL', qty, take, orderRef=ref, tif='DAY')] if take else [])
+            trail = o.get('stopMode') == 'trail' and o.get('trailRel') and stop and con not in no_trail
+            kids = []
+            if trail:  # IBKR's own trailing stop: its trigger follows the highest price at trailingPercent below it
+                kids.append(Order(action='SELL', totalQuantity=qty, orderType='TRAIL', trailingPercent=round(100 * float(o['trailRel']), 2), trailStopPrice=stop, orderRef=ref, tif='DAY'))
+            elif stop:
+                kids.append(StopOrder('SELL', qty, stop, orderRef=ref, tif='DAY'))
+            if take:
+                kids.append(LimitOrder('SELL', qty, take, orderRef=ref, tif='DAY'))
             for k in kids:
                 k.ocaGroup, k.ocaType, k.transmit = group, 2, True
                 ib.placeOrder(c, k)
-            print(f'  {sym}: bought {n:g} at {paid:.4f}: stop {stop}' + (f', take-profit {take}' if take else ', no take-profit') + f' for {qty} (one cancelling the other)')
+            if trail:
+                trail_ids[con] = kids[0].orderId
+            how = (f'trailing stop {100 * float(o["trailRel"]):.2f}% below the high (from {stop})' if trail else
+                   f'stop {stop}' + (f' (to the entry once up {100 * float(o["breakevenRel"]):.2f}%)' if o.get('stopMode') == 'breakeven' else ''))
+            print(f'  {sym}: bought {n:g} at {paid:.4f}: {how}' + (f', take-profit {take}' if take else ', no take-profit') + f' for {qty} (one cancelling the other)')
+
+    def move_to_breakeven():
+        """A break-even stop (stopMode breakeven) moved up to the price paid once the share has traded
+        breakevenRel above it since the fill: the day's high in IBKR's quote (the auction is the day's
+        first trade, so the high is after the fill; a delayed quote moves it late, never early)."""
+        live = [t for t in ib.reqAllOpenOrders() if t.order.orderRef == ref and t.order.action == 'SELL' and t.order.orderType == 'STP'
+                and t.orderStatus.status not in DEAD + ('Filled', 'PendingCancel')]
+        for con, (sym, c, paid, o, ticks) in entries.items():
+            if o.get('stopMode') != 'breakeven' or not o.get('breakevenRel') or con in moved:
+                continue
+            stp = next((t for t in live if t.contract.conId == con), None)
+            if stp is None:
+                continue
+            to = round_to(paid, tick_at(ticks[0], ticks[1], paid), 'up')
+            if stp.order.auxPrice >= to - 1e-9:
+                moved.add(con)
+                continue
+            if con not in quotes:
+                ib.reqMarketDataType(3)  # real time where subscribed, else delayed (free)
+                quotes[con] = ib.reqMktData(c, '', False, False)
+            q = quotes[con]
+            hi = next((x for x in (q.high, q.last) if isinstance(x, (int, float)) and math.isfinite(x) and x > 0), None)
+            if hi is None or hi < paid * (1 + float(o['breakevenRel'])):
+                continue
+            stp.order.auxPrice = to
+            ib.placeOrder(stp.contract, stp.order)
+            moved.add(con)
+            now = next((x for x in (q.last, q.bid) if isinstance(x, (int, float)) and math.isfinite(x) and x > 0), None)
+            print(f'  {sym}: up {100 * (hi / paid - 1):.2f}% since bought at {paid:.4f}: its stop moved to {to} (break-even)'
+                  + (f'; the price now {now}, under it: it sells' if now is not None and now <= to else ''))
 
     def expire_open_buys():
         """After the opening auction, an order for the open still working (a day order: its good-till
@@ -1142,6 +1201,7 @@ def rebuy(args, ref):
         if at_open:
             expire_open_buys()
             set_levels(fills)
+            move_to_breakeven()
         for tr in ib.reqCompletedOrders(True):
             o, c = tr.order, tr.contract
             # A completed order's status is all IBKR sends with it: its quantity comes from its fills.
@@ -1183,6 +1243,8 @@ def rebuy(args, ref):
             print(f'  {c.symbol}: stopped at {level} (paid {paid:.4f}): buy-back {qty} from {back} (at most {cap}), sale at {out}')
         # every 5 seconds around the open (the auction's fills get their levels at once), else every 20
         ib.sleep(5 if at_open and datetime.now(tz) < auction_over + timedelta(minutes=10) else 20)
+    for q in quotes.values():
+        ib.cancelMktData(q.contract)
     for t in ib.openTrades():  # its buy-backs not triggered: cancelled before the close
         if t.order.orderRef == ref and any(t.order.orderId == p.orderId for p in mine):
             ib.cancelOrder(t.order)

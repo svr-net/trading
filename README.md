@@ -26,16 +26,25 @@ order is one a person would place, and whose backtest trades exactly those order
   if refused, a day order the watch cancels then), so it buys in the opening auction or not at all.
   The amount is the slot's capital, **at most 1% of the share's median day's value** (`maxCapital`,
   which the budget and `tools/ibkr/submit.py` respect), at least GBP 500.
-- **Stop-loss and take-profit from the fill**: the order file carries them as fractions of the price
-  bought at (`stopRel`, `takeRel`); the bridge's watch (`submit.py --rebuy`) places them once the
-  auction has filled, from the fill's own price, one cancelling the other (reduced together on a part
-  fill, placed again when more is bought, never twice), so a gap down never leaves the stop above the
-  entry. Whatever is still held is sold in the closing auction. The pair is chosen each day from a
-  grid (stop 1 to 4 daily volatilities, take-profit 1 to 3 or none) by what it added to the model's
-  top forecasts over the last 250 sessions against the 4-volatility stop alone, shrunk by its t
-  statistic: levels are tightened only where they have paid. The daily bar cannot tell which came
-  first, so a day that touched both counts as stopped; a stop sells half a spread below its level, a
-  take-profit fills only when the high clears it by half a spread.
+- **Stop-loss and take-profit from the fill, moving during the day**: the order file carries them as
+  fractions of the price bought at (`stopRel`, `takeRel`) and how the stop moves (`stopMode`): fixed;
+  `trail`, IBKR's own trailing stop `trailRel` under the highest price since the fill (moved at IBKR,
+  whether or not the bridge is up; a fixed stop where IBKR refuses it); or `breakeven`, moved by the
+  bridge's watch to the price paid once the share has traded `breakevenRel` (one volatility) above it
+  (from the day's high in IBKR's quote: with delayed data the move comes late, never early). The watch
+  (`submit.py --rebuy`) places them once the auction has filled, from the fill's own price, one
+  cancelling the other (reduced together on a part fill, placed again when more is bought, never
+  twice), so a gap down never leaves the stop above the entry. Whatever is still held is sold in the
+  closing auction. The levels are chosen each day from 75 (stop 1 to 4 daily volatilities, fixed,
+  trailing or break-even; take-profit 1 to 3 or none) by what each added to the model's top forecasts
+  over the last 250 sessions against the fixed 4-volatility stop alone, shrunk by its t statistic:
+  levels are tightened, or made to move, only where they have paid.
+- **Replayed on 5-minute paths**: the levels are tested on each share-day's 5-minute bars where there
+  are any (`--bars`: the store's LSE bars and the bridge's 30-second recordings of each day's
+  candidates, `tools/eoddata/intraday_export.mjs --paths UK`; each bar's low taken before its high).
+  Without them, on the daily bar both ways (the low first, the high first), the worse taken: a moving
+  stop cannot be credited on a daily bar, so on daily bars alone it is seldom chosen. The report says
+  how many trades were replayed on paths and each kind of stop's best record.
 - **Costs only on the final orders**: the model learns and its backtest trades before the broker's
   costs (the report shows what they would have been, never charges them). The next session's orders
   then have them applied, each on its own amount: IBKR's commission, the 0.5% stamp duty (not AIM
@@ -46,10 +55,12 @@ order is one a person would place, and whose backtest trades exactly those order
   is applied, what is next).
 - **Checks**: `tools/check/uk_leak.sh` (CI and the daily run): on a generated market it must find a
   planted effect, learn a take-profit where the day's highs spike and fade and none on a random walk,
+  on 5-minute bars a trailing or break-even stop where the day's runs fade and a fixed one on a random walk,
   every order must be sensible (bought at the open only, levels around the entry, an amount within the
   share's liquidity) and unchanged by later data. `tools/ibkr/test/levels.py` (CI) runs the orders
   through `submit.py` against a stand-in IBKR: the auction-only buy, the levels from the fill, a part
-  fill, a refused good-till time, the stop cancelling the take-profit.
+  fill, a refused good-till time, the stop cancelling the take-profit, IBKR's trailing stop (and a fixed
+  one where it is refused), the break-even move.
 
 `ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free aim.txt] [--segments
 lse_segments.csv] [--override ibkr.csv] [--json scan.json] [--orders orders.json]` prints the

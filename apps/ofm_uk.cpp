@@ -38,13 +38,17 @@
 //             most --adv-share (1%) of the share's median day's value (at least --min-order, GBP 500).
 //   levels    a stop-loss and a take-profit set from the price it was bought at (the bridge places
 //             them once the auction has filled, so a gap down never sets the stop above the entry), one
-//             cancelling the other; whatever is still held is sold in the closing auction. Each day
-//             the pair is chosen from a grid (stop 1, 1.5, 2, 3 or 4 daily volatilities below the
-//             entry; take-profit 1, 1.5, 2 or 3 above, or none) by the record of the last 250 sessions:
-//             what each pair added, per session, to the day's highest fifth of forecasts bought at the
-//             open, against the 4-volatility stop alone, shrunk by its t statistic (a pair must have
-//             added about two standard errors to be chosen; otherwise the 4-volatility stop alone).
-//             A day's bar cannot tell which came first: a share that touched both is taken as stopped.
+//             cancelling the other; whatever is still held is sold in the closing auction. The stop
+//             s daily volatilities below the entry (1, 1.5, 2, 3 or 4) is fixed, trailing (s below the
+//             highest price since the fill: IBKR's own trailing stop) or break-even (moved to the entry
+//             once the price has risen one volatility: the bridge's watch); the take-profit 1, 1.5, 2 or
+//             3 above, or none. Each day the levels are chosen from these 75 by the record of the last
+//             250 sessions: what each added, per session, to the day's highest fifth of forecasts
+//             bought at the open, against the fixed 4-volatility stop alone, shrunk by its t statistic
+//             (about two standard errors to be chosen; otherwise that stop alone).
+//   paths     the levels are replayed on each share-day's 5-minute bars where --bars has them (each
+//             bar's low taken before its high: the stop first); else on the daily bar both ways, the
+//             low first and the high first, the worse taken (the bar cannot tell which came first).
 //   choice    the orders whose expected return (before costs) is at least --hurdle (0.05%), the largest
 //             expected gain in pounds first, at most --slots (X_NPICK, 5) a day; for the final orders,
 //             after each one's own costs. Some days none.
@@ -76,7 +80,7 @@ namespace {
 using swing::kNaN;
 
 struct Opt {
-  std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut;
+  std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv;
   double capital = 5000, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
   std::size_t slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
@@ -104,7 +108,7 @@ struct Order {
   double close = 0, limit = 0, stop = 0, value = 0, sigma = 0, spread = 0;
   double stopSd = 4, takeSd = kNaN;  // the levels from the entry, in daily volatilities (take NaN: none)
   double adj = 0;       // what the chosen levels added over the last 250 sessions (per trade)
-  std::size_t level = 0;
+  std::size_t level = 0, mode = 0;  // the grid's pair; 0 fixed, 1 trailing, 2 break-even
   double expected = 0;  // the calibrated return of the trade as placed (the open, its levels, the close), before costs
   double cost = 0;      // the round trip's costs if it buys in the auction and sells at the close
   double net = 0;       // expected - cost: the return if it buys
@@ -116,6 +120,7 @@ struct Fill {
   int filled = 0;  // 1 in the opening auction
   int exit = 0;    // 0 the closing auction, 1 the stop, 2 the take-profit
   double entry = 0, exitPx = 0, gross = 0, cost = 0, ret = 0;
+  bool onPath = false;  // its day replayed on 5-minute bars
 };
 }  // namespace
 
@@ -138,6 +143,7 @@ int main(int argc, char** argv) {
     else if (a == "--json") o.jsonOut = argv[++k];
     else if (a == "--orders") o.ordersOut = argv[++k];
     else if (a == "--trace") o.traceOut = argv[++k];
+    else if (a == "--bars") o.barsCsv = argv[++k];
     else if (a == "--min-value") o.minValue = std::atof(argv[++k]);
     else if (a == "--adv-share") o.advShare = std::atof(argv[++k]);
     else if (a == "--min-order") o.minOrder = std::atof(argv[++k]);
@@ -343,17 +349,106 @@ int main(int argc, char** argv) {
     ic[u] = saa > 0 && sbb > 0 ? sab / std::sqrt(saa * sbb) : kNaN;
   }
 
-  // The levels' grid and the exit of a share bought at `entry` in the opening auction of session d:
-  // the prices the orders would trade at (no broker costs: those come off the final orders only).
+  // The levels' grid: a stop s daily volatilities below the entry, fixed, trailing (s below the highest
+  // price since the fill) or moved to the entry once the price has risen one volatility (break-even);
+  // a take-profit k above the entry, or none. The base: the fixed 4-volatility stop alone.
   static const double kStop[] = {1, 1.5, 2, 3, 4}, kTake[] = {1, 1.5, 2, 3, kNaN};
-  constexpr std::size_t nS = 5, nK = 5, nL = nS * nK, kBase = 4 * nK + 4;  // the base: the 4-volatility stop alone
+  static const char* const kMode[] = {"fixed", "trailing", "break-even"};
+  constexpr std::size_t nS = 5, nK = 5, nM = 3, nL = nM * nS * nK, kBase = 4 * nK + 4;
+  const auto modeOf = [](std::size_t g) { return g / (nS * nK); };
+  const auto stopOf = [](std::size_t g) { return kStop[(g / nK) % nS]; };
+  const auto takeOf = [](std::size_t g) { return kTake[g % nK]; };
+  const auto levelName = [&](std::size_t g) {
+    char b[64];
+    if (std::isfinite(takeOf(g))) std::snprintf(b, sizeof b, "%s %g/%g", kMode[modeOf(g)], stopOf(g), takeOf(g));
+    else std::snprintf(b, sizeof b, "%s %g/none", kMode[modeOf(g)], stopOf(g));
+    return std::string(b);
+  };
+
+  // The 5-minute bars (--bars date,ticker,time,high,low,close[,volume]) of the share-days the levels are
+  // tested on (the day after each close, for the day's highest 2/5 of forecasts): each a path of prices
+  // in time order, every bar's low before its high (the order within a bar is not known: the stop first).
+  std::vector<float> pathPts;
+  std::map<std::size_t, std::pair<std::size_t, std::size_t>> pathOf;  // (day, share) -> (offset, points)
+  std::size_t pathDays = 0, pathBad = 0;
+  if (!o.barsCsv.empty()) {
+    std::vector<char> want(T * N, 0);
+    for (std::size_t u = 0; u + 1 < T; ++u) {
+      if (pred[u].empty()) continue;
+      std::vector<std::pair<double, std::size_t>> v;
+      for (std::size_t j = 0; j < pred[u].size(); ++j) v.emplace_back(pred[u][j], uni[u][j]);
+      std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+      for (std::size_t q = 0; q < v.size() * 2 / 5; ++q) want[at(u + 1, v[q].second)] = 1;
+    }
+    std::map<std::string, std::size_t> di, ti;
+    for (std::size_t t = 0; t < T; ++t) di[p.days[t]] = t;
+    for (std::size_t i = 0; i < N; ++i) ti[p.tickers[i]] = i;
+    std::map<std::size_t, std::vector<std::pair<std::string, std::pair<float, float>>>> raw;
+    std::ifstream in(o.barsCsv);
+    std::string l;
+    std::getline(in, l);
+    while (std::getline(in, l)) {
+      std::size_t c[6], k = 0;
+      for (std::size_t q = 0; q < l.size() && k < 6; ++q)
+        if (l[q] == ',') c[k++] = q;
+      if (k < 5) continue;
+      const auto d = di.find(l.substr(0, std::min<std::size_t>(c[0], 10))), tk = ti.find(l.substr(c[0] + 1, c[1] - c[0] - 1));
+      if (d == di.end() || tk == ti.end() || !want[at(d->second, tk->second)]) continue;
+      const float h = float(std::atof(l.c_str() + c[2] + 1)), lo = float(std::atof(l.c_str() + c[3] + 1));
+      if (!(h > 0) || !(lo > 0) || h < lo) continue;
+      raw[at(d->second, tk->second)].push_back({l.substr(c[1] + 1, c[2] - c[1] - 1), {lo, h}});
+    }
+    for (auto& [key, bars] : raw) {
+      const std::size_t t = key / N, i = key % N;
+      std::sort(bars.begin(), bars.end());
+      // in the daily bar's scale (the bridge's recordings are IBKR's prices: an LSE share in pence or
+      // pounds), and the same prices as the daily bar: not a stale or mis-scaled day
+      double scale = 1;
+      if (!bars.empty() && p.O[key] > 0)
+        for (double sc : {1.0, 100.0, 0.01})
+          if (std::fabs(std::log(p.O[key] / (sc * double(bars.front().second.first)))) < 0.1) scale = sc;
+      if (scale != 1)
+        for (auto& b : bars) b.second.first = float(b.second.first * scale), b.second.second = float(b.second.second * scale);
+      if (bars.size() < 10 || !(p.O[key] > 0) || std::fabs(std::log(double(bars.front().second.first) / p.O[key])) > 0.1 ||
+          std::fabs(std::log(double(bars.back().second.second) / p.C[at(t, i)])) > 0.1) {
+        ++pathBad;
+        continue;
+      }
+      pathOf[key] = {pathPts.size(), 2 * bars.size()};
+      for (const auto& b : bars) pathPts.push_back(b.second.first), pathPts.push_back(b.second.second);
+      ++pathDays;
+    }
+  }
   struct Exit { int code; double px, slip; };
-  const auto exitOf = [&](std::size_t d, std::size_t i, double entry, double sg, double spr, double sSd, double kSd) {
+  // A trade on a path of prices: stopped when a price reaches the stop (a stop sells into the bid), out at
+  // the take-profit when a price trades through it, else at the close; the stop moves up after each price.
+  const auto simulate = [&](const float* pts, std::size_t m, double C, double entry, double sg, double hs, std::size_t g) {
+    const double sSd = stopOf(g), kSd = takeOf(g);
+    const std::size_t mode = modeOf(g);
+    double stop = entry * (1 - sSd * sg), hw = entry;
+    const double take = std::isfinite(kSd) ? entry * (1 + kSd * sg) : kNaN;
+    for (std::size_t q = 0; q < m; ++q) {
+      const double x = pts[q];
+      if (x <= stop) return Exit{1, stop, hs};
+      if (std::isfinite(take) && x >= take * (1 + hs)) return Exit{2, take, 0.0};
+      if (x > hw) {
+        hw = x;
+        if (mode == 1) stop = std::max(stop, hw * (1 - sSd * sg));
+        if (mode == 2 && hw >= entry * (1 + sg)) stop = std::max(stop, entry);
+      }
+    }
+    return Exit{0, C, 0.0};
+  };
+  // The exit of a share bought at `entry` in the opening auction of session d with the levels g: on its
+  // 5-minute path where there is one; else on the daily bar both ways (the low first, the high first),
+  // the worse taken, as the bar cannot tell.
+  const auto exitOf = [&](std::size_t d, std::size_t i, double entry, double sg, double spr, std::size_t g) {
     const double L = p.L[at(d, i)], H = p.H[at(d, i)], C = p.C[at(d, i)], hs = 0.5 * spr;
-    const double stop = entry * (1 - sSd * sg), take = std::isfinite(kSd) ? entry * (1 + kSd * sg) : kNaN;
-    if (L <= stop) return Exit{1, stop, hs};                               // touched: stopped (first, if the take-profit was touched too); a stop sells into the bid
-    if (std::isfinite(take) && H >= take * (1 + hs)) return Exit{2, take, 0.0};  // a resting limit sell: filled only when the high trades through it
-    return Exit{0, C, 0.0};                                                 // the closing auction's price
+    const auto it = pathOf.find(at(d, i));
+    if (it != pathOf.end()) return simulate(&pathPts[it->second.first], it->second.second, C, entry, sg, hs, g);
+    const float lowFirst[2] = {float(L), float(H)}, highFirst[2] = {float(H), float(L)};
+    const Exit a = simulate(lowFirst, 2, C, entry, sg, hs, g), b = simulate(highFirst, 2, C, entry, sg, hs, g);
+    return a.px * (1 - a.slip) <= b.px * (1 - b.slip) ? a : b;
   };
   // Each session, the day's highest fifth of forecasts bought at the open (when the auction was under
   // the limit), as a triple barrier (Lopez de Prado 2018: the stop, the take-profit, the close): every
@@ -378,7 +473,7 @@ int main(int argc, char** argv) {
       const double O = p.O[at(u + 1, i)], sg = sigma[at(u, i)], spr = spread[at(u, i)], x = v[q].first;
       if (!(O <= p.C[at(u, i)] * (1 + o.capSd * sg))) continue;
       for (std::size_t g = 0; g < nL; ++g) {
-        const Exit e = exitOf(u + 1, i, O, sg, spr, kStop[g / nK], kTake[g % nK]);
+        const Exit e = exitOf(u + 1, i, O, sg, spr, g);
         const double r = e.px / O - 1 - e.slip, y = std::clamp(r / sg, -4.0, 4.0);
         sum[g] += r;
         auto& c = day[g];
@@ -451,7 +546,7 @@ int main(int argc, char** argv) {
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder || r.expected < o.hurdle) continue;
       r.limit = r.close * (1 + o.capSd * r.sigma);
-      r.level = lv, r.adj = lvAdj, r.stopSd = kStop[lv / nK], r.takeSd = kTake[lv % nK];
+      r.level = lv, r.adj = lvAdj, r.stopSd = stopOf(lv), r.takeSd = takeOf(lv), r.mode = modeOf(lv);
       r.stop = r.close * (1 - r.stopSd * r.sigma);  // shown from the close; placed from the price bought at
       r.cost = withCosts ? costOf(r) : 0.0;
       r.net = r.expected - r.cost;
@@ -480,7 +575,8 @@ int main(int argc, char** argv) {
     const double O = p.O[at(d, i)];
     if (!(O <= r.limit)) return f;  // the auction above the limit: not bought (the order expires with the auction)
     f.filled = 1, f.entry = O;
-    const Exit e = exitOf(d, i, O, r.sigma, r.spread, r.stopSd, r.takeSd);
+    const Exit e = exitOf(d, i, O, r.sigma, r.spread, r.level);
+    f.onPath = pathOf.count(at(d, i)) > 0;
     f.exit = e.code, f.exitPx = e.px;
     f.gross = f.exitPx / f.entry - 1 - e.slip;
     f.cost = costOf(r);
@@ -494,12 +590,12 @@ int main(int argc, char** argv) {
   if (tlog) std::fprintf(tlog, "date,ticker,close,limit,stopRel,takeRel,value,expected,cost,filled,entry,exit,exitPrice,gross,ret\n");
   std::vector<double> ret;
   std::vector<std::string> days;
-  double nOrders = 0, nFilled = 0, nAuction = 0, nStopped = 0, nTaken = 0, nCapped = 0, sumGross = 0, sumCost = 0, sumNet = 0, nWin = 0, sumValue = 0, sumExpected = 0;
+  double nOrders = 0, nFilled = 0, nOnPath = 0, nAuction = 0, nStopped = 0, nTaken = 0, nCapped = 0, sumGross = 0, sumCost = 0, sumNet = 0, nWin = 0, sumValue = 0, sumExpected = 0;
   std::size_t daysWithOrders = 0, firstDay = T, levelDays[nL] = {};
   std::map<std::string, std::pair<std::vector<double>, double>> byYear;  // each year's daily returns, IC sum
   std::vector<double> baseline;  // every share of the day's list, bought at the open and sold at the close (gross): the market the orders come from
   const auto traceOrder = [&](std::size_t t, const Order& r) {
-    if (trace) std::fprintf(trace, "%s,%s,%.6g,%.6g,%.6g,%.6g,%.6g\n", p.days[t].c_str(), p.tickers[r.i].c_str(), r.limit, r.stopSd, r.takeSd, r.value, r.net);
+    if (trace) std::fprintf(trace, "%s,%s,%.6g,%zu,%.6g,%.6g\n", p.days[t].c_str(), p.tickers[r.i].c_str(), r.limit, r.level, r.value, r.net);
   };
   struct Check { std::size_t i; Order r; Fill f; };
   std::vector<Check> lastCheck;
@@ -518,7 +614,7 @@ int main(int argc, char** argv) {
       const Fill f = play(t, r);
       nOrders += 1, nCapped += r.capped, sumExpected += (std::isfinite(r.fill) ? r.fill : 1.0) * r.net;
       if (f.filled) {
-        nFilled += 1, nAuction += f.filled == 1, nStopped += f.exit == 1, nTaken += f.exit == 2, sumGross += f.gross, sumCost += f.cost, sumNet += f.ret, nWin += f.ret > 0, sumValue += r.value;
+        nFilled += 1, nOnPath += f.onPath, nAuction += f.filled == 1, nStopped += f.exit == 1, nTaken += f.exit == 2, sumGross += f.gross, sumCost += f.cost, sumNet += f.ret, nWin += f.ret > 0, sumValue += r.value;
         day += r.value * f.ret / (double(o.slots) * o.capital);
       }
       if (tlog)
@@ -598,23 +694,31 @@ int main(int argc, char** argv) {
     // whole period (for reading only: the choice each day saw only the 250 sessions before it).
     std::printf("uk:   levels used (stop / take-profit, daily volatilities from the entry):");
     for (std::size_t g = 0; g < nL; ++g)
-      if (levelDays[g]) {
-        char k[16];
-        std::snprintf(k, sizeof k, std::isfinite(kTake[g % nK]) ? "%g" : "none", kTake[g % nK]);
-        std::printf(" %g/%s on %zu sessions;", kStop[g / nK], k, levelDays[g]);
-      }
+      if (levelDays[g]) std::printf(" %s on %zu sessions;", levelName(g).c_str(), levelDays[g]);
     std::printf("\n");
-    {
+    std::printf("uk:   5-minute bars: %zu share-days (%zu left out: too few bars or not the daily bar's prices); %.0f%% of the filled trades replayed on them, "
+                "the rest on the daily bar with the worse of its two orders\n", pathDays, pathBad, nFilled > 0 ? 100 * nOnPath / nFilled : 0.0);
+    {  // every pair's record over the whole period (for reading only: each day's choice saw only the 250 sessions before it), the best ten
       const std::size_t lo = firstDay > 0 ? firstDay - 1 : 0;
       const double n = lvD[T] - lvD[lo];
       if (n > 1) {
-        std::printf("uk:   each pair over the backtest, added a trade against the %g-volatility stop alone (t):", kStop[kBase / nK]);
+        std::vector<std::pair<double, std::size_t>> best;
+        std::vector<double> mean(nL), tst(nL);
         for (std::size_t g = 0; g < nL; ++g) {
-          if (g == kBase) continue;
           const double m = (lvS[T * nL + g] - lvS[lo * nL + g]) / n, v = (lvS2[T * nL + g] - lvS2[lo * nL + g]) / n - m * m;
-          char k[16];
-          std::snprintf(k, sizeof k, std::isfinite(kTake[g % nK]) ? "%g" : "none", kTake[g % nK]);
-          std::printf("%s %g/%s %+.3f%% (%+.1f)", g % nK ? "," : "\nuk:    ", kStop[g / nK], k, 100 * m, v > 0 ? m / std::sqrt(v / n) : 0.0);
+          mean[g] = m, tst[g] = v > 0 ? m / std::sqrt(v / n) : 0.0;
+          if (g != kBase) best.emplace_back(m, g);
+        }
+        std::sort(best.rbegin(), best.rend());
+        std::printf("uk:   the best levels over the backtest, added a trade against the fixed 4-volatility stop alone (t):");
+        for (std::size_t q = 0; q < std::min<std::size_t>(10, best.size()); ++q)
+          std::printf("%s %s %+.3f%% (%+.1f)", q ? "," : "", levelName(best[q].second).c_str(), 100 * best[q].first, tst[best[q].second]);
+        for (std::size_t md = 0; md < nM; ++md) {  // each kind's best
+          std::size_t bg = kBase;
+          double bm = -1e9;
+          for (std::size_t g = md * nS * nK; g < (md + 1) * nS * nK; ++g)
+            if (mean[g] > bm) bm = mean[g], bg = g;
+          std::printf("%s best %s: %s %+.3f%%", md ? ";" : "\nuk:   by kind:", kMode[md], levelName(bg).c_str(), 100 * bm);
         }
         std::printf("\n");
       }
@@ -631,16 +735,18 @@ int main(int argc, char** argv) {
   }
   std::printf("uk: next session (after the close of %s): %zu orders\n", p.days.back().c_str(), next.size());
   for (const auto& r : next)
-    std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); stop %.1f%% and %s from the price bought at; expected %+.2f%% before costs (levels %+.2f%%), its costs %.2f%%, %+.2f%% after; "
+    std::printf("uk:   %-6s buy GBP %5.0f%s at the open, at most %.4g (close %.4g %+.2f%%); a %s stop %.1f%% and %s from the price bought at; expected %+.2f%% before costs (levels %+.2f%%), its costs %.2f%%, %+.2f%% after; "
                 "the auction under the limit on %.0f%% of its last sessions%s\n",
-                p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1), -100 * r.stopSd * r.sigma,
-                std::isfinite(r.takeSd) ? ("take-profit +" + std::to_string(100 * r.takeSd * r.sigma).substr(0, 4) + "%").c_str() : "no take-profit", 100 * r.expected, 100 * r.adj, 100 * r.cost,
+                p.tickers[r.i].c_str(), r.value, r.capped ? " (its liquidity)" : "", r.limit, r.close, 100 * (r.limit / r.close - 1),
+                r.mode == 1 ? "trailing" : r.mode == 2 ? "break-even (to the entry once up 1 volatility)" : "fixed", -100 * r.stopSd * r.sigma, std::isfinite(r.takeSd) ? ("take-profit +" + std::to_string(100 * r.takeSd * r.sigma).substr(0, 4) + "%").c_str() : "no take-profit", 100 * r.expected, 100 * r.adj, 100 * r.cost,
                 100 * r.net, 100 * (std::isfinite(r.fill) ? r.fill : 0.0), stampFree[r.i] ? " (AIM: no stamp duty)" : "");
 
   // The orders for the bridge (prices: to the private store, never the page): each carries its amount
   // (capital, at most maxCapital, the share's liquidity), its auction-only limit ("entry": "open"), and
   // its levels as fractions of the price it is bought at (stopRel, takeRel: the bridge sets them from the
-  // fill); stop and take are the same levels from the last close, for reading.
+  // fill), how its stop moves (stopMode: fixed; trail, trailRel below the highest price since the fill;
+  // breakeven, to the entry once the price is breakevenRel above it); stop and take are the same levels
+  // from the last close, for reading.
   if (!o.ordersOut.empty()) {
     std::ofstream f(o.ordersOut);
     char b[1024];
@@ -648,11 +754,12 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < next.size(); ++q) {
       const auto& r = next[q];
       std::snprintf(b, sizeof b,
-                    "%s{\"ticker\":\"%s\",\"close\":%.6g,\"entry\":\"open\",\"limit\":%.6g,\"stop\":%.6g,\"take\":%s,\"stopRel\":%.6g,\"takeRel\":%s,\"exit\":\"close\",\"expected\":%.6g,\"ifFilled\":%.6g,\"fill\":%.4g,\"capital\":%.2f,"
+                    "%s{\"ticker\":\"%s\",\"close\":%.6g,\"entry\":\"open\",\"limit\":%.6g,\"stop\":%.6g,\"take\":%s,\"stopRel\":%.6g,\"takeRel\":%s,\"stopMode\":\"%s\",\"trailRel\":%s,\"breakevenRel\":%s,\"exit\":\"close\",\"expected\":%.6g,\"ifFilled\":%.6g,\"fill\":%.4g,\"capital\":%.2f,"
                     "\"maxCapital\":%.2f,\"rebuy\":0,\"rebuyCost\":0,\"spread\":%.6g,\"cost\":%.6g,\"costAmount\":%.4g,\"stampFree\":%s}",
                     q ? "," : "", p.tickers[r.i].c_str(), r.close, r.limit, r.stop,
                     std::isfinite(r.takeSd) ? std::to_string(r.close * (1 + r.takeSd * r.sigma)).c_str() : "null", -r.stopSd * r.sigma,
-                    std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, std::isfinite(r.fill) ? r.fill : 0.0, r.value,
+                    std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", r.mode == 1 ? "trail" : r.mode == 2 ? "breakeven" : "fixed",
+                    r.mode == 1 ? std::to_string(r.stopSd * r.sigma).c_str() : "null", r.mode == 2 ? std::to_string(r.sigma).c_str() : "null", (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, std::isfinite(r.fill) ? r.fill : 0.0, r.value,
                     o.advShare * adv[at(T - 1, r.i)], r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
       f << b;
     }
