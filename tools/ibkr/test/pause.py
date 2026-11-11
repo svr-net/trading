@@ -107,7 +107,26 @@ def bridge_waits():
     return 'bridge: a step pauses the fetch and waits for it; a watch does not; the last step lets it go on; no fetch starts during a step'
 
 
+def completed_orders_give_up():
+    """IBKR that never ends the completed orders' list: submit.completed_orders gives up after its wait and
+    the step goes on without them (the reports' and the page's TimeoutError on 11 Nov)."""
+    import asyncio
+    b = levels._broker(levels.Broker)
+
+    def never(*_):
+        async def hang():
+            await asyncio.sleep(3600)
+        return hang()
+    b.reqCompletedOrdersAsync = never
+    t0 = time.monotonic()
+    got = submit.completed_orders(b, wait=1)
+    assert got == [] and time.monotonic() - t0 < 5, (got, time.monotonic() - t0)
+    del b.reqCompletedOrdersAsync
+    return 'completed orders: no answer in time, the step goes on without them'
+
+
 if __name__ == '__main__':
     print(fetch_pauses())
     print(bridge_waits())
+    print(completed_orders_give_up())
     print('pause: the daily-bars fetch gives way to the bridge\'s other steps; OK')

@@ -158,6 +158,19 @@ def levels_from_fill(paid, o, ticks):
     return stop, take
 
 
+def completed_orders(ib, api_only=False, wait=20):
+    """IBKR's completed orders, or [] when it does not answer within `wait` seconds: IB Gateway at times never
+    ends the list (completedOrdersEnd), and the request then failed the whole step with a TimeoutError after a
+    minute (the reports and the page's trades, 11 Nov). The steps use it only to name how a share was sold
+    (a stop, a take-profit); without it, the order's reference says (the close's -close) or 'sale'."""
+    import asyncio
+    try:
+        return list(ib.run(asyncio.wait_for(ib.reqCompletedOrdersAsync(api_only), wait)))
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f'  completed orders: no answer from IBKR in {wait} s ({type(e).__name__}); without them\n')
+        return []
+
+
 def ib_symbol(ticker, market):
     # EODData's class shares (BRK.B) are "BRK B" at IBKR in the US; LSE keeps the dot (BT.A).
     return ticker.replace('.', ' ') if market == 'US' else ticker
@@ -368,7 +381,7 @@ def state(args):
                                           'bought': 0.0, 'buy': None, 'sold': 0.0, 'sell': None, 'soldBy': '', 'held': 0.0, 'price': None,
                                           'pnl': 0.0, 'open': None, 'fees': 0.0, 'feesKnown': False, 'ordered': None, 'note': ''})
     orders = {}
-    for t in list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(False)):
+    for t in list(ib.reqAllOpenOrders()) + completed_orders(ib):
         o = t.order
         if not (o.orderRef or '').startswith(ref):
             continue
@@ -705,7 +718,7 @@ def main():
         # commissions), and the commissions.
         from datetime import timezone
         per = {}
-        kinds = {t.order.permId: t.order.orderType for t in list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(False))}
+        kinds = {t.order.permId: t.order.orderType for t in list(ib.reqAllOpenOrders()) + completed_orders(ib)}
         for f in ib.fills():
             if not f.execution.orderRef.startswith(ref):  # the day's orders and the close's sales (ref-close)
                 continue
@@ -1263,7 +1276,7 @@ def rebuy(args, ref):
             expire_open_buys()
             set_levels(fills)
             move_to_breakeven()
-        for tr in ib.reqCompletedOrders(True):
+        for tr in completed_orders(ib, True):
             o, c = tr.order, tr.contract
             # A completed order's status is all IBKR sends with it: its quantity comes from its fills.
             if o.orderRef != ref or o.action != 'SELL' or o.orderType != 'STP' or tr.orderStatus.status != 'Filled':
