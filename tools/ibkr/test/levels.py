@@ -193,6 +193,15 @@ class Broker:
     def trades(self):
         return list(self._trades)
 
+    def run(self, aw):
+        import asyncio
+        return asyncio.new_event_loop().run_until_complete(aw)
+
+    def reqCompletedOrdersAsync(self, *_):
+        async def done():
+            return []
+        return done()
+
     def reqCompletedOrders(self, *_):
         return []
 
