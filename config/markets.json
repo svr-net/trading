@@ -24,32 +24,12 @@
           "only": "aim"
         },
         {
-          "name": "n15-regime",
-          "env": {
-            "X_NPICK": "15",
-            "X_REGIME": "1"
-          }
-        },
-        {
-          "name": "aim-n15-regime",
-          "env": {
-            "X_NPICK": "15",
-            "X_REGIME": "1"
-          },
-          "only": "aim"
-        },
-        {
           "name": "aim-regime-size",
           "env": {
             "X_REGIME": "1",
             "X_SIZE": "1"
           },
           "only": "aim"
-        },
-        {
-          "name": "single",
-          "app": "single",
-          "env": {}
         },
         {
           "name": "hold-up",
@@ -63,13 +43,6 @@
             "--capital",
             "1000"
           ]
-        },
-        {
-          "name": "regime-balance",
-          "env": {
-            "X_REGIME": "1",
-            "X_BALANCE": "1"
-          }
         }
       ],
       "budget": {
@@ -102,28 +75,11 @@
           }
         },
         {
-          "name": "fillnet",
-          "env": {
-            "X_FILLNET": "1"
-          }
-        },
-        {
           "name": "sharedepth-filln-size",
           "env": {
             "X_SHAREDEPTH": "1",
             "X_FILLN": "1",
             "X_SIZE": "1"
-          }
-        },
-        {
-          "name": "single",
-          "app": "single",
-          "env": {}
-        },
-        {
-          "name": "balance",
-          "env": {
-            "X_BALANCE": "1"
           }
         }
       ],
