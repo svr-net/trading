@@ -29,7 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
-  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' ? "the regulators' fees" : "its exchange's taxes"}; the auctions cross no spread)`;
+  if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' ? "the regulators' fees" : c.market === 'APAC' ? "its exchange's fees" : "its exchange's taxes"}; the auctions cross no spread)`;
   if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
   const cur = { UK: '£', US: '$', APAC: 'A$', EU: '€' }[c.market] || '';
@@ -106,6 +106,7 @@ function render(r, source) {
   const hint = $('planhint');
   const taxes = c?.market === 'UK' ? 'stamp duty (none on AIM shares)'
     : c?.market === 'US' ? "the regulators' fees on the sale (no tax on buying)"
+    : c?.market === 'APAC' ? "its exchange's fees (no tax on buying in Sydney or Singapore)"
     : "its exchange's taxes on a share held (the French FTT 0.4% and the Spanish 0.2% on buying, the Portuguese 0.3%, the Belgian TOB 0.35% each side; none in Amsterdam or Frankfurt)"
   if (hint) {
     hint.dataset.base ??= hint.innerHTML;

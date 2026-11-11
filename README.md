@@ -16,7 +16,12 @@ as Europe's shadow.
 **And the US**: the US's live strategy too (`--costs US --hold 5`: NYSE and NASDAQ, dollars, shares of USD 5
 or more). Its orders pay IBKR's USD 0.005 a share (at least USD 1, at most 1%) each way and the SEC's and
 FINRA's fees on the sale; there is no tax on buying. The research model (`base`) runs on as its shadow.
-What follows is said of the UK; Europe and the US are the same but for prices, segments and costs.
+**And Asia-Pacific**: the ASX and the SGX (`--costs APAC --venues tools/venues.txt --hold 5`, tickers
+`EXCHANGE:CODE`): each exchange's commission and fees, no tax on buying. Each order is good only through its
+own exchange's opening auction: the ASX opens in alphabetical groups from 10:00 to about 10:09 Sydney time
+(good until 10:12), the SGX at 09:00 Singapore time (good until 09:02). An order's amount is in the ASX's AUD
+(an SGX order's taken as SGD, about the same). The research model (`base`) runs on as its shadow.
+What follows is said of the UK; the other markets are the same but for prices, segments and costs.
 
 The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every
 order is one a person would place, and whose backtest trades exactly those orders:

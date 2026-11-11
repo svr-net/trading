@@ -124,11 +124,22 @@ def capital_of(o, args):
 AUCTION_MINUTES = 2  # an order for the open ("entry": "open") works until this long after the open: the opening auction only
 
 
-def auction_end_utc(market):
+# Exchanges whose opening auction is not the market's open: the end of an order-for-the-open there (zone,
+# hour, minute). The ASX opens in five alphabetical groups from 10:00 to about 10:09 Sydney time (an order
+# good until 10:12 meets every group's auction); the SGX at 09:00 Singapore time, three hours after it.
+AUCTION_END = {'ASX': ('Australia/Sydney', 10, 12), 'SGX': ('Asia/Singapore', 9, 2)}
+
+
+def auction_end_utc(market, ticker=''):
     """The end of an order for the open (IBKR's good-till time, UTC, yyyymmdd-hh:mm:ss): a few minutes
-    after the market's open, so it buys in the opening auction or not at all (never on a dip later)."""
+    after its exchange's open (ticker EXCHANGE:CODE; else the market's), so it buys in the opening auction
+    or not at all (never on a dip later)."""
     from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
+    ex = ticker.split(':', 1)[0] if ':' in ticker else ''
+    if ex in AUCTION_END:
+        tz_name, h, m = AUCTION_END[ex]
+        return datetime.now(ZoneInfo(tz_name)).replace(hour=h, minute=m, second=0, microsecond=0).astimezone(timezone.utc).strftime('%Y%m%d-%H:%M:%S')
     tz_name, oh, om = OPEN[market]
     opens = datetime.now(ZoneInfo(tz_name)).replace(hour=oh, minute=om, second=0, microsecond=0)
     return (opens + timedelta(minutes=AUCTION_MINUTES)).astimezone(timezone.utc).strftime('%Y%m%d-%H:%M:%S')
@@ -522,7 +533,7 @@ def holds(args):
                     continue
                 lim = round_to(o['limit'] * scale, tick_at(ticks[0], ticks[1], o['limit'] * scale), 'down')
                 order = LimitOrder('BUY', qty, lim, orderRef=ref, tif='GTD')
-                order.goodTillDate = auction_end_utc(args.market)
+                order.goodTillDate = auction_end_utc(args.market, o['ticker'])
                 how = f'in the opening auction, at most {lim:g}'
             elif o.get('open') or not o.get('limit'):
                 order, how = MarketOrder('BUY', qty, orderRef=ref, tif='DAY'), 'in the opening auction'
@@ -795,14 +806,14 @@ def main():
             parent.transmit = True
             ib.placeOrder(contract, parent)
         print(f"  {sym}: buy {qty} limit {lim}" + ''.join(f', {c.action.lower()} {c.orderType} {c.auxPrice if c.orderType == "STP" else c.lmtPrice}' for c in children))
-    def open_buy(contract, sym, qty, lim, tif='GTD'):
+    def open_buy(contract, sym, qty, lim, tif='GTD', ticker=''):
         """A buy for the open: a limit (no higher than lim) good only through the opening auction (GTD a
         few minutes after the open; with DAY, the watch cancels it then). No levels attached: the watch
         (--rebuy) places the stop-loss and take-profit from the price it was bought at, so a gap never
         sets them from the wrong price."""
         parent = LimitOrder('BUY', qty, lim, orderRef=ref, tif=tif, transmit=True)
         if tif == 'GTD':
-            parent.goodTillDate = auction_end_utc(args.market)
+            parent.goodTillDate = auction_end_utc(args.market, ticker)
         ib.placeOrder(contract, parent)
         print(f'  {sym}: buy {qty} at the open, at most {lim} ({tif}' + (f' until {parent.goodTillDate} UTC' if tif == 'GTD' else '') + '); its stop and take-profit from its fill')
 
@@ -874,7 +885,7 @@ def main():
             print(f'  {sym}: moved to buy {t0.order.totalQuantity:g} limit {lim}' + (f', take {take}' if take else '') + (f', stop {stop}' if stop else ''))
             continue
         if o.get('entry') == 'open':
-            open_buy(contract, sym, qty, lim)
+            open_buy(contract, sym, qty, lim, ticker=o['ticker'])
             continue
         bracket(contract, sym, qty, lim, take, stop, after if after and k_order >= slots else None)
     # IBKR's answer to each order (a rejection comes after placeOrder returns). An order refused only
