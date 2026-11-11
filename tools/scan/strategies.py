@@ -11,9 +11,9 @@ data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is bui
 first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
 tools/eoddata/aim.txt); one with "app": "single" is the single-share model (apps/ofm_single: every
 share learnt and backtested on its own bars only), given the same arguments; one with "app": "hold" the
-multi-day single-share model (apps/ofm_hold); one with "app": "uk" the UK model (apps/ofm_uk: orders
-sized to each share's liquidity, made only when its out-of-sample record clears the costs; it may be
-the UK's live strategy); "args" (a list) are added after the model's arguments
+multi-day single-share model (apps/ofm_hold); one with "app": "uk" the auction model (apps/ofm_uk: orders
+sized to each share's liquidity, bought in the opening auction and held up to 5 days with --hold 5,
+made only when its expected return clears the order's own costs; the UK's and Europe's live strategy); "args" (a list) are added after the model's arguments
 (a later one wins: e.g. ["--holds", "up", "--pricing", "tiered", "--capital", "1000"]).
 
 The budget (a market's "budget": {"total": T, "slots": [2, 3, 5, 10]}): the live strategy runs once for
@@ -62,8 +62,8 @@ def strategies(config, market):
             sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
         if s.get('app') in ('single', 'hold') and s['role'] == 'live':
             sys.exit(f"strategies: {market} {s['name']}: the single-share models run as shadows only (the bridge places the research model's or the UK model's orders)")
-        if s.get('app') == 'uk' and market != 'UK':
-            sys.exit(f"strategies: {market} {s['name']}: the UK model (apps/ofm_uk) is for the UK only")
+        if s.get('app') == 'uk' and market not in ('UK', 'EU'):
+            sys.exit(f"strategies: {market} {s['name']}: the auction model (apps/ofm_uk) is for the UK and Europe only")
         bad_args = [x for x in s.get('args', []) if not isinstance(x, str) or not re.match(r'^[A-Za-z0-9_.,:/=-]{1,64}$', x)]
         if bad_args or not isinstance(s.get('args', []), list):
             sys.exit(f"strategies: {market} {s['name']}: bad args {bad_args or s.get('args')!r}")

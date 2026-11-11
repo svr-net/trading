@@ -79,8 +79,8 @@ def Stock(symbol, exchange, currency, primaryExchange=''):
 
 
 NS = types.SimpleNamespace
-CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6}
-CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0}
+CONIDS = {'AAA': 1, 'BBB': 2, 'CCC': 3, 'DDD': 4, 'EEE': 5, 'XXX': 6, 'MC': 7}
+CLOSES = {'AAA': 350.0, 'BBB': 120.0, 'CCC': 80.0, 'DDD': 100.0, 'EEE': 50.0, 'XXX': 100.0, 'MC': 500.0}
 
 
 class Event:
@@ -395,7 +395,7 @@ def hold_book():
     json.dump(st, open(state, 'w'))
     last = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
     moc = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderType == 'MOC']
-    assert len(moc) == 1 and moc[0].order.totalQuantity == 990 and 'its last, 5' in last, (last, [vars(t.order) for t in b._trades if t.order.action == 'SELL'])
+    assert len(moc) == 1 and moc[0].order.totalQuantity == 990 and 'its last day (5)' in last, (last, [vars(t.order) for t in b._trades if t.order.action == 'SELL'])
     # The daily update (the next morning's orders file): kept, its exit level set again; then, a morning
     # later, no longer wanted: sold at the open, and not offered again at that close.
     moc[0].orderStatus.status = 'Cancelled'
@@ -420,6 +420,27 @@ def hold_book():
     return placed + closed + last + kept + dropped + closed2
 
 
+def eu_book():
+    """Europe's hold book (apps/ofm_uk --costs EU --hold 5): a ticker EXCHANGE:CODE, priced in euros (not
+    pence), its buy good only through Paris's opening auction (09:00 Paris, GTD two minutes later)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(8, 50), ZoneInfo('Europe/Paris'))
+    d = tempfile.mkdtemp()
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'PAR:MC', 'close': 500.0, 'entry': 'open', 'open': True, 'limit': 503.0, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5,
+         'capital': 6000.0, 'maxCapital': 8000.0}]}
+    path, state = os.path.join(d, 'EU.json'), os.path.join(d, 'holds-EU.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'EU', '--holds', 'place', '--orders', path, '--hold-state', state])
+    buy = next(t for t in SHARED[0]._trades if t.contract.symbol == 'MC' and t.order.action == 'BUY')
+    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('Europe/Paris'))
+    # EUR 6,000 at EUR 503 a share: 11 shares (euros, not pence); on Paris's exchange (SBF); until 09:02 Paris
+    assert buy.order.tif == 'GTD' and buy.order.lmtPrice == 503.0 and buy.order.totalQuantity == 11 and buy.contract.exchange == 'SBF', (vars(buy.order), placed)
+    assert (until.hour, until.minute) == (9, 2), until
+    return placed
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -428,3 +449,5 @@ if __name__ == '__main__':
     print(hold_book())
     print('hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; '
           'updated every morning (kept with its new exit level, or sold at the open); OK')
+    print(eu_book())
+    print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
