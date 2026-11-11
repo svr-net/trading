@@ -60,8 +60,23 @@
   ],
   "uk": [
    {
-    "name": "regime",
+    "name": "uk",
     "role": "live",
+    "env": {},
+    "ref": null
+   },
+   {
+    "name": "regime-trend50",
+    "role": "shadow",
+    "env": {
+     "X_REGIME": "1",
+     "X_TREND": "50"
+    },
+    "ref": null
+   },
+   {
+    "name": "regime",
+    "role": "shadow",
     "env": {
      "X_REGIME": "1"
     },
