@@ -188,6 +188,14 @@
     },
     "ref": null
    }
+  ],
+  "forex": [
+   {
+    "name": "hold5",
+    "role": "live",
+    "env": {},
+    "ref": null
+   }
   ]
  }
 }
