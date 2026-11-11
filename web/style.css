@@ -152,3 +152,6 @@ td.warn { color: var(--hedged); }
 .days .day-pnl { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .days .day-pnl.pos { color: var(--good); } .days .day-pnl.neg { color: var(--bad); }
 .days details .table-scroll { border: 0; border-top: 1px solid var(--rule); border-radius: 0 0 10px 10px; }
+/* Phones: the orders keep the share, what it pays, when it sells and its expected return; the chance to
+   buy, the costs and the gain if it buys (also in the notes) show on wider screens. */
+@media (max-width: 560px) { #plan .opt { display: none; } }
