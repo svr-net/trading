@@ -520,6 +520,31 @@ def index_book():
     return placed
 
 
+def legacy_positions():
+    """Positions of an earlier book in the state (no exit plan of their own: no 'days', as the UK's old
+    hold-up book's) do not take the live book's slots: with 2 of them held and a book of 2 slots, both of
+    the day's orders are placed (12 Nov: 6 old positions left the UK's new book no slot)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(7, 45), LONDON)
+    d = tempfile.mkdtemp()
+    b = _broker(Broker)
+    b.events = []
+    for sym, cid in (('AAA', 1), ('BBB', 2)):  # held at IBKR from the old book
+        b.fills.append(NS(execution=NS(orderRef='ofm-UKH-2026-11-05', side='BOT', shares=10, price=100.0, permId=0), contract=Contract(sym, 'LSE', 'GBP', cid, 'LSE')))
+    state = os.path.join(d, 'holds-UK.json')
+    json.dump({'positions': {'AAA': {'conId': 1, 'qty': 10, 'entry': 100.0, 'since': '2026-11-05', 'closes': 2},
+                             'BBB': {'conId': 2, 'qty': 10, 'entry': 100.0, 'since': '2026-11-05', 'closes': 2}}, 'pending': {}}, open(state, 'w'))
+    book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 2, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': t, 'close': 100.0, 'entry': 'open', 'open': True, 'limit': 101.0, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5,
+         'capital': 1000.0, 'maxCapital': 1000.0} for t in ('XXX', 'DDD')]}
+    path = os.path.join(d, 'UK.json')
+    json.dump(book, open(path, 'w'))
+    placed = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    buys = sorted(t.contract.symbol for t in b._trades if t.order.action == 'BUY')
+    assert buys == ['DDD', 'XXX'] and '2 positions of an earlier book held' in placed, (buys, placed)
+    return placed
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -536,3 +561,5 @@ if __name__ == '__main__':
     print('Asia-Pacific: each order good only through its own exchange\'s opening auction (ASX until 10:12 Sydney, SGX until 09:02 Singapore); OK')
     print(index_book())
     print('INDEX: AMEX:SPY routed SMART in dollars, its own client, good only through New York\'s opening auction; OK')
+    print(legacy_positions())
+    print('hold book: an earlier book\'s positions do not take the live book\'s slots; OK')

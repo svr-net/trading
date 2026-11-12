@@ -371,6 +371,7 @@ def state(args):
     from ib_async import IB
 
     ref = f'ofm-{args.market}-{date.today().isoformat()}'
+    href = f'ofm-{args.market}H-{date.today().isoformat()}'  # the multi-day book's orders of the day (and its sales, -close, -exit)
     mine = {ib_symbol(t.split(':')[-1], args.market) for t in (args.tickers or '').split(',') if t}
     ib = IB()
     connect(ib, args, args.client_id + 6, tries=2)
@@ -384,7 +385,7 @@ def state(args):
     orders = {}
     for t in list(ib.reqAllOpenOrders()) + completed_orders(ib):
         o = t.order
-        if not (o.orderRef or '').startswith(ref):
+        if not (o.orderRef or '').startswith(ref) and not (o.orderRef or '').startswith(href):
             continue
         orders[o.permId] = (t.contract, o, t.orderStatus.status)
         r = row(t.contract)
@@ -398,7 +399,7 @@ def state(args):
     bv = {}
     for f in ib.reqExecutions():
         e = f.execution
-        if not (e.orderRef or '').startswith(ref):
+        if not (e.orderRef or '').startswith(ref) and not (e.orderRef or '').startswith(href):
             continue
         r = row(f.contract)
         k = 'bought' if e.side == 'BOT' else 'sold'
@@ -519,7 +520,13 @@ def holds(args):
                 pos['exitAbove'] = float(u['exitAbove'])
         # The day's own orders (the daily strategy) keep their shares: the book never buys one of them.
         daily = {t.contract.symbol for t in ib.reqAllOpenOrders() if (t.order.orderRef or '').startswith(f'ofm-{args.market}-{date.today().isoformat()}')}
-        free = max(0, int(book.get('slots', 10)) - len(st['positions']))  # the book's slots not held
+        # The book's slots not held: its own positions only. Positions with no exit plan of their own (no
+        # 'days': left by the UK's old hold-up shadow book, which ran on this state file) are still sold by
+        # their own rule at the close, but do not take the live book's slots (12 Nov: 6 of them blocked it).
+        own = [p for p in st['positions'].values() if 'days' in p]
+        free = max(0, int(book.get('slots', 10)) - len(own))
+        if len(own) < len(st['positions']):
+            lines.append(f"{len(st['positions']) - len(own)} positions of an earlier book held (sold by their own rule); {free} of the book's {int(book.get('slots', 10))} slots free")
         for o in book.get('orders', []):
             sym = ib_symbol(o['ticker'].split(':')[-1], args.market)
             if free <= 0:
