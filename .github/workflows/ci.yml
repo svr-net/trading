@@ -18,10 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+        run: |
+          command -v ninja >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build >/dev/null 2>&1; } || echo "no Ninja (the package servers did not answer), building with Make"
       - name: Build and test
         run: |
-          cmake -S . -B build -G Ninja
+          cmake -S . -B build $(command -v ninja >/dev/null && echo "-G Ninja")
           cmake --build build
           ./build/ofm_tests
       - name: No look-ahead (the model on a generated market, tools/check/leak.sh)

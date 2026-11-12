@@ -56,7 +56,7 @@ jobs:
       # the data downloads; the model step waits for them, and nothing is published if they fail.
       - name: Build the model and run its checks (in the background)
         run: |
-          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_hold ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
+          nohup sh -c '{ command -v ninja >/dev/null || sudo apt-get install -y --no-install-recommends ninja-build >/dev/null 2>&1 || echo "no Ninja, building with Make"; } && cmake -S . -B build $(command -v ninja >/dev/null && echo "-G Ninja") && cmake --build build --target ofm_research ofm_single ofm_hold ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research; echo $? > build.rc' > build.log 2>&1 &
       # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
       # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
