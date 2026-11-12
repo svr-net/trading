@@ -579,7 +579,9 @@ def read_once(name, fn):
 
 def read_trades(m):
     """Today's trades and the model's holdings from IBKR (submit.py --state), into TRADES."""
-    code, out = run_submit(['--market', m, '--state', '--capital', str(CAPITAL), '--tickers', ','.join(model_tickers(m))], timeout=180)
+    # the model's shares: the day's book's lately and the multi-day book's held (the page shows both)
+    tickers = sorted(set(model_tickers(m)) | hold_symbols(m))
+    code, out = run_submit(['--market', m, '--state', '--capital', str(CAPITAL), '--tickers', ','.join(tickers)], timeout=180)
     line = next((x for x in reversed(out.splitlines()) if x.startswith('{')), '')
     if code != 0 or not line:
         TRADES_NOTE[m] = (out.splitlines() or ['no answer from IBKR'])[-1]
