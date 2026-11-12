@@ -102,6 +102,12 @@ say "GitHub: the EOD_TOKEN (the daily job's token: repository svr-net/eod, Conte
 ask_secret EOD_TOKEN "  token (not shown)"
 ask CAPITAL "Amount a trade (account currency)" "5000"
 ask AUTO_MARKETS "Place and close automatically each weekday (UK, EU, US, APAC, INDEX, comma separated, or none)" "UK"
+# INDEX (US-listed index ETFs, 12 Nov 2026) trades on New York's clock with the US: a setup that trades the US
+# and was answered before INDEX existed gets it too, saved in .env below (NO_AUTO_INDEX=1 keeps it out).
+case ",$(echo "$AUTO_MARKETS" | tr -d ' ' | tr a-z A-Z)," in
+  *,INDEX,*) ;;
+  *,US,*) if [ "${NO_AUTO_INDEX:-}" != 1 ]; then AUTO_MARKETS="$AUTO_MARKETS,INDEX"; say "AUTO_MARKETS: INDEX added beside the US ($AUTO_MARKETS; NO_AUTO_INDEX=1 to keep it out)"; fi ;;
+esac
 true
 ask TZ "Time zone" "Europe/London"
 if [ -z "${BRIDGE_KEY:-}" ]; then
