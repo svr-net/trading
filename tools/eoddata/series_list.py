@@ -70,8 +70,10 @@ def main():
         w = csv.writer(f)
         w.writerow(['date', 'ticker', 'open', 'high', 'low', 'close', 'volume'])
         w.writerows(rows)
+    bad = sum(1 for r in rows if not all(float(x or 0) > 0 for x in r[2:6]))
     print(f'{os.path.basename(args.list)}: {len(found)} of {len(todo)} series' + (f' (none at EODData: {", ".join(missing)})' if missing else '')
-          + (', each with its inverse' if args.inverse else '') + f'; {len(rows)} rows in {args.out}')
+          + (', each with its inverse' if args.inverse else '') + f'; {len(rows)} rows in {args.out}'
+          + (f'; {bad} of them without a full bar (an open, high, low or close of 0: left out by the models)' if bad else ''))
 
 
 if __name__ == '__main__':
