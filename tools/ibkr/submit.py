@@ -48,8 +48,8 @@ from datetime import date
 
 # Each market's exchange and currency at IBKR (US shares routed SMART); in markets of several
 # exchanges (EU, APAC) a ticker is EXCHANGE:CODE, EODData's exchange, and takes that exchange's.
-VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD'), 'EU': ('SBF', 'EUR'), 'INDEX': ('SMART', 'USD')}
-EXCHANGE = {'AMEX': ('SMART', 'USD'), 'ARCA': ('SMART', 'USD'), 'NYSE': ('SMART', 'USD'), 'NASDAQ': ('SMART', 'USD'), 'BATS': ('SMART', 'USD'),  # INDEX: US-listed index ETFs
+VENUE = {'UK': ('LSE', 'GBP'), 'US': ('SMART', 'USD'), 'APAC': ('ASX', 'AUD'), 'EU': ('SBF', 'EUR'), 'INDEX': ('IBIS', 'EUR')}  # INDEX: UCITS ETFs on Xetra
+EXCHANGE = {'AMEX': ('SMART', 'USD'), 'ARCA': ('SMART', 'USD'), 'NYSE': ('SMART', 'USD'), 'NASDAQ': ('SMART', 'USD'), 'BATS': ('SMART', 'USD'),
             'PAR': ('SBF', 'EUR'), 'AMS': ('AEB', 'EUR'), 'BRU': ('ENEXT.BE', 'EUR'), 'LIS': ('BVL', 'EUR'), 'MSE': ('BM', 'EUR'),
             'FRA': ('IBIS', 'EUR'), 'OSL': ('OSE', 'NOK'), 'ASX': ('ASX', 'AUD'), 'SGX': ('SGX', 'SGD')}
 
@@ -174,7 +174,7 @@ def completed_orders(ib, api_only=False, wait=20):
 
 def ib_symbol(ticker, market):
     # EODData's class shares (BRK.B) are "BRK B" at IBKR in the US; LSE keeps the dot (BT.A).
-    return ticker.replace('.', ' ') if market in ('US', 'INDEX') else ticker
+    return ticker.replace('.', ' ') if market == 'US' else ticker
 
 
 def per_share(o, market):
@@ -326,12 +326,20 @@ def leftovers(args):
     from ib_async import IB
 
     mine = {ib_symbol(t.split(':')[-1], args.market) for t in (args.tickers or '').split(',') if t}
-    cur = {'UK': {'GBP'}, 'US': {'USD'}, 'EU': {'EUR', 'NOK'}, 'APAC': {'AUD', 'SGD'}, 'INDEX': {'USD'}}[args.market]
+    cur = {'UK': {'GBP'}, 'US': {'USD'}, 'EU': {'EUR', 'NOK'}, 'APAC': {'AUD', 'SGD'}, 'INDEX': {'EUR', 'USD'}}[args.market]
     ib = IB()
     errors = {}
     ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
     connect(ib, args, args.client_id + 5)
     held = [p for p in ib.reqPositions() if p.position > 0 and p.contract.symbol in mine and p.contract.currency in cur]
+    # The multi-day book's buys (orderRef ofm-<MARKET>H-<date>) are its own, whatever day: never leftovers,
+    # also before its close has recorded the day's fills (13 Nov: the EU close sold WKL, bought that morning
+    # by the book, because the old daily book had traded it within the 10 days).
+    book_bought = {}
+    for f in ib.reqExecutions():
+        if (f.execution.orderRef or '').startswith(f'ofm-{args.market}H-') and f.execution.side == 'BOT':
+            book_bought[f.contract.conId] = book_bought.get(f.contract.conId, 0) + f.execution.shares
+    held = [p for p in held if p.position - book_bought.get(p.contract.conId, 0) > 0]
     if args.check:
         for p in held:
             print(f'  {p.contract.symbol}: {p.position:g} shares still held')
@@ -345,7 +353,7 @@ def leftovers(args):
     for f in ib.reqExecutions():
         if f.execution.orderRef.startswith(today) and f.execution.side == 'BOT':
             bought[f.contract.conId] = bought.get(f.contract.conId, 0) + f.execution.shares
-    held = [(p, p.position - bought.get(p.contract.conId, 0)) for p in held]
+    held = [(p, p.position - bought.get(p.contract.conId, 0) - book_bought.get(p.contract.conId, 0)) for p in held]
     held = [(p, q) for p, q in held if q > 0]
     ok_all, lines = True, []
     for p, qty in held:
@@ -626,6 +634,13 @@ def holds(args):
                 o.orderType = 'LOC'
                 how = f"in the closing auction only at or above {lim:g} (LOC, close {pos['closes']} of {last})"
             fate, msgs = order_fate(ib, ib.placeOrder(c, o), errors)
+            if fate == 'dead' and any(m.startswith('387') or 'Error 387' in m for m in msgs):
+                # The exchange takes no LOC (387, LSE through the API, 13 Nov): a limit at the same level for
+                # the rest of the day, which rests into the closing auction (sold at the level or above, as the
+                # LOC; it may also trade in the minutes before the auction, at the level or above).
+                fate, msgs2 = order_fate(ib, ib.placeOrder(c, LimitOrder('SELL', qty, lim, orderRef=ref + '-close', tif='DAY')), errors)
+                how += f" refused (IBKR {msgs[0].split(':')[0]}: no LOC here); a limit at {lim:g} for the rest of the day instead"
+                msgs = msgs2
             lines.append(f"{sym}: sell {qty:g} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     ib.sleep(2)
     ib.disconnect()
@@ -999,7 +1014,7 @@ def main():
         sys.exit(3)
 
 
-OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0), 'INDEX': ('America/New_York', 9, 30)}
+OPEN = {'UK': ('Europe/London', 8, 0), 'EU': ('Europe/Paris', 9, 0), 'US': ('America/New_York', 9, 30), 'APAC': ('Australia/Sydney', 10, 0), 'INDEX': ('Europe/Berlin', 9, 0)}
 
 
 def streamed(book, lines):
@@ -1060,7 +1075,7 @@ def auction(args):
     print(json.dumps({'date': opens.date().isoformat(), 'market': args.market, 'asOf': book.get('asOf'), 'shares': list(rows.values())}))
 
 
-CLOSE = {'UK': ('Europe/London', 16, 35), 'EU': ('Europe/Paris', 17, 35), 'US': ('America/New_York', 16, 0), 'APAC': ('Australia/Sydney', 16, 10), 'INDEX': ('America/New_York', 16, 0)}
+CLOSE = {'UK': ('Europe/London', 16, 35), 'EU': ('Europe/Paris', 17, 35), 'US': ('America/New_York', 16, 0), 'APAC': ('Australia/Sydney', 16, 10), 'INDEX': ('Europe/Berlin', 17, 35)}
 
 
 def paths(args):
@@ -1355,7 +1370,7 @@ def diag(args):
     accounts = ib.managedAccounts()
     out.update(api=True, accounts=len(accounts), paper=all(a.startswith('D') for a in accounts) if accounts else None,
                serverTime=ib.reqCurrentTime().isoformat())
-    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR', 'INDEX': 'SPY'}[args.market], *VENUE[args.market])
+    contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR', 'INDEX': 'EXS1'}[args.market], *VENUE[args.market])
     if qualified(ib, contract):
         ib.reqMarketDataType(1)
         k = ib.reqMktData(contract, '', False, False)

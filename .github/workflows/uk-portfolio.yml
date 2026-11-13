@@ -41,13 +41,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU"]' || '["US","INDEX","FOREX"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || inputs.market == 'INDEX' && '["INDEX"]' || inputs.market == 'FOREX' && '["FOREX"]' || '["UK","EU","US","APAC","INDEX","FOREX"]')) }}
+        market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU","INDEX"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU","INDEX"]' || '["US","FOREX"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || inputs.market == 'INDEX' && '["INDEX"]' || inputs.market == 'FOREX' && '["FOREX"]' || '["UK","EU","US","APAC","INDEX","FOREX"]')) }}
     env:
       MARKET: ${{ matrix.market }}
       # EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
       # fills and costs, 8-year walk-forward): 8.4% a year, Sharpe 1.38 -> 18.2%, Sharpe 1.71.
-      # INDEX: US-listed index ETFs (tools/eoddata/index.txt); FOREX: currency pairs (forex.txt; research only).
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || matrix.market == 'INDEX' && 'NYSE Arca,NASDAQ' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
+      # INDEX: UCITS index ETFs on Xetra (tools/eoddata/index.txt; with Europe's scans); FOREX: currency pairs (forex.txt; research only).
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || matrix.market == 'INDEX' && 'FRA' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -182,8 +182,8 @@ jobs:
           # apps/ofm_uk --bars, in markets.json): the store's LSE bars and the bridge's recordings of each day's
           # candidates (paths/UK); none: the model uses the daily bars, the worse of their two orders.
           if [ "$MARKET" = UK ]; then node tools/eoddata/intraday_export.mjs --exchanges LSE --paths UK --out data/intraday-uk.csv || echo 'date,ticker,time,high,low,close,volume' > data/intraday-uk.csv; fi
-          # EU and APAC: each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
-          case "$MARKET" in EU|APAC) STAMP=(--venues tools/venues.txt);; esac
+          # EU, APAC and INDEX (Xetra): each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
+          case "$MARKET" in EU|APAC|INDEX) STAMP=(--venues tools/venues.txt);; esac
           # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
           # else sold at the close): shares stopped in the opening volatility mostly recover by the close
           # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).

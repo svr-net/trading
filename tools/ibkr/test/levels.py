@@ -171,6 +171,9 @@ class Broker:
         if contract.symbol == 'EEE' and order.orderType == 'TRAIL':  # a share where IBKR takes no trailing stop
             t.orderStatus.status = 'Cancelled'
             self.errorEvent.emit(order.orderId, 387, 'Unsupported order type for this exchange and security type', contract)
+        if order.orderType in ('LOC', 'MOC') and contract.symbol in getattr(self, 'no_close_orders', ()):  # LSE through the API (13 Nov)
+            t.orderStatus.status = 'Cancelled'
+            self.errorEvent.emit(order.orderId, 387, 'Unsupported order type for this exchange and security type.', contract)
         if contract.symbol == 'CCC' and order.tif == 'GTD':
             t.orderStatus.status = 'Cancelled'
             self.errorEvent.emit(order.orderId, 10052, 'Invalid time in force: GTD is not allowed for this order', contract)
@@ -495,13 +498,13 @@ def apac_book():
 
 
 def index_book():
-    """The INDEX market's hold book: an index ETF (AMEX:SPY) routed SMART in dollars, good only through New
-    York's opening auction, on the INDEX market's own IBKR client (57)."""
+    """The INDEX market's hold book: a UCITS index ETF on Xetra (FRA:SPY here: the stand-in's share) on IBIS in
+    euros, good only through Frankfurt's opening auction, on the INDEX market's own IBKR client (57)."""
     SHARED.clear()
-    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(9, 21), ZoneInfo('America/New_York'))
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(8, 46), ZoneInfo('Europe/Berlin'))
     d = tempfile.mkdtemp()
     book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
-        {'ticker': 'AMEX:SPY', 'close': 600.0, 'entry': 'open', 'open': True, 'limit': 603.0, 'stop': None, 'take': None, 'exitAbove': 0.003, 'days': 5,
+        {'ticker': 'FRA:SPY', 'close': 600.0, 'entry': 'open', 'open': True, 'limit': 603.0, 'stop': None, 'take': None, 'exitAbove': 0.003, 'days': 5,
          'capital': 7000.0, 'maxCapital': 1e9}]}
     path, state = os.path.join(d, 'INDEX.json'), os.path.join(d, 'holds-INDEX.json')
     json.dump(book, open(path, 'w'))
@@ -513,9 +516,9 @@ def index_book():
     placed = run(['--market', 'INDEX', '--holds', 'place', '--orders', path, '--hold-state', state])
     del b.connect
     buy = next(t for t in SHARED[0]._trades if t.contract.symbol == 'SPY' and t.order.action == 'BUY')
-    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('America/New_York'))
-    # USD 7,000 at USD 603: 11 shares; SMART; until 09:32 New York; the INDEX client (17 + 40 + 7 for the hold book)
-    assert buy.contract.exchange == 'SMART' and buy.order.totalQuantity == 11 and (until.hour, until.minute) == (9, 32), (vars(buy.order), placed)
+    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('Europe/Berlin'))
+    # EUR 7,000 at EUR 603: 11 shares; IBIS; until 09:02 Frankfurt; the INDEX client (17 + 40 + 7 for the hold book)
+    assert buy.contract.exchange == 'IBIS' and buy.order.totalQuantity == 11 and (until.hour, until.minute) == (9, 2), (vars(buy.order), placed)
     assert ids and ids[0] == 17 + 40 + 7, ids
     return placed
 
@@ -545,6 +548,56 @@ def legacy_positions():
     return placed
 
 
+def close_orders_refused():
+    """An exchange that takes no LOC (387: the LSE through the API, 13 Nov): the position is offered with a
+    limit at the same exit level for the rest of the day instead (it rests into the closing auction), and
+    on its last day a refused MOC becomes a limit at the 20-day low (sell_out)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(16, 20), LONDON)
+    d = tempfile.mkdtemp()
+    b = _broker(Broker)
+    b.events, b.no_close_orders = [], {'XXX'}
+    today = _dt.date.today().isoformat()
+    b.fills.append(NS(execution=NS(orderRef=f'ofm-UKH-{today}', side='BOT', shares=990, price=100.0, permId=0), contract=Contract('XXX', 'LSE', 'GBP', 6, 'LSE')))
+    state = os.path.join(d, 'holds-UK.json')
+    json.dump({'positions': {}, 'pending': {'XXX': {'conId': 6, 'qty': 990, 'exitAbove': 0.012, 'days': 5}}}, open(state, 'w'))
+    closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    sells = [t for t in b._trades if t.order.action == 'SELL']
+    assert [t.order.orderType for t in sells] == ['LOC', 'LMT'] and sells[1].order.lmtPrice == 101.5 and sells[1].order.tif == 'DAY', ([vars(t.order) for t in sells], closed)
+    assert sells[1].orderStatus.status == 'Submitted' and 'for the rest of the day instead: live' in closed, closed
+    st = json.load(open(state))
+    sells[1].orderStatus.status = 'Cancelled'
+    st['positions']['XXX'].update(closes=4, offered='2000-01-01')
+    json.dump(st, open(state, 'w'))
+    last = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    sells = [t for t in b._trades if t.order.action == 'SELL']
+    assert [t.order.orderType for t in sells[2:]] == ['MOC', 'LMT'] and 'limit at the 20-day low instead: live' in last, ([vars(t.order) for t in sells], last)
+    return closed + last
+
+
+def leftovers_keep_book():
+    """The leftovers step sells only the daily book's shares from earlier days: never one the multi-day book
+    bought (orderRef ofm-<MARKET>H-), also before the book's close has recorded it (13 Nov: the EU close sold
+    WKL, bought by the book that morning, as the old daily book had traded it within its 10 days)."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(16, 21), LONDON)
+    b = _broker(Broker)
+    b.events = []
+    today = _dt.date.today().isoformat()
+    b.fills.append(NS(execution=NS(orderRef=f'ofm-UKH-{today}', side='BOT', shares=4, price=100.0, permId=0), contract=Contract('XXX', 'LSE', 'GBP', 6, 'LSE')))
+    b.fills.append(NS(execution=NS(orderRef='ofm-UK-2026-11-05', side='BOT', shares=10, price=100.0, permId=0), contract=Contract('AAA', 'LSE', 'GBP', 1, 'LSE')))
+    try:
+        run(['--market', 'UK', '--leftovers', '--check', '--tickers', 'XXX,AAA'])
+        checked = ''
+    except AssertionError as e:  # exit 1: one of the model's shares held
+        checked = str(e)
+    assert 'exited 1' in checked and 'AAA: 10 shares still held' in checked and 'XXX' not in checked.split('\n', 1)[1], checked
+    out = run(['--market', 'UK', '--leftovers', '--tickers', 'XXX,AAA'])
+    sold = sorted(t.contract.symbol for t in b._trades if t.order.action == 'SELL')
+    assert sold == ['AAA'], (sold, out)
+    return out
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -560,6 +613,10 @@ if __name__ == '__main__':
     print(apac_book())
     print('Asia-Pacific: each order good only through its own exchange\'s opening auction (ASX until 10:12 Sydney, SGX until 09:02 Singapore); OK')
     print(index_book())
-    print('INDEX: AMEX:SPY routed SMART in dollars, its own client, good only through New York\'s opening auction; OK')
+    print('INDEX: a Xetra ETF on IBIS in euros, its own client, good only through Frankfurt\'s opening auction; OK')
     print(legacy_positions())
     print('hold book: an earlier book\'s positions do not take the live book\'s slots; OK')
+    print(close_orders_refused())
+    print('hold book: where the exchange takes no LOC or MOC, a day limit at the exit level (the last day: at the 20-day low); OK')
+    print(leftovers_keep_book())
+    print('leftovers: never the multi-day book\'s shares; OK')
