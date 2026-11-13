@@ -193,9 +193,9 @@ for f in full cut; do
 done
 for m in ix fx; do
   M=$([ "$m" = ix ] && echo INDEX || echo FOREX)
-  V=(); [ "$m" = ix ] && V=(--venues "$W/venues.txt")
-  "$BIN" --csv "$W/$m-full.csv" --costs "$M" "${V[@]}" --top 60 --hold 5 --trace "$W/$m.tr" --orders "$W/$m.json" > "$W/$m.out"
-  "$BIN" --csv "$W/$m-cut.csv" --costs "$M" "${V[@]}" --top 60 --hold 5 --trace "$W/$m-cut.tr" > /dev/null
+  V=; [ "$m" = ix ] && V="--venues $W/venues.txt"
+  "$BIN" --csv "$W/$m-full.csv" --costs "$M" $V --top 60 --hold 5 --trace "$W/$m.tr" --orders "$W/$m.json" > "$W/$m.out"
+  "$BIN" --csv "$W/$m-cut.csv" --costs "$M" $V --top 60 --hold 5 --trace "$W/$m-cut.tr" > /dev/null
   xn=$(wc -l < "$W/$m-cut.tr")
   [ "$xn" -gt 200 ] || { cat "$W/$m.out"; echo "FAIL: $M, only $xn orders"; exit 1; }
   head -n "$xn" "$W/$m.tr" | cmp -s - "$W/$m-cut.tr" || { echo "FAIL: $M, an order changed with later data (look-ahead)"; exit 1; }
