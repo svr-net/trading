@@ -123,7 +123,7 @@ def with_capital(args_m, amount, tag):
     return a
 
 
-CURRENCY = {'UK': 'GBP', 'EU': 'EUR', 'US': 'USD', 'APAC': 'AUD', 'INDEX': 'USD', 'FOREX': 'USD'}
+CURRENCY = {'UK': 'GBP', 'EU': 'EUR', 'US': 'USD', 'APAC': 'AUD', 'INDEX': 'EUR', 'FOREX': 'USD'}
 
 
 def fx_rates(path):

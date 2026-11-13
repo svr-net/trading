@@ -29,13 +29,15 @@ halfway to its diagonal, so markets that move together share), no money for a ma
 most `market_cap` (50%) a market, and on a paper account at least `paper_floor` (5%) each so every market's
 fills keep being measured. Each market publishes its record (results only) for the others' scans.
 
-**INDEX and FOREX**: INDEX trades index ETFs listed in New York (`tools/eoddata/index.txt`: the S&P 500,
-Nasdaq 100, Dow, Russell 2000 and world indices, about 25 MSCI country indices and the 11 S&P sectors), with
-the US's costs, on New York's clock (placed at 09:21, the bridge's `AUTO_MARKETS` naming INDEX). FOREX models
+**INDEX and FOREX**: INDEX trades UCITS index ETFs on Xetra (`tools/eoddata/index.txt`: world, US, European,
+emerging-market, country and sector indices; FRA:CODE, in euros, the Frankfurt line of `tools/venues.txt`), on
+Frankfurt's clock (placed at 08:46 Paris time, the bridge's `AUTO_MARKETS` naming INDEX). IBKR lets an EU
+account buy no US-listed ETF (no key information document: order rejected, 201, 13 Nov), so the New York
+list of 12 Nov was replaced. FOREX models
 currency pairs (`tools/eoddata/forex.txt`, each with its inverse, `CODE-`, so the model can take either side;
 IBKR's FX commission; no volume, so no liquidity cap) as research only: it has no budget, and the bridge does
 not trade it. Both are fetched as named series (`tools/eoddata/series_list.py`: each from the first of its
-EODData exchanges with bars) and scanned with the US's evening run.
+EODData exchanges with bars); INDEX is scanned with Europe's runs, FOREX with the US's.
 What follows is said of the UK; the other markets are the same but for prices, segments and costs.
 
 The UK's live strategy (`config/markets.json`) is a separate, deliberately simple model whose every

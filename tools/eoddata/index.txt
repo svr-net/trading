@@ -1,50 +1,42 @@
-# The INDEX market: US-listed equity index ETFs (each traded in its exchange's opening and closing auctions).
-# A line: the ETF's code, then the EODData exchanges to try in turn (the first with bars is kept).
-# Broad indices
-SPY AMEX,NYSE
-QQQ NASDAQ
-DIA AMEX,NYSE
-IWM AMEX,NYSE
-MDY AMEX,NYSE
-ACWI NASDAQ,AMEX
-EFA AMEX,NYSE
-EEM AMEX,NYSE
-VGK AMEX,NYSE
-# Country indices (MSCI)
-EWJ AMEX,NYSE
-EWU AMEX,NYSE
-EWG AMEX,NYSE
-EWQ AMEX,NYSE
-EWI AMEX,NYSE
-EWP AMEX,NYSE
-EWL AMEX,NYSE
-EWN AMEX,NYSE
-EWD AMEX,NYSE
-EWC AMEX,NYSE
-EWA AMEX,NYSE
-EWH AMEX,NYSE
-EWS AMEX,NYSE
-EWT AMEX,NYSE
-EWY AMEX,NYSE
-EWZ AMEX,NYSE
-EWW AMEX,NYSE
-FXI AMEX,NYSE
-INDA AMEX,NYSE,NASDAQ
-EZA AMEX,NYSE
-ECH AMEX,NYSE
-EIDO AMEX,NYSE
-THD AMEX,NYSE
-TUR AMEX,NYSE,NASDAQ
-EPOL AMEX,NYSE
-# S&P 500 sectors
-XLK AMEX,NYSE
-XLF AMEX,NYSE
-XLE AMEX,NYSE
-XLV AMEX,NYSE
-XLI AMEX,NYSE
-XLY AMEX,NYSE
-XLP AMEX,NYSE
-XLU AMEX,NYSE
-XLB AMEX,NYSE
-XLRE AMEX,NYSE
-XLC AMEX,NYSE
+# The INDEX market: UCITS equity index ETFs on Xetra, in euros (IBKR: IBIS; each traded in Xetra's opening and
+# closing auctions). An EU account may buy no US-listed ETF (no key information document: IBKR 201, 13 Nov 2026),
+# so these replace the New York list. A line: the ETF's Xetra code, then the EODData exchanges to try in turn (the
+# first with bars is kept; a code with none is left out and named in the run's summary).
+# World and regions
+EUNL FRA
+IQQW FRA
+XDWD FRA
+VWCE FRA
+VGWL FRA
+IUSN FRA
+IS3N FRA
+EUNM FRA
+XMME FRA
+VFEM FRA
+EUNK FRA
+VEUR FRA
+EXSA FRA
+SXR1 FRA
+# United States
+SXR8 FRA
+VUSA FRA
+SXRV FRA
+ZPRR FRA
+QDVE FRA
+# Europe and countries
+SXRT FRA
+XESC FRA
+EXS1 FRA
+EXS3 FRA
+XDAX FRA
+VJPN FRA
+EXX7 FRA
+# European sectors (STOXX Europe 600)
+EXV1 FRA
+EXV3 FRA
+EXH1 FRA
+EXV6 FRA
+EXV4 FRA
+EXH3 FRA
+EXV2 FRA
+EXH4 FRA

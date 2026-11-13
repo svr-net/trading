@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
     else if (a == "--warm") o.warm = std::size_t(std::atol(argv[++k]));
   }
   static const std::set<std::string> kMarkets = {"UK", "EU", "US", "APAC", "INDEX", "FOREX"};
-  if (o.csv.empty() || !kMarkets.count(o.market) || ((o.market == "EU" || o.market == "APAC") && o.venues.empty())) {
+  if (o.csv.empty() || !kMarkets.count(o.market) || ((o.market == "EU" || o.market == "APAC" || o.market == "INDEX") && o.venues.empty())) {
     std::fprintf(stderr, "usage: ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free f] [--segments f] [--override f] [--json f] [--orders f]\n");
     return 2;
   }
@@ -180,9 +180,10 @@ int main(int argc, char** argv) {
   // Europe's and Asia-Pacific's (--costs EU|APAC, tickers EXCHANGE:CODE) in their exchanges' currencies, each
   // exchange's commission, fees and taxes from --venues (tools/venues.txt: the tax on buying a share held past
   // the day, as these are, for the holds); the US's in dollars (IBKR's commission a share).
-  // INDEX: US-listed index ETFs (the US's costs); FOREX: currency pairs (research: IBKR's FX commission, no
+  // INDEX: UCITS index ETFs on Xetra (FRA:CODE, in euros, the Frankfurt line of --venues: an EU account may
+  // not buy US-listed ETFs, IBKR 201, 13 Nov); FOREX: currency pairs (research: IBKR's FX commission, no
   // volume, every pair listed, each pair's inverse beside it so the model can take either side).
-  const bool fx = o.market == "FOREX", uk = o.market == "UK", us = o.market == "US" || o.market == "INDEX";
+  const bool fx = o.market == "FOREX", uk = o.market == "UK", us = o.market == "US";
   const char* cur = uk ? "GBP" : us || fx ? "USD" : o.market == "APAC" ? "AUD" : "EUR";  // APAC: the ASX's AUD (an SGX order's amount in SGD)
   const double priceUnit = uk ? 100.0 : 1.0;
   if (!uk && !minPriceSet) o.minPrice = fx ? 0.0 : us ? 5.0 : o.market == "APAC" ? 0.5 : 1.0;  // EUR 1; USD 5 (no penny stocks); AUD/SGD 0.50

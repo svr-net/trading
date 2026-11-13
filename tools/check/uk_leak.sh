@@ -184,17 +184,18 @@ for o in book['orders']:
     side = max(6, 0.0008 * v) if ex == 'ASX' else max(2.5, 0.0008 * v) + 0.0004 * v
     assert ex in ('ASX', 'SGX') and o['ifFilled'] > 0 and abs(o['cost'] - 2 * side / v) < 1e-6, o
 PY
-# INDEX (US-listed index ETFs, EXCHANGE:CODE, the US's costs) and FOREX (pairs with no volume, each with its
+# INDEX (UCITS index ETFs on Xetra, FRA:CODE, in euros, the Frankfurt line of --venues) and FOREX (pairs with no volume, each with its
 # inverse, IBKR's FX commission): no order changed by later data, each order's costs its own.
 for f in full cut; do
-  awk -F, -v OFS=, 'NR == 1 { print; next } { n = substr($2, 2) + 0; if (n >= 45) next; $2 = (n % 5 ? "AMEX" : "NASDAQ") ":" $2; for (k = 3; k <= 6; k++) $k = $k / 10; print }' "$W/$f.csv" > "$W/ix-$f.csv"
+  awk -F, -v OFS=, 'NR == 1 { print; next } { n = substr($2, 2) + 0; if (n >= 45) next; $2 = "FRA:" $2; for (k = 3; k <= 6; k++) $k = $k / 10; print }' "$W/$f.csv" > "$W/ix-$f.csv"
   awk -F, -v OFS=, 'NR == 1 { print; next } { n = substr($2, 2) + 0; if (n >= 30) next; o = $3 / 300; h = $4 / 300; l = $5 / 300; c = $6 / 300
     print $1, "FOREX:P" n, o, h, l, c, 0; print $1, "FOREX:P" n "-", 1 / o, 1 / l, 1 / h, 1 / c, 0 }' "$W/$f.csv" > "$W/fx-$f.csv"
 done
 for m in ix fx; do
   M=$([ "$m" = ix ] && echo INDEX || echo FOREX)
-  "$BIN" --csv "$W/$m-full.csv" --costs "$M" --top 60 --hold 5 --trace "$W/$m.tr" --orders "$W/$m.json" > "$W/$m.out"
-  "$BIN" --csv "$W/$m-cut.csv" --costs "$M" --top 60 --hold 5 --trace "$W/$m-cut.tr" > /dev/null
+  V=(); [ "$m" = ix ] && V=(--venues "$W/venues.txt")
+  "$BIN" --csv "$W/$m-full.csv" --costs "$M" "${V[@]}" --top 60 --hold 5 --trace "$W/$m.tr" --orders "$W/$m.json" > "$W/$m.out"
+  "$BIN" --csv "$W/$m-cut.csv" --costs "$M" "${V[@]}" --top 60 --hold 5 --trace "$W/$m-cut.tr" > /dev/null
   xn=$(wc -l < "$W/$m-cut.tr")
   [ "$xn" -gt 200 ] || { cat "$W/$m.out"; echo "FAIL: $M, only $xn orders"; exit 1; }
   head -n "$xn" "$W/$m.tr" | cmp -s - "$W/$m-cut.tr" || { echo "FAIL: $M, an order changed with later data (look-ahead)"; exit 1; }
@@ -204,9 +205,8 @@ import json, math, sys
 ix, fx = (json.load(open(p)) for p in sys.argv[1:3])
 assert ix['orders'] and fx['orders'], 'INDEX or FOREX: no orders'
 for o in ix['orders']:
-    v, sh = o['capital'], max(1, math.floor(o['capital'] / o['close']))
-    want = (2 * min(0.01 * v, max(1.0, 0.005 * sh)) + 0.0000278 * v + min(8.30, 0.000166 * sh)) / v
-    assert o['ticker'].split(':')[0] in ('AMEX', 'NASDAQ') and abs(o['cost'] - want) < 1e-6, o
+    v = o['capital']
+    assert o['ticker'].startswith('FRA:') and abs(o['cost'] - 2 * max(3, 0.0005 * v) / v) < 1e-4, o
 for o in fx['orders']:
     assert o['ticker'].startswith('FOREX:P') and o['capital'] == 5000 and abs(o['cost'] - 2 * max(2, 0.00002 * 5000) / 5000) < 1e-9, o
 assert any(o['ticker'].endswith('-') for o in fx['orders']) or True

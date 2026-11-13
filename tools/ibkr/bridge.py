@@ -87,16 +87,16 @@ IB_PORT = int(os.environ.get('IB_PORT', '4002'))
 CAPITAL = float(os.environ.get('CAPITAL', '5000'))
 ORIGIN = os.environ.get('ALLOWED_ORIGIN', 'https://svr-net.github.io')
 CACHE = os.environ.get('ORDERS_DIR', '/tmp/ofm-orders')
-MARKETS = ('UK', 'EU', 'US', 'APAC', 'INDEX')  # INDEX: US-listed index ETFs, on New York's clock
+MARKETS = ('UK', 'EU', 'US', 'APAC', 'INDEX')  # INDEX: UCITS index ETFs on Xetra, on Frankfurt's clock
 AUTO = [m.strip().upper() for m in os.environ.get('AUTO_MARKETS', '').split(',') if m.strip().upper() in MARKETS]
-ZONE = {'UK': 'Europe/London', 'EU': 'Europe/Paris', 'US': 'America/New_York', 'APAC': 'Australia/Sydney', 'INDEX': 'America/New_York'}
+ZONE = {'UK': 'Europe/London', 'EU': 'Europe/Paris', 'US': 'America/New_York', 'APAC': 'Australia/Sydney', 'INDEX': 'Europe/Berlin'}
 TIMES = {'UK': (os.environ.get('AUTO_UK_PLACE', '07:45'), os.environ.get('AUTO_UK_CLOSE', '16:20')),
          'US': (os.environ.get('AUTO_US_PLACE', '09:20'), os.environ.get('AUTO_US_CLOSE', '15:40')),
          'EU': (os.environ.get('AUTO_EU_PLACE', '08:45'), os.environ.get('AUTO_EU_CLOSE', '17:20')),
          'APAC': (os.environ.get('AUTO_APAC_PLACE', '09:45'), os.environ.get('AUTO_APAC_CLOSE', '15:50')),
-         'INDEX': (os.environ.get('AUTO_INDEX_PLACE', '09:21'), os.environ.get('AUTO_INDEX_CLOSE', '15:41'))}
+         'INDEX': (os.environ.get('AUTO_INDEX_PLACE', '08:46'), os.environ.get('AUTO_INDEX_CLOSE', '17:21'))}
 HISTORY = os.environ.get('HISTORY_DIR', os.environ.get('ORDERS_DIR', '/tmp/ofm-orders'))
-REPORT = {'INDEX': os.environ.get('AUTO_INDEX_REPORT', '16:20'), 'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10'), 'APAC': os.environ.get('AUTO_APAC_REPORT', '16:30'), 'EU': os.environ.get('AUTO_EU_REPORT', '17:50')}
+REPORT = {'INDEX': os.environ.get('AUTO_INDEX_REPORT', '17:55'), 'UK': os.environ.get('AUTO_UK_REPORT', '16:45'), 'US': os.environ.get('AUTO_US_REPORT', '16:10'), 'APAC': os.environ.get('AUTO_APAC_REPORT', '16:30'), 'EU': os.environ.get('AUTO_EU_REPORT', '17:50')}
 # The opening auction's recording (submit.py --auction; places nothing), after the orders are in: the
 # LSE auction runs 07:50 to 08:00, the US opening cross at 09:30. AUCTION=0 turns it off.
 BARS_AT = os.environ.get('AUTO_BARS', '06:00')  # Saturdays (the exchange's clock): IBKR's daily bars for the pool; empty: off
@@ -106,7 +106,7 @@ BARS_DAILY = os.environ.get('BARS_DAILY', '1') != '0'  # every trading day after
 # offered at each close only above their entry price, sold at the fifth; the day's close and the
 # leftovers step never sell them (their own orderRef; their shares left out of the model's).
 HOLD_BOOKS = dict(x.split(':', 1) for x in os.environ.get('HOLD_BOOKS', 'UK:hold-up').split(',') if ':' in x)
-AUCTION = {'INDEX': os.environ.get('AUTO_INDEX_AUCTION', '09:25'), 'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
+AUCTION = {'INDEX': os.environ.get('AUTO_INDEX_AUCTION', '08:53'), 'UK': os.environ.get('AUTO_UK_AUCTION', '07:52'), 'US': os.environ.get('AUTO_US_AUCTION', '09:24'), 'APAC': os.environ.get('AUTO_APAC_AUCTION', '09:52'), 'EU': os.environ.get('AUTO_EU_AUCTION', '08:52')} if os.environ.get('AUCTION', '1') != '0' else {}
 PATHS = os.environ.get('PATHS', '1') != '0'
 STARTED = datetime.now().astimezone()
 VERSION = os.environ.get('BRIDGE_VERSION', 'unknown')  # the commit it was built from

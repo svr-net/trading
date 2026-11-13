@@ -498,13 +498,13 @@ def apac_book():
 
 
 def index_book():
-    """The INDEX market's hold book: an index ETF (AMEX:SPY) routed SMART in dollars, good only through New
-    York's opening auction, on the INDEX market's own IBKR client (57)."""
+    """The INDEX market's hold book: a UCITS index ETF on Xetra (FRA:SPY here: the stand-in's share) on IBIS in
+    euros, good only through Frankfurt's opening auction, on the INDEX market's own IBKR client (57)."""
     SHARED.clear()
-    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(9, 21), ZoneInfo('America/New_York'))
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(8, 46), ZoneInfo('Europe/Berlin'))
     d = tempfile.mkdtemp()
     book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
-        {'ticker': 'AMEX:SPY', 'close': 600.0, 'entry': 'open', 'open': True, 'limit': 603.0, 'stop': None, 'take': None, 'exitAbove': 0.003, 'days': 5,
+        {'ticker': 'FRA:SPY', 'close': 600.0, 'entry': 'open', 'open': True, 'limit': 603.0, 'stop': None, 'take': None, 'exitAbove': 0.003, 'days': 5,
          'capital': 7000.0, 'maxCapital': 1e9}]}
     path, state = os.path.join(d, 'INDEX.json'), os.path.join(d, 'holds-INDEX.json')
     json.dump(book, open(path, 'w'))
@@ -516,9 +516,9 @@ def index_book():
     placed = run(['--market', 'INDEX', '--holds', 'place', '--orders', path, '--hold-state', state])
     del b.connect
     buy = next(t for t in SHARED[0]._trades if t.contract.symbol == 'SPY' and t.order.action == 'BUY')
-    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('America/New_York'))
-    # USD 7,000 at USD 603: 11 shares; SMART; until 09:32 New York; the INDEX client (17 + 40 + 7 for the hold book)
-    assert buy.contract.exchange == 'SMART' and buy.order.totalQuantity == 11 and (until.hour, until.minute) == (9, 32), (vars(buy.order), placed)
+    until = _dt.datetime.strptime(buy.order.goodTillDate, '%Y%m%d-%H:%M:%S').replace(tzinfo=_dt.timezone.utc).astimezone(ZoneInfo('Europe/Berlin'))
+    # EUR 7,000 at EUR 603: 11 shares; IBIS; until 09:02 Frankfurt; the INDEX client (17 + 40 + 7 for the hold book)
+    assert buy.contract.exchange == 'IBIS' and buy.order.totalQuantity == 11 and (until.hour, until.minute) == (9, 2), (vars(buy.order), placed)
     assert ids and ids[0] == 17 + 40 + 7, ids
     return placed
 
@@ -613,7 +613,7 @@ if __name__ == '__main__':
     print(apac_book())
     print('Asia-Pacific: each order good only through its own exchange\'s opening auction (ASX until 10:12 Sydney, SGX until 09:02 Singapore); OK')
     print(index_book())
-    print('INDEX: AMEX:SPY routed SMART in dollars, its own client, good only through New York\'s opening auction; OK')
+    print('INDEX: a Xetra ETF on IBIS in euros, its own client, good only through Frankfurt\'s opening auction; OK')
     print(legacy_positions())
     print('hold book: an earlier book\'s positions do not take the live book\'s slots; OK')
     print(close_orders_refused())
