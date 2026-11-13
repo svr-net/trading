@@ -332,6 +332,14 @@ def leftovers(args):
     ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2119, 2158) else None
     connect(ib, args, args.client_id + 5)
     held = [p for p in ib.reqPositions() if p.position > 0 and p.contract.symbol in mine and p.contract.currency in cur]
+    # The multi-day book's buys (orderRef ofm-<MARKET>H-<date>) are its own, whatever day: never leftovers,
+    # also before its close has recorded the day's fills (13 Nov: the EU close sold WKL, bought that morning
+    # by the book, because the old daily book had traded it within the 10 days).
+    book_bought = {}
+    for f in ib.reqExecutions():
+        if (f.execution.orderRef or '').startswith(f'ofm-{args.market}H-') and f.execution.side == 'BOT':
+            book_bought[f.contract.conId] = book_bought.get(f.contract.conId, 0) + f.execution.shares
+    held = [p for p in held if p.position - book_bought.get(p.contract.conId, 0) > 0]
     if args.check:
         for p in held:
             print(f'  {p.contract.symbol}: {p.position:g} shares still held')
@@ -345,7 +353,7 @@ def leftovers(args):
     for f in ib.reqExecutions():
         if f.execution.orderRef.startswith(today) and f.execution.side == 'BOT':
             bought[f.contract.conId] = bought.get(f.contract.conId, 0) + f.execution.shares
-    held = [(p, p.position - bought.get(p.contract.conId, 0)) for p in held]
+    held = [(p, p.position - bought.get(p.contract.conId, 0) - book_bought.get(p.contract.conId, 0)) for p in held]
     held = [(p, q) for p, q in held if q > 0]
     ok_all, lines = True, []
     for p, qty in held:
@@ -626,6 +634,13 @@ def holds(args):
                 o.orderType = 'LOC'
                 how = f"in the closing auction only at or above {lim:g} (LOC, close {pos['closes']} of {last})"
             fate, msgs = order_fate(ib, ib.placeOrder(c, o), errors)
+            if fate == 'dead' and any(m.startswith('387') or 'Error 387' in m for m in msgs):
+                # The exchange takes no LOC (387, LSE through the API, 13 Nov): a limit at the same level for
+                # the rest of the day, which rests into the closing auction (sold at the level or above, as the
+                # LOC; it may also trade in the minutes before the auction, at the level or above).
+                fate, msgs2 = order_fate(ib, ib.placeOrder(c, LimitOrder('SELL', qty, lim, orderRef=ref + '-close', tif='DAY')), errors)
+                how += f" refused (IBKR {msgs[0].split(':')[0]}: no LOC here); a limit at {lim:g} for the rest of the day instead"
+                msgs = msgs2
             lines.append(f"{sym}: sell {qty:g} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     ib.sleep(2)
     ib.disconnect()
