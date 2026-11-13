@@ -64,6 +64,12 @@
     "ref": null
    },
    {
+    "name": "hold5-base",
+    "role": "shadow",
+    "env": {},
+    "ref": null
+   },
+   {
     "name": "edge",
     "role": "shadow",
     "env": {
