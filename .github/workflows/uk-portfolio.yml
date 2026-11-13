@@ -282,7 +282,7 @@ jobs:
               n=${f#report/shadow-}; n=${n%.json}
               jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' "$f" > "web/data/$M-$n.json"
               python3 tools/report/daily_email.py track "$f" "web/data/track-$M-$n.json"
-              git add "web/data/$M-$n.json" "web/data/track-$M-$n.json"
+              git add "web/data/$M-$n.json"; [ -f "web/data/track-$M-$n.json" ] && git add "web/data/track-$M-$n.json"  # no track yet: a shadow with no trades (13 Nov: INDEX)
             done
             python3 -c "import json,sys; p='web/data/strategies.json'; d=json.load(open(p)) if __import__('os').path.exists(p) else {'about':'Each market\'s strategies: the live one and its shadows (config/markets.json); results only.','markets':{}}; s=json.load(open('report/strategies.json')); d['markets'][s['market'].lower()]=[{'name':x['name'],'role':x['role'],'env':x['env'],'ref':x['ref']} for x in s['strategies']]; json.dump(d,open(p,'w'),indent=1)"
             # The market's share of the account's daily limit and its record (results only), read by the other markets' scans.
