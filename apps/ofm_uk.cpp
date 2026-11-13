@@ -187,7 +187,11 @@ int main(int argc, char** argv) {
   const char* cur = uk ? "GBP" : us || fx ? "USD" : o.market == "APAC" ? "AUD" : "EUR";  // APAC: the ASX's AUD (an SGX order's amount in SGD)
   const double priceUnit = uk ? 100.0 : 1.0;
   if (!uk && !minPriceSet) o.minPrice = fx ? 0.0 : us ? 5.0 : o.market == "APAC" ? 0.5 : 1.0;  // EUR 1; USD 5 (no penny stocks); AUD/SGD 0.50
-  if (fx) o.minValue = 0;  // no volume: no liquidity floor
+  // FOREX: no volume. INDEX: EODData's FRA bars are the Frankfurt floor's, a sliver of the ETFs' volume on Xetra,
+  // where market makers quote them (13 Nov: every ETF under the EUR 250,000 floor, no order). Neither has a
+  // liquidity floor, nor an order capped by the day's volume.
+  const bool noVolume = fx || o.market == "INDEX";
+  if (noVolume) o.minValue = 0;
   const swing::Costs venueCosts = uk || us || fx ? swing::Costs{} : swing::costs(p, o.market, o.capital, o.venues, "");
 
   // Stamp duty (AIM shares are exempt) and the order book's segments.
@@ -692,7 +696,7 @@ int main(int argc, char** argv) {
       Order r;
       r.i = i, r.close = p.C[at(t, i)], r.sigma = sigma[at(t, i)], r.spread = spread[at(t, i)];
       r.expected = (a + b * pred[t][j]) * r.sigma;  // the trade as placed: bought at the open, out at its stop, its take-profit or the close
-      r.value = fx ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX: no volume to cap it by
+      r.value = noVolume ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX, INDEX: no volume to cap it by
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder || r.expected < o.hurdle) continue;
       r.limit = r.close * (1 + o.capSd * r.sigma);
@@ -1040,7 +1044,7 @@ int main(int argc, char** argv) {
                       "%s{\"ticker\":\"%s\",\"close\":%.6g,\"entry\":\"open\",\"open\":true,\"limit\":%.6g,\"stop\":null,\"take\":null,\"exitAbove\":%.6g,\"days\":%zu,\"holdDays\":%.3g,"
                       "\"expected\":%.6g,\"ifFilled\":%.6g,\"fill\":%.4g,\"capital\":%.2f,\"maxCapital\":%.2f,\"rebuy\":0,\"spread\":%.6g,\"cost\":%.6g,\"costAmount\":%.4g,\"stampFree\":%s}",
                       q ? "," : "", p.tickers[r.i].c_str(), r.close, r.limit, r.exitAbove, H, r.holdDays, (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net,
-                      std::isfinite(r.fill) ? r.fill : 0.0, r.value, (fx ? o.capital : o.advShare * adv[at(T - 1, r.i)]), r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
+                      std::isfinite(r.fill) ? r.fill : 0.0, r.value, (noVolume ? o.capital : o.advShare * adv[at(T - 1, r.i)]), r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
         f << b;
         continue;
       }
@@ -1051,7 +1055,7 @@ int main(int argc, char** argv) {
                     std::isfinite(r.takeSd) ? std::to_string(r.close * (1 + r.takeSd * r.sigma)).c_str() : "null", -r.stopSd * r.sigma,
                     std::isfinite(r.takeSd) ? std::to_string(r.takeSd * r.sigma).c_str() : "null", r.mode == 1 ? "trail" : r.mode == 2 ? "breakeven" : "fixed",
                     r.mode == 1 ? std::to_string(r.stopSd * r.sigma).c_str() : "null", r.mode == 2 ? std::to_string(r.sigma).c_str() : "null", (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, std::isfinite(r.fill) ? r.fill : 0.0, r.value,
-                    (fx ? o.capital : o.advShare * adv[at(T - 1, r.i)]), r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
+                    (noVolume ? o.capital : o.advShare * adv[at(T - 1, r.i)]), r.spread, r.cost, r.cost * r.value, stampFree[r.i] ? "true" : "false");
       f << b;
     }
     if (o.hold) {  // the daily update of the positions held (the bridge's hold book): for every share on the day's list, kept or sold at the open, and its exit level now
