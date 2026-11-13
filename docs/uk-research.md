@@ -73,3 +73,10 @@ Year by year, `edge` beats `hold5-base` in the UK in 5 of 7 years (2022: +26% ag
 live strategy now runs with all three switches; `hold5-base` keeps the model without them in view. In Europe,
 `hold5-base` leads over the whole period, but only +3% in 2026 against +18% (`edge`) and +29% (`resid-target`):
 watched, not switched.
+
+### Every market (13 Nov 2026)
+
+At the owner's request, every market's live strategy now runs with all three switches, as the UK's does. On the
+store's data this lowered the whole-period backtests in Europe, the US and Asia-Pacific (see the table above);
+they beat the model without the switches in 2026. Each market's `hold5-base` shadow keeps that model in view;
+going back is the live strategy's `env` set to `{}` in `config/markets.json`.
