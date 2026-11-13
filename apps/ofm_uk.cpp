@@ -225,6 +225,8 @@ int main(int argc, char** argv) {
   // (Abdi and Ranaldo 2017, smoothed over about 64 bars) and the sessions it traded, at each close.
   std::vector<double> sigma(T * N, kNaN), adv(T * N, kNaN), spread(T * N, 0.0);
   std::vector<char> eligible(T * N, 0);
+  // Why a share-day with a bar and a year's history was left out (the first failing test, for the log).
+  std::array<std::atomic<std::size_t>, 7> why{};  // gaps, jump, price, volatility, value, flat bar, segment
   {
     std::atomic<std::size_t> next{0};
     auto work = [&] {
@@ -265,6 +267,11 @@ int main(int argc, char** argv) {
           const bool recent = barDays.size() == 18 && t - barDays.front() < 20;  // 18 bars within the last 20 sessions
           eligible[at(t, i)] = segOk[i] && recent && !jump && hist >= 250 && p.C[at(t, i)] >= o.minPrice && sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol && adv[at(t, i)] >= o.minValue &&
                                p.H[at(t, i)] > p.L[at(t, i)];
+          if (!eligible[at(t, i)] && hist >= 250) {
+            const std::size_t k = !recent ? 0 : jump ? 1 : p.C[at(t, i)] < o.minPrice ? 2 : !(sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol) ? 3
+                                : !(adv[at(t, i)] >= o.minValue) ? 4 : !(p.H[at(t, i)] > p.L[at(t, i)]) ? 5 : 6;
+            ++why[k];
+          }
         }
       }
     };
@@ -923,6 +930,9 @@ int main(int argc, char** argv) {
               p.days.front().c_str(), p.days.back().c_str(), segKnown, segOut);
   std::printf("uk: the day's list: %.0f shares on average (at most %zu; at least %s %.0f traded a day); %zu fits of %zu inputs (the last on %.0f share-days)\n",
               double(uniMean) / double(T), o.top, cur, o.minValue, fits, F, fitted);
+  std::printf("uk:   left out (share-days with a year's history): %zu missing bars in the last 20 sessions, %zu a jump over 30%%, %zu under the price floor, "
+              "%zu volatility outside (0, %.0f%%], %zu under the value floor, %zu a bar with no range, %zu outside the order book's segments; at least 20 a day to fit\n",
+              why[0].load(), why[1].load(), why[2].load(), why[3].load(), 100 * o.maxVol, why[4].load(), why[5].load(), why[6].load());
   if (ret.empty()) {
     std::printf("uk: no out-of-sample record yet (at least %zu sessions to fit and %zu to calibrate): no orders\n", o.warm, o.calMin);
   } else {
