@@ -290,7 +290,76 @@ int main(int argc, char** argv) {
   }
 
   // The inputs at each close, ranked across the day's shares, and the targets.
-  const auto sig = swing::signals(p);
+  auto sig = swing::signals(p);
+  // Research switches (shadows in config/markets.json; the live strategies run without them):
+  //   X_RESID=1   residual reversal (Blitz, Huij, Lansdorp and Verbeek 2013; Da, Liu and Schaumburg 2014): the
+  //               1, 5 and 20-day loss less the share's market beta times the market's (beta over 60 sessions;
+  //               the market: the mean return of the shares with a bar that day), so a share that fell with
+  //               the market is not taken for one that fell on its own.
+  //   X_VOLREGIME=1  reversal scaled by the market's volatility (Nagel 2012, "Evaporating Liquidity": reversal pays
+  //               the providers of liquidity most when volatility is high): the 1 and 5-day loss ranks times
+  //               the market's 20-session volatility over its median of the year before, less 1.
+  //   X_TARGET=H  the fit's target the hold's own (the open after the close to the H-th close, per its sigma
+  //               times the root of H) in place of the next session's open to close (Garleanu and Pedersen
+  //               2013: with costs, a signal is worth what it earns over the time it is held).
+  const bool xResid = std::getenv("X_RESID") && std::string(std::getenv("X_RESID")) == "1";
+  const bool xRegime = std::getenv("X_VOLREGIME") && std::string(std::getenv("X_VOLREGIME")) == "1";
+  const std::size_t xTarget = std::getenv("X_TARGET") ? std::min<std::size_t>(5, std::max<std::size_t>(1, std::size_t(std::atol(std::getenv("X_TARGET"))))) : 1;
+  std::vector<double> mkt(T, 0.0), mbeta(T * N, kNaN), regime(T, 0.0);
+  if (xResid || xRegime) {
+    for (std::size_t t = 1; t < T; ++t) {  // the market's return at close t: the shares with a bar on t and t-1
+      double s = 0;
+      std::size_t n = 0;
+      for (std::size_t i = 0; i < N; ++i) {
+        const double r = p.ret(t, i, 1);
+        if (std::isfinite(r) && std::fabs(r) < 0.5) s += r, ++n;
+      }
+      mkt[t] = n ? s / double(n) : 0.0;
+    }
+  }
+  if (xResid) {
+    for (std::size_t i = 0; i < N; ++i)
+      for (std::size_t t = 61; t < T; ++t) {
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        std::size_t n = 0;
+        for (std::size_t u = t - 59; u <= t; ++u) {
+          const double r = p.ret(u, i, 1);
+          if (!std::isfinite(r)) continue;
+          sx += mkt[u], sy += r, sxx += mkt[u] * mkt[u], sxy += mkt[u] * r, ++n;
+        }
+        if (n < 40) continue;
+        const double vx = sxx / double(n) - (sx / double(n)) * (sx / double(n));
+        if (vx > 0) mbeta[at(t, i)] = (sxy / double(n) - sx * sy / double(n) / double(n)) / vx;
+      }
+    const auto resid = [&p, &mkt, &mbeta, N](std::size_t t, std::size_t i, std::size_t k) {
+      const double r = p.ret(t, i, k), b = mbeta[t * N + i];
+      if (!std::isfinite(r) || !std::isfinite(b) || t < k) return kNaN;
+      double m = 1;
+      for (std::size_t u = t - k + 1; u <= t; ++u) m *= 1 + mkt[u];
+      return -(r - b * (m - 1));
+    };
+    sig.push_back({"residual loser 1d", [resid](std::size_t t, std::size_t i) { return resid(t, i, 1); }});
+    sig.push_back({"residual loser 5d", [resid](std::size_t t, std::size_t i) { return resid(t, i, 5); }});
+    sig.push_back({"residual loser 20d", [resid](std::size_t t, std::size_t i) { return resid(t, i, 20); }});
+  }
+  std::vector<std::size_t> regimeOf;  // the signals whose rank is scaled by the market's volatility
+  if (xRegime) {
+    std::vector<double> mv(T, kNaN);
+    for (std::size_t t = 20; t < T; ++t) {
+      double s = 0, s2 = 0;
+      for (std::size_t u = t - 19; u <= t; ++u) s += mkt[u], s2 += mkt[u] * mkt[u];
+      mv[t] = std::sqrt(std::max(0.0, s2 / 20 - (s / 20) * (s / 20)));
+    }
+    for (std::size_t t = 270; t < T; ++t) {
+      std::vector<double> past(mv.begin() + long(t - 250), mv.begin() + long(t) + 1);
+      std::nth_element(past.begin(), past.begin() + 125, past.end());
+      regime[t] = past[125] > 0 ? std::clamp(mv[t] / past[125] - 1, -1.0, 3.0) : 0.0;
+    }
+    const std::size_t base = sig.size();
+    sig.push_back({"loser 1d x market volatility", [&p](std::size_t t, std::size_t i) { return -p.ret(t, i, 1); }});
+    sig.push_back({"loser 5d x market volatility", [&p](std::size_t t, std::size_t i) { return -p.ret(t, i, 5); }});
+    regimeOf = {base, base + 1};
+  }
   const std::size_t S = sig.size(), F = S + 3, D = F + 1;  // signals, volatility, liquidity, stamp duty; the intercept first
   std::vector<std::vector<double>> X(T), Y(T);
   {
@@ -309,12 +378,14 @@ int main(int argc, char** argv) {
             col[j] = f < S ? sig[f].f(t, i) : f == S ? std::log(sigma[at(t, i)]) : f == S + 1 ? std::log(adv[at(t, i)]) : (stampFree[i] ? 1.0 : 0.0);
           }
           rankInPlace(col);
-          for (std::size_t j = 0; j < n; ++j) X[t][j * D + 1 + f] = col[j];
+          const double scale = std::find(regimeOf.begin(), regimeOf.end(), f) != regimeOf.end() ? regime[t] : 1.0;
+          for (std::size_t j = 0; j < n; ++j) X[t][j * D + 1 + f] = col[j] * scale;
         }
-        if (t + 1 < T)
+        if (t + xTarget < T)
           for (std::size_t j = 0; j < n; ++j) {
             const std::size_t i = u[j];
-            if (p.ok(t + 1, i) && p.hasOpen(t + 1, i)) Y[t][j] = std::clamp((p.C[at(t + 1, i)] / p.O[at(t + 1, i)] - 1) / sigma[at(t, i)], -4.0, 4.0);
+            if (p.ok(t + xTarget, i) && p.hasOpen(t + 1, i))
+              Y[t][j] = std::clamp((p.C[at(t + xTarget, i)] / p.O[at(t + 1, i)] - 1) / (sigma[at(t, i)] * std::sqrt(double(xTarget))), -4.0, 4.0);
           }
       }
     };
@@ -347,8 +418,8 @@ int main(int argc, char** argv) {
   std::size_t fits = 0;
   for (std::size_t t = 0; t < T; ++t) {
     if (t % o.refit == 0 && t >= o.warm) {
-      // samples u with their target known at t: u + 1 <= t
-      const std::size_t hi = t, lo = t > o.window ? t - o.window : 0;
+      // samples u with their target known at t: u + xTarget <= t
+      const std::size_t hi = t + 1 >= xTarget ? t + 1 - xTarget : 0, lo = hi > o.window ? hi - o.window : 0;
       const double n = cum[hi * G + G - 1] - cum[lo * G + G - 1];
       std::size_t daysWith = 0;
       for (std::size_t u = lo; u < hi; ++u) daysWith += !Y[u].empty();

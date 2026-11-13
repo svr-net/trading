@@ -26,3 +26,36 @@ this model. (These lists are largely marketing pages; the books themselves are t
 3. ~~Resolve the stop / take-profit order from 5-minute bars~~: done, with trailing and break-even stops (`--bars`); the more
    LSE paths the store and the bridge's recordings hold, the more of the record is exact rather than the daily bar's worse case.
 4. **Deflated Sharpe ratio**: deflate for the 25 level pairs (and the budget's 4 trade counts) with the variance of their Sharpe ratios.
+
+## Research switches from the literature (13 Nov 2026)
+
+The model already used three findings from this literature:
+- the overnight versus intraday split of past returns (Lou, Polk and Skouras 2019, "A Tug of War", JFE);
+- the opening gap's reversal (Berkman, Koch, Tuttle and Zhang 2012, JFQA);
+- short-term losers (Jegadeesh 1990; Lehmann 1990).
+
+Three more are now switches in `apps/ofm_uk`, measured as shadows (`edge`: all three; `resid-target`: the first
+and the third) in every market before any goes live:
+
+- **`X_RESID=1`, residual reversal.** Blitz, Huij, Lansdorp and Verbeek (2013, JFM, "Short-term residual
+  reversal") and Da, Liu and Schaumburg (2014, Management Science) find that the reversal of returns left after
+  the market's (and the industry's) move earns two to four times the plain reversal's risk-adjusted return. It
+  stays profitable after costs in large caps, because it no longer carries time-varying factor bets. Here: the
+  1, 5 and 20-day losses less beta times the market's. Beta is fitted over 60 sessions; the market is the mean
+  return of that day's shares.
+- **`X_VOLREGIME=1`, reversal scaled by market volatility.** Nagel (2012, RFS, "Evaporating Liquidity") shows
+  that reversal returns are the price of supplying liquidity, and the VIX forecasts them: they are highest when
+  volatility is high. Here: the 1 and 5-day loss ranks times the market's 20-session volatility over its median
+  of the year before, less 1. The fit learns how much more the losers earn in turbulent markets.
+- **`X_TARGET=5`, the fit's target matching the 5-day hold.** Gârleanu and Pedersen (2013, JF, "Dynamic Trading
+  with Predictable Returns and Transaction Costs"): with costs, a signal is worth what it earns over the
+  horizon it is held, and persistent signals deserve more weight than fast-decaying ones. The target becomes the
+  open after the signal to the 5th close, over sigma times the root of 5, instead of the next session's open to
+  close. The fit uses only targets known by the day it is made (`tools/check/uk_leak.sh` checks it).
+
+Other findings that shaped the design:
+- **Costs:** Frazzini, Israel and Moskowitz (2018) find reversal is the anomaly most constrained by costs; De
+  Groot, Huij and Zhou (2012) find most of the cost comes from trading small caps. Hence the costs on the final
+  orders only, few large orders, the liquidity floor and the volatility cap.
+- **Not adopted:** volatility-managed sizing (Moreira and Muir 2017, JF) would cut exposure exactly when Nagel's
+  reversal pays most, so it is left out for a reversal book.
