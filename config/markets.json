@@ -5,7 +5,11 @@
       "live": {
         "name": "uk",
         "app": "uk",
-        "env": {},
+        "env": {
+          "X_RESID": "1",
+          "X_VOLREGIME": "1",
+          "X_TARGET": "5"
+        },
         "args": [
           "--hold",
           "5"
@@ -84,19 +88,6 @@
           "name": "hold5-base",
           "app": "uk",
           "env": {},
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
-          "name": "edge",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5"
-          },
           "args": [
             "--hold",
             "5"

@@ -59,3 +59,17 @@ Other findings that shaped the design:
   orders only, few large orders, the liquidity floor and the volatility cap.
 - **Not adopted:** volatility-managed sizing (Moreira and Muir 2017, JF) would cut exposure exactly when Nagel's
   reversal pays most, so it is left out for a reversal book.
+
+### First results on the store's data (13 Nov 2026; before costs, 5 slots of 5,000, the same model without the switches as `hold5-base`)
+
+| market | hold5-base | edge (all three) | resid-target |
+|---|---|---|---|
+| UK | +30.7% a year, Sharpe 1.20, worst fall 38% | **+46.8%, 1.50, 30%** | +43.8%, 1.43, 30% |
+| EU | **+119.0%, 3.19, 34%** | +54.6%, 1.73, 44% | +55.3%, 1.74, 43% |
+| US | **+6.6%, 0.36, 56%** | −1.4%, 0.12, 65% | −1.5%, 0.12, 63% |
+| APAC | **+34.3%, 1.24, 45%** | +29.6%, 1.05, 44% | +27.2%, 0.99, 48% |
+
+Year by year, `edge` beats `hold5-base` in the UK in 5 of 7 years (2022: +26% against −21%) and in 2026. The UK's
+live strategy now runs with all three switches; `hold5-base` keeps the model without them in view. In Europe,
+`hold5-base` leads over the whole period, but only +3% in 2026 against +18% (`edge`) and +29% (`resid-target`):
+watched, not switched.
