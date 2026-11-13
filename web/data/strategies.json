@@ -293,6 +293,16 @@
    {
     "name": "hold5",
     "role": "live",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5"
+    },
+    "ref": null
+   },
+   {
+    "name": "hold5-base",
+    "role": "shadow",
     "env": {},
     "ref": null
    }
