@@ -1100,7 +1100,14 @@ int main(int argc, char** argv) {
       f << b;
     }
     f << "]},\"pool\":[";
-    for (std::size_t q = 0; q < uni[T - 1].size(); ++q) f << (q ? ",\"" : "\"") << p.tickers[uni[T - 1][q]] << '"';
+    // The pool (the bridge fetches IBKR's daily bars for it): the day's list; INDEX every ETF, as most of their
+    // Frankfurt-floor bars have gaps (no open) that IBKR's Xetra bars fill (13 Nov: 10 of 32 a day with 18 bars in 20).
+    std::vector<std::size_t> poolOf = uni[T - 1];
+    if (o.market == "INDEX") {
+      poolOf.resize(N);
+      for (std::size_t i = 0; i < N; ++i) poolOf[i] = i;
+    }
+    for (std::size_t q = 0; q < poolOf.size(); ++q) f << (q ? ",\"" : "\"") << p.tickers[poolOf[q]] << '"';
     f << "]}\n";
   }
 
