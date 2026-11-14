@@ -472,6 +472,9 @@ def main():
     budget = budget_of(args.config, args.market)
     variants = []  # (k, the live strategy run with k trades of the budget's k-th)
     pending_variants = []  # (k, command, environment): started in waves the runner's memory holds
+    # The shadows too (14 Nov: ten shadows started at once beside the budget's runs and the EU's and the US's
+    # runners ran out of memory, killed): every run waits its turn in the same waves, the budget's first.
+    pending_shadows = []  # (strategy, live, stem, command, environment)
     for s in strategies(args.config, args.market):
         live = s['role'] == 'live'
         stem = 'ofm' if live else f"shadow-{s['name']}"
@@ -507,9 +510,8 @@ def main():
             cmd += ['--orders', path]
         env = {k: v for k, v in os.environ.items() if not k.startswith('X_')}
         env.update(s.get('env', {}), X_VERIFY='1')
-        log = open(f'report/{stem}.txt', 'w')
-        jobs.append((s, live, stem, subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT), log))
-    if pending_variants:  # the runs the memory allows at once (a large market's run holds about 1 GB per million share-days)
+        pending_shadows.append((s, live, stem, cmd, env))
+    if pending_variants or pending_shadows:  # the runs the memory allows at once (a large market's run holds about 1 GB per million share-days)
         csv = model[model.index('--csv') + 1] if '--csv' in model else None
         rows = sum(1 for _ in open(csv)) if csv and os.path.exists(csv) else 0
         avail = 0
@@ -518,19 +520,27 @@ def main():
         except (OSError, StopIteration):
             pass
         per = max(1, rows) * 1000  # bytes a run holds per share-day, measured roughly (the features, their interactions, the forecasts)
-        width = max(1, min(len(pending_variants), int(0.7 * avail / per) - len(jobs))) if avail else len(pending_variants)
-        print(f'strategies: {args.market}: {len(pending_variants)} budget runs, {width} at a time ({rows} share-days, {avail / 2**30:.1f} GB free)', flush=True)
-        queue = list(pending_variants)
+        n_runs = len(pending_variants) + len(pending_shadows)
+        width = max(1, min(n_runs, int(0.7 * avail / per))) if avail else n_runs
+        print(f'strategies: {args.market}: {len(pending_variants)} budget runs and {len(pending_shadows)} shadows, {width} at a time ({rows} share-days, {avail / 2**30:.1f} GB free)', flush=True)
+        queue = [('budget', x) for x in pending_variants] + [('shadow', x) for x in pending_shadows]
         running = []
         while queue or running:
             while queue and len(running) < width:
-                k, cmd, env = queue.pop(0)
-                log = open(f'data/budget/report-{k}.txt', 'w')
-                p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
-                running.append((k, p, log))
-                variants.append((k, p, log))
-            running[0][1].wait()
-            running = [r for r in running if r[1].poll() is None]
+                kind, x = queue.pop(0)
+                if kind == 'budget':
+                    k, cmd, env = x
+                    log = open(f'data/budget/report-{k}.txt', 'w')
+                    p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+                    variants.append((k, p, log))
+                else:
+                    s_, live_, stem_, cmd, env = x
+                    log = open(f'report/{stem_}.txt', 'w')
+                    p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+                    jobs.append((s_, live_, stem_, p, log))
+                running.append(p)
+            running[0].wait()
+            running = [r for r in running if r.poll() is None]
     if variants:  # the budget's runs: the walk-forward choice of how many trades makes the live strategy
         s = next(x for x in strategies(args.config, args.market) if x['role'] == 'live')
         total, slots = budget
