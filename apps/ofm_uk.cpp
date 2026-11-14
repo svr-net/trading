@@ -83,7 +83,7 @@ using swing::kNaN;
 
 struct Opt {
   std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv, venues;
-  double capital = 5000, maxVol = 0.04, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
+  double capital = 5000, maxVol = 0.04, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, capMax = 0.03, minPrice = 20, lambda = 0.5;
   std::size_t roll = 5, slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
   std::size_t hold = 0;  // --hold H: held up to H sessions (sold at the first close above its exit level), 0: within the day
@@ -159,6 +159,7 @@ int main(int argc, char** argv) {
     else if (a == "--min-order") o.minOrder = std::atof(argv[++k]);
     else if (a == "--hurdle") o.hurdle = std::atof(argv[++k]);
     else if (a == "--cap-sd") o.capSd = std::atof(argv[++k]);
+    else if (a == "--cap-max") o.capMax = std::atof(argv[++k]);  // the learnt cap's ceiling over the close (X_CAPLEARN): 3%
     else if (a == "--min-price") o.minPrice = std::atof(argv[++k]), minPriceSet = true;
     else if (a == "--lambda") o.lambda = std::atof(argv[++k]);
     else if (a == "--refit") o.refit = std::max<std::size_t>(1, std::size_t(std::atol(argv[++k])));
@@ -875,7 +876,7 @@ int main(int argc, char** argv) {
     double baseS = 0, baseN = 0;
     for (std::size_t b = 0; b < NB; ++b) {
       const double s = gapS[hi * NB + b] - gapS[lo * NB + b], n = gapN[hi * NB + b] - gapN[lo * NB + b];
-      adj[b] = n >= 30 ? s / n : 0.0;
+      adj[b] = n > 0 ? s / (n + 500.0) : 0.0;  // shrunk to 0 where the band has few trades (a large gap: news, rare)
       if (kGapEdge[b + 1] <= o.capSd + 1e-9) baseS += s, baseN += n;  // the bands the calibration's trades bought in
     }
     const double base = baseN > 0 ? baseS / baseN : 0.0;
@@ -885,12 +886,15 @@ int main(int argc, char** argv) {
       if (!p.ok(q, i) || !p.hasOpen(q + 1, i) || !(sigma[at(q, i)] > 0)) continue;
       pr[bandOf((p.O[at(q + 1, i)] / p.C[at(q, i)] - 1) / sigma[at(q, i)])] += 1, cnt += 1;
     }
-    double best = -1e18, bestK = o.capSd, acc = 0, accP = 0, bestP = 0;
+    double best = -1e18, bestK = std::min(o.capSd, o.capMax / std::max(sg, 1e-9)), acc = 0, accP = 0, bestP = 0;
     const double scale = sg * std::sqrt(double(xTarget));
     for (std::size_t b = 0; b + 1 < NB; ++b) {  // the cap at each band's upper edge (8 at most)
       const double pb = cnt > 0 ? pr[b] / cnt : 0.0;
       acc += pb * (e + (adj[b] - base) * scale), accP += pb;
       if (kGapEdge[b + 1] < 0.25 - 1e-9) continue;  // at least a quarter of a volatility over the close
+      // at most 2 volatilities and --cap-max over the close (14 Nov: 8 volatilities let US orders pay up to 31%
+      // over the close: a gap that large is news, and its record too thin to trust)
+      if (kGapEdge[b + 1] > 2 + 1e-9 || kGapEdge[b + 1] * sg > o.capMax + 1e-12) break;
       if (acc > best + 1e-15) best = acc, bestK = kGapEdge[b + 1], bestP = accP;
     }
     fill = bestP;
