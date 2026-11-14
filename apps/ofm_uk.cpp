@@ -476,6 +476,8 @@ int main(int argc, char** argv) {
   std::vector<std::vector<double>> pred(T);
   double fitted = 0;
   std::size_t fits = 0;
+  std::vector<std::vector<double>> betaLast(wins.size());  // each fit's coefficients at the last close (the orders' reasons)
+  std::vector<double> wLast(wins.size(), wins.size() == 1 ? 1.0 : 0.0);
   for (std::size_t k = 0; k < wins.size(); ++k) {
     std::vector<double> beta;
     for (std::size_t t = 0; t < T; ++t) {
@@ -500,6 +502,7 @@ int main(int argc, char** argv) {
         predK[k][t][j] = s;
       }
     }
+    betaLast[k] = beta;
   }
   const auto rankIc = [&](const std::vector<double>& f, std::size_t u) {
     std::vector<double> a, b;
@@ -533,6 +536,8 @@ int main(int argc, char** argv) {
         for (std::size_t k = 0; k < wins.size(); ++k)
           if (!predK[k][t].empty()) w[k] = 1.0, sw += 1.0;
       if (!(sw > 0)) continue;
+      if (t + 1 == T)
+        for (std::size_t k = 0; k < wins.size(); ++k) wLast[k] = w[k] / sw;
       pred[t].assign(Y[t].size(), 0.0);
       for (std::size_t k = 0; k < wins.size(); ++k)
         if (w[k] > 0)
@@ -1403,13 +1408,46 @@ int main(int argc, char** argv) {
                   days.empty() ? "" : days.front().c_str(), days.empty() ? "" : days.back().c_str(), all.annual, all.sharpe, all.dd, nOrders, nFilled, nFilled > 0 ? sumNet / nFilled : 0.0,
                   nFilled > 0 ? nWin / nFilled : 0.0);
     f << b << ",\"orders\":[";
+    // Each order's reasons: the model's score at the last close is its coefficients times the share's inputs
+    // (ranks across the day's list); the inputs that added the most, with the share's own value of each (a
+    // signal's: higher is bought, e.g. "loser 5d" is minus the 5-day return), and the order's rank on the day.
+    std::vector<double> coef(D, 0.0);
+    for (std::size_t k = 0; k < wins.size(); ++k)
+      if (betaLast[k].size() == D)
+        for (std::size_t a = 0; a < D; ++a) coef[a] += wLast[k] * betaLast[k][a];
+    const auto whyOf = [&](std::size_t i) {
+      std::string s;
+      const auto& u = uni[T - 1];
+      const auto it = std::lower_bound(u.begin(), u.end(), i);
+      if (it == u.end() || *it != i || X[T - 1].empty() || pred[T - 1].empty()) return s;
+      const std::size_t j = std::size_t(it - u.begin());
+      std::size_t rank = 1;
+      for (double x : pred[T - 1]) rank += x > pred[T - 1][j];
+      std::vector<std::pair<double, std::size_t>> parts;
+      for (std::size_t g = 0; g < F; ++g) parts.emplace_back(coef[1 + g] * X[T - 1][j * D + 1 + g], g);
+      std::sort(parts.begin(), parts.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+      char w[256];
+      std::snprintf(w, sizeof w, ",\"rank\":%zu,\"of\":%zu,\"why\":[", rank, u.size());
+      s += w;
+      for (std::size_t q = 0; q < std::min<std::size_t>(4, parts.size()); ++q) {
+        const std::size_t g = parts[q].second;
+        if (!(parts[q].first > 0)) break;
+        const char* name = g < S ? sig[g].name : g == S ? "volatility" : g == S + 1 ? "liquidity" : "stamp-free";
+        const double v = g < S ? sig[g].f(T - 1, i) : g == S ? sigma[at(T - 1, i)] : g == S + 1 ? 0.0 : (stampFree[i] ? 1.0 : 0.0);
+        std::snprintf(w, sizeof w, "%s{\"k\":\"%s\",\"c\":%.4g,\"v\":%.4g}", q ? "," : "", name, parts[q].first, std::isfinite(v) ? v : 0.0);
+        s += w;
+      }
+      return s + "]";
+    };
     for (std::size_t q = 0; q < next.size(); ++q) {
       const auto& r = next[q];
       if (o.hold) {
         std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"expected\":%.6g,\"ifFilled\":%.6g,\"gross\":%.6g,\"cost\":%.6g,\"entry\":\"open\",\"limit\":%.6g,\"stop\":null,\"take\":null,"
                       "\"exitAbove\":%.6g,\"days\":%zu,\"holdDays\":%.3g,\"rebuy\":0,\"fill\":%.4g,\"amount\":%.0f}", q ? "," : "", p.tickers[r.i].c_str(),
                       (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.expected, r.cost, r.limit / r.close - 1, r.exitAbove, H, r.holdDays, std::isfinite(r.fill) ? r.fill : 0.0, r.value);
-        f << b;
+        std::string rec = b;
+        rec.pop_back();  // the closing brace: the reasons go in before it
+        f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << "}";
         continue;
       }
       // the levels from the entry (the open), the limit from the close

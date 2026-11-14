@@ -542,6 +542,30 @@ def chart_bars(market, ticker, days=120):
     return bars[-max(1, min(int(days), 500)):]
 
 
+PROFILES = {}  # exchange -> (when read, {code: {sector, industry}})
+PROFILE_EXCHANGES = {'UK': ['LSE'], 'US': ['NYSE', 'NASDAQ'], 'EU': ['PAR', 'AMS', 'BRU', 'LIS', 'MSE', 'FRA'], 'APAC': ['ASX', 'SGX']}
+
+
+def profile_of(market, ticker):
+    """The share's sector and industry (EODData's profiles in the private store, profiles/<EXCHANGE>.json, read
+    at most twice a day), for the page's chart of an order: never published (the data licence). {} when none."""
+    ex = ticker.split(':')[0] if ':' in ticker else None
+    code = ticker.split(':')[-1]
+    for e in ([ex] if ex else PROFILE_EXCHANGES.get(market, [])):
+        hit = PROFILES.get(e)
+        if not hit or time.time() - hit[0] > 12 * 3600:
+            rows = {}
+            try:
+                body = store_get(f'profiles/{e}.json')
+                rows = {r['code']: {'sector': r.get('sector', ''), 'industry': r.get('industry', '')} for r in json.loads(body or b'[]') if r.get('code')}
+            except Exception:  # noqa: BLE001  no profile: the chart without it
+                rows = {}
+            hit = PROFILES[e] = (time.time(), rows)
+        if code in hit[1]:
+            return {'exchange': e, **hit[1][code]}
+    return {}
+
+
 def fetch_bars(market, daily=False):
     """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), merged into the
     file kept here and written to the private store as ibkr/<MARKET>/daily.csv; returns (ok,
@@ -1234,7 +1258,7 @@ class Handler(BaseHTTPRequestHandler):
             bars = chart_bars(m, t, days) if t else []
             if not bars:
                 return self.reply(404, {'error': f'no IBKR bars kept for {t or "?"} ({m}): they come with the next bars fetch'})
-            return self.reply(200, {'market': m, 'ticker': t, 'bars': bars})
+            return self.reply(200, {'market': m, 'ticker': t, 'bars': bars, 'profile': profile_of(m, t)})
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:
