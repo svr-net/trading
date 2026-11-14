@@ -237,6 +237,32 @@
      "X_RISK": "1"
     },
     "ref": null
+   },
+   {
+    "name": "boll",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_BOLL": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "psar",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_PSAR": "1"
+    },
+    "ref": null
    }
   ],
   "us": [
