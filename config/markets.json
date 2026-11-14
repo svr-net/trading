@@ -95,37 +95,6 @@
           ]
         },
         {
-          "name": "noroll",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1"
-          },
-          "args": [
-            "--hold",
-            "5",
-            "--roll",
-            "0"
-          ]
-        },
-        {
-          "name": "adapt",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1",
-            "X_ADAPT": "1"
-          },
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
           "name": "norisk",
           "app": "uk",
           "env": {
@@ -279,37 +248,6 @@
           ]
         },
         {
-          "name": "noroll",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1"
-          },
-          "args": [
-            "--hold",
-            "5",
-            "--roll",
-            "0"
-          ]
-        },
-        {
-          "name": "adapt",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1",
-            "X_ADAPT": "1"
-          },
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
           "name": "norisk",
           "app": "uk",
           "env": {
@@ -425,37 +363,6 @@
           "name": "hold5-base",
           "app": "uk",
           "env": {},
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
-          "name": "noroll",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1"
-          },
-          "args": [
-            "--hold",
-            "5",
-            "--roll",
-            "0"
-          ]
-        },
-        {
-          "name": "adapt",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1",
-            "X_ADAPT": "1"
-          },
           "args": [
             "--hold",
             "5"
@@ -583,37 +490,6 @@
           ]
         },
         {
-          "name": "noroll",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1"
-          },
-          "args": [
-            "--hold",
-            "5",
-            "--roll",
-            "0"
-          ]
-        },
-        {
-          "name": "adapt",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1",
-            "X_ADAPT": "1"
-          },
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
           "name": "norisk",
           "app": "uk",
           "env": {
@@ -719,37 +595,6 @@
           "name": "hold5-base",
           "app": "uk",
           "env": {},
-          "args": [
-            "--hold",
-            "5"
-          ]
-        },
-        {
-          "name": "noroll",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1"
-          },
-          "args": [
-            "--hold",
-            "5",
-            "--roll",
-            "0"
-          ]
-        },
-        {
-          "name": "adapt",
-          "app": "uk",
-          "env": {
-            "X_RESID": "1",
-            "X_VOLREGIME": "1",
-            "X_TARGET": "5",
-            "X_RISK": "1",
-            "X_ADAPT": "1"
-          },
           "args": [
             "--hold",
             "5"
