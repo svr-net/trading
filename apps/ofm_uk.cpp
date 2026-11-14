@@ -84,7 +84,7 @@ using swing::kNaN;
 struct Opt {
   std::string csv, market, stampFree, segments, overrideCsv, jsonOut, ordersOut, traceOut, barsCsv, venues;
   double capital = 5000, maxVol = 0.04, minValue = 250000, advShare = 0.01, minOrder = 500, hurdle = 0.0005, capSd = 0.5, minPrice = 20, lambda = 0.5;
-  std::size_t slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
+  std::size_t roll = 5, slots = 5, top = 300, refit = 21, window = 750, warm = 250, calWindow = 500, calMin = 120;
   bool tiered = false;
   std::size_t hold = 0;  // --hold H: held up to H sessions (sold at the first close above its exit level), 0: within the day
 };
@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
     else if (a == "--venues") o.venues = argv[++k];
     else if (a == "--segments") o.segments = argv[++k];
     else if (a == "--override") o.overrideCsv = argv[++k];
+    else if (a == "--roll") o.roll = std::size_t(std::atol(argv[++k]));
     else if (a == "--pricing") o.tiered = std::string(argv[++k]) == "tiered";
     else if (a == "--json") o.jsonOut = argv[++k];
     else if (a == "--orders") o.ordersOut = argv[++k];
@@ -176,6 +177,27 @@ int main(int argc, char** argv) {
     return 2;
   }
   const auto at = [N](std::size_t t, std::size_t i) { return t * N + i; };
+  // Missing bars rolled forward for the inputs only (--roll, at most that many sessions in a row; 0: off): a
+  // session with no bar takes the share's last close as its open, high, low and close, and no volume, so a
+  // thin share's (INDEX's Frankfurt-floor ETFs, 13 Nov: 27,141 share-days left out for gaps) signals,
+  // volatility and history run on. The rolled panel pin feeds the inputs; the trades, their targets and the
+  // backtest use the real bars p only, and a share is listed only on a session with a real bar.
+  swing::Panel pin = p;
+  std::size_t rolled = 0;
+  if (o.roll)
+    for (std::size_t i = 0; i < N; ++i) {
+      std::size_t last = T, gap = 0;
+      for (std::size_t t = 0; t < T; ++t) {
+        if (p.ok(t, i) && p.hasOpen(t, i)) {
+          last = t, gap = 0;
+          continue;
+        }
+        if (p.ok(t, i) || last == T || ++gap > o.roll) continue;
+        const double c = p.C[at(last, i)];
+        pin.O[at(t, i)] = pin.H[at(t, i)] = pin.L[at(t, i)] = pin.C[at(t, i)] = c, pin.V[at(t, i)] = 0;
+        ++rolled;
+      }
+    }
   // The market: the UK's prices in pence (traded value in pounds: / 100), stamp duty and the LSE's segments;
   // Europe's and Asia-Pacific's (--costs EU|APAC, tickers EXCHANGE:CODE) in their exchanges' currencies, each
   // exchange's commission, fees and taxes from --venues (tools/venues.txt: the tax on buying a share held past
@@ -236,19 +258,19 @@ int main(int argc, char** argv) {
         std::size_t prev = T, hist = 0;
         double e = 0, w = 0;
         for (std::size_t t = 0; t < T; ++t) {
-          if (!p.ok(t, i)) continue;
+          if (!pin.ok(t, i)) continue;
           ++hist;
           bool jump = false;
           if (prev < T) {
-            const double r = std::log(p.C[at(t, i)] / p.C[at(prev, i)]);
+            const double r = std::log(pin.C[at(t, i)] / pin.C[at(prev, i)]);
             rets.push_back(r);
             if (rets.size() > 60) rets.erase(rets.begin());
             jump = std::fabs(std::expm1(r)) > 0.30;
-            const double c = std::log(p.C[at(prev, i)]), a = c - 0.5 * std::log(p.H[at(prev, i)] * p.L[at(prev, i)]), b = c - 0.5 * std::log(p.H[at(t, i)] * p.L[at(t, i)]);
+            const double c = std::log(pin.C[at(prev, i)]), a = c - 0.5 * std::log(pin.H[at(prev, i)] * pin.L[at(prev, i)]), b = c - 0.5 * std::log(pin.H[at(t, i)] * pin.L[at(t, i)]);
             e += (4 * a * b - e) / 64, w += (1 - w) / 64;
           }
           spread[at(t, i)] = std::min(0.2, w > 0 ? std::sqrt(std::max(0.0, e / w)) : 0.0);
-          vals.push_back(p.C[at(t, i)] * p.V[at(t, i)] / priceUnit);  // the UK's pence to pounds
+          vals.push_back(pin.C[at(t, i)] * pin.V[at(t, i)] / priceUnit);  // the UK's pence to pounds
           if (vals.size() > 20) vals.erase(vals.begin());
           barDays.push_back(t);
           if (barDays.size() > 18) barDays.erase(barDays.begin());
@@ -265,9 +287,9 @@ int main(int argc, char** argv) {
             adv[at(t, i)] = v[10];
           }
           const bool recent = barDays.size() == 18 && t - barDays.front() < 20;  // 18 bars within the last 20 sessions
-          eligible[at(t, i)] = segOk[i] && recent && !jump && hist >= 250 && p.C[at(t, i)] >= o.minPrice && sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol && adv[at(t, i)] >= o.minValue &&
+          eligible[at(t, i)] = p.ok(t, i) && segOk[i] && recent && !jump && hist >= 250 && p.C[at(t, i)] >= o.minPrice && sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol && adv[at(t, i)] >= o.minValue &&
                                p.H[at(t, i)] > p.L[at(t, i)];
-          if (!eligible[at(t, i)] && hist >= 250) {
+          if (!eligible[at(t, i)] && hist >= 250 && p.ok(t, i)) {
             const std::size_t k = !recent ? 0 : jump ? 1 : p.C[at(t, i)] < o.minPrice ? 2 : !(sigma[at(t, i)] > 0 && sigma[at(t, i)] <= o.maxVol) ? 3
                                 : !(adv[at(t, i)] >= o.minValue) ? 4 : !(p.H[at(t, i)] > p.L[at(t, i)]) ? 5 : 6;
             ++why[k];
@@ -290,7 +312,7 @@ int main(int argc, char** argv) {
   }
 
   // The inputs at each close, ranked across the day's shares, and the targets.
-  auto sig = swing::signals(p);
+  auto sig = swing::signals(pin);  // the inputs on the rolled bars
   // Research switches (shadows in config/markets.json; the live strategies run without them):
   //   X_RESID=1   residual reversal (Blitz, Huij, Lansdorp and Verbeek 2013; Da, Liu and Schaumburg 2014): the
   //               1, 5 and 20-day loss less the share's market beta times the market's (beta over 60 sessions;
@@ -1001,6 +1023,7 @@ int main(int argc, char** argv) {
               p.days.front().c_str(), p.days.back().c_str(), segKnown, segOut);
   std::printf("uk: the day's list: %.0f shares on average (at most %zu; at least %s %.0f traded a day); %zu fits of %zu inputs (the last on %.0f share-days)\n",
               double(uniMean) / double(T), o.top, cur, o.minValue, fits, F, fitted);
+  std::printf("uk:   %zu missing bars rolled forward for the inputs (at most %zu sessions in a row; never traded on)\n", rolled, o.roll);
   std::printf("uk:   left out (share-days with a year's history): %zu missing bars in the last 20 sessions, %zu a jump over 30%%, %zu under the price floor, "
               "%zu volatility outside (0, %.0f%%], %zu under the value floor, %zu a bar with no range, %zu outside the order book's segments; at least 20 a day to fit\n",
               why[0].load(), why[1].load(), why[2].load(), why[3].load(), 100 * o.maxVol, why[4].load(), why[5].load(), why[6].load());
