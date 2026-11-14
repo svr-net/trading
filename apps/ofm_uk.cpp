@@ -1536,7 +1536,7 @@ int main(int argc, char** argv) {
                       (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.expected, r.cost, r.limit / r.close - 1, r.exitAbove, H, r.holdDays, std::isfinite(r.fill) ? r.fill : 0.0, r.value);
         std::string rec = b;
         rec.pop_back();  // the closing brace: the reasons go in before it
-        f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << ",\"fromForecast\":" << r.fromForecast << ",\"fromAverage\":" << r.fromAverage
+        f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << ",\"fromForecast\":" << r.fromForecast << ",\"fromAverage\":" << r.fromAverage << ",\"fromCap\":" << (r.expected - r.fromForecast - r.fromAverage)
           << ",\"sameBase\":" << (xExcess ? "true" : "false") << ",\"noEdge\":" << (r.noEdge ? "\"" + xNoEdge + "\"" : std::string("false")) << "}";
         continue;
       }

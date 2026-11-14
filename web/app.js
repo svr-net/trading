@@ -258,7 +258,7 @@ const REASON = {
 };
 function chartWhy(o) {
   const facts = [
-    ['Expected', signed(o.expected, 2)[0]], ['Chance to buy', o.fill != null ? `${Math.round(100 * o.fill)}%` : '–'],
+    ['Expected after costs', signed(o.expected, 2)[0]], ['Chance to buy', o.fill != null ? `${Math.round(100 * o.fill)}%` : '–'],
     ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Exit', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : '–'],
     ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank today', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
@@ -266,17 +266,29 @@ function chartWhy(o) {
   // Where its expected return comes from: the forecast's part, and the average trade's for a share that moves
   // this much a day (the order list is chosen by the expected return, which scales with the daily move).
   // With the same baseline for every share (sameBase: X_EXCESS), the forecast's part is what put it on the list.
-  const split = o.fromForecast == null || o.fromAverage == null ? ''
-    : o.noEdge === 'merge'
-      ? `<p class="split">Today the forecast's past record gave it no weight. Its expected return before costs is ${pct(o.fromForecast + o.fromAverage, 2)}, the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. It was picked by that and by the forecast's rank together${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}: each share's place on the two lists added.</p>`
-    : o.noEdge
-      ? `<p class="split">Today the forecast's past record gave it no weight, so every share has the same expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}. It was picked by the forecast's rank instead${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, from its top fifth.</p>`
-    : o.sameBase
-      ? `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromAverage, 2)}</b> the average trade's, the same for every share today, and <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, for a share that moves ${pct(o.sigma, 1).slice(1)} a day. The forecast's part is what put it on the list.</p>`
-      : `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, and <b>${pct(o.fromAverage, 2)}</b> the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. ${
-        Math.abs(o.fromForecast) < Math.abs(o.fromAverage) ? 'It is on the list mostly for how much it moves, less for the forecast.' : 'It is on the list mostly for the forecast.'}</p>`;
+  const split = o.fromForecast == null || o.fromAverage == null ? '' : splitText(o);
   $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
     + split + (why.length ? `<strong>What the forecast saw</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+}
+// Where its expected return before costs comes from: the average trade's part (the same for every share with
+// sameBase), the forecast's, and its learnt buy cap's (fromCap: what buying only under its cap, over the share's
+// past opening gaps, adds or takes). The largest part is what put it on the list; with the forecast's weight 0
+// today the forecast chose nothing.
+function splitText(o) {
+  const cap = o.fromCap || 0, total = o.fromForecast + o.fromAverage + cap;
+  const noWeight = Math.abs(o.fromForecast) < 1e-5;
+  const parts = [{ k: 'average', v: o.fromAverage, t: `<b>${pct(o.fromAverage, 2)}</b> the average trade's${o.sameBase ? ', the same for every share today' : ` for a share that moves ${pct(o.sigma, 1).slice(1)} a day`}` },
+    { k: 'forecast', v: o.fromForecast, t: `<b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}` }];
+  if (Math.abs(cap) >= 1e-5) parts.push({ k: 'cap', v: cap, t: `<b>${pct(cap, 2)}</b> from its buy cap: what buying only when the open is at most ${pct(o.limit, 1)} over the close has made on this share's past opening gaps` });
+  // what tells it apart from the other shares: not the average trade's part when every share has the same
+  let top = null;
+  for (const x of parts) if (!(x.k === 'average' && o.sameBase) && x.v > 0 && (!top || x.v > top.v)) top = x;
+  const why = noWeight
+    ? `The forecast had no weight today (its recent record showed no clear link to the outcome), so it did not choose this order${top?.k === 'cap' ? ': its buy cap did, among the shares whose opening gaps have paid best under their caps' : top?.k === 'average' ? ': how much the share moves did' : ''}.`
+    : top?.k === 'forecast' ? "The forecast's part is what put it on the list."
+      : top?.k === 'cap' ? 'It is on the list mostly for its buy cap, less for the forecast.'
+        : 'It is on the list mostly for how much it moves, less for the forecast.';
+  return `<p class="split">Its expected return before costs, ${pct(total, 2)}: ${parts.map((x) => x.t).join('; ')}. ${why} After its costs${o.fill != null ? ` and its ${Math.round(100 * o.fill)}% chance to buy` : ''}, ${signed(o.expected, 2)[0]}.</p>`;
 }
 function openChart(o, source) {
   const dlg = $('chart-dialog');
@@ -294,6 +306,17 @@ function openChart(o, source) {
     .then((j) => {
       if (!j.bars?.length) throw new Error(j.error || 'no bars');
       $('chart-dialog-note').textContent = `${j.bars.length} daily bars to ${j.bars[j.bars.length - 1].d}${source === 'UK' ? ' (pence)' : ''}`;
+      // IBKR's bars can switch between pence and pounds for a while (a GBX/GBP quote): such a stretch drawn at
+      // a hundredth of the price leaves the chart empty. Each bar put in the units of the latest (the order's).
+      const ref = j.bars[j.bars.length - 1].c;
+      let rescaled = 0;
+      if (ref > 0) j.bars = j.bars.map((b) => {
+        const r = b.c / ref, k = r > 30 && r < 300 ? 0.01 : r < 1 / 30 && r > 1 / 300 ? 100 : 1;
+        if (k === 1) return b;
+        rescaled += 1;
+        return { ...b, o: b.o * k, h: b.h * k, l: b.l * k, c: b.c * k };
+      });
+      if (rescaled) $('chart-dialog-note').textContent += ` · ${rescaled} bar${rescaled === 1 ? '' : 's'} quoted in ${ref < j.bars[0].c ? 'pounds' : 'pence'} by IBKR put in the same units`;
       const pf = j.profile || {};
       $('chart-dialog-profile').textContent = [pf.exchange, pf.sector, pf.industry].filter(Boolean).join(' · ');
       chartShown = [j.bars, o];
