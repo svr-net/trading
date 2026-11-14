@@ -234,6 +234,11 @@ function showMarket(m) {
   try { localStorage.setItem('market', m); } catch { /* no storage */ }
   for (const b of document.querySelectorAll('.market-switch button')) b.setAttribute('aria-selected', String(b.dataset.market === m));
   const name = MARKETS[m];
+  // FOREX is research only, never traded: its tab has no broker views (Results and Broker are the bridge's).
+  const research = m === 'forex';
+  for (const b of document.querySelectorAll('.views button')) if (b.dataset.view === 'results' || b.dataset.view === 'broker') b.hidden = research;
+  if (research && !$('view-results').hidden) showView('orders');
+  if (research && !$('view-broker').hidden) showView('orders');
   $('asof').textContent = `Loading the latest ${name} scan…`;
   $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '';
   fetch(`data/${m}.json`, { cache: 'no-cache' })
