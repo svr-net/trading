@@ -204,3 +204,25 @@ published.
 updates the data, runs the model, publishes the scan to the page and sends the daily email.
 
 Research only, not investment advice.
+
+## The model on the phone: the Lab (WebAssembly)
+
+`docker/wasm/Dockerfile` builds the live model (`apps/ofm_uk`) to WebAssembly in cached layers:
+- **Toolchain:** a pinned Emscripten, with its system libraries (libc++ with SIMD and LTO) built once by a warm-up
+  compile.
+- **Model:** the model's sources only. That is the one layer a model change rebuilds.
+- **Output:** a scratch stage with `ofm_uk.js` and `ofm_uk.wasm`, about 330 KB.
+
+It is built with `-O3 -flto -msimd128`, single-threaded, since GitHub Pages cannot send the headers WebAssembly
+threads need. The site's CI job builds it with `docker buildx` and the GitHub Actions layer cache
+(`cache-from`/`cache-to type=gha`). `tools/check/wasm_same.mjs` checks it gives the native model's exact backtest
+and orders.
+
+The page's **Lab** view runs it in a Web Worker on the market's daily bars from the bridge (`GET /bars.csv`,
+keyed: the prices stay on the device). The model's switches start as the live strategy's and can be changed. The
+backtest is shorter than the scan's, since IBKR's bars go back about two years.
+
+Locally: `docker buildx build -f docker/wasm/Dockerfile --target out --output type=local,dest=web/lab .`
+
+**The repeat scans** (21:30 and 05:30 UTC, `SHADOWS=0`) run the live strategy only. The shadows run once a day, in
+each market's evening scan, and their results are kept on the page.

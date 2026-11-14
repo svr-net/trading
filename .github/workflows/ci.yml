@@ -55,6 +55,25 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # The model as WebAssembly for the page's Lab (docker/wasm/Dockerfile): the toolchain's layers come from
+      # GitHub's cache, so a model change rebuilds only its own layer.
+      - uses: docker/setup-buildx-action@v3
+      - name: The model as WebAssembly (cached layers)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/wasm/Dockerfile
+          target: out
+          outputs: type=local,dest=web/lab
+          cache-from: type=gha,scope=wasm
+          cache-to: type=gha,mode=max,scope=wasm
+      - name: The Lab's cost tables
+        run: cp tools/venues.txt tools/eoddata/aim.txt web/lab/ && ls -l web/lab
+      - name: The WebAssembly model gives the native model's results (pull requests)
+        if: ${{ !inputs.site-only }}
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build -j4 --target ofm_uk > /dev/null
+          node tools/check/wasm_same.mjs build/ofm_uk web/lab/ofm_uk.js
       - uses: actions/upload-artifact@v4
         with:
           name: site

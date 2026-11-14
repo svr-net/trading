@@ -343,7 +343,7 @@ function drawOHLC(bars, o) {
   $('ohlc-legend').innerHTML = legendKey(col('--accent'), 'Bollinger 20, 2') + legendKey(col('--hedged'), 'PSAR') + legendKey(col('--ink'), 'buy cap') + legendKey(col('--good'), 'exit');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['orders', 'results', 'backtest', 'broker', 'about'];
+const VIEWS = ['orders', 'results', 'backtest', 'broker', 'lab', 'about'];
 let bridgeOk = false;
 function showView(v) {
   if (!VIEWS.includes(v)) v = 'orders';
@@ -369,9 +369,9 @@ function showMarket(m) {
   const name = MARKETS[m];
   // FOREX is research only, never traded: its tab has no broker views (Results and Broker are the bridge's).
   const research = m === 'forex';
-  for (const b of document.querySelectorAll('.views button')) if (b.dataset.view === 'results' || b.dataset.view === 'broker') b.hidden = research;
-  if (research && !$('view-results').hidden) showView('orders');
-  if (research && !$('view-broker').hidden) showView('orders');
+  for (const b of document.querySelectorAll('.views button')) if (['results', 'broker', 'lab'].includes(b.dataset.view)) b.hidden = research;
+  if (research && (!$('view-results').hidden || !$('view-broker').hidden || !$('view-lab').hidden)) showView('orders');
+  labSwitches(m);
   $('asof').textContent = `Loading the latest ${name} scan…`;
   $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '';
   fetch(`data/${m}.json`, { cache: 'no-cache' })
@@ -650,3 +650,69 @@ let firstView = location.hash.slice(1);
 try { firstView = firstView || localStorage.getItem('view') || 'orders'; } catch { /* no storage */ }
 showView(firstView);
 
+
+// The Lab: the model compiled to WebAssembly (web/lab/, docker/wasm/Dockerfile) run here, in a Web Worker, on the
+// market's daily bars from the bridge (GET /bars.csv, keyed: the prices never leave this device). Its switches
+// start as the market's live strategy's (data/strategies.json).
+const LAB_SWITCHES = [
+  ['X_RESID', '1', 'Residual reversal (Blitz et al. 2013)'],
+  ['X_VOLREGIME', '1', 'Reversal scaled by market volatility (Nagel 2012)'],
+  ['X_TARGET', '5', "Fitted on the 5-day hold's return"],
+  ['X_RISK', '1', "The book's volatility target"],
+  ['X_CAPLEARN', '1', "Each order's own learnt buy cap"],
+  ['X_BOLL', '1', 'Bollinger bands as inputs'],
+  ['X_PSAR', '1', 'A PSAR exit at the close'],
+  ['X_ADAPT', '1', 'Adaptive learning (three windows)'],
+];
+function labSwitches(m) {
+  const box = $('lab-switches');
+  if (!box) return;
+  fetch('data/strategies.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((idx) => {
+    const env = (idx?.markets?.[m] || []).find((s) => s.role === 'live')?.env || {};
+    box.replaceChildren(...LAB_SWITCHES.map(([k, v, t]) => {
+      const l = document.createElement('label'), c = document.createElement('input');
+      c.type = 'checkbox', c.dataset.key = k, c.dataset.value = v, c.checked = env[k] === v;
+      l.append(c, document.createTextNode(`${t}${env[k] === v ? ' (live)' : ''}`));
+      return l;
+    }));
+  });
+}
+let labWorker = null;
+$('lab-run').addEventListener('click', async () => {
+  const M = MARKETS[market], status = $('lab-status');
+  $('lab-verdict').innerHTML = '', $('lab-orders').replaceChildren(), $('lab-log').hidden = true;
+  status.textContent = 'Fetching the bars from your bridge…';
+  let csv;
+  try {
+    const r = await fetch(`${bridgeUrl()}/bars.csv?market=${encodeURIComponent(M)}`, { headers: { 'X-Bridge-Key': bridgeKey() } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+    csv = new Uint8Array(await r.arrayBuffer());
+  } catch (e) {
+    status.textContent = /key|401|Failed to fetch|NetworkError|Load failed/i.test(String(e.message)) ? 'Connect your bridge under Broker (its address and key): the bars come from your IBKR account.' : `No bars: ${e.message}.`;
+    return;
+  }
+  const env = {};
+  for (const c of $('lab-switches').querySelectorAll('input')) if (c.checked) env[c.dataset.key] = c.dataset.value;
+  const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--hold', '5'];
+  if (['EU', 'APAC', 'INDEX'].includes(M)) { files['venues.txt'] = await (await fetch('lab/venues.txt')).text(); args.push('--venues', '/venues.txt'); }
+  if (M === 'UK') { files['aim.txt'] = await (await fetch('lab/aim.txt')).text(); args.push('--stamp-free', '/aim.txt'); }
+  status.textContent = `Running the model on ${(csv.length / 1e6).toFixed(1)} MB of bars…`;
+  if (labWorker) labWorker.terminate();
+  labWorker = new Worker('lab/worker.js', { type: 'module' });
+  labWorker.onmessage = ({ data }) => {
+    if (data.progress) { status.textContent = data.progress.replace(/^uk: +/, '').slice(0, 120); return; }
+    if (data.error) { status.textContent = `The model stopped: ${data.error}`; $('lab-log').textContent = data.log.join('\n'); $('lab-log').hidden = false; return; }
+    const b = data.report?.backtest, n = data.orders?.orders?.length || 0;
+    status.textContent = `Done in ${(data.ms / 1000).toFixed(1)} s on this device.`;
+    $('lab-verdict').innerHTML = b && b.trades
+      ? `<div class="tile"><span class="k">On this device, ${b.from} – ${b.to}</span><span class="v">${pct(b.annualReturn)}</span><span class="s">a year · Sharpe ${b.sharpe.toFixed(2)} · worst fall ${pct(b.maxDrawdown, 0).slice(1)} · ${b.trades} trades</span></div>`
+      : '<div class="tile"><span class="k">On this device</span><span class="v">–</span><span class="s">too little history in the bars to learn and calibrate</span></div>';
+    table($('lab-orders'), [['Share'], ['Buy at open', 'num'], ['Sell at', 'num'], ['Expected', 'num']],
+      n ? data.orders.orders.map((o) => {
+        const last = o.close, cap = o.limit / last - 1;
+        return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'], signed(o.expected, 2)];
+      }) : [{ gap: 'No orders: none expected to gain after its costs.' }]);
+    $('lab-log').textContent = data.log.filter((l) => /^uk: /.test(l)).join('\n'), $('lab-log').hidden = false;
+  };
+  labWorker.postMessage({ csv, args, env, files }, [csv.buffer]);
+});

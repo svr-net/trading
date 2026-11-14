@@ -169,6 +169,10 @@ jobs:
           cat build.log
           exit "$(cat build.rc 2>/dev/null || echo 1)"
       - name: The model and the daily trades (results only)
+        env:
+          # The repeat runs (21:30 and 05:30 UTC: the same markets' data again, for a late EODData day) refresh
+          # the live orders only; the shadows run once a day, in each market's evening scan.
+          SHADOWS: ${{ (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '0' || '1' }}
         run: |
           set -o pipefail
           mkdir -p report

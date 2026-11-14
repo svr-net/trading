@@ -27,6 +27,7 @@
       <button type="button" data-view="results">Results</button>
       <button type="button" data-view="backtest">Backtest</button>
       <button type="button" data-view="broker">Broker</button>
+      <button type="button" data-view="lab">Lab</button>
       <button type="button" data-view="about">About</button>
     </nav>
   </header>
@@ -84,6 +85,16 @@
     <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
   </section>
 
+  <section class="view" id="view-lab" hidden aria-labelledby="lab-title">
+    <h2 id="lab-title">Lab: the model on this device</h2>
+    <p class="hint">The same model as the evening scan, compiled to WebAssembly and run here, in a background thread, on this market's daily bars from your Interactive Brokers account (through your bridge; the prices stay on this device). Turn the model's switches on or off and run it: its backtest and the orders it would place next. IBKR's bars go back about two years, so the backtest is shorter than the scan's, which learns from up to nine.</p>
+    <div class="lab-switches" id="lab-switches"></div>
+    <div class="broker-actions"><button type="button" id="lab-run">Run the model</button> <span class="muted" id="lab-status"></span></div>
+    <div class="verdict" id="lab-verdict"></div>
+    <div class="table-scroll"><table id="lab-orders"></table></div>
+    <pre class="broker-log" id="lab-log" hidden></pre>
+  </section>
+
   <section class="view" id="view-about" hidden aria-labelledby="about-title">
     <h2 id="about-title">How it works</h2>
     <p class="hint"><b>The model.</b> Every evening, after each market's close, one model per market (the UK, Europe, the US, Asia-Pacific and INDEX, UCITS index ETFs on Xetra) ranks its most traded shares from their daily prices and volumes. It looks for shares that fell on their own rather than with the market (<i>residual reversal</i>), and weights them more when the market is turbulent (<i>Nagel's liquidity premium</i>). It is fitted on the return over the 5 days a position can be held, and refitted every month on the years before only. Its bets shrink when its own results turn volatile (down to a quarter), so a bad run is ridden small rather than whole. A day with no bar for a share is filled with its last close for the model's inputs only: it never buys or sells on one.</p>
@@ -99,6 +110,6 @@
   <div class="legend" id="ohlc-legend"></div>
   <p class="hint">Daily bars from your Interactive Brokers account, through your bridge: shown only here, never published. <b>Bollinger bands</b>: the 20-day mean and 2 standard deviations either side. <b>PSAR</b>: the dots, under the price in a rise, over it in a fall (0.02 a step, at most 0.2). <b>Buy cap</b>: the most this order pays in the opening auction. <b>Exit</b>: its exit level, from a buy at the last close.</p>
 </dialog>
-<script type="module" src="app.js?v=68"></script>
+<script type="module" src="app.js?v=69"></script>
 </body>
 </html>

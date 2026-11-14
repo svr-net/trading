@@ -170,3 +170,8 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #chart-dialog .dialog-head h3 { margin: 0; }
 #chart-dialog-close { font-size: 18px; line-height: 1; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
 #ohlc { width: 100%; display: block; }
+
+/* The Lab: the model's switches. */
+.lab-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; margin: 10px 0; }
+.lab-switches label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; }
+.lab-switches input { margin-top: 3px; }
