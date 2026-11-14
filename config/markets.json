@@ -1,5 +1,5 @@
 {
-  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only; \"uk\": the auction model, apps/ofm_uk (every market), whose orders are sized to each share's liquidity and made only when its out-of-sample record clears the costs: it may be the UK's live strategy), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record. \"paper\": true (a paper account) gives every market an equal share whatever its record, to measure the broker's real fills. \"reserve\" (EUR) is kept out of the markets' shares for the multi-day books the bridge places (HOLD_BOOKS: the UK's hold-up, 10 trades of GBP 1,000). INDEX: US-listed index ETFs (tools/eoddata/index.txt), traded like the share markets. FOREX: currency pairs (tools/eoddata/forex.txt), research only: no budget, so the bridge never places them (and does not trade FOREX). The uk model's research switches (apps/ofm_uk): X_RESID=1 residual reversal (Blitz et al. 2013; Da, Liu and Schaumburg 2014), X_VOLREGIME=1 reversal scaled by the market's volatility (Nagel 2012), X_TARGET=H the fit's target the hold's own H sessions (Garleanu and Pedersen 2013); the shadows 'edge' (all three) and 'resid-target' measure them against 'hold5-base' (the same model and sizing, no switch). Missing bars are rolled forward for the uk model's inputs (--roll 5, never traded on); the shadow 'noroll' (--roll 0) keeps the model without it in view. X_ADAPT=1: three fits (250, 750, 1,500 sessions) combined by their recent skill, the calibration over 250 sessions; X_RISK=1: the day's orders scaled to 1% of the book's own daily volatility (a quarter to the whole); shadows 'adapt', 'risk', 'adapt-risk'. FOREX (research only, never traded) sizes its orders at USD 25,000, IBKR's standard FX lot (IDEALPRO): at 5,000 the USD 2 minimum commission a side (0.08%) ate the model's expected +0.09% an order, so no order was shown. The opening-auction buy's price cap (--cap-sd, the last close plus that many daily volatilities; 0.5 live): shadows cap1, cap2 and moo (8: in effect at the auction's price) measure buying more often against paying more. X_CAPLEARN=1: each order's own cap, learnt (the share's gaps, what each size of gap has cost the market's trades); shadow caplearn. X_BOLL=1: Bollinger bands (20 sessions, 2 standard deviations) as inputs: the band z-score and closing under the lower band; shadow boll. X_PSAR=1: each position also sold at the first close under its Parabolic SAR (from the day it was bought; 0.02 a step, at most 0.2); shadow psar. X_ROBUSTVOL=1: the daily volatility without one-off jumps; X_TOPFRAC=f: only the forecast's top f of the day's list may be ordered; shadows robustvol, topfifth, robust-top.",
+  "about": "Each market's strategies for the daily scan (tools/scan/strategies.py). 'live' makes the orders the bridge places; each of 'shadows' runs on the same data every day, its orders kept in the private store and never placed, its results tracked on the page beside the live one's. A strategy: name (lowercase, digits, -), env (the model's research switches, X_*), optional ref (a git commit or tag: the model built at that version), optional only (\"aim\": the UK's AIM shares only, which pay no stamp duty), optional app (\"single\": the single-share model, apps/ofm_single, every share learnt and backtested on its own bars only; \"hold\": the multi-day single-share model, apps/ofm_hold; shadows only; \"uk\": the auction model, apps/ofm_uk (every market), whose orders are sized to each share's liquidity and made only when its out-of-sample record clears the costs: it may be the UK's live strategy), optional args (added after the model's arguments). Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each number of trades k, T/k each, and trades the k whose year before was best, chosen day by day (tools/scan/strategies.py). The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D invested a day across the markets, each market's share following its record. \"paper\": true (a paper account) gives every market an equal share whatever its record, to measure the broker's real fills. \"reserve\" (EUR) is kept out of the markets' shares for the multi-day books the bridge places (HOLD_BOOKS: the UK's hold-up, 10 trades of GBP 1,000). INDEX: US-listed index ETFs (tools/eoddata/index.txt), traded like the share markets. FOREX: currency pairs (tools/eoddata/forex.txt), research only: no budget, so the bridge never places them (and does not trade FOREX). The uk model's research switches (apps/ofm_uk): X_RESID=1 residual reversal (Blitz et al. 2013; Da, Liu and Schaumburg 2014), X_VOLREGIME=1 reversal scaled by the market's volatility (Nagel 2012), X_TARGET=H the fit's target the hold's own H sessions (Garleanu and Pedersen 2013); the shadows 'edge' (all three) and 'resid-target' measure them against 'hold5-base' (the same model and sizing, no switch). Missing bars are rolled forward for the uk model's inputs (--roll 5, never traded on); the shadow 'noroll' (--roll 0) keeps the model without it in view. X_ADAPT=1: three fits (250, 750, 1,500 sessions) combined by their recent skill, the calibration over 250 sessions; X_RISK=1: the day's orders scaled to 1% of the book's own daily volatility (a quarter to the whole); shadows 'adapt', 'risk', 'adapt-risk'. FOREX (research only, never traded) sizes its orders at USD 25,000, IBKR's standard FX lot (IDEALPRO): at 5,000 the USD 2 minimum commission a side (0.08%) ate the model's expected +0.09% an order, so no order was shown. The opening-auction buy's price cap (--cap-sd, the last close plus that many daily volatilities; 0.5 live): shadows cap1, cap2 and moo (8: in effect at the auction's price) measure buying more often against paying more. X_CAPLEARN=1: each order's own cap, learnt (the share's gaps, what each size of gap has cost the market's trades); shadow caplearn. X_BOLL=1: Bollinger bands (20 sessions, 2 standard deviations) as inputs: the band z-score and closing under the lower band; shadow boll. X_PSAR=1: each position also sold at the first close under its Parabolic SAR (from the day it was bought; 0.02 a step, at most 0.2); shadow psar. X_ROBUSTVOL=1: the daily volatility without one-off jumps; X_TOPFRAC=f: only the forecast's top f of the day's list may be ordered; shadows robustvol, topfifth, robust-top. 14 Nov: live adds X_ROBUSTVOL (UK, US), X_TOPFRAC=0.2 (EU, INDEX), both (APAC); shadow previous keeps the live model before it.",
   "markets": {
     "UK": {
       "live": {
@@ -10,7 +10,8 @@
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
           "X_RISK": "1",
-          "X_CAPLEARN": "1"
+          "X_CAPLEARN": "1",
+          "X_ROBUSTVOL": "1"
         },
         "args": [
           "--hold",
@@ -102,7 +103,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_CAPLEARN": "1"
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1"
           },
           "args": [
             "--hold",
@@ -116,7 +118,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_RISK": "1"
+            "X_RISK": "1",
+            "X_ROBUSTVOL": "1"
           },
           "args": [
             "--hold",
@@ -132,6 +135,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
             "X_BOLL": "1"
           },
           "args": [
@@ -148,6 +152,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
             "X_PSAR": "1"
           },
           "args": [
@@ -203,6 +208,21 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "previous",
+          "app": "uk",
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1"
+          },
+          "args": [
+            "--hold",
+            "5"
+          ]
         }
       ],
       "budget": {
@@ -223,7 +243,8 @@
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
           "X_RISK": "1",
-          "X_CAPLEARN": "1"
+          "X_CAPLEARN": "1",
+          "X_TOPFRAC": "0.2"
         },
         "args": [
           "--hold",
@@ -289,7 +310,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_CAPLEARN": "1"
+            "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2"
           },
           "args": [
             "--hold",
@@ -303,7 +325,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_RISK": "1"
+            "X_RISK": "1",
+            "X_TOPFRAC": "0.2"
           },
           "args": [
             "--hold",
@@ -319,6 +342,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2",
             "X_BOLL": "1"
           },
           "args": [
@@ -335,6 +359,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2",
             "X_PSAR": "1"
           },
           "args": [
@@ -385,6 +410,21 @@
             "X_CAPLEARN": "1",
             "X_ROBUSTVOL": "1",
             "X_TOPFRAC": "0.2"
+          },
+          "args": [
+            "--hold",
+            "5"
+          ]
+        },
+        {
+          "name": "previous",
+          "app": "uk",
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
@@ -410,7 +450,8 @@
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
           "X_RISK": "1",
-          "X_CAPLEARN": "1"
+          "X_CAPLEARN": "1",
+          "X_ROBUSTVOL": "1"
         },
         "args": [
           "--hold",
@@ -444,7 +485,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_CAPLEARN": "1"
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1"
           },
           "args": [
             "--hold",
@@ -458,7 +500,8 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_RISK": "1"
+            "X_RISK": "1",
+            "X_ROBUSTVOL": "1"
           },
           "args": [
             "--hold",
@@ -474,6 +517,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
             "X_BOLL": "1"
           },
           "args": [
@@ -490,6 +534,7 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
             "X_PSAR": "1"
           },
           "args": [
@@ -540,6 +585,21 @@
             "X_CAPLEARN": "1",
             "X_ROBUSTVOL": "1",
             "X_TOPFRAC": "0.2"
+          },
+          "args": [
+            "--hold",
+            "5"
+          ]
+        },
+        {
+          "name": "previous",
+          "app": "uk",
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
@@ -565,7 +625,9 @@
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
           "X_RISK": "1",
-          "X_CAPLEARN": "1"
+          "X_CAPLEARN": "1",
+          "X_ROBUSTVOL": "1",
+          "X_TOPFRAC": "0.2"
         },
         "args": [
           "--hold",
@@ -599,7 +661,9 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_CAPLEARN": "1"
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2"
           },
           "args": [
             "--hold",
@@ -613,7 +677,9 @@
             "X_RESID": "1",
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
-            "X_RISK": "1"
+            "X_RISK": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2"
           },
           "args": [
             "--hold",
@@ -629,6 +695,8 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2",
             "X_BOLL": "1"
           },
           "args": [
@@ -645,6 +713,8 @@
             "X_TARGET": "5",
             "X_RISK": "1",
             "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2",
             "X_PSAR": "1"
           },
           "args": [
@@ -700,6 +770,21 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "previous",
+          "app": "uk",
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1"
+          },
+          "args": [
+            "--hold",
+            "5"
+          ]
         }
       ],
       "budget": {
@@ -719,7 +804,8 @@
           "X_RESID": "1",
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
-          "X_RISK": "1"
+          "X_RISK": "1",
+          "X_TOPFRAC": "0.2"
         },
         "args": [
           "--hold",
@@ -742,7 +828,8 @@
           "env": {
             "X_RESID": "1",
             "X_VOLREGIME": "1",
-            "X_TARGET": "5"
+            "X_TARGET": "5",
+            "X_TOPFRAC": "0.2"
           },
           "args": [
             "--hold",
@@ -772,6 +859,7 @@
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
             "X_RISK": "1",
+            "X_TOPFRAC": "0.2",
             "X_BOLL": "1"
           },
           "args": [
@@ -787,6 +875,7 @@
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
             "X_RISK": "1",
+            "X_TOPFRAC": "0.2",
             "X_PSAR": "1"
           },
           "args": [
@@ -834,6 +923,20 @@
             "X_RISK": "1",
             "X_ROBUSTVOL": "1",
             "X_TOPFRAC": "0.2"
+          },
+          "args": [
+            "--hold",
+            "5"
+          ]
+        },
+        {
+          "name": "previous",
+          "app": "uk",
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1"
           },
           "args": [
             "--hold",

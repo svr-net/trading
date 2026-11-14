@@ -454,6 +454,7 @@ const SHADOW_NOTE = {
   robustvol: "with a volatility that leaves out one-off jumps",
   topfifth: "only the forecast's top fifth",
   'robust-top': "the forecast's top fifth, with the robust volatility",
+  previous: 'the live model before 14 Nov (without the robust volatility / top fifth)',
 };
 function sideBySide(m) {
   const el = $('sidebyside');
@@ -718,6 +719,8 @@ const LAB_SWITCHES = [
   ['X_TARGET', '5', "Fitted on the 5-day hold's return"],
   ['X_RISK', '1', "The book's volatility target"],
   ['X_CAPLEARN', '1', "Each order's own learnt buy cap"],
+  ['X_ROBUSTVOL', '1', 'A volatility without one-off jumps'],
+  ['X_TOPFRAC', '0.2', "Only the forecast's top fifth"],
   ['X_BOLL', '1', 'Bollinger bands as inputs'],
   ['X_PSAR', '1', 'A PSAR exit at the close'],
   ['X_ADAPT', '1', 'Adaptive learning (three windows)'],
