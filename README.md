@@ -27,8 +27,9 @@ has the papers and the results), and rolls missing bars forward for its inputs (
 Each market's `hold5-base` (no switch) and `noroll` (`--roll 0`) shadows keep the alternatives in view.
 
 **The account's split over the markets** (`tools/scan/strategies.py`): the daily limit goes where it does the
-most for the whole account. Each market's record is its last year of daily results after its orders' broker
-costs (the model and backtests run before costs; the money is decided on what they would have kept); the
+most for the whole account. Each market's record is its last year of daily results before costs, as the
+model learns and is backtested (no cost enters the learning, the backtests or the split; the costs come off
+the next day's final orders only, and an order expected to lose after them is not made); the
 split is the mean-variance one (each market's mean shrunk by its t statistic, the markets' covariance shrunk
 halfway to its diagonal, so markets that move together share), no money for a market with no edge left, at
 most `market_cap` (50%) a market, and on a paper account at least `paper_floor` (5%) each so every market's
