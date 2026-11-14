@@ -454,6 +454,7 @@ const SHADOW_NOTE = {
   robustvol: "with a volatility that leaves out one-off jumps",
   topfifth: "only the forecast's top fifth",
   'robust-top': "the forecast's top fifth, with the robust volatility",
+  previous: 'the live model before 14 Nov (without the robust volatility / top fifth)',
 };
 function sideBySide(m) {
   const el = $('sidebyside');

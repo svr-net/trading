@@ -221,3 +221,22 @@ Two switches, as shadows in every market:
 The shadows are `robustvol`, `topfifth` and `robust-top` (both). Each order on the page now carries its split,
 `fromForecast` and `fromAverage`, and the pop-up says which drove it. `uk_leak.sh`: no order changed by later
 data, and every top-fifth order in the forecast's top fifth.
+
+### Results and the live models (14 Nov 2026; the store's data, before costs)
+
+| market | live before | `robustvol` | `topfifth` | `robust-top` | `boll` | `psar` |
+|---|---|---|---|---|---|---|
+| UK | Sharpe 3.20, worst fall 20.1% | **3.54, 15.9%** | 2.20, 19.9% | 2.63, 16.3% | 3.58, 16.6% | 2.96, 21.5% |
+| EU | 1.49, 31.5% | 1.71, 35.5% | **2.05, 21.9%** | 1.59, 27.5% | 1.79, 26.7% | 1.50, 26.6% |
+| US | 0.30, 52.1% | **0.34, 41.7%** | −0.10, 43.0% | 0.26, 38.3% | 0.28, 48.5% | −0.26, 69.4% |
+| APAC | 1.16, 25.6% | 0.72, 32.0% | 1.08, 24.0% | **1.29, 26.9%** | 1.21, 22.4% | 0.61, 35.3% |
+| INDEX | 2.37, 15.4% | 2.29, 16.2% | **2.74, 9.3%** | 2.58, 9.9% | 2.38, 15.7% | 2.19, 14.6% |
+
+In the UK, volatile shares carry the edge, and the fault was stale volatility (TRB). In Europe and INDEX the
+forecast is the edge. Now live:
+- the robust volatility in the UK and the US;
+- the forecast's top fifth in Europe and INDEX;
+- both in Asia-Pacific.
+
+PSAR hurt everywhere, as Kaminski and Lo predict for a reversal book. Every shadow stays on the page. `previous`
+keeps the live model before this change; `boll`, `psar`, `norisk` and `nocaplearn` now sit on the new live model.
