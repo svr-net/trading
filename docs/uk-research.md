@@ -294,7 +294,16 @@ on most days, and on those the return comes from the average trade's part. The t
 by its place on the expected return's list and on the forecast's added (a Borda count). Days with weight are as
 before. The shadows `rankpick` (`rank`), `nofallback` and `edgeonly` stay on the page beside it.
 
-### Every shadow merged into live, no shadows (15 Nov)
+### The previous model back live, no shadows (15 Nov)
+
+Every switch on together did worse than the previous model in every market (5 slots, before costs, a year's
+return, the Sharpe): UK +34%, 2.26 against +103%, 4.32; EU +33%, 1.76 against +41%, 2.06; US −3%, −0.06 against
++10%, 0.58; APAC +11%, 0.66 (a 50% drawdown) against +23%, 1.18; INDEX +25%, 1.99 against +41%, 2.86. The merged
+pick did worse too (UK +76%, 3.88). Each market's live model is now its live set before 14 Nov again (no
+`X_NOEDGE`, `X_BOLL`, `X_PSAR`; `X_TOPFRAC` and `X_ROBUSTVOL` where they were), with the costs still applied only
+at the end, and no shadows. The switches stay in the model, for the page's Lab and the look-ahead check.
+
+### Every shadow merged into live, no shadows (15 Nov, replaced the same day)
 
 Each market's live model now has every switch its UK-model shadows tried, on together, and no shadows run:
 - UK, EU, US, APAC and INDEX: `X_RESID`, `X_VOLREGIME`, `X_TARGET=5`, `X_RISK`, `X_CAPLEARN`, `X_ROBUSTVOL`,
