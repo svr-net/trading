@@ -221,9 +221,56 @@ window.addEventListener('resize', () => { if (shown) drawChart(shown); if (chart
 // published here: the data licence), with Bollinger bands (20 days, 2 standard deviations), the Parabolic SAR
 // (Wilder: 0.02 a step, at most 0.2), the volume, and the order's buy cap and exit level.
 let chartShown = null;
+// The model's reasons in words: each input that added most to the share's score at the last close, with its
+// own value (apps/ofm_uk whyOf: a signal's value is oriented so that higher is bought).
+const REASON = {
+  'loser 1d': (v) => `Fell ${pct(v, 1).slice(1)} on the last day`,
+  'loser 5d': (v) => `Fell ${pct(v, 1).slice(1)} over 5 days`,
+  'loser 20d': (v) => `Fell ${pct(v, 1).slice(1)} over 20 days`,
+  'residual loser 1d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market on the last day`,
+  'residual loser 5d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market over 5 days`,
+  'residual loser 20d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market over 20 days`,
+  'day fell open-close': (v) => `Fell ${pct(v, 1).slice(1)} from its open to its close`,
+  'gapped down': (v) => `Opened ${pct(v, 1).slice(1)} under the close before`,
+  'close near low': () => "Closed near the day's low",
+  'below 20d mean': (v) => `${pct(v, 1).slice(1)} under its 20-day average`,
+  'Bollinger z (below the mean)': (v) => `${v.toFixed(1)} standard deviations under its 20-day average (Bollinger)`,
+  'under the lower Bollinger band': () => 'Closed under its lower Bollinger band',
+  'loser 1d x market volatility': () => 'A fall in a turbulent market (reversals pay more then)',
+  'loser 5d x market volatility': () => 'A 5-day fall in a turbulent market (reversals pay more then)',
+  'loser 5d, low vol': () => 'A 5-day fall that is large for how much it usually moves',
+  'low volatility': () => 'A calm share (low volatility)',
+  'low max day': () => 'No extreme up day lately',
+  'momentum 12-1m': (v) => `Up ${pct(v, 0).slice(1)} over the year before last month`,
+  'near 52w high': () => 'Near its 52-week high',
+  'volume surge': () => 'Volume well above usual',
+  'overnight rev 20d': () => 'Its overnight moves have reversed lately',
+  'overnight rev 60d': () => 'Its overnight moves have reversed over 3 months',
+  'overnight rev 250d': () => 'Its overnight moves have reversed over the year',
+  'intraday mom 20d': () => 'Strong intraday moves lately',
+  'intraday mom 60d': () => 'Strong intraday moves over 3 months',
+  'intraday mom 250d': () => 'Strong intraday moves over the year',
+  'intraday less overnight 60d': () => 'Gains made in the day rather than overnight (3 months)',
+  'intraday less overnight 250d': () => 'Gains made in the day rather than overnight (the year)',
+  volatility: (v) => `Its volatility (${pct(v, 1).slice(1)} a day)`,
+  liquidity: () => 'Its trading volume',
+  'stamp-free': () => 'No stamp duty (AIM)',
+};
+function chartWhy(o) {
+  const facts = [
+    ['Expected', signed(o.expected, 2)[0]], ['Chance to buy', o.fill != null ? `${Math.round(100 * o.fill)}%` : '–'],
+    ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Exit', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : '–'],
+    ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank today', o.rank ? `${o.rank} of ${o.of}` : '–'],
+  ];
+  const why = (o.why || []).map((w) => (REASON[w.k] ? REASON[w.k](w.v) : w.k));
+  $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
+    + (why.length ? `<strong>Why it is on the list</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+}
 function openChart(o, source) {
   const dlg = $('chart-dialog');
   $('chart-dialog-title').textContent = o.ticker;
+  $('chart-dialog-profile').textContent = '';
+  chartWhy(o);
   $('chart-dialog-note').textContent = 'Loading its daily bars from your bridge…';
   $('ohlc-legend').innerHTML = '';
   chartShown = null;
@@ -235,6 +282,8 @@ function openChart(o, source) {
     .then((j) => {
       if (!j.bars?.length) throw new Error(j.error || 'no bars');
       $('chart-dialog-note').textContent = `${j.bars.length} daily bars to ${j.bars[j.bars.length - 1].d}${source === 'UK' ? ' (pence)' : ''}`;
+      const pf = j.profile || {};
+      $('chart-dialog-profile').textContent = [pf.exchange, pf.sector, pf.industry].filter(Boolean).join(' · ');
       chartShown = [j.bars, o];
       drawOHLC(j.bars, o);
     })
