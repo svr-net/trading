@@ -34,4 +34,16 @@ assert min(wp.values()) >= 0.05 - 1e-9 and abs(sum(wp.values()) - 1) < 1e-9, wp
 assert s.allocate({'UK': {d: -0.001 for d in days}}) == {'UK': 0.0}, 'no edge anywhere: nothing'
 one = s.allocate({'INDEX': rec['US'], 'UK': rec['APAC'], 'EU': rec['APAC']}, cap=0.5, floor=0.05)
 assert abs(one['INDEX'] - 0.5) < 1e-9 and abs(one['UK'] - 0.05) < 1e-9, f'the floors came out of the capped market, not the unused limit: {one}'
+# The outlook (forward_of): the next session's orders, their chance to fill, what the backtest delivered.
+same = {'UK': rec['US'], 'EU': {d: v for d, v in rec['US'].items()}}
+w0 = s.allocate(same, cap=1.0)
+w1 = s.allocate(same, cap=1.0, forward={'UK': 0.004, 'EU': 0.0})
+assert abs(w0['UK'] - w0['EU']) < 1e-9 and w1['UK'] > w1['EU'], (w0, w1)
+import json, tempfile
+d = tempfile.mkdtemp()
+json.dump({'slots': 2, 'orders': [{'expected': 0.006, 'holdDays': 3}, {'expected': 0.002, 'holdDays': 2}]}, open(f'{d}/o.json', 'w'))
+open(f'{d}/t.csv', 'w').write('date,ticker,expected,filled,ret\n2026-01-02,A,0.01,1,0.004\n2026-01-03,B,0.01,1,0.001\n2026-01-03,C,0.02,0,0\n2025-01-01,D,0.01,1,0.05\n')
+out, exp, dl = s.forward_of(f'{d}/o.json', f'{d}/t.csv', '2026-01-01')
+assert abs(exp - (0.002 + 0.001) / 2) < 1e-12 and abs(dl - 0.25) < 1e-12 and abs(out - exp * 0.25) < 1e-12, (out, exp, dl)
+print('outlook: the next orders and their chance to fill shift the split, discounted by what the backtest delivered; OK')
 print('allocate: the split maximises the risk-adjusted return, no money without an edge, capped, floored on paper; OK')
