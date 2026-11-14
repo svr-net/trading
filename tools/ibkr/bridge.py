@@ -1150,6 +1150,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def reply_text(self, code, text, kind='text/csv'):
+        data = text.encode() if isinstance(text, str) else text
+        self.send_response(code)
+        self.cors()
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_OPTIONS(self):  # the browser's preflight (with Chrome's private-network permission)
         self.send_response(204)
         self.cors()
@@ -1202,6 +1211,16 @@ class Handler(BaseHTTPRequestHandler):
             if not hit:
                 return self.reply(202, {'error': TRADES_NOTE.get(m) or 'being read from IBKR: ask again in a minute', 'shares': []})
             return self.reply(200, {**hit[1], 'age': int(time.monotonic() - hit[0]), 'note': TRADES_NOTE.get(m, '')})
+        if u.path == '/bars.csv':  # the market's daily bars from IBKR (the kept file), for the page's Lab (keyed: prices)
+            m = self.market(parse_qs(u.query).get('market', [''])[0])
+            if not m:
+                return
+            chart_bars(m, '', 1)  # the kept file, from the store when there is none here yet
+            path = os.path.join(HISTORY, f'ibkr-{m}.csv')
+            if not (os.path.exists(path) and os.path.getsize(path) > 100):
+                return self.reply(404, {'error': f'no IBKR bars kept for {m} yet: they come with the next bars fetch'})
+            with open(path, 'rb') as f:
+                return self.reply_text(200, f.read())
         if u.path == '/chart':  # a share's daily bars from IBKR, for the page's chart of an order (keyed: prices)
             q = parse_qs(u.query)
             m = self.market(q.get('market', [''])[0])

@@ -129,6 +129,18 @@ struct Fill {
 };
 }  // namespace
 
+// The work spread over every CPU thread; in the browser (WebAssembly without threads: the page's Lab) on one.
+template <class F>
+static void runParallel(F& work) {
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+  work();
+#else
+  std::vector<std::thread> th;
+  for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k) th.emplace_back(work);
+  for (auto& x : th) x.join();
+#endif
+}
+
 int main(int argc, char** argv) {
   Opt o;
   bool minPriceSet = false;
@@ -299,9 +311,7 @@ int main(int argc, char** argv) {
         }
       }
     };
-    std::vector<std::thread> th;
-    for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k) th.emplace_back(work);
-    for (auto& x : th) x.join();
+    runParallel(work);
   }
   std::vector<std::vector<std::size_t>> uni(T);
   for (std::size_t t = 0; t < T; ++t) {
@@ -433,9 +443,7 @@ int main(int argc, char** argv) {
           }
       }
     };
-    std::vector<std::thread> th;
-    for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k) th.emplace_back(work);
-    for (auto& x : th) x.join();
+    runParallel(work);
   }
   // Each day's sums for the ridge (prefix sums: a window's in one subtraction).
   const std::size_t G = D * D + D + 1;

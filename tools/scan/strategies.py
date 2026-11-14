@@ -510,6 +510,12 @@ def main():
             cmd += ['--orders', path]
         env = {k: v for k, v in os.environ.items() if not k.startswith('X_')}
         env.update(s.get('env', {}), X_VERIFY='1')
+        if not live and os.environ.get('SHADOWS', '1') == '0':
+            # The repeat runs (SHADOWS=0: 21:30 and 05:30 UTC, the same day's data again) refresh the live orders
+            # only; the shadows' results stay those of the evening's run, still listed for the page.
+            index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'),
+                                        'report': f'{stem}.json', 'kept': True})
+            continue
         pending_shadows.append((s, live, stem, cmd, env))
     if pending_variants or pending_shadows:  # the runs the memory allows at once (a large market's run holds about 1 GB per million share-days)
         csv = model[model.index('--csv') + 1] if '--csv' in model else None
