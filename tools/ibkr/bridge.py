@@ -506,6 +506,42 @@ def in_background(market, action, job):
     threading.Thread(target=run, daemon=True).start()
 
 
+CHART_CACHE = {}  # market -> (the kept file's mtime, {ticker: [bar, ...]})
+
+
+def chart_bars(market, ticker, days=120):
+    """A share's last `days` daily bars from IBKR (the file the bars fetch keeps here: ibkr-<MARKET>.csv; the
+    store's when there is none yet), for the page's chart of an order: [{d, o, h, l, c, v}], oldest first.
+    The ticker as the orders give it (EXCHANGE:CODE in Europe) or its code alone. Prices go only to the page
+    that holds the bridge's key, never to the published page (the data licence)."""
+    import csv
+    path = os.path.join(HISTORY, f'ibkr-{market}.csv')
+    if not (os.path.exists(path) and os.path.getsize(path) > 100):
+        kept = store_get(f'ibkr/{market}/daily.csv')
+        if not kept or len(kept) < 100:
+            return []
+        with open(path, 'wb') as f:
+            f.write(kept)
+    mtime = os.path.getmtime(path)
+    hit = CHART_CACHE.get(market)
+    if not hit or hit[0] != mtime:
+        by = {}
+        with open(path, newline='') as f:
+            for r in csv.reader(f):
+                if len(r) < 7 or r[0] == 'date':
+                    continue
+                try:
+                    by.setdefault(r[1], []).append({'d': r[0][:10], 'o': float(r[2]), 'h': float(r[3]), 'l': float(r[4]), 'c': float(r[5]), 'v': float(r[6] or 0)})
+                except ValueError:
+                    continue
+        for bars in by.values():
+            bars.sort(key=lambda b: b['d'])
+        hit = CHART_CACHE[market] = (mtime, by)
+    by = hit[1]
+    bars = by.get(ticker) or by.get(ticker.split(':')[-1]) or next((v for k, v in by.items() if k.split(':')[-1] == ticker.split(':')[-1]), [])
+    return bars[-max(1, min(int(days), 500)):]
+
+
 def fetch_bars(market, daily=False):
     """IBKR's daily bars for the pool (submit.py --bars, about 75 minutes for the UK's), merged into the
     file kept here and written to the private store as ibkr/<MARKET>/daily.csv; returns (ok,
@@ -1166,6 +1202,20 @@ class Handler(BaseHTTPRequestHandler):
             if not hit:
                 return self.reply(202, {'error': TRADES_NOTE.get(m) or 'being read from IBKR: ask again in a minute', 'shares': []})
             return self.reply(200, {**hit[1], 'age': int(time.monotonic() - hit[0]), 'note': TRADES_NOTE.get(m, '')})
+        if u.path == '/chart':  # a share's daily bars from IBKR, for the page's chart of an order (keyed: prices)
+            q = parse_qs(u.query)
+            m = self.market(q.get('market', [''])[0])
+            if not m:
+                return
+            t = (q.get('ticker', [''])[0] or '').strip()
+            try:
+                days = int(q.get('days', ['120'])[0] or 120)
+            except ValueError:
+                days = 120
+            bars = chart_bars(m, t, days) if t else []
+            if not bars:
+                return self.reply(404, {'error': f'no IBKR bars kept for {t or "?"} ({m}): they come with the next bars fetch'})
+            return self.reply(200, {'market': m, 'ticker': t, 'bars': bars})
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
             if not m:
