@@ -80,3 +80,14 @@ At the owner's request, every market's live strategy now runs with all three swi
 store's data this lowered the whole-period backtests in Europe, the US and Asia-Pacific (see the table above);
 they beat the model without the switches in 2026. Each market's `hold5-base` shadow keeps that model in view;
 going back is the live strategy's `env` set to `{}` in `config/markets.json`.
+
+## Missing bars rolled forward (14 Nov 2026)
+
+A session with no bar for a share used to break its inputs, and with them the requirement of 18 bars in the last
+20 sessions. INDEX's Frankfurt-floor ETFs lost 27,141 share-days that way. Now `apps/ofm_uk --roll 5` (the
+default) rolls the share's last close forward over up to 5 missing sessions in a row: open, high, low and close
+all equal to it, and no volume. This feeds only the inputs: signals, volatility, the history and gap test, and
+the traded value. The trades, the fit's targets and the backtest still use the real bars only, and a share is
+listed only on a session with a real bar of its own. `tools/check/uk_leak.sh`, with one bar in seven missing:
+2,360 orders with the roll against 145 without, none on a rolled bar, none changed by later data. The shadow
+`noroll` (`--roll 0`) keeps the model without it in view.
