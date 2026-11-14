@@ -717,7 +717,7 @@
      "X_ROBUSTVOL": "1",
      "X_TOPFRAC": "0.2",
      "X_EXCESS": "1",
-     "X_NOEDGE": "rank"
+     "X_NOEDGE": "merge"
     },
     "ref": null
    },
@@ -910,6 +910,22 @@
      "X_ROBUSTVOL": "1",
      "X_TOPFRAC": "0.2",
      "X_EXCESS": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "rankpick",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2",
+     "X_EXCESS": "1",
+     "X_NOEDGE": "rank"
     },
     "ref": null
    }
