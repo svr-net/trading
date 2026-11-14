@@ -476,7 +476,9 @@
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
      "X_RISK": "1",
-     "X_CAPLEARN": "1"
+     "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2"
     },
     "ref": null
    },
@@ -507,7 +509,9 @@
      "X_RESID": "1",
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
-     "X_CAPLEARN": "1"
+     "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2"
     },
     "ref": null
    },
@@ -518,7 +522,9 @@
      "X_RESID": "1",
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
-     "X_RISK": "1"
+     "X_RISK": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2"
     },
     "ref": null
    },
@@ -531,6 +537,8 @@
      "X_TARGET": "5",
      "X_RISK": "1",
      "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2",
      "X_BOLL": "1"
     },
     "ref": null
@@ -544,6 +552,8 @@
      "X_TARGET": "5",
      "X_RISK": "1",
      "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1",
+     "X_TOPFRAC": "0.2",
      "X_PSAR": "1"
     },
     "ref": null
@@ -585,6 +595,18 @@
      "X_CAPLEARN": "1",
      "X_ROBUSTVOL": "1",
      "X_TOPFRAC": "0.2"
+    },
+    "ref": null
+   },
+   {
+    "name": "previous",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1"
     },
     "ref": null
    }
