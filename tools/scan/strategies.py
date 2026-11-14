@@ -170,6 +170,7 @@ def days_of(path):
 # The split's memory: the period relevant to the multi-day hold only (SPLIT_WINDOW sessions: four 5-day holds),
 # not the whole year; within it the most recent days count most, exponentially (a day HALF_LIFE sessions old
 # counts half as much as the last one). The model itself still learns from its years of history.
+MIN_ORDER = 500.0  # the strategy engine's smallest order (apps/ofm_strategy: minOrder), in the market's currency
 SPLIT_WINDOW = 20
 HALF_LIFE = 10
 
@@ -494,6 +495,7 @@ def main():
                 # little money, so its record fell and its share with it: 7 Nov, the UK).
                 total = daily * rates[mine]
                 budget = (total, slots)
+            final_args = args_m + list(s.get('args', []))  # the final run's, at the market's own amount (below)
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
@@ -623,7 +625,27 @@ def main():
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
                          + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
                          + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
+        # A book no larger than the money allows: each order at least the engine's smallest (MIN_ORDER), else fewer and
+        # larger positions (a market on the paper floor, 5% of the account, cannot hold 10 orders of a few hundred).
+        if total > 0 and total / nxt < MIN_ORDER:
+            fit = int(total // MIN_ORDER)
+            lines.append(f"budget:   {nxt} trades of {total / nxt:,.0f} would each be under the smallest order ({MIN_ORDER:,.0f}): "
+                         + (f"{fit} of {total / fit:,.0f} instead" if fit else 'no orders'))
+            nxt = max(1, fit)
+            if not fit:
+                total = 0.0
         lines.append(f"budget:   next session: {nxt} trades of {total / nxt:,.0f}" + (' (no orders: no positive record)' if total <= 0 else '') + (' (paper account)' if paper_of(args.config) else ''))
+        # The final orders at the amount the bridge will place (the market's share over its trades): the budget's runs
+        # traded the whole limit, so their costs, their minimum order and the drop of an order its costs make a loss
+        # were for larger orders. The same strategy and book again (the engine: a second or so), costs at the end.
+        if total > 0:
+            env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
+            env.update(s.get('env', {}), X_NPICK=str(nxt))
+            cmd = [*engine(s), *with_capital(final_args, total / nxt, 'final'), '--json', f'data/budget/report-{nxt}.json', '--orders', f'data/budget/orders-{nxt}.json']
+            with open(f'data/budget/report-{nxt}.txt', 'w') as log:
+                if subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT).returncode:
+                    sys.stdout.write(open(f'data/budget/report-{nxt}.txt').read())
+                    sys.exit(f"strategies: the live strategy {s['name']}'s final run at {total / nxt:,.0f} a trade failed")
         shutil.copy(f'data/budget/report-{nxt}.json', 'report/ofm.json')
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
