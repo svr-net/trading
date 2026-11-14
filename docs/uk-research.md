@@ -294,6 +294,19 @@ on most days, and on those the return comes from the average trade's part. The t
 by its place on the expected return's list and on the forecast's added (a Borda count). Days with weight are as
 before. The shadows `rankpick` (`rank`), `nofallback` and `edgeonly` stay on the page beside it.
 
+### Every shadow merged into live, no shadows (15 Nov)
+
+Each market's live model now has every switch its UK-model shadows tried, on together, and no shadows run:
+- UK, EU, US, APAC and INDEX: `X_RESID`, `X_VOLREGIME`, `X_TARGET=5`, `X_RISK`, `X_CAPLEARN`, `X_ROBUSTVOL`,
+  `X_EXCESS`, `X_BOLL`, `X_PSAR`, `X_TOPFRAC=0.2` and `X_NOEDGE=merge`.
+- FOREX: its shadows tried nothing beyond its live switches; `X_NOEDGE=merge` as before.
+
+The research and single-share models' switches (`X_REGIME`, `X_TREND`, `X_NPICK`, `X_SIZE`, `X_BALANCE`,
+`X_SHAREDEPTH`, `X_FILLN`, `X_FILLNET`) belong to other models and are not the live model's. The switches were
+tested one at a time, not together; the scan's backtest is the record of the combination. The look-ahead check
+covers every switch on together. The shadows' published results are removed from the page (they stay in the
+history and in the private store).
+
 ### Costs only at the end (14 Nov)
 
 No cost enters the modelling:
