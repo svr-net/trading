@@ -182,3 +182,13 @@ earnings shock, a bid), and the record of such gaps is too thin to trust. The le
 volatilities and at most 3% over the close (`--cap-max 0.03`). Each gap band's estimate is shrunk towards 0 by
 its number of trades (n / (n + 500)), so a band with few trades cannot pull the cap up. `uk_leak.sh` checks the
 ceiling.
+
+## Bollinger bands (14 Nov 2026)
+
+`X_BOLL=1` adds two inputs from Bollinger bands (20 sessions, 2 standard deviations):
+- **The band z-score:** how far the close is under its 20-session mean, in the share's own 20-session standard
+  deviations. A fall in a calm share counts as more stretched than the same fall in a volatile one.
+- **The lower band:** whether the share closed under it.
+
+The model already had the distance under the 20-session mean (`below 20d mean`), but not scaled by the share's own
+spread. Shadow `boll` runs it on top of each market's live model. `uk_leak.sh`: no order changed by later data.

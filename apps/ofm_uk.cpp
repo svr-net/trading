@@ -366,6 +366,26 @@ int main(int argc, char** argv) {
     sig.push_back({"residual loser 5d", [resid](std::size_t t, std::size_t i) { return resid(t, i, 5); }});
     sig.push_back({"residual loser 20d", [resid](std::size_t t, std::size_t i) { return resid(t, i, 20); }});
   }
+  // X_BOLL=1: Bollinger bands (20 sessions, 2 standard deviations): how far the close is under its 20-session
+  // mean in the share's own 20-session standard deviations (the band z-score: a fall in a calm share is more
+  // stretched than the same fall in a wild one), and whether it closed under the lower band.
+  if (std::getenv("X_BOLL") && std::string(std::getenv("X_BOLL")) == "1") {
+    const auto band = [&pin, N](std::size_t t, std::size_t i, double& z) {
+      if (t < 19) return false;
+      double s = 0, s2 = 0;
+      for (std::size_t k = 0; k < 20; ++k) {
+        if (!pin.ok(t - k, i)) return false;
+        const double c = pin.C[(t - k) * N + i];
+        s += c, s2 += c * c;
+      }
+      const double m = s / 20, sd = std::sqrt(std::max(0.0, s2 / 20 - m * m));
+      if (!(sd > 0)) return false;
+      z = (pin.C[t * N + i] - m) / sd;
+      return true;
+    };
+    sig.push_back({"Bollinger z (below the mean)", [band](std::size_t t, std::size_t i) { double z = 0; return band(t, i, z) ? -z : kNaN; }});
+    sig.push_back({"under the lower Bollinger band", [band](std::size_t t, std::size_t i) { double z = 0; return band(t, i, z) ? (z < -2 ? 1.0 : 0.0) : kNaN; }});
+  }
   std::vector<std::size_t> regimeOf;  // the signals whose rank is scaled by the market's volatility
   if (xRegime) {
     std::vector<double> mv(T, kNaN);
