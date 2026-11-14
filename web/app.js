@@ -188,7 +188,10 @@ function drawChart(r) {
   });
   let lastX = -Infinity;
   C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
-  const series = C.series.filter((s) => color[s.name]);  // the daily trades only (an older scan also carries the market)
+  // The book's growth: the strategy engine names its one series after the strategy (an older scan: 'daily trades',
+  // and the market beside it, not drawn).
+  const series = C.series.filter((s) => color[s.name] || C.series.length === 1);
+  for (const s of series) color[s.name] ||= color['daily trades'];
   // Stretches with no trade (the line flat for 15 points or more, about 30 sessions): shaded and named, so they
   // do not read as missing data. At the start the model is still learning (its first fit and calibration); later
   // it stood aside because its out-of-sample record showed no edge (14 Nov: the US, mid-2023 to early 2024).
@@ -420,39 +423,15 @@ function showMarket(m) {
     .catch(() => { if (market === m) $('asof').textContent = `No ${name} scan has been published yet; it appears after the next scheduled run.`; });
   sideBySide(m);
 }
-// The market's strategies (data/strategies.json, from config/markets.json): the live one and its
-// shadows, each with its backtest and its record since tracking began (the same days for each).
-// What the uk model's shadows leave out of the live one (config/markets.json; docs/uk-research.md).
-const SHADOW_NOTE = {
-  'hold5-base': 'without the research switches',
-  'resid-target': 'without the volatility regime',
-  noroll: 'without rolling missing bars',
-  adapt: 'with adaptive learning',
-  norisk: "without the book's volatility target",
-  cap1: 'buy cap: the close plus 1 daily volatility',
-  cap2: 'buy cap: the close plus 2 daily volatilities',
-  moo: "buy at the auction's price, whatever it is",
-  caplearn: "each order's own buy cap, learnt",
-  nocaplearn: 'without the learnt buy cap (the close plus 0.5 volatility)',
-  boll: 'with Bollinger bands',
-  psar: 'with a PSAR stop at the close',
-  robustvol: "with a volatility that leaves out one-off jumps",
-  topfifth: "only the forecast's top fifth",
-  'robust-top': "the forecast's top fifth, with the robust volatility",
-  previous: 'the live model before 14 Nov (without the robust volatility / top fifth)',
-  forecast: 'the forecast counts for more (the same baseline for every share)',
-  noexcess: 'the live model before the forecast counted for more',
-  edgeonly: 'no orders on a day the forecast has no weight',
-  rankpick: "on a day the forecast has no weight, by its rank alone (the forecast's top fifth)",
-  nofallback: 'the live model before 14 Nov (no forecast-rank pick on a day the forecast has no weight)',
-};
+// The market's strategy (data/strategies.json, from config/markets.json): its backtest and its record since
+// tracking began.
 function sideBySide(m) {
   const el = $('sidebyside');
   el.replaceChildren();
   const get = (f) => fetch(`data/${f}`, { cache: 'no-cache' }).then((res) => (res.ok ? res.json() : null)).catch(() => null);
   get('strategies.json').then(async (idx) => {
     const list = idx?.markets?.[m] || [];
-    if (!list.length) { table(el, [['Strategy']], [{ gap: 'one strategy: the live one (no shadows published yet)' }]); return; }
+    if (!list.length) { table(el, [['Strategy']], [{ gap: 'no strategy published yet' }]); return; }
     const liveTrack = m === 'uk' ? 'track.json' : `track-${m}.json`;
     const rows = await Promise.all(list.map(async (s) => {
       const live = s.role === 'live';
@@ -465,14 +444,17 @@ function sideBySide(m) {
       return d.length ? [d.reduce((w, x) => w * (1 + x), 1) - 1, d.length] : [null, 0];
     };
     if (market !== m) return;
-    table(el, [['Strategy'], ['Expected a day', 'num'], ['Expected a year', 'num'], ['Backtest a year', 'num'], ['Sharpe', 'num'], ['Orders bought', 'num'], ['Tracked', 'num'], ['Next open', 'num']],
+    // The backtest (before costs) as the strategy engine reports it: a year's return, the Sharpe ratio, the worst
+    // fall, the average trade and how long it was held; the book; and the tracked days.
+    table(el, [['Strategy'], ['Backtest a year', 'num'], ['Sharpe', 'num'], ['Worst fall', 'num'], ['Per trade', 'num opt'], ['Held', 'num opt'], ['Book', 'num'], ['Tracked', 'num']],
       rows.map(({ s, r, t }) => {
         const B = r?.backtest || {};
         const [rec, n] = record(t);
-        const E = r?.expected;  // a day's recommended orders on average (unfilled 0), and compounded over 252 days
-        return [[`${s.name}${s.role === 'live' ? ' (live)' : ` (shadow${SHADOW_NOTE[s.name] ? `: ${SHADOW_NOTE[s.name]}` : ''})`}`], E ? signed(E.daily, 3) : ['–', 'num'], E ? signed(E.yearly, 1) : ['–', 'num'], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
-          [B.orders ? `${Math.round(100 * B.trades / B.orders)}%` : '–', 'num'], n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num'],
-          [r ? String((r.orders || []).length) : '–', 'num']];
+        const bu = r?.budget;
+        return [[`${s.strategy || s.name}${s.role === 'live' ? ' (live)' : ''}`], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
+          [B.maxDrawdown != null ? pct(B.maxDrawdown, 0).slice(1) : '–', 'num'], B.avgTrade != null ? [signed(B.avgTrade, 2)[0], `${signed(B.avgTrade, 2)[1]} opt`] : ['–', 'num opt'],
+          [B.holdDays ? `${Math.round(B.holdDays)} d` : '–', 'num opt'], [bu?.trades ? `${bu.trades} × ${Math.round(bu.amount).toLocaleString('en-GB')}` : r?.slots ? `${r.slots}` : '–', 'num'],
+          n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num']];
       }));
   });
 }
