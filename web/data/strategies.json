@@ -435,7 +435,8 @@
      "X_TARGET": "5",
      "X_RISK": "1",
      "X_CAPLEARN": "1",
-     "X_ROBUSTVOL": "1"
+     "X_ROBUSTVOL": "1",
+     "X_EXCESS": "1"
     },
     "ref": null
    },
@@ -467,7 +468,8 @@
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
      "X_CAPLEARN": "1",
-     "X_ROBUSTVOL": "1"
+     "X_ROBUSTVOL": "1",
+     "X_EXCESS": "1"
     },
     "ref": null
    },
@@ -479,7 +481,8 @@
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
      "X_RISK": "1",
-     "X_ROBUSTVOL": "1"
+     "X_ROBUSTVOL": "1",
+     "X_EXCESS": "1"
     },
     "ref": null
    },
@@ -493,6 +496,7 @@
      "X_RISK": "1",
      "X_CAPLEARN": "1",
      "X_ROBUSTVOL": "1",
+     "X_EXCESS": "1",
      "X_BOLL": "1"
     },
     "ref": null
@@ -507,6 +511,7 @@
      "X_RISK": "1",
      "X_CAPLEARN": "1",
      "X_ROBUSTVOL": "1",
+     "X_EXCESS": "1",
      "X_PSAR": "1"
     },
     "ref": null
@@ -574,6 +579,19 @@
      "X_CAPLEARN": "1",
      "X_ROBUSTVOL": "1",
      "X_EXCESS": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "noexcess",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_ROBUSTVOL": "1"
     },
     "ref": null
    }
