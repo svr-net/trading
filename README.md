@@ -32,7 +32,9 @@ model learns and is backtested (no cost enters the learning, the backtests or th
 the next day's final orders only, and an order expected to lose after them is not made). Half of each market's
 mean is its outlook instead (`forward_of`): its next orders' expected return after their own costs, times their
 chance to fill in the opening auction, per day held, cut to the share of its expectations the backtest delivered
-over the last year (a model that promises more than it delivers counts for less); the
+over the last year (a model that promises more than it delivers counts for less). The records' means, their
+covariance and the delivered share weigh the most recent days most (exponentially, half-life 60 sessions:
+`HALF_LIFE`); the
 split is the mean-variance one (each market's mean shrunk by its t statistic, the markets' covariance shrunk
 halfway to its diagonal, so markets that move together share), no money for a market with no edge left, at
 most `market_cap` (50%) a market, and on a paper account at least `paper_floor` (5%) each so every market's
