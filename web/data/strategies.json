@@ -46,7 +46,10 @@
     "name": "trend",
     "role": "live",
     "strategy": "trend",
-    "params": {}
+    "params": {
+     "psar": 1,
+     "rebuy": 0
+    }
    }
   ]
  }
