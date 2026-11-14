@@ -130,3 +130,11 @@ The live column is the budget's sizing; the others are 5 slots of 5,000.
 - **`X_RISK` cuts every market's worst fall,** by up to 16 points (the US 65% → 49%, APAC 44% → 29%), and halves
   APAC's 2026 loss (−37% → −17%), for a lower return in the calm years. It is now live in every market. The
   shadow `norisk` keeps the model without it in view.
+
+## Costs: on the next day's final orders only (14 Nov 2026)
+
+At the owner's instruction: no cost enters the learning, the backtests or the split of the account's money over
+the markets. The budget's record of each market is now its backtested daily results before costs. Before, it
+subtracted the trade log's broker costs, `costs_of`, now removed. The costs come off the next day's final order
+list only (`apps/ofm_uk`, `ordersAt(T - 1, true)`): each order's expected return after its own commission, stamp
+duty and taxes, and an order expected to lose after them is not made.

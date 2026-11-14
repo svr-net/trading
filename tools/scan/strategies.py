@@ -258,23 +258,6 @@ def previous_share(market, config):
     return 1.0 / max(1, n)
 
 
-def costs_of(path, total):
-    """Each day's broker costs of a run's filled orders (X_TRADELOG: date, value, cost, filled) as a share of
-    the money the run traded (its slots times their amount): to take off its record before costs."""
-    out = {}
-    try:
-        with open(path) as f:
-            head = next(f).strip().split(',')
-            cd, cv, cc, cf = (head.index(k) for k in ('date', 'value', 'cost', 'filled'))
-            for line in f:
-                c = line.strip().split(',')
-                if len(c) > max(cd, cv, cc, cf) and float(c[cf] or 0) > 0 and total > 0:
-                    out[c[cd]] = out.get(c[cd], 0.0) + float(c[cc]) * float(c[cv]) / total
-    except (OSError, StopIteration, ValueError):
-        pass
-    return out
-
-
 def solve(a, b):
     """x with a x = b (Gauss-Jordan with pivoting; a small, symmetric positive definite matrix)."""
     n = len(b)
@@ -293,7 +276,7 @@ def solve(a, b):
 
 def allocate(records, cap=0.5, floor=0.0):
     """The account's daily limit split over the markets to maximise its risk-adjusted return: each market's
-    record (its daily results after its orders' costs over the last year, on the same days) gives its mean,
+    record (its daily results before costs over the last year, on the same days) gives its mean,
     shrunk by its t statistic, and the markets' covariance, shrunk halfway to its diagonal; the weights are
     the mean-variance ones (the covariance's inverse times the means), none negative (a market with no edge
     left gets none), adding up to the whole limit, none over `cap`; with `floor` (a paper account), every
@@ -343,7 +326,7 @@ def allocate(records, cap=0.5, floor=0.0):
 
 
 def published_records(market, config, fresh_days=10):
-    """The other markets' records after costs (their latest web/data/budget-<market>.json 'record', at most
+    """The other markets' records before costs (their latest web/data/budget-<market>.json 'record', at most
     fresh_days old), and the shares of those without one yet (kept as they are)."""
     from datetime import date
     rec, held = {}, {}
@@ -508,13 +491,12 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} with {k} trades failed ({code})")
         series = {k: days_of(f'data/budget/trades-{k}.csv.days') for k, _, _ in variants}
         days, picks, meta, nxt = choose(series)
-        run_total = total  # the amount the runs traded (their costs)
-        # The record after costs: each day's chosen run less its filled orders' broker costs (the model and its
-        # backtest run before costs; the money it gets is decided on what it would have made after them).
-        costs = {k: costs_of(f'data/budget/trades-{k}.csv', run_total) for k in slots}
-        net = [r - costs.get(k, {}).get(d, 0.0) for d, k, r in zip(days, picks, meta)]
-        record = dict(zip(days[-250:], net[-250:]))
-        score = shrunk(net[-250:])
+        run_total = total  # the amount the runs traded
+        # The record before costs, as the model learns and is backtested: no cost enters the learning, the
+        # backtests or the split of the money; the costs come off the next day's final orders only (apps/ofm_uk:
+        # each order's expected return after its own costs, an order expected to lose after them not made).
+        record = dict(zip(days[-250:], meta[-250:]))
+        score = shrunk(meta[-250:])
         daily, cur = account_of(args.config)
         share, scale = 1.0, 1.0
         alloc = {}
@@ -560,8 +542,8 @@ def main():
                      f"compounded {100 * ey:+.1f}% a year | the last year: {100 * ed1:+.3f}% a day, {100 * ey1:+.1f}% a year")
         if daily > 0:
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; "
-                         f"its record after costs {100 * score:+.3f}% a day shrunk)")
-            lines.append("budget:   the split that maximises the account's risk-adjusted return (records after costs, the markets' covariance; "
+                         f"its record before costs {100 * score:+.3f}% a day shrunk)")
+            lines.append("budget:   the split that maximises the account's risk-adjusted return (records before costs, the markets' covariance; "
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
                          + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
                          + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
