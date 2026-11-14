@@ -1,4 +1,4 @@
-# Each exchange's costs for ofm_research --venues (a ticker EXCHANGE:CODE takes its exchange's line):
+# Each exchange's costs for ofm_strategy --venues (a ticker EXCHANGE:CODE takes its exchange's line):
 # exchange, the amount a trade (the exchange's currency), IBKR's commission (fixed pricing: a rate,
 # at least a minimum an order), a further fee's rate an order, the tax on buying, the tax on both
 # sides, and (optional) the tax on buying a share still held at the day's end (default: the tax on

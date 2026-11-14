@@ -57,7 +57,7 @@ jobs:
       # the data downloads; the model step waits for them, and nothing is published if they fail.
       - name: Build the model and run its checks (in the background)
         run: |
-          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_research ofm_single ofm_hold ofm_uk ofm_tests && ./build/ofm_tests && sh tools/check/leak.sh build/ofm_research && sh tools/check/uk_leak.sh build/ofm_uk; echo $? > build.rc' > build.log 2>&1 &
+          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_strategy && sh tools/check/strategy_check.sh build/ofm_strategy; echo $? > build.rc' > build.log 2>&1 &
       # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
       # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
       # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
@@ -156,13 +156,11 @@ jobs:
             echo "last:    $(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | tail -1)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      # The predictive model (apps/ofm_research, fused kernels in kernels/v2): every share's
-      # features from its daily OHLCV, a walk-forward linear model with liquidity and volatility
-      # interactions, traded on the prediction one close older (so bid-ask bounce between the
-      # last close and the next open is not learnt); the next open's 10 highest, bought at the open
-      # and sold at the close. Results only.
-      # Before anything is published: the model's tests and its no-look-ahead checks (a generated
-      # market: later data changed, a day's bars removed, the kernel against the trade path).
+      # The strategy engine (apps/ofm_strategy): each market's injectable strategy (strategies/*.cpp, chosen in
+      # config/markets.json) on the fused kernels of the chosen back end; learnt and backtested before any cost,
+      # the broker's costs applied to the final order list only. Results only.
+      # Before anything is published: every strategy's checks on a generated market (no look-ahead, every back
+      # end the same, the final orders by expected return with their costs).
       - name: Tests and no-look-ahead checks (the build started above)
         run: |
           for i in $(seq 1 600); do if [ -f build.rc ]; then break; fi; sleep 2; done
@@ -179,19 +177,8 @@ jobs:
           PUBLISH=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then PUBLISH=(--publish-orders); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
           STAMP=(); if [ "$MARKET" = UK ]; then node tools/eoddata/aim.mjs tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
-          # UK: which shares trade through the opening and closing auctions (the exchange's monthly
-          # instrument list; the committed one if that fails): the others pay a half-spread each way.
-          if [ "$MARKET" = UK ]; then node tools/eoddata/lse_segments.mjs tools/eoddata/lse_segments.csv || true; STAMP+=(--segments tools/eoddata/lse_segments.csv); fi
-          # UK: the 5-minute paths the UK model replays its stops and take-profits on (fixed, trailing, break-even;
-          # apps/ofm_uk --bars, in markets.json): the store's LSE bars and the bridge's recordings of each day's
-          # candidates (paths/UK); none: the model uses the daily bars, the worse of their two orders.
-          if [ "$MARKET" = UK ]; then node tools/eoddata/intraday_export.mjs --exchanges LSE --paths UK --out data/intraday-uk.csv || echo 'date,ticker,time,high,low,close,volume' > data/intraday-uk.csv; fi
           # EU, APAC and INDEX (Xetra): each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC|INDEX) STAMP=(--venues tools/venues.txt);; esac
-          # Every market: a safety stop only (a learnt rare day's fall, 1 in 20 to 1 in 100; no take-profit;
-          # else sold at the close): shares stopped in the opening volatility mostly recover by the close
-          # (UK, same data: +79% a year, Sharpe 4.98, against +55%, 4.94, with learnt stops and take-profits).
-          STAMP+=(--exit safety)
           # IBKR's own daily bars (the bridge fetches them into the store on Saturdays: two years, their open
           # the opening auction's price) in place of the store's where it has them: EODData's open for a thin
           # share is not the auction's (4 Nov HCM: the store's open 2.4% under the limit, IBKR filled at the
@@ -202,15 +189,9 @@ jobs:
           # to GBP 6,000), USD 5,000 in the US, EUR 5,000 in Europe, 5,000 in Asia-Pacific (AUD, SGD; the
           # exchanges' amounts are in tools/venues.txt).
           CAPITAL=5000
-          # The market's strategies (config/markets.json): the live one makes the orders the bridge places;
-          # each shadow runs on the same data, its orders kept in the store and never placed, its results
-          # beside the live one's on the page. Every run checks the kernel's trades against the trade
-          # path that makes the orders (X_VERIFY); any difference stops the live run before anything is published.
-          python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --lag 1 --scan --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
-          grep -E "^strategies|^budget|self-adaptive pool|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next|^uk: the account|^uk: next|^uk:   [A-Z]|^uk:   candidate|^uk:   levels|^uk:   5-minute|^uk:   by kind" report/strategies.log || true  # each strategy's headline in the log
-          for f in report/shadow-*.txt; do
-            if [ -f "$f" ]; then { echo "### shadow ${f#report/shadow-}"; echo '```'; grep -E "self-adaptive|  orders:|before costs|^single: the account|^single: next|^hold: the account|^hold: next" "$f" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
-          done
+          # The market's strategy (config/markets.json), run by the strategy engine: its orders are the ones the bridge places.
+          python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
+          grep -E "^strategies|^budget|^strategy:" report/strategies.log || true  # the strategy's headline in the log
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The day's fundamentals (started above)
         if: ${{ always() }}

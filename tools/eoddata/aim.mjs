@@ -1,6 +1,6 @@
 // The AIM shares' tickers (exempt from the UK's 0.5% stamp duty on buying since April 2014), from
 // stockanalysis.com's list of the London Stock Exchange's AIM market, one a line, for
-// ofm_research --stamp-free. Keeps the committed list when the site does not answer or changed.
+// ofm_strategy --stamp-free. Keeps the committed list when the site does not answer or changed.
 //   node tools/eoddata/aim.mjs tools/eoddata/aim.txt
 import { readFileSync, writeFileSync } from 'node:fs';
 

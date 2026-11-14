@@ -117,7 +117,7 @@ def tick_at(rule, min_tick, price):
 
 def capital_of(o, args):
     # The order's own amount (the model's, in its exchange's currency), else --capital; never more than
-    # its maxCapital (apps/ofm_uk: a share of what the share trades in a day).
+    # its maxCapital (apps/ofm_strategy: a share of what the share trades in a day).
     c = float(o.get('capital') or args.capital)
     return min(c, float(o['maxCapital'])) if o.get('maxCapital') else c
 
@@ -487,7 +487,7 @@ def holds(args):
              days, else the fifth) sold at any price (MOC), before that only at or above its exit level
              (LOC at the entry times 1 + exitAbove, at least the entry and a tick: sold at the first close
              that reaches it, as the backtest).
-    An order with "entry": "open" (apps/ofm_uk --hold) is a limit good only through the opening auction
+    An order with "entry": "open" (apps/ofm_strategy) is a limit good only through the opening auction
     (GTD a few minutes after the open; a day order if IBKR refuses that), so it never buys a dip later."""
     from ib_async import IB, LimitOrder, MarketOrder
     path = args.hold_state
@@ -505,7 +505,7 @@ def holds(args):
             st['positions'].pop(sym)
         st['pending'] = {}
         book = json.load(open(args.orders)) if args.orders else {'orders': []}
-        # The daily update (apps/ofm_uk --hold: "updates", every share on the day's list): each position the
+        # The daily update (apps/ofm_strategy: "updates", every share on the day's list): each position the
         # model would no longer buy is sold now (before the open: in the opening auction); the others keep,
         # their exit level set again from the day's. A share without an update keeps its plan.
         today = date.today().isoformat()
@@ -581,7 +581,8 @@ def holds(args):
                 order = LimitOrder('BUY', qty, order.lmtPrice, orderRef=ref, tif='DAY')  # GTD refused: a day order (the close cancels it if unfilled)
                 fate, msgs = order_fate(ib, ib.placeOrder(c, order), errors)
                 how += ' (a day order: IBKR refused the good-till time)'
-            st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up'), 'exitAbove': float(o.get('exitAbove') or 0), 'days': int(o.get('days') or 5)}
+            # exitAbove null (apps/ofm_strategy): held until the strategy drops it (sold at the open by the daily update)
+            st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up'), 'exitAbove': None if o.get('exitAbove') is None else float(o['exitAbove']), 'days': int(o.get('days') or 5)}
             free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     else:
@@ -601,7 +602,7 @@ def holds(args):
                 continue
             plan = pend.get(sym, {})
             st['positions'][sym] = {'conId': c.conId, 'qty': q, 'entry': v / q, 'since': today, 'closes': 0,
-                                    'exitAbove': float(plan.get('exitAbove') or 0), 'days': int(plan.get('days') or 5)}
+                                    'exitAbove': None if plan.get('exitAbove', 0) is None else float(plan.get('exitAbove') or 0), 'days': int(plan.get('days') or 5)}
             lines.append(f'{sym}: bought {q:g} at {v / q:g}')
         st['pending'] = {}
         for sym, pos in st['positions'].items():
@@ -625,6 +626,9 @@ def holds(args):
             if pos['closes'] >= last:  # its last day: sold at the close whatever the price (a limit at the 20-day low if the exchange refuses a MOC)
                 ok, line = sell_out(ib, c, qty, ref + '-close', errors, at_close=True)
                 lines.append(f'{sym}: its last day ({last}): {line}')
+                continue
+            elif pos.get('exitAbove', 0) is None:  # no exit level: held until the strategy drops it (the daily update sells it at the open)
+                lines.append(f"{sym}: held ({pos['closes']} of at most {last} closes; sold when the strategy drops it)")
                 continue
             else:
                 tick = tick_at(ticks[0], ticks[1], pos['entry'])

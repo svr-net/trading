@@ -2,19 +2,18 @@
 bridge places, and its shadows, whose orders are kept in the private store and never placed. Every
 run is checked as the live one always was (X_VERIFY: the kernel's trades against the trade path).
 
-  python3 tools/scan/strategies.py --market EU [--publish-orders] -- <ofm_research's arguments>
+  python3 tools/scan/strategies.py --market EU [--publish-orders] -- <the strategy engine's arguments>
 
 Writes report/ofm.json and report/ofm.txt (the live strategy, as before), report/shadow-<name>.json
 and .txt for each shadow, and report/strategies.json (the market's strategies, results only). With
 --publish-orders (the main branch): the orders to data/eoddata/orders/<MARKET>.json (live) and
 data/eoddata/shadow/<MARKET>-<name>.json (shadows). A strategy with a ref is built at that version
 first (in .pins/<ref>); one with "only": "aim" sees only the UK's AIM shares (no stamp duty;
-tools/eoddata/aim.txt); one with "app": "single" is the single-share model (apps/ofm_single: every
-share learnt and backtested on its own bars only), given the same arguments; one with "app": "hold" the
-multi-day single-share model (apps/ofm_hold); one with "app": "uk" the auction model (apps/ofm_uk: orders
-sized to each share's liquidity, bought in the opening auction and held up to 5 days with --hold 5,
-made only when its expected return clears the order's own costs; every market's live strategy); "args" (a list) are added after the model's arguments
-(a later one wins: e.g. ["--holds", "up", "--pricing", "tiered", "--capital", "1000"]).
+tools/eoddata/aim.txt). Every strategy runs on the strategy engine (apps/ofm_strategy): "strategy" names one
+of its injectable strategies (strategies/*.cpp; ofm_strategy --list), "params" ({"name": value}) overrides its
+parameters, and "backend" picks the compute back end (backends/*.cpp; default: every thread). The engine
+learns and backtests before any cost; the broker's costs come off the final order list only. "args" (a list)
+are added after the engine's arguments.
 
 The budget (a market's "budget": {"total": T, "slots": [2, 3, 5, 10]}): the live strategy runs once for
 each number of trades k, k trades a day of T/k each (--capital, and each venue's amount in --venues,
@@ -40,7 +39,6 @@ import subprocess
 import sys
 
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
-REF = re.compile(r'^[A-Za-z0-9._/-]{1,80}$')
 
 
 def strategies(config, market):
@@ -53,39 +51,36 @@ def strategies(config, market):
         names.add(s['name'])
         bad = [k for k in s.get('env', {}) if not re.match(r'^X_[A-Z0-9_]+$', k)]
         if bad:
-            sys.exit(f"strategies: {market} {s['name']}: only the model's research switches (X_*) may be set, not {bad}")
-        if 'ref' in s and not REF.match(s['ref']):
-            sys.exit(f"strategies: {market} {s['name']}: a bad ref {s['ref']!r}")
+            sys.exit(f"strategies: {market} {s['name']}: only X_* switches may be set, not {bad}")
         if s.get('only') not in (None, 'aim'):
             sys.exit(f"strategies: {market} {s['name']}: an unknown share filter {s['only']!r}")
-        if s.get('app') not in (None, 'single', 'hold', 'uk'):
-            sys.exit(f"strategies: {market} {s['name']}: an unknown model {s['app']!r}")
-        if s.get('app') in ('single', 'hold') and s['role'] == 'live':
-            sys.exit(f"strategies: {market} {s['name']}: the single-share models run as shadows only (the bridge places the research model's or the UK model's orders)")
-        if s.get('app') == 'uk' and market not in ('UK', 'EU', 'US', 'APAC', 'INDEX', 'FOREX'):
-            sys.exit(f"strategies: {market} {s['name']}: the auction model (apps/ofm_uk) is for the UK, Europe, the US and Asia-Pacific only")
+        if not NAME.match(str(s.get('strategy', ''))):
+            sys.exit(f"strategies: {market} {s['name']}: no strategy (one of ofm_strategy --list)")
+        if not NAME.match(str(s.get('backend', 'threads'))):
+            sys.exit(f"strategies: {market} {s['name']}: a bad back end {s.get('backend')!r}")
+        params = s.get('params', {})
+        if not isinstance(params, dict) or any(not re.match(r'^[a-z][a-z0-9_]{0,30}$', k) or not isinstance(v, (int, float)) for k, v in params.items()):
+            sys.exit(f"strategies: {market} {s['name']}: bad params {params!r}")
         bad_args = [x for x in s.get('args', []) if not isinstance(x, str) or not re.match(r'^[A-Za-z0-9_.,:/=-]{1,64}$', x)]
         if bad_args or not isinstance(s.get('args', []), list):
             sys.exit(f"strategies: {market} {s['name']}: bad args {bad_args or s.get('args')!r}")
-        if s.get('app') and 'ref' in s:
-            sys.exit(f"strategies: {market} {s['name']}: a pinned version is for the research model only")
     return out
 
 
-def binary(ref, app=None):
-    """The model's binary: this checkout's, or one built at ref."""
-    if app in ('single', 'hold', 'uk'):
-        return f'./build/ofm_{app}'
-    if not ref:
-        return './build/ofm_research'
-    root = os.path.join('.pins', ref.replace('/', '_'))
-    exe = os.path.join(root, 'build', 'ofm_research')
-    if not os.path.exists(exe):
-        subprocess.run(['git', 'fetch', '-q', '--depth', '1', 'origin', ref], check=True)
-        subprocess.run(['git', 'worktree', 'add', '-f', '--detach', root, 'FETCH_HEAD'], check=True)
-        subprocess.run(['cmake', '-S', root, '-B', os.path.join(root, 'build'), '-G', 'Ninja'], check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(['cmake', '--build', os.path.join(root, 'build'), '--target', 'ofm_research'], check=True, stdout=subprocess.DEVNULL)
-    return exe
+def describe(s):
+    """A strategy in words for the log: its name, parameters and back end."""
+    p = ' '.join(f'{k}={v:g}' for k, v in sorted(s.get('params', {}).items()))
+    return f"{s['strategy']}" + (f' ({p})' if p else '') + (f" on {s['backend']}" if s.get('backend') else '')
+
+
+def engine(s):
+    """The engine's command for strategy s: the binary, its strategy, back end and parameters."""
+    cmd = ['./build/ofm_strategy', '--strategy', s['strategy']]
+    if s.get('backend'):
+        cmd += ['--backend', s['backend']]
+    for k, v in sorted(s.get('params', {}).items()):
+        cmd += ['--param', f'{k}={v:g}']
+    return cmd
 
 
 def budget_of(config, market):
@@ -502,11 +497,11 @@ def main():
             for k in slots:
                 env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
                 env.update(s.get('env', {}), X_VERIFY='1', X_NPICK=str(k), X_TRADELOG=f'data/budget/trades-{k}.csv')
-                cmd = [binary(s.get('ref'), s.get('app')), *with_capital(args_m + list(s.get('args', [])), total / k, k), '--json', f'data/budget/report-{k}.json',
+                cmd = [*engine(s), *with_capital(args_m + list(s.get('args', [])), total / k, k), '--json', f'data/budget/report-{k}.json',
                        '--orders', f'data/budget/orders-{k}.json']
                 pending_variants.append((k, cmd, env))
             continue
-        cmd = [binary(s.get('ref'), s.get('app')), *args_m, *s.get('args', []), '--json', f'report/{stem}.json']
+        cmd = [*engine(s), *args_m, *s.get('args', []), '--json', f'report/{stem}.json']
         if args.publish_orders:
             path = f'data/eoddata/orders/{args.market}.json' if live else f"data/eoddata/shadow/{args.market}-{s['name']}.json"
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -516,7 +511,7 @@ def main():
         if not live and os.environ.get('SHADOWS', '1') == '0':
             # The repeat runs (SHADOWS=0: 21:30 and 05:30 UTC, the same day's data again) refresh the live orders
             # only; the shadows' results stay those of the evening's run, still listed for the page.
-            index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'),
+            index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'strategy': s['strategy'], 'params': s.get('params', {}), 'only': s.get('only'),
                                         'report': f'{stem}.json', 'kept': True})
             continue
         pending_shadows.append((s, live, stem, cmd, env))
@@ -567,7 +562,7 @@ def main():
         days, picks, meta, nxt = choose(series)
         run_total = total  # the amount the runs traded
         # The record before costs, as the model learns and is backtested: no cost enters the learning, the
-        # backtests or the split of the money; the costs come off the next day's final orders only (apps/ofm_uk:
+        # backtests or the split of the money; the costs come off the next day's final orders only (apps/ofm_strategy:
         # each order's expected return after its own costs, an order expected to lose after them not made).
         record = dict(zip(days[-250:], meta[-250:]))
         score = shrunk(meta[-SPLIT_WINDOW:], HALF_LIFE)
@@ -633,7 +628,7 @@ def main():
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
         book = json.load(open(f'data/budget/orders-{nxt}.json'))  # each order's amount: the market's share over the trades
-        for o in book.get('orders', []):  # never more than the model's own cap (apps/ofm_uk: the share's liquidity)
+        for o in book.get('orders', []):  # never more than the model's own cap (apps/ofm_strategy: the share's liquidity)
             o['capital'] = min(total / nxt, float(o.get('maxCapital') or float('inf')))
         if total <= 0:
             book['orders'] = []
@@ -659,14 +654,14 @@ def main():
             json.dump(rj, open('report/ofm.json', 'w'))
         except (OSError, ValueError):
             pass
-        print(f"strategies: {args.market} live {s['name']} (budget {total:g}, {nxt} trades of {total / nxt:g}): {' '.join(f'{x}={v}' for x, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} live {s['name']} (budget {total:g}, {nxt} trades of {total / nxt:g}): {describe(s)}", flush=True)
         sys.stdout.write(open('report/ofm.txt').read())
-        index['strategies'].append({'name': s['name'], 'role': 'live', 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'),
+        index['strategies'].append({'name': s['name'], 'role': 'live', 'env': s.get('env', {}), 'strategy': s['strategy'], 'params': s.get('params', {}), 'only': s.get('only'),
                                     'report': 'ofm.json', 'budget': {'total': total, 'trades': nxt, 'amount': total / nxt}})
     for s, live, stem, p, log in jobs:
         code = p.wait()
         log.close()
-        print(f"strategies: {args.market} {s['role']} {s['name']}" + (f" (at {s['ref']})" if s.get('ref') else '') + (' (AIM shares only)' if s.get('only') == 'aim' else '') + ({'single': ' (single-share model)', 'hold': ' (multi-day single-share model)', 'uk': ' (UK model)'}.get(s.get('app'), '')) + f": {' '.join(f'{k}={v}' for k, v in s.get('env', {}).items()) or 'defaults'}", flush=True)
+        print(f"strategies: {args.market} {s['role']} {s['name']}" + (' (AIM shares only)' if s.get('only') == 'aim' else '') + f": {describe(s)}", flush=True)
         sys.stdout.write(open(f'report/{stem}.txt').read())
         if code:
             if live:
@@ -675,7 +670,7 @@ def main():
                 sys.exit(f"strategies: the live strategy {s['name']} failed ({code})")
             print(f"strategies: the shadow {s['name']} failed ({code}): skipped")
             continue
-        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'ref': s.get('ref'), 'only': s.get('only'), 'app': s.get('app'), 'report': f'{stem}.json'})
+        index['strategies'].append({'name': s['name'], 'role': s['role'], 'env': s.get('env', {}), 'strategy': s['strategy'], 'params': s.get('params', {}), 'only': s.get('only'), 'report': f'{stem}.json'})
     with open('report/strategies.json', 'w') as f:
         json.dump(index, f, indent=1)
 

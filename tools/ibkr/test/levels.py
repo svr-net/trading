@@ -598,6 +598,35 @@ def leftovers_keep_book():
     return out
 
 
+def strategy_book():
+    """The strategy engine's book (apps/ofm_strategy: "exitAbove": null): bought in the opening auction, then held:
+    nothing offered at the closes before its last day; sold at the open when the daily update drops it."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(7, 50), LONDON)
+    d = tempfile.mkdtemp()
+    book = {'model': 'strategy', 'book': 'hold', 'days': 260, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'XXX', 'close': 100.0, 'entry': 'open', 'open': True, 'limit': 101.0, 'stop': None, 'take': None, 'exitAbove': None, 'days': 260,
+         'capital': 1000.0, 'maxCapital': 1000.0}], 'updates': [{'ticker': 'XXX', 'keep': True, 'exitAbove': None}]}
+    path, state = os.path.join(d, 'UK.json'), os.path.join(d, 'holds-UK.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    b = SHARED[0]
+    buy = next(t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY')
+    b.fill(buy, 990, 100.0)
+    CLOCK[0] = CLOCK[0].replace(hour=16, minute=30)
+    closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    pos = json.load(open(state))['positions']['XXX']
+    assert pos['exitAbove'] is None and pos['days'] == 260 and pos['closes'] == 1, pos
+    assert not [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL'] and 'held (1 of at most 260 closes' in closed, closed
+    book['orders'], book['updates'] = [], [{'ticker': 'XXX', 'keep': False, 'exitAbove': None}]
+    json.dump(book, open(path, 'w'))
+    dropped = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    out = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderRef.endswith('-exit')]
+    assert len(out) == 1 and out[0].order.orderType == 'MKT' and out[0].order.totalQuantity == 990, (dropped, [vars(t.order) for t in out])
+    return placed + closed + dropped
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -606,6 +635,8 @@ if __name__ == '__main__':
     print(hold_book())
     print('hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; '
           'updated every morning (kept with its new exit level, or sold at the open); OK')
+    print(strategy_book())
+    print('strategy book: held with no exit level (nothing offered at the close), sold at the open when the strategy drops it; OK')
     print(eu_book())
     print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
     print(us_book())
