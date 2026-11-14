@@ -6,8 +6,8 @@
  "allocation": {
   "APAC": 0.425,
   "EU": 0.05,
-  "INDEX": 0.425,
-  "UK": 0.05,
+  "INDEX": 0.05,
+  "UK": 0.425,
   "US": 0.05
  },
  "record": {
