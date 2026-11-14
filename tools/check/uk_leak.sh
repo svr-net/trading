@@ -282,7 +282,7 @@ nn=$(wc -l < "$W/ne-cut.tr")
 [ "$nn" -gt 100 ] || { cat "$W/ne.out"; echo "FAIL: the rank pick, only $nn orders"; exit 1; }
 head -n "$nn" "$W/ne.tr" | cmp -s - "$W/ne-cut.tr" || { echo "FAIL: the rank pick, an order changed with later data (look-ahead)"; exit 1; }
 
-# Every switch on together (the live model since 15 Nov: the shadows merged into it): no order changed by later data.
+# Every switch on together (tried live on 15 Nov, then put back): no order changed by later data.
 L="X_RESID=1 X_VOLREGIME=1 X_TARGET=5 X_RISK=1 X_CAPLEARN=1 X_ROBUSTVOL=1 X_EXCESS=1 X_NOEDGE=merge X_BOLL=1 X_PSAR=1 X_TOPFRAC=0.2"
 env $L "$BIN" --csv "$W/full.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/all.tr" > "$W/all.out"
 env $L "$BIN" --csv "$W/cut.csv" --costs UK --top 60 --stamp-free "$W/aim.txt" --hold 5 --trace "$W/all-cut.tr" > /dev/null
