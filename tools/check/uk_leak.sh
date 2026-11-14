@@ -234,6 +234,12 @@ X_RESID=1 X_VOLREGIME=1 X_TARGET=5 X_RISK=1 X_CAPLEARN=1 "$BIN" --csv "$W/cut.cs
 cn=$(wc -l < "$W/cl-cut.tr")
 [ "$cn" -gt 200 ] || { cat "$W/cl.out"; echo "FAIL: the learnt cap, only $cn orders"; exit 1; }
 head -n "$cn" "$W/cl.tr" | cmp -s - "$W/cl-cut.tr" || { echo 'FAIL: the learnt cap, an order changed with later data (look-ahead)'; exit 1; }
+python3 - "$W/cl.json" <<'PY'
+import json, sys
+book = json.load(open(sys.argv[1]))
+for o in book['orders']:  # never more than 3% (--cap-max) over the close (14 Nov: US orders capped 31% over it)
+    assert o['limit'] <= o['close'] * 1.03 + 1e-9, o
+PY
 # Missing bars rolled forward for the inputs (--roll, 5 by default): with one bar in seven missing, more orders
 # than without the roll, every order on a share's real bar, and no order changed by later data.
 for f in full cut; do awk -F, 'NR == 1 { print; next } { h = 0; s = $1 $2; for (k = 1; k <= length(s); k++) h = (h * 31 + index("0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ:", substr(s, k, 1))) % 7919; if (h % 7 != 3) print }' "$W/$f.csv" > "$W/gap-$f.csv"; done

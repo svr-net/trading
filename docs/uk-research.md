@@ -175,3 +175,10 @@ The live column is the budget's sizing; the rest are 5 slots of 5,000.
   1.52 → 3.54) and opens up where they don't (the US 96% bought, Sharpe 0.08 → 0.74).
 - **Now live** in the UK, Europe, the US and Asia-Pacific; INDEX keeps the close plus 0.5. Shadow `nocaplearn`
   keeps the model without it in view.
+
+**A ceiling on the learnt cap (14 Nov 2026).** The first live scan let US orders pay up to 31% over the close
+(8 volatilities of a volatile share). In the US, gap-ups had not hurt on average, but a gap that large is news (an
+earnings shock, a bid), and the record of such gaps is too thin to trust. The learnt cap is now at most 2
+volatilities and at most 3% over the close (`--cap-max 0.03`). Each gap band's estimate is shrunk towards 0 by
+its number of trades (n / (n + 500)), so a band with few trades cannot pull the cap up. `uk_leak.sh` checks the
+ceiling.
