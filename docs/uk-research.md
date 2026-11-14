@@ -1,3 +1,6 @@
+> **Superseded (15 Nov 2026).** The models below were deleted and replaced by the strategy engine and its
+> injectable strategies ([strategies.md](strategies.md)). Kept as the record of what was tried.
+
 # Ideas from the algorithmic trading literature (for the UK model, `apps/ofm_uk`)
 
 A survey of the books most recommended in 2025-2026 reading lists ([QuantVPS](https://www.quantvps.com/blog/best-algorithmic-trading-books),

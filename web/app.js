@@ -1,6 +1,6 @@
 // The page: the latest scan of each market, published by the scheduled workflow (results only, no
 // prices): the next open's trades and the model's walk-forward backtest. Rendering only; every
-// number comes from the model (apps/ofm_research), the chart laid out there too.
+// number comes from the strategy engine (apps/ofm_strategy), the chart laid out there too.
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 1) => (x == null ? '–' : `${x >= 0 ? '+' : ''}${(100 * x).toFixed(d)}%`);
 const SERIES = [['daily trades', '--daybook']];
@@ -29,6 +29,7 @@ let shown = null;
 const costs = (r) => {
   const c = r.costs;
   if (!c) return 'no fees or costs';
+  if (c.net === false && r.model === 'strategy') return `the backtest before any cost; each order's expected return after its own ${c.broker} costs, applied at the end (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' ? "the regulators' fees" : c.market === 'FOREX' ? "IBKR's FX commission" : c.market === 'APAC' ? "its exchange's fees" : "its exchange's taxes"})`;
   if (c.net === false && r.model === 'uk') return `the backtest before costs; each order's expected return after its own ${c.broker} costs (commission and ${c.market === 'UK' ? 'stamp duty' : c.market === 'US' ? "the regulators' fees" : c.market === 'FOREX' ? "IBKR's FX commission" : c.market === 'APAC' ? "its exchange's fees" : "its exchange's taxes"}; the auctions cross no spread)`;
   if (c.net === false) return `before costs (gross; ${c.broker} costs not deducted${c.venues ? '' : `, ${{ UK: '£', US: '$', APAC: 'A$', EU: '€', INDEX: '€', FOREX: '$' }[c.market] || ''}${c.capital.toLocaleString('en-GB')} a trade`})`;
   if (c.venues) return `after ${c.broker} costs and each exchange's transaction taxes (${c.market === 'EU' ? `€${c.capital.toLocaleString('en-GB')} a trade${r.exchanges && !r.exchanges.includes('OSL') ? '' : ', its value in NOK in Oslo'}` : `${c.capital.toLocaleString('en-GB')} a trade in its currency`})`;
@@ -72,7 +73,8 @@ function render(r, source) {
     ? `<strong>No orders placed for the next trading day:</strong> this market's share of the account is 0 today (its record over the last year is not reliably positive)${n ? `; the ${n} order${n === 1 ? '' : 's'} below ${n === 1 ? 'is' : 'are'} what the model would place` : ''}.`
     : isLive
     ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; `
-      + (r.book === 'hold' ? `each held until its first close at its exit level, at most ${r.days} days.` : 'anything bought is sold by the close.')
+      + (r.model === 'strategy' ? `each held until the strategy drops it (${r.strategy}: rebalanced every ${r.rebalance} sessions).`
+        : r.book === 'hold' ? `each held until its first close at its exit level, at most ${r.days} days.` : 'anything bought is sold by the close.')
     : (r.backtest?.sharpe ?? 0) < 1
       ? `<strong>Research only: not traded.</strong> ${c?.net === false ? 'Before costs' : 'After costs'} the model shows no reliable edge here${n ? '; the orders below are what it would place' : ''}.`
       : `<strong>Not traded automatically:</strong> the bridge does not trade this market (AUTO_MARKETS)${n ? '; the orders below are what it would place' : ''}.`;
@@ -100,7 +102,7 @@ function render(r, source) {
       // The stop from the price bought at: fixed, trailing under the day's high, or to the price paid once up `breakeven`.
       const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + how, o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
-      if (holds) row.push([`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
+      if (holds) row.push(o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
@@ -126,7 +128,13 @@ function render(r, source) {
     : "its exchange's taxes on a share held (the French FTT 0.4% and the Spanish 0.2% on buying, the Portuguese 0.3%, the Belgian TOB 0.35% each side; none in Amsterdam or Frankfurt)"
   if (hint) {
     hint.dataset.base ??= hint.innerHTML;
-    hint.innerHTML = r.model === 'uk' && r.book === 'hold'
+    hint.innerHTML = r.model === 'strategy'
+      ? `<b>${esc(r.strategy)}</b>: ${esc(r.about || '')}. The list was made at the rebalance after the close of ${r.decided}; the book holds ${r.slots} positions. `
+        + '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is tried again the next morning. '
+        + '<b>Sell at</b>: <i>when dropped</i>, at the open of the morning after the strategy leaves it out of its list. '
+        + `<b>Costs</b>: the order's own commission and ${taxes}, applied only at the end, to this list: they choose nothing and change no order's place. `
+        + '<b>If it buys</b>: what the strategy\'s past trades at the same rank made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
+      : r.model === 'uk' && r.book === 'hold'
       ? '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is cancelled, so it never buys a dip later. '
         + `<b>Sell at</b>: in the closing auction of the first day the share closes this far above the price paid, else at the close of day ${r.days} (≤ ${r.days} d): held as few days as it needs`
         + (r.orders.some((o) => o.holdDays) ? `, about ${(r.orders.reduce((a, o) => a + (o.holdDays || 0), 0) / r.orders.length).toFixed(1)} days on average. ` : '. ')
@@ -221,74 +229,22 @@ window.addEventListener('resize', () => { if (shown) drawChart(shown); if (chart
 // published here: the data licence), with Bollinger bands (20 days, 2 standard deviations), the Parabolic SAR
 // (Wilder: 0.02 a step, at most 0.2), the volume, and the order's buy cap and exit level.
 let chartShown = null;
-// The model's reasons in words: each input that added most to the share's score at the last close, with its
-// own value (apps/ofm_uk whyOf: a signal's value is oriented so that higher is bought).
-const REASON = {
-  'loser 1d': (v) => `Fell ${pct(v, 1).slice(1)} on the last day`,
-  'loser 5d': (v) => `Fell ${pct(v, 1).slice(1)} over 5 days`,
-  'loser 20d': (v) => `Fell ${pct(v, 1).slice(1)} over 20 days`,
-  'residual loser 1d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market on the last day`,
-  'residual loser 5d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market over 5 days`,
-  'residual loser 20d': (v) => `Fell ${pct(v, 1).slice(1)} more than its market over 20 days`,
-  'day fell open-close': (v) => `Fell ${pct(v, 1).slice(1)} from its open to its close`,
-  'gapped down': (v) => `Opened ${pct(v, 1).slice(1)} under the close before`,
-  'close near low': () => "Closed near the day's low",
-  'below 20d mean': (v) => `${pct(v, 1).slice(1)} under its 20-day average`,
-  'Bollinger z (below the mean)': (v) => `${v.toFixed(1)} standard deviations under its 20-day average (Bollinger)`,
-  'under the lower Bollinger band': () => 'Closed under its lower Bollinger band',
-  'loser 1d x market volatility': () => 'A fall in a turbulent market (reversals pay more then)',
-  'loser 5d x market volatility': () => 'A 5-day fall in a turbulent market (reversals pay more then)',
-  'loser 5d, low vol': () => 'A 5-day fall that is large for how much it usually moves',
-  'low volatility': () => 'A calm share (low volatility)',
-  'low max day': () => 'No extreme up day lately',
-  'momentum 12-1m': (v) => `Up ${pct(v, 0).slice(1)} over the year before last month`,
-  'near 52w high': () => 'Near its 52-week high',
-  'volume surge': () => 'Volume well above usual',
-  'overnight rev 20d': () => 'Its overnight moves have reversed lately',
-  'overnight rev 60d': () => 'Its overnight moves have reversed over 3 months',
-  'overnight rev 250d': () => 'Its overnight moves have reversed over the year',
-  'intraday mom 20d': () => 'Strong intraday moves lately',
-  'intraday mom 60d': () => 'Strong intraday moves over 3 months',
-  'intraday mom 250d': () => 'Strong intraday moves over the year',
-  'intraday less overnight 60d': () => 'Gains made in the day rather than overnight (3 months)',
-  'intraday less overnight 250d': () => 'Gains made in the day rather than overnight (the year)',
-  volatility: (v) => `Its volatility (${pct(v, 1).slice(1)} a day)`,
-  liquidity: () => 'Its trading volume',
-  'stamp-free': () => 'No stamp duty (AIM)',
-};
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// The pop-up's top: the order's facts, why the strategy holds it (apps/ofm_strategy: the strategy's own reason,
+// from the rebalance that made the list), and its expected return: before costs, what the strategy's past trades
+// at the same place on the list made; its costs, applied at the end; and that times its chance to buy.
 function chartWhy(o) {
   const facts = [
     ['Expected after costs', signed(o.expected, 2)[0]], ['Chance to buy', o.fill != null ? `${Math.round(100 * o.fill)}%` : '–'],
-    ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Exit', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : '–'],
-    ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank today', o.rank ? `${o.rank} of ${o.of}` : '–'],
+    ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Sell', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : 'when dropped'],
+    ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
-  const why = (o.why || []).map((w) => (REASON[w.k] ? REASON[w.k](w.v) : w.k));
-  // Where its expected return comes from: the forecast's part, and the average trade's for a share that moves
-  // this much a day (the order list is chosen by the expected return, which scales with the daily move).
-  // With the same baseline for every share (sameBase: X_EXCESS), the forecast's part is what put it on the list.
-  const split = o.fromForecast == null || o.fromAverage == null ? '' : splitText(o);
+  const money = o.gross == null ? ''
+    : `<p class="split">Expected before costs <b>${pct(o.gross, 2)}</b>: what the strategy's past trades at rank ${o.rank} made, held about ${Math.round(o.holdDays || 0)} sessions. `
+      + `Its costs, <b>${pct(o.cost, 2)}</b>, come off at the end: <b>${pct(o.ifFilled, 2)}</b> if it buys${o.fill != null ? `, ${signed(o.expected, 2)[0]} with its ${Math.round(100 * o.fill)}% chance to buy` : ''}.`
+      + `${o.held ? " The strategy's book holds it already: the bridge buys it only if the account does not." : ''}</p>`;
   $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
-    + split + (why.length ? `<strong>What the forecast saw</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
-}
-// Where its expected return before costs comes from: the average trade's part (the same for every share with
-// sameBase), the forecast's, and its learnt buy cap's (fromCap: what buying only under its cap, over the share's
-// past opening gaps, adds or takes). The largest part is what put it on the list; with the forecast's weight 0
-// today the forecast chose nothing.
-function splitText(o) {
-  const cap = o.fromCap || 0, total = o.fromForecast + o.fromAverage + cap;
-  const noWeight = Math.abs(o.fromForecast) < 1e-5;
-  const parts = [{ k: 'average', v: o.fromAverage, t: `<b>${pct(o.fromAverage, 2)}</b> the average trade's${o.sameBase ? ', the same for every share today' : ` for a share that moves ${pct(o.sigma, 1).slice(1)} a day`}` },
-    { k: 'forecast', v: o.fromForecast, t: `<b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}` }];
-  if (Math.abs(cap) >= 1e-5) parts.push({ k: 'cap', v: cap, t: `<b>${pct(cap, 2)}</b> from its buy cap: what buying only when the open is at most ${pct(o.limit, 1)} over the close has made on this share's past opening gaps` });
-  // what tells it apart from the other shares: not the average trade's part when every share has the same
-  let top = null;
-  for (const x of parts) if (!(x.k === 'average' && o.sameBase) && x.v > 0 && (!top || x.v > top.v)) top = x;
-  const why = noWeight
-    ? `The forecast had no weight today (its recent record showed no clear link to the outcome), so it did not choose this order${top?.k === 'cap' ? ': its buy cap did, among the shares whose opening gaps have paid best under their caps' : top?.k === 'average' ? ': how much the share moves did' : ''}.`
-    : top?.k === 'forecast' ? "The forecast's part is what put it on the list."
-      : top?.k === 'cap' ? 'It is on the list mostly for its buy cap, less for the forecast.'
-        : 'It is on the list mostly for how much it moves, less for the forecast.';
-  return `<p class="split">Its expected return before costs, ${pct(total, 2)}: ${parts.map((x) => x.t).join('; ')}. ${why} After its costs${o.fill != null ? ` and its ${Math.round(100 * o.fill)}% chance to buy` : ''}, ${signed(o.expected, 2)[0]}.</p>`;
+    + (o.reason ? `<strong>Why it is on the list</strong><p class="split">${esc(o.reason)}</p>` : '') + money;
 }
 function openChart(o, source) {
   const dlg = $('chart-dialog');
@@ -747,29 +703,22 @@ showView(firstView);
 // The Lab: the model compiled to WebAssembly (web/lab/, docker/wasm/Dockerfile) run here, in a Web Worker, on the
 // market's daily bars from the bridge (GET /bars.csv, keyed: the prices never leave this device). Its switches
 // start as the market's live strategy's (data/strategies.json).
-const LAB_SWITCHES = [
-  ['X_RESID', '1', 'Residual reversal (Blitz et al. 2013)'],
-  ['X_VOLREGIME', '1', 'Reversal scaled by market volatility (Nagel 2012)'],
-  ['X_TARGET', '5', "Fitted on the 5-day hold's return"],
-  ['X_RISK', '1', "The book's volatility target"],
-  ['X_CAPLEARN', '1', "Each order's own learnt buy cap"],
-  ['X_ROBUSTVOL', '1', 'A volatility without one-off jumps'],
-  ['X_TOPFRAC', '0.2', "Only the forecast's top fifth"],
-  ['X_EXCESS', '1', 'The forecast counts for more'],
-  ['X_NOEDGE', 'merge', 'On a day the forecast has no weight, pick by its rank and the expected return together'],
-  ['X_BOLL', '1', 'Bollinger bands as inputs'],
-  ['X_PSAR', '1', 'A PSAR exit at the close'],
-  ['X_ADAPT', '1', 'Adaptive learning (three windows)'],
+// The strategies built into the engine (strategies/*.cpp); the market's live one is chosen first.
+const LAB_STRATEGIES = [
+  ['momentum', '12-month momentum, rebalanced monthly'],
+  ['trend', 'Trend following, rebalanced weekly'],
+  ['lowvol', 'Low volatility, rebalanced monthly'],
+  ['reversal', 'Residual reversal, held a week'],
 ];
 function labSwitches(m) {
   const box = $('lab-switches');
   if (!box) return;
   fetch('data/strategies.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((idx) => {
-    const env = (idx?.markets?.[m] || []).find((s) => s.role === 'live')?.env || {};
-    box.replaceChildren(...LAB_SWITCHES.map(([k, v, t]) => {
+    const live = (idx?.markets?.[m] || []).find((s) => s.role === 'live')?.strategy;
+    box.replaceChildren(...LAB_STRATEGIES.map(([k, t]) => {
       const l = document.createElement('label'), c = document.createElement('input');
-      c.type = 'checkbox', c.dataset.key = k, c.dataset.value = v, c.checked = env[k] === v;
-      l.append(c, document.createTextNode(`${t}${env[k] === v ? ' (live)' : ''}`));
+      c.type = 'radio', c.name = 'lab-strategy', c.value = k, c.checked = k === (live || 'momentum');
+      l.append(c, document.createTextNode(`${t}${k === live ? ' (live)' : ''}`));
       return l;
     }));
   });
@@ -788,28 +737,27 @@ $('lab-run').addEventListener('click', async () => {
     status.textContent = /key|401|Failed to fetch|NetworkError|Load failed/i.test(String(e.message)) ? 'Connect your bridge under Broker (its address and key): the bars come from your IBKR account.' : `No bars: ${e.message}.`;
     return;
   }
-  const env = {};
-  for (const c of $('lab-switches').querySelectorAll('input')) if (c.checked) env[c.dataset.key] = c.dataset.value;
-  const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--hold', '5'];
+  const env = {}, chosen = $('lab-switches').querySelector('input:checked')?.value || 'momentum';
+  const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--strategy', chosen, '--backend', 'serial'];
   if (['EU', 'APAC', 'INDEX'].includes(M)) { files['venues.txt'] = await (await fetch('lab/venues.txt')).text(); args.push('--venues', '/venues.txt'); }
   if (M === 'UK') { files['aim.txt'] = await (await fetch('lab/aim.txt')).text(); args.push('--stamp-free', '/aim.txt'); }
   status.textContent = `Running the model on ${(csv.length / 1e6).toFixed(1)} MB of bars…`;
   if (labWorker) labWorker.terminate();
   labWorker = new Worker('lab/worker.js', { type: 'module' });
   labWorker.onmessage = ({ data }) => {
-    if (data.progress) { status.textContent = data.progress.replace(/^uk: +/, '').slice(0, 120); return; }
+    if (data.progress) { status.textContent = data.progress.replace(/^strategy: +/, '').slice(0, 120); return; }
     if (data.error) { status.textContent = `The model stopped: ${data.error}`; $('lab-log').textContent = data.log.join('\n'); $('lab-log').hidden = false; return; }
     const b = data.report?.backtest, n = data.orders?.orders?.length || 0;
     status.textContent = `Done in ${(data.ms / 1000).toFixed(1)} s on this device.`;
     $('lab-verdict').innerHTML = b && b.trades
       ? `<div class="tile"><span class="k">On this device, ${b.from} – ${b.to}</span><span class="v">${pct(b.annualReturn)}</span><span class="s">a year · Sharpe ${b.sharpe.toFixed(2)} · worst fall ${pct(b.maxDrawdown, 0).slice(1)} · ${b.trades} trades</span></div>`
-      : '<div class="tile"><span class="k">On this device</span><span class="v">–</span><span class="s">too little history in the bars to learn and calibrate</span></div>';
+      : '<div class="tile"><span class="k">On this device</span><span class="v">–</span><span class="s">too little history in the bars for the strategy (it needs a year)</span></div>';
     table($('lab-orders'), [['Share'], ['Buy at open', 'num'], ['Sell at', 'num'], ['Expected', 'num']],
       n ? data.orders.orders.map((o) => {
         const last = o.close, cap = o.limit / last - 1;
-        return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'], signed(o.expected, 2)];
+        return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'], signed(o.expected, 2)];
       }) : [{ gap: 'No orders: none expected to gain after its costs.' }]);
-    $('lab-log').textContent = data.log.filter((l) => /^uk: /.test(l)).join('\n'), $('lab-log').hidden = false;
+    $('lab-log').textContent = data.log.filter((l) => /^strategy: /.test(l)).join('\n'), $('lab-log').hidden = false;
   };
   labWorker.postMessage({ csv, args, env, files }, [csv.buffer]);
 });

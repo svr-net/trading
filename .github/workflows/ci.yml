@@ -19,22 +19,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
-      - name: Build and test
+      - name: Build (the strategy engine with every strategy and back end)
         run: |
           cmake -S . -B build -G Ninja
           cmake --build build
-          ./build/ofm_tests
-      - name: No look-ahead (the model on a generated market, tools/check/leak.sh)
-        run: sh tools/check/leak.sh build/ofm_research
-      - name: The swing model on a generated market (tools/check/swing_leak.sh)
-        run: sh tools/check/swing_leak.sh build/ofm_swing
-      - name: The single-share model on a generated market (tools/check/single_leak.sh)
-        run: sh tools/check/single_leak.sh build/ofm_single
-      - name: The multi-day single-share model on a generated market (tools/check/hold_leak.sh)
-        run: sh tools/check/hold_leak.sh build/ofm_hold
-      - name: The UK model on a generated market (tools/check/uk_leak.sh)
-        run: sh tools/check/uk_leak.sh build/ofm_uk
-      - name: The UK model's orders through submit.py on a stand-in IBKR (tools/ibkr/test/levels.py)
+          ./build/ofm_strategy --list
+      - name: Every strategy on a generated market (no look-ahead, every back end the same, costs at the end; tools/check/strategy_check.sh)
+        run: sh tools/check/strategy_check.sh build/ofm_strategy
+      - name: The orders through submit.py on a stand-in IBKR (tools/ibkr/test/levels.py)
         run: python3 tools/ibkr/test/levels.py
       - name: The daily-bars fetch gives way to the bridge's other steps (tools/ibkr/test/pause.py)
         run: python3 tools/ibkr/test/pause.py
@@ -55,10 +47,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # The model as WebAssembly for the page's Lab (docker/wasm/Dockerfile): the toolchain's layers come from
-      # GitHub's cache, so a model change rebuilds only its own layer.
+      # The strategy engine as WebAssembly for the page's Lab (docker/wasm/Dockerfile): the toolchain's layers come
+      # from GitHub's cache, so a strategy change rebuilds only its own layer.
       - uses: docker/setup-buildx-action@v3
-      - name: The model as WebAssembly (cached layers)
+      - name: The strategy engine as WebAssembly (cached layers)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,11 +61,11 @@ jobs:
           cache-to: type=gha,mode=max,scope=wasm
       - name: The Lab's cost tables
         run: cp tools/venues.txt tools/eoddata/aim.txt web/lab/ && ls -l web/lab
-      - name: The WebAssembly model gives the native model's results (pull requests)
+      - name: The WebAssembly engine gives the native engine's results (pull requests)
         if: ${{ !inputs.site-only }}
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build -j4 --target ofm_uk > /dev/null
-          node tools/check/wasm_same.mjs build/ofm_uk web/lab/ofm_uk.js
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build -j4 --target ofm_strategy > /dev/null
+          node tools/check/wasm_same.mjs build/ofm_strategy web/lab/ofm_strategy.js
       - uses: actions/upload-artifact@v4
         with:
           name: site

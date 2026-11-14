@@ -12,7 +12,7 @@
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Automatic trades with Interactive Brokers, held up to 5 days</div>
+    <div class="eyebrow">Automatic trades with Interactive Brokers: research-backed strategies, held until dropped</div>
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
@@ -86,10 +86,10 @@
   </section>
 
   <section class="view" id="view-lab" hidden aria-labelledby="lab-title">
-    <h2 id="lab-title">Lab: the model on this device</h2>
-    <p class="hint">The same model as the evening scan, compiled to WebAssembly and run here, in a background thread, on this market's daily bars from your Interactive Brokers account (through your bridge; the prices stay on this device). Turn the model's switches on or off and run it: its backtest and the orders it would place next. IBKR's bars go back about two years, so the backtest is shorter than the scan's, which learns from up to nine.</p>
+    <h2 id="lab-title">Lab: the strategies on this device</h2>
+    <p class="hint">The same strategy engine as the evening scan, compiled to WebAssembly and run here, in a background thread, on this market's daily bars from your Interactive Brokers account (through your bridge; the prices stay on this device). Choose a strategy and run it: its backtest (before costs) and the orders it would place next (costs applied at the end). IBKR's bars go back about two years and a strategy needs one of them to start, so the backtest is shorter than the scan's, which uses up to nine.</p>
     <div class="lab-switches" id="lab-switches"></div>
-    <div class="broker-actions"><button type="button" id="lab-run">Run the model</button> <span class="muted" id="lab-status"></span></div>
+    <div class="broker-actions"><button type="button" id="lab-run">Run the strategy</button> <span class="muted" id="lab-status"></span></div>
     <div class="verdict" id="lab-verdict"></div>
     <div class="table-scroll"><table id="lab-orders"></table></div>
     <pre class="broker-log" id="lab-log" hidden></pre>
@@ -97,9 +97,9 @@
 
   <section class="view" id="view-about" hidden aria-labelledby="about-title">
     <h2 id="about-title">How it works</h2>
-    <p class="hint"><b>The model.</b> Every evening, after each market's close, one model per market (the UK, Europe, the US, Asia-Pacific and INDEX, UCITS index ETFs on Xetra) ranks its most traded shares from their daily prices and volumes. It looks for shares that fell on their own rather than with the market (<i>residual reversal</i>), and weights them more when the market is turbulent (<i>Nagel's liquidity premium</i>). It is fitted on the return over the 5 days a position can be held, and refitted every month on the years before only. Its bets shrink when its own results turn volatile (down to a quarter), so a bad run is ridden small rather than whole. A day with no bar for a share is filled with its last close for the model's inputs only: it never buys or sells on one.</p>
-    <p class="hint"><b>The orders.</b> Each pick is bought in the next opening auction only, never later in the day, at most at its own price cap: learnt from how the share usually opens and what opening that far above the close has cost or added before, so a strong pick buys more surely and a weak one avoids paying up. It is offered at each close at or above its exit level: the first close that reaches it sells it, and otherwise it is sold on its fifth day. Every morning the day's model updates the positions held: one it would no longer buy is sold at the open, and the others get their exit level set again. The bridge on your NAS places all of this at Interactive Brokers (a paper account for now) and records the fills; Results compares them with what the model expected.</p>
-    <p class="hint"><b>Costs and money.</b> No cost enters the learning, the backtests or the split of the money; Interactive Brokers' commissions, UK stamp duty (none on AIM shares) and the European taxes come off only the next day's final order list: each order's expected return after its own costs, and an order expected to lose after them is not made. The account's daily limit is split over the markets half by their backtested records over the last 20 sessions, the period that matters for a 5-day hold (before costs, as the model learns; the most recent days counting most, a day 10 sessions old half as much; the model itself still learns from years) and half by their outlook: the next day's orders' expected return after their costs, times their chance to fill in the opening auction, cut to the share of its expectations the model actually delivered in the backtest. The split gives the most to the best risk-adjusted, at most half to one market, and on paper at least 5% each. Each market's earlier models run beside it as shadows, so a change is measured before it is kept. Prices are not published under the data licence.</p>
+    <p class="hint"><b>The strategies.</b> Every evening, after each market's close, the strategy engine runs the market's strategy on its most traded shares' daily bars. Each strategy is one of the few that research has found to keep working after it was published and after trading costs: <i>momentum</i> (the shares with the highest return over the last year, leaving out the last month; Jegadeesh and Titman 1993), <i>trend following</i> (an asset held while its own year's return is positive; Hurst, Ooi and Pedersen 2017), <i>low volatility</i> (the calmest shares; Frazzini and Pedersen 2014) and <i>residual reversal</i> (the week's largest falls against the market; Blitz et al. 2013). Each is its own file in the engine and is chosen per market; the shares, prices and positions are the same for all.</p>
+    <p class="hint"><b>The book.</b> A market's book holds a few positions of equal size. At each rebalance (monthly for momentum and low volatility, weekly for trend following and reversal) the strategy scores the shares and the highest scores are the ones to hold. A share it no longer wants is sold at the next open; one it wants and does not hold is bought in the next opening auction, at most a little above the last close, and tried again the next morning if the open was higher. The bridge on your NAS places this at Interactive Brokers (a paper account for now) and records the fills; Results compares them with the backtest.</p>
+    <p class="hint"><b>Costs and money.</b> No cost enters the strategies, the backtests or the split of the money: they are judged on what the market did. Interactive Brokers' commissions, UK stamp duty (none on AIM shares) and the European taxes are applied only at the end, to the next day's order list: each order's expected return after its own costs, and one expected to lose after them is not placed. The account's limit is split over the markets by their backtested records and their outlook, at most half to one market, and on paper at least 5% each. Prices are not published under the data licence.</p>
     <footer>Research tool, not investment advice.</footer>
   </section>
 </div>
@@ -112,6 +112,6 @@
   <div class="legend" id="ohlc-legend"></div>
   <p class="hint">Daily bars from your Interactive Brokers account, through your bridge: shown only here, never published. <b>Bollinger bands</b>: the 20-day mean and 2 standard deviations either side. <b>PSAR</b>: the dots, under the price in a rise, over it in a fall (0.02 a step, at most 0.2). <b>Buy cap</b>: the most this order pays in the opening auction. <b>Exit</b>: its exit level, from a buy at the last close.</p>
 </dialog>
-<script type="module" src="app.js?v=77"></script>
+<script type="module" src="app.js?v=78"></script>
 </body>
 </html>

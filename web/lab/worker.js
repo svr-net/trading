@@ -1,14 +1,14 @@
-// The page's Lab: the model (apps/ofm_uk, built to WebAssembly by docker/wasm/Dockerfile) in a background thread,
+// The page's Lab: the strategy engine (apps/ofm_strategy, built to WebAssembly by docker/wasm/Dockerfile) in a background thread,
 // run on the market's daily bars from the bridge (prices: never published). One fresh instance per run.
-import createOfmUk from './ofm_uk.js';
+import createOfmStrategy from './ofm_strategy.js';
 
 self.onmessage = async ({ data }) => {
   const { csv, args, env, files } = data;
   const lines = [];
   try {
     const t0 = performance.now();
-    const m = await createOfmUk({
-      print: (s) => { lines.push(s); if (/^uk: /.test(s)) self.postMessage({ progress: s }); },
+    const m = await createOfmStrategy({
+      print: (s) => { lines.push(s); if (/^strategy: /.test(s)) self.postMessage({ progress: s }); },
       printErr: (s) => lines.push(s),
       preRun: [(mod) => Object.assign(mod.ENV, env)],
     });

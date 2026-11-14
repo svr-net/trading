@@ -410,7 +410,7 @@ def place_and_watch(market):
     if not as_of or date.fromisoformat(as_of) < date.today() - timedelta(days=4):
         return False, f'orders from {as_of or "?"} are too old: not placed'
     book = json.load(open(path))
-    if book.get('book') == 'hold':  # a multi-day book (apps/ofm_uk --hold): the hold book places it (hold-place), nothing within the day
+    if book.get('book') == 'hold':  # a multi-day book (apps/ofm_strategy): the hold book places it (hold-place), nothing within the day
         LIVE_HOLD[market] = (datetime.now(ZoneInfo(ZONE[market])).date().isoformat(), True)
         mark_done(market, 'place')
         return True, f"a multi-day book ({len(book.get('orders', []))} orders, held up to {book.get('days', 5)} days): placed by hold-place"
@@ -943,7 +943,7 @@ LIVE_HOLD = {}  # market -> (day, whether its live orders are a multi-day book)
 
 def live_is_hold(market):
     """Whether the market's live orders (orders/<MARKET>.json) are a multi-day book ("book": "hold",
-    apps/ofm_uk --hold): then the hold book places them (submit.py --holds), not the day's placing.
+    apps/ofm_strategy): then the hold book places them (submit.py --holds), not the day's placing.
     Read once a day (a failed read is tried again later)."""
     day = datetime.now(ZoneInfo(ZONE[market])).date().isoformat()
     c = LIVE_HOLD.get(market)
