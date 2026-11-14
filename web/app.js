@@ -262,6 +262,7 @@ const SHADOW_NOTE = {
   caplearn: "each order's own buy cap, learnt",
   nocaplearn: 'without the learnt buy cap (the close plus 0.5 volatility)',
   boll: 'with Bollinger bands',
+  psar: 'with a PSAR stop at the close',
 };
 function sideBySide(m) {
   const el = $('sidebyside');
