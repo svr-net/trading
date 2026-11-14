@@ -101,7 +101,8 @@
           "env": {
             "X_RESID": "1",
             "X_VOLREGIME": "1",
-            "X_TARGET": "5"
+            "X_TARGET": "5",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
@@ -206,7 +207,8 @@
           "env": {
             "X_RESID": "1",
             "X_VOLREGIME": "1",
-            "X_TARGET": "5"
+            "X_TARGET": "5",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
@@ -279,7 +281,8 @@
           "env": {
             "X_RESID": "1",
             "X_VOLREGIME": "1",
-            "X_TARGET": "5"
+            "X_TARGET": "5",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
@@ -352,7 +355,8 @@
           "env": {
             "X_RESID": "1",
             "X_VOLREGIME": "1",
-            "X_TARGET": "5"
+            "X_TARGET": "5",
+            "X_CAPLEARN": "1"
           },
           "args": [
             "--hold",
