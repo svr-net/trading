@@ -28,9 +28,15 @@ for s in $names; do
   n=$(wc -l < "$W/$s-cut.tr")
   [ "$n" -gt 10 ] || { echo "FAIL: $s: only $n orders on the shorter market"; exit 1; }
   head -n "$n" "$W/$s-$first.tr" | cmp -s - "$W/$s-cut.tr" || { echo "FAIL: $s: an order changed with later data (look-ahead)"; exit 1; }
+  # the PSAR stop and its buy-back: no look-ahead either
+  X_TRADELOG="$W/$s-psar.log" "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar.tr" > "$W/$s-psar.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar-cut.tr" > /dev/null
+  np=$(wc -l < "$W/$s-psar-cut.tr")
+  head -n "$np" "$W/$s-psar.tr" | cmp -s - "$W/$s-psar-cut.tr" || { echo "FAIL: $s with the PSAR stop: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "positions stopped" "$W/$s-psar.out" || { cat "$W/$s-psar.out"; echo "FAIL: $s: the PSAR stop did not run"; exit 1; }
   jq -e '.costs.net == false and .costs.atEnd == true
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
     || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
-  echo "strategy $s: $n orders unchanged by later data; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+  echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back); the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
 done

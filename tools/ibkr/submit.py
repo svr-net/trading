@@ -488,10 +488,14 @@ def holds(args):
              (LOC at the entry times 1 + exitAbove, at least the entry and a tick: sold at the first close
              that reaches it, as the backtest).
     An order with "entry": "open" (apps/ofm_strategy) is a limit good only through the opening auction
-    (GTD a few minutes after the open; a day order if IBKR refuses that), so it never buys a dip later."""
-    from ib_async import IB, LimitOrder, MarketOrder
+    (GTD a few minutes after the open; a day order if IBKR refuses that), so it never buys a dip later.
+    A stop (apps/ofm_strategy: "stopPrice", the store's price unit; the Parabolic SAR): a good-till-cancelled stop
+    sell at IBKR for each position (orderRef ofm-<MARKET>S-...), placed once its buy fills, moved each morning to
+    the day's level from the update, and cancelled before the book sells the position any other way."""
+    from ib_async import IB, LimitOrder, MarketOrder, StopOrder
     path = args.hold_state
     st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
+    stop_ref = f'ofm-{args.market}S'
     ref = f'ofm-{args.market}H-{date.today().isoformat()}'
     ib = IB()
     errors = {}
@@ -499,6 +503,28 @@ def holds(args):
     connect(ib, args, args.client_id + 7)
     lines = []
     held = {p.contract.symbol: p for p in ib.reqPositions() if p.position > 0}
+
+    def stops_of(sym):  # the book's working stop orders on a share
+        return [t for t in ib.reqAllOpenOrders() if t.contract.symbol == sym and (t.order.orderRef or '').startswith(stop_ref) and t.orderStatus.status not in DEAD]
+
+    def cancel_stops(sym):
+        for t in stops_of(sym):
+            ib.cancelOrder(t.order)
+
+    def set_stop(sym, contract, qty, level):
+        """The position's stop at `level` (IBKR's price scale), on the price step under it: kept when it is
+        already there, else the old one cancelled and a good-till-cancelled stop placed."""
+        c, ticks = exit_contract(ib, contract)
+        if c is None:
+            return f'{sym}: not found at IBKR, NO STOP'
+        lim = round_to(level, tick_at(ticks[0], ticks[1], level), 'down')
+        cur = stops_of(sym)
+        if len(cur) == 1 and abs(float(cur[0].order.auxPrice) - lim) < 1e-9 and float(cur[0].order.totalQuantity) == float(qty):
+            return f'{sym}: its stop kept at {lim:g}'
+        cancel_stops(sym)
+        fate, msgs = order_fate(ib, ib.placeOrder(c, StopOrder('SELL', qty, lim, orderRef=f'{stop_ref}-{date.today().isoformat()}', tif='GTC')), errors)
+        return f"{sym}: stop at {lim:g} (good till cancelled): {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else '')
+
     if args.holds == 'place':
         for sym in [s_ for s_ in st['positions'] if s_ not in held]:
             lines.append(f'{sym}: sold (no longer held)')
@@ -519,10 +545,14 @@ def holds(args):
                     lines.append(f'{sym}: already sold at the open today')
                     continue
                 qty = min(float(pos.get('qty', held[sym].position)), held[sym].position)
+                cancel_stops(sym)  # never two sales of the same shares
                 ok, line = sell_out(ib, held[sym].contract, qty, ref + '-exit', errors, at_close=False)
                 if ok:
                     pos['exiting'] = today
                 lines.append(f"{sym}: the model no longer holds it ({100 * float(u.get('expected') or 0):+.2f}% expected), sold at the open: {line}")
+            elif u.get('stopPrice') is not None and pos.get('scale'):  # kept: its stop moved to the day's level
+                pos['stop'] = float(u['stopPrice']) * float(pos['scale'])
+                lines.append(set_stop(sym, held[sym].contract, min(float(pos.get('qty', held[sym].position)), held[sym].position), pos['stop']))
             elif u.get('exitAbove') is not None and abs(float(u['exitAbove']) - float(pos.get('exitAbove') or 0)) > 1e-9:
                 lines.append(f"{sym}: kept; its exit level {100 * float(pos.get('exitAbove') or 0):+.2f}% -> {100 * float(u['exitAbove']):+.2f}% above the price paid")
                 pos['exitAbove'] = float(u['exitAbove'])
@@ -583,6 +613,8 @@ def holds(args):
                 how += ' (a day order: IBKR refused the good-till time)'
             # exitAbove null (apps/ofm_strategy): held until the strategy drops it (sold at the open by the daily update)
             st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up'), 'exitAbove': None if o.get('exitAbove') is None else float(o['exitAbove']), 'days': int(o.get('days') or 5)}
+            if o.get('stopPrice') is not None and o.get('entry') == 'open':  # its stop once it fills (IBKR's price scale)
+                st['pending'][sym].update(stopPrice=float(o['stopPrice']) * scale, scale=scale)
             free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     else:
@@ -603,6 +635,9 @@ def holds(args):
             plan = pend.get(sym, {})
             st['positions'][sym] = {'conId': c.conId, 'qty': q, 'entry': v / q, 'since': today, 'closes': 0,
                                     'exitAbove': None if plan.get('exitAbove', 0) is None else float(plan.get('exitAbove') or 0), 'days': int(plan.get('days') or 5)}
+            if plan.get('stopPrice') is not None:  # its stop: the strategy's level, under the price paid (else 5% under it)
+                lvl = float(plan['stopPrice'])
+                st['positions'][sym].update(stop=lvl if lvl < v / q else 0.95 * v / q, scale=float(plan.get('scale') or 1.0))
             lines.append(f'{sym}: bought {q:g} at {v / q:g}')
         st['pending'] = {}
         for sym, pos in st['positions'].items():
@@ -623,7 +658,10 @@ def holds(args):
                 lines.append(f'{sym}: not found at IBKR, NOT OFFERED')
                 continue
             last = int(pos.get('days') or 5)
+            if pos.get('stop') and pos['closes'] < last:  # the position's stop working at IBKR (placed after its fill; moved each morning)
+                lines.append(set_stop(sym, p.contract, qty, float(pos['stop'])))
             if pos['closes'] >= last:  # its last day: sold at the close whatever the price (a limit at the 20-day low if the exchange refuses a MOC)
+                cancel_stops(sym)
                 ok, line = sell_out(ib, c, qty, ref + '-close', errors, at_close=True)
                 lines.append(f'{sym}: its last day ({last}): {line}')
                 continue

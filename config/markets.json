@@ -4,7 +4,11 @@
     "UK": {
       "live": {
         "name": "momentum",
-        "strategy": "momentum"
+        "strategy": "momentum",
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": [],
       "budget": {
@@ -18,7 +22,11 @@
     "EU": {
       "live": {
         "name": "momentum",
-        "strategy": "momentum"
+        "strategy": "momentum",
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": [],
       "budget": {
@@ -32,7 +40,11 @@
     "US": {
       "live": {
         "name": "momentum",
-        "strategy": "momentum"
+        "strategy": "momentum",
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": [],
       "budget": {
@@ -46,7 +58,11 @@
     "APAC": {
       "live": {
         "name": "momentum",
-        "strategy": "momentum"
+        "strategy": "momentum",
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": [],
       "budget": {
@@ -60,7 +76,11 @@
     "INDEX": {
       "live": {
         "name": "trend",
-        "strategy": "trend"
+        "strategy": "trend",
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": [],
       "budget": {
@@ -78,7 +98,11 @@
         "args": [
           "--capital",
           "25000"
-        ]
+        ],
+        "params": {
+          "psar": 1,
+          "rebuy": 0
+        }
       },
       "shadows": []
     }
