@@ -118,6 +118,7 @@ struct Order {
   double fill = kNaN;   // how often its opening auction would have bought over the share's last 250 sessions
   double exitAbove = 0, holdDays = 0;  // --hold: sold at the first close this far above the price paid (else at the last), and the days such trades were held
   bool capped = false;  // its amount cut to the share's liquidity
+  double capK = kNaN;   // its own price cap in the opening auction, daily volatilities over the close (X_CAPLEARN; else --cap-sd)
 };
 
 struct Fill {
@@ -834,6 +835,68 @@ int main(int argc, char** argv) {
   // The orders for the session after the close t, before costs (the model and its backtest), or with
   // the broker's costs applied (withCosts: the final orders): each order's expected return less its own
   // costs, those that still gain kept, the highest expected gain in pounds first.
+  // X_CAPLEARN=1: each order's own price cap in the opening auction, learnt. Over the last 750 sessions known by
+  // the day (walk-forward), the market's shares' outcome after each size of opening gap (the gap over the close,
+  // in daily volatilities, in bands), against the day's mean, is what a gap costs or adds; the share's own gaps
+  // over its last 250 sessions are its chance to open in each band. The cap is the band edge that makes the most
+  // of the order: its chance to buy in each band times its expected return given that gap, added up. A strong
+  // pick takes a higher cap (bought more surely), a weak one keeps a tight one. The calibration stays on --cap-sd.
+  const bool xCapLearn = std::getenv("X_CAPLEARN") && std::string(std::getenv("X_CAPLEARN")) == "1";
+  static const std::vector<double> kGapEdge = {-1e9, -1, -0.5, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 8, 1e9};
+  const std::size_t NB = kGapEdge.size() - 1;
+  const auto bandOf = [&](double g) {
+    std::size_t b = 0;
+    while (b + 1 < NB && g > kGapEdge[b + 1]) ++b;
+    return b;
+  };
+  std::vector<double> gapS, gapN;  // prefix sums by day: (T + 1) x NB
+  if (xCapLearn) {
+    gapS.assign((T + 1) * NB, 0.0), gapN.assign((T + 1) * NB, 0.0);
+    for (std::size_t u = 0; u < T; ++u) {
+      for (std::size_t b = 0; b < NB; ++b) gapS[(u + 1) * NB + b] = gapS[u * NB + b], gapN[(u + 1) * NB + b] = gapN[u * NB + b];
+      if (Y[u].empty() || u + 1 >= T) continue;
+      double m = 0, n = 0;
+      for (double y : Y[u])
+        if (std::isfinite(y)) m += y, n += 1;
+      if (n < 20) continue;
+      m /= n;
+      for (std::size_t j = 0; j < Y[u].size(); ++j) {
+        const std::size_t i = uni[u][j];
+        if (!std::isfinite(Y[u][j]) || !p.hasOpen(u + 1, i) || !(sigma[at(u, i)] > 0)) continue;
+        const std::size_t b = bandOf((p.O[at(u + 1, i)] / p.C[at(u, i)] - 1) / sigma[at(u, i)]);
+        gapS[(u + 1) * NB + b] += Y[u][j] - m, gapN[(u + 1) * NB + b] += 1;
+      }
+    }
+  }
+  // The order's cap, its chance to buy and its expected return if it buys, at the close t.
+  const auto learnCap = [&](std::size_t t, std::size_t i, double e, double sg, double& fill, double& eFilled) {
+    const std::size_t hi = t + 1 >= xTarget + 1 ? t + 1 - (xTarget + 1) : 0, lo = hi > 750 ? hi - 750 : 0;  // days whose outcome is known at t
+    std::vector<double> adj(NB, 0.0);
+    double baseS = 0, baseN = 0;
+    for (std::size_t b = 0; b < NB; ++b) {
+      const double s = gapS[hi * NB + b] - gapS[lo * NB + b], n = gapN[hi * NB + b] - gapN[lo * NB + b];
+      adj[b] = n >= 30 ? s / n : 0.0;
+      if (kGapEdge[b + 1] <= o.capSd + 1e-9) baseS += s, baseN += n;  // the bands the calibration's trades bought in
+    }
+    const double base = baseN > 0 ? baseS / baseN : 0.0;
+    std::vector<double> pr(NB, 0.0);
+    double cnt = 0;
+    for (std::size_t q = t > 250 ? t - 250 : 0; q < t; ++q) {
+      if (!p.ok(q, i) || !p.hasOpen(q + 1, i) || !(sigma[at(q, i)] > 0)) continue;
+      pr[bandOf((p.O[at(q + 1, i)] / p.C[at(q, i)] - 1) / sigma[at(q, i)])] += 1, cnt += 1;
+    }
+    double best = -1e18, bestK = o.capSd, acc = 0, accP = 0, bestP = 0;
+    const double scale = sg * std::sqrt(double(xTarget));
+    for (std::size_t b = 0; b + 1 < NB; ++b) {  // the cap at each band's upper edge (8 at most)
+      const double pb = cnt > 0 ? pr[b] / cnt : 0.0;
+      acc += pb * (e + (adj[b] - base) * scale), accP += pb;
+      if (kGapEdge[b + 1] < 0.25 - 1e-9) continue;  // at least a quarter of a volatility over the close
+      if (acc > best + 1e-15) best = acc, bestK = kGapEdge[b + 1], bestP = accP;
+    }
+    fill = bestP;
+    eFilled = bestP > 0 ? best / bestP : e;
+    return bestK;
+  };
   const auto ordersAt = [&](std::size_t t, bool withCosts) {
     std::vector<Order> out;
     double a = 0, b = 0, lvAdj = 0, daysHeld = 0;
@@ -848,7 +911,14 @@ int main(int argc, char** argv) {
       r.value = noVolume ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX, INDEX: no volume to cap it by
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder || r.expected < o.hurdle) continue;
-      r.limit = r.close * (1 + o.capSd * r.sigma);
+      r.capK = o.capSd;
+      if (xCapLearn) {
+        double f = 0, ef = r.expected;
+        r.capK = learnCap(t, i, r.expected, r.sigma, f, ef);
+        r.expected = ef;  // its expected return if it buys, over the gaps its cap lets in
+        if (r.expected < o.hurdle) continue;
+      }
+      r.limit = r.close * (1 + r.capK * r.sigma);
       r.level = lv, r.adj = lvAdj, r.stopSd = stopOf(lv), r.takeSd = takeOf(lv), r.mode = modeOf(lv);
       if (o.hold) r.stopSd = kNaN, r.takeSd = kNaN, r.mode = 0, r.exitAbove = kTh[lv] * r.sigma, r.holdDays = daysHeld;
       r.stop = o.hold ? kNaN : r.close * (1 - r.stopSd * r.sigma);  // shown from the close; placed from the price bought at
@@ -863,7 +933,7 @@ int main(int argc, char** argv) {
       double n = 0, f = 0;
       for (std::size_t q = t > 250 ? t - 250 : 0; q < t; ++q) {
         if (!p.ok(q, r.i) || !p.ok(q + 1, r.i) || !(sigma[at(q, r.i)] > 0)) continue;
-        const double lim = p.C[at(q, r.i)] * (1 + o.capSd * sigma[at(q, r.i)]);
+        const double lim = p.C[at(q, r.i)] * (1 + r.capK * sigma[at(q, r.i)]);
         n += 1, f += p.hasOpen(q + 1, r.i) && p.O[at(q + 1, r.i)] <= lim;
       }
       r.fill = n > 0 ? f / n : kNaN;

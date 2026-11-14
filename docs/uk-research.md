@@ -138,3 +138,21 @@ the markets. The budget's record of each market is now its backtested daily resu
 subtracted the trade log's broker costs, `costs_of`, now removed. The costs come off the next day's final order
 list only (`apps/ofm_uk`, `ordersAt(T - 1, true)`): each order's expected return after its own commission, stamp
 duty and taxes, and an order expected to lose after them is not made.
+
+## Buying more surely (14 Nov 2026)
+
+An order that does not buy is a lost opportunity. The live buy is good only in the opening auction, at most the
+last close plus 0.5 daily volatilities (`--cap-sd 0.5`). Two experiments, as shadows in every market:
+
+- **Fixed caps.** `cap1`, `cap2` and `moo` set the cap at 1, 2 and 8 volatilities. At 8 the order in effect buys
+  at the auction's price.
+- **`X_CAPLEARN=1`, each order's own cap, learnt.** Two things are learnt walk-forward:
+  - What a gap costs or adds: for each size of opening gap over the close (bands from below −1 to above 3
+    daily volatilities), the market's shares' outcome against the day's mean, over the last 750 sessions whose
+    outcome is known.
+  - The share's chance to open in each band, from its own gaps over its last 250 sessions.
+
+  The cap is the band edge that makes the most of the order: its chance to buy in each band, times its expected
+  return given that gap, added up. A strong pick takes a higher cap and buys more surely; a weak one keeps a tight
+  one. The order's chance to fill and its expected return if filled follow from the cap, and so do its costs and
+  its rank. The calibration stays on `--cap-sd`. `uk_leak.sh`: no order changed by later data.
