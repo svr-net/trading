@@ -156,3 +156,22 @@ last close plus 0.5 daily volatilities (`--cap-sd 0.5`). Two experiments, as sha
   return given that gap, added up. A strong pick takes a higher cap and buys more surely; a weak one keeps a tight
   one. The order's chance to fill and its expected return if filled follow from the cap, and so do its costs and
   its rank. The calibration stays on `--cap-sd`. `uk_leak.sh`: no order changed by later data.
+
+### Results (14 Nov 2026, the store's data, before costs)
+
+| market | live (bought, Sharpe, worst fall) | `cap1` | `cap2` | `moo` | `caplearn` |
+|---|---|---|---|---|---|
+| UK | 86%, 1.52, 26.8% | 96%, 0.84, 32.7% | 99%, 0.42, 40.7% | 100%, 0.46, 34.9% | 67%, **3.54**, **16.5%** |
+| EU | 89%, 1.51, 34.1% | 95%, 1.51, 37.8% | 97%, 1.45, 39.2% | 98%, 1.37, 40.7% | 77%, **1.89**, **25.6%** |
+| US | 87%, 0.08, 45.1% | 97%, 0.22, 39.5% | 99%, 0.41, 40.6% | 100%, 0.29, 41.0% | 96%, **0.74**, 44.1% |
+| APAC | 85%, 0.78, 36.5% | 95%, 0.99, 39.1% | 98%, 1.10, 33.1% | 99%, 1.15, 28.6% | 79%, 1.08, **22.9%** |
+| INDEX | 70%, **2.37**, 15.4% | 83%, 2.03, 14.1% | 89%, 1.88, 16.2% | 89%, 1.85, 19.2% | 78%, 2.23, 14.8% |
+
+The live column is the budget's sizing; the rest are 5 slots of 5,000.
+
+- **Buying more often is not better on its own.** In the UK and Europe a share that opens well above its close
+  tends to give it back over the hold, so a higher fixed cap adds losing trades.
+- **The learnt cap separates the two cases per order.** It tightens where gap-ups lose (UK 67% bought, Sharpe
+  1.52 → 3.54) and opens up where they don't (the US 96% bought, Sharpe 0.08 → 0.74).
+- **Now live** in the UK, Europe, the US and Asia-Pacific; INDEX keeps the close plus 0.5. Shadow `nocaplearn`
+  keeps the model without it in view.
