@@ -12,7 +12,8 @@
           "X_RISK": "1",
           "X_CAPLEARN": "1",
           "X_ROBUSTVOL": "1",
-          "X_EXCESS": "1"
+          "X_EXCESS": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -261,6 +262,41 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1"
+          }
         }
       ],
       "budget": {
@@ -283,7 +319,8 @@
           "X_RISK": "1",
           "X_CAPLEARN": "1",
           "X_TOPFRAC": "0.2",
-          "X_EXCESS": "1"
+          "X_EXCESS": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -506,6 +543,41 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1"
+          }
         }
       ],
       "budget": {
@@ -528,7 +600,8 @@
           "X_RISK": "1",
           "X_CAPLEARN": "1",
           "X_ROBUSTVOL": "1",
-          "X_EXCESS": "1"
+          "X_EXCESS": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -719,6 +792,41 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1"
+          }
         }
       ],
       "budget": {
@@ -742,7 +850,8 @@
           "X_CAPLEARN": "1",
           "X_ROBUSTVOL": "1",
           "X_TOPFRAC": "0.2",
-          "X_EXCESS": "1"
+          "X_EXCESS": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -939,6 +1048,43 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1"
+          }
         }
       ],
       "budget": {
@@ -960,7 +1106,8 @@
           "X_TARGET": "5",
           "X_RISK": "1",
           "X_TOPFRAC": "0.2",
-          "X_EXCESS": "1"
+          "X_EXCESS": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -1131,6 +1278,39 @@
             "--hold",
             "5"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1"
+          }
         }
       ],
       "budget": {
@@ -1150,7 +1330,8 @@
           "X_RESID": "1",
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
-          "X_RISK": "1"
+          "X_RISK": "1",
+          "X_NOEDGE": "rank"
         },
         "args": [
           "--hold",
@@ -1170,6 +1351,39 @@
             "--capital",
             "25000"
           ]
+        },
+        {
+          "name": "edgeonly",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5",
+            "--capital",
+            "25000"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_NOEDGE": "skip"
+          }
+        },
+        {
+          "name": "nofallback",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5",
+            "--capital",
+            "25000"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1"
+          }
         }
       ]
     }
