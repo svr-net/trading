@@ -88,7 +88,7 @@ for o in rows:
     if o['filled'] != '0':  # bought at the open, under its limit; out at its stop, its take-profit or the close
         e, x = float(o['entry']), float(o['exitPrice'])
         assert e <= lim, o
-        if o['exit'] == '1': assert abs(x / e - 1 - float(o['stopRel'])) < 1e-4, o
+        if o['exit'] == '1': assert x / e - 1 >= float(o['stopRel']) - 1e-4, o  # at its stop or above it (trailing, break-even: moved up)
         if o['exit'] == '2': assert float(o['takeRel']) > 0 and abs(x / e - 1 - float(o['takeRel'])) < 1e-4, o
 filled = sum(1 for o in rows if o['filled'] != '0')
 assert filled > 0.6 * len(rows), f'only {filled} of {len(rows)} orders bought at the open'

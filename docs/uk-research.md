@@ -274,3 +274,13 @@ in every market, so every share had the same expected return and the order list 
 before. `rank` is live in every market; the shadows `edgeonly` (`skip`) and `nofallback` (the live model before it)
 stay on the page beside it, so the three can be compared. An order picked this way says so in its chart's pop-up.
 The look-ahead check (tools/check/uk_leak.sh) covers it.
+
+### Costs only at the end (14 Nov)
+
+No cost enters the modelling:
+- The learning, the backtest and the order list are all before costs.
+- Stops and take-profits pay no half spread.
+- The order list is sorted by expected return, highest first. It was sorted by expected gain in money; on a day the forecast has no weight, it is still sorted by the forecast's rank.
+- The budget split's outlook is before costs.
+
+The broker's costs are applied last, to the finished list. Each order's expected return less its own costs is what the page shows. An order its costs make a loss is dropped, and no other order takes its place.
