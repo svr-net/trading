@@ -412,7 +412,8 @@
     "env": {
      "X_RESID": "1",
      "X_VOLREGIME": "1",
-     "X_TARGET": "5"
+     "X_TARGET": "5",
+     "X_RISK": "1"
     },
     "ref": null
    },
