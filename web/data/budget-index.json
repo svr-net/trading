@@ -2,13 +2,13 @@
  "market": "INDEX",
  "date": "2026-11-13",
  "score": 0.0,
- "share": 0.425,
+ "share": 0.275,
  "allocation": {
-  "APAC": 0.05,
-  "EU": 0.05,
-  "INDEX": 0.425,
-  "UK": 0.425,
-  "US": 0.05
+  "APAC": 0.15,
+  "EU": 0.15,
+  "INDEX": 0.275,
+  "UK": 0.275,
+  "US": 0.15
  },
  "record": {
   "2025-11-07": -0.00792301,
@@ -267,14 +267,14 @@
   "expectedDaily": 0.0005102790523112197,
   "delivered": 1.0
  },
- "total": 16150.0,
+ "total": 10450.0,
  "currency": "EUR",
  "slots": [
   3,
   5
  ],
  "next": 5,
- "amount": 3230.0,
+ "amount": 2090.0,
  "chosen": {
   "3": 660,
   "5": 1352
