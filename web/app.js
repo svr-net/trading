@@ -173,6 +173,31 @@ function drawChart(r) {
   let lastX = -Infinity;
   C.years.forEach((yr) => { if (X(yr.x) - lastX >= 60) { ctx.fillText(yr.label, X(yr.x) - 12, h - 6); lastX = X(yr.x); } });
   const series = C.series.filter((s) => color[s.name]);  // the daily trades only (an older scan also carries the market)
+  // Stretches with no trade (the line flat for 15 points or more, about 30 sessions): shaded and named, so they
+  // do not read as missing data. At the start the model is still learning (its first fit and calibration); later
+  // it stood aside because its out-of-sample record showed no edge (14 Nov: the US, mid-2023 to early 2024).
+  const flat = [];
+  if (series[0]) {
+    const y = series[0].y;
+    let a = 0;
+    for (let i = 1; i <= y.length; i++) {
+      if (i < y.length && y[i] === y[i - 1]) continue;
+      if (i - 1 - a >= 15) flat.push([a, i - 1]);
+      a = i;
+    }
+    const n = y.length - 1 || 1;
+    ctx.save();
+    flat.forEach(([a0, b0]) => {
+      const x0 = X(a0 / n), x1 = X(b0 / n);
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = css.getPropertyValue('--muted').trim();
+      ctx.fillRect(x0, pad.t, x1 - x0, h - pad.t - pad.b);
+      ctx.globalAlpha = 1;
+      const label = a0 === 0 ? 'learning' : 'no trades';
+      if (x1 - x0 >= ctx.measureText(label).width + 6) ctx.fillText(label, (x0 + x1) / 2 - ctx.measureText(label).width / 2, pad.t + 12);
+    });
+    ctx.restore();
+  }
   series.forEach((s) => {
     ctx.strokeStyle = color[s.name] || ctx.strokeStyle;
     ctx.lineWidth = 2;
@@ -180,7 +205,8 @@ function drawChart(r) {
     s.y.forEach((y, i) => (i ? ctx.lineTo(X(i / (s.y.length - 1)), Y(y)) : ctx.moveTo(X(0), Y(y))));
     ctx.stroke();
   });
-  legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('');
+  legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('')
+    + (flat.length ? '<span class="flat-key">shaded: no trades (the model stood aside: no edge in its record)</span>' : '');
 }
 window.addEventListener('resize', () => { if (shown) drawChart(shown); });
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
