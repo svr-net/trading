@@ -92,6 +92,13 @@
     <footer>Research tool, not investment advice.</footer>
   </section>
 </div>
-<script type="module" src="app.js?v=67"></script>
+<dialog id="chart-dialog" aria-labelledby="chart-dialog-title">
+  <div class="dialog-head"><h3 id="chart-dialog-title">Chart</h3><button type="button" id="chart-dialog-close" aria-label="Close">✕</button></div>
+  <p class="muted" id="chart-dialog-note"></p>
+  <canvas id="ohlc" height="340" aria-label="Daily candles, volume, Bollinger bands and PSAR"></canvas>
+  <div class="legend" id="ohlc-legend"></div>
+  <p class="hint">Daily bars from your Interactive Brokers account, through your bridge: shown only here, never published. <b>Bollinger bands</b>: the 20-day mean and 2 standard deviations either side. <b>PSAR</b>: the dots, under the price in a rise, over it in a fall (0.02 a step, at most 0.2). <b>Buy cap</b>: the most this order pays in the opening auction. <b>Exit</b>: its exit level, from a buy at the last close.</p>
+</dialog>
+<script type="module" src="app.js?v=68"></script>
 </body>
 </html>
