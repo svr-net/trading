@@ -12,7 +12,8 @@
      "X_RISK": "1",
      "X_CAPLEARN": "1",
      "X_TOPFRAC": "0.2",
-     "X_EXCESS": "1"
+     "X_EXCESS": "1",
+     "X_NOEDGE": "rank"
     },
     "ref": null
    },
@@ -209,6 +210,35 @@
      "X_RISK": "1",
      "X_CAPLEARN": "1",
      "X_TOPFRAC": "0.2"
+    },
+    "ref": null
+   },
+   {
+    "name": "edgeonly",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_TOPFRAC": "0.2",
+     "X_EXCESS": "1",
+     "X_NOEDGE": "skip"
+    },
+    "ref": null
+   },
+   {
+    "name": "nofallback",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1",
+     "X_TOPFRAC": "0.2",
+     "X_EXCESS": "1"
     },
     "ref": null
    }
