@@ -249,6 +249,9 @@ const SHADOW_NOTE = {
   'hold5-base': 'without the research switches',
   'resid-target': 'without the volatility regime',
   noroll: 'without rolling missing bars',
+  adapt: 'with adaptive learning',
+  risk: "with the book's volatility target",
+  'adapt-risk': 'with adaptive learning and the volatility target',
 };
 function sideBySide(m) {
   const el = $('sidebyside');
