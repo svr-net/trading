@@ -267,6 +267,8 @@ function chartWhy(o) {
   // this much a day (the order list is chosen by the expected return, which scales with the daily move).
   // With the same baseline for every share (sameBase: X_EXCESS), the forecast's part is what put it on the list.
   const split = o.fromForecast == null || o.fromAverage == null ? ''
+    : o.noEdge === 'merge'
+      ? `<p class="split">Today the forecast's past record gave it no weight. Its expected return before costs is ${pct(o.fromForecast + o.fromAverage, 2)}, the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. It was picked by that and by the forecast's rank together${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}: each share's place on the two lists added.</p>`
     : o.noEdge
       ? `<p class="split">Today the forecast's past record gave it no weight, so every share has the same expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}. It was picked by the forecast's rank instead${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, from its top fifth.</p>`
     : o.sameBase
@@ -462,6 +464,7 @@ const SHADOW_NOTE = {
   forecast: 'the forecast counts for more (the same baseline for every share)',
   noexcess: 'the live model before the forecast counted for more',
   edgeonly: 'no orders on a day the forecast has no weight',
+  rankpick: "on a day the forecast has no weight, by its rank alone (the forecast's top fifth)",
   nofallback: 'the live model before 14 Nov (no forecast-rank pick on a day the forecast has no weight)',
 };
 function sideBySide(m) {
@@ -730,7 +733,7 @@ const LAB_SWITCHES = [
   ['X_ROBUSTVOL', '1', 'A volatility without one-off jumps'],
   ['X_TOPFRAC', '0.2', "Only the forecast's top fifth"],
   ['X_EXCESS', '1', 'The forecast counts for more'],
-  ['X_NOEDGE', 'rank', "On a day the forecast has no weight, pick by its rank (top fifth)"],
+  ['X_NOEDGE', 'merge', 'On a day the forecast has no weight, pick by its rank and the expected return together'],
   ['X_BOLL', '1', 'Bollinger bands as inputs'],
   ['X_PSAR', '1', 'A PSAR exit at the close'],
   ['X_ADAPT', '1', 'Adaptive learning (three windows)'],

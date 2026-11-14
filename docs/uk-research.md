@@ -275,6 +275,25 @@ before. `rank` is live in every market; the shadows `edgeonly` (`skip`) and `nof
 stay on the page beside it, so the three can be compared. An order picked this way says so in its chart's pop-up.
 The look-ahead check (tools/check/uk_leak.sh) covers it.
 
+### The rank pick and the previous model merged (15 Nov)
+
+The first full scan with `rank` live gave up most of the return against the previous model (`nofallback`):
+
+| Market | `rank` | `nofallback` | `edgeonly` |
+|---|---|---|---|
+| UK | +20%, 1.42 | +103%, 4.32 | +1%, 0.18 |
+| EU | +35%, 2.00 | +41%, 2.06 | −1%, −0.15 |
+| US | +5%, 0.33 | +10%, 0.58 | +4%, 0.42 |
+| APAC | +9%, 0.50 | +23%, 1.18 | +6%, 0.62 |
+| INDEX | +38%, 2.24 | +41%, 2.86 | −1%, −0.52 |
+| FOREX | +3%, 0.79 | +8%, 2.65 | 0%, 0.01 |
+
+(A year's return and the Sharpe, before costs.) `edgeonly` earning nearly nothing shows the forecast has no weight
+on most days, and on those the return comes from the average trade's part. The top fifth alone does worse too
+(`topfifth`, UK +46%, US −6%). `X_NOEDGE=merge` is now live in every market: on a day without weight, every share
+by its place on the expected return's list and on the forecast's added (a Borda count). Days with weight are as
+before. The shadows `rankpick` (`rank`), `nofallback` and `edgeonly` stay on the page beside it.
+
 ### Costs only at the end (14 Nov)
 
 No cost enters the modelling:
