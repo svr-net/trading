@@ -87,6 +87,7 @@
     "daily_max": 50000,
     "currency": "EUR",
     "paper": true,
-    "reserve": 12000
+    "reserve": 12000,
+    "paper_floor": 0.15
   }
 }

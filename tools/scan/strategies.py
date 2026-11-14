@@ -623,7 +623,7 @@ def main():
                          f"of which the backtest delivered {100 * fdel:.0f}% over the last {SPLIT_WINDOW} sessions (recent trades counting most): {100 * outlook:+.3f}% a day")
             lines.append("budget:   the split that maximises the account's risk-adjusted return (half the records before costs, half the outlook, over the last " + str(SPLIT_WINDOW) + " sessions, the most recent counting most (half-life " + str(HALF_LIFE) + "); the markets' covariance; "
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
-                         + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
+                         + (f", at least {100 * floor:.0f}% each on paper" if paper_of(args.config) else '') + '): '
                          + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
         # A book no larger than the money allows: each order at least the engine's smallest (MIN_ORDER), else fewer and
         # larger positions (a market on the paper floor, 5% of the account, cannot hold 10 orders of a few hundred).
