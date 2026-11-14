@@ -112,3 +112,21 @@ same in calm and turbulent markets rides a bad run to its end. Two switches addr
   scaled order's minimum commission is slightly understated.
 
 `tools/check/uk_leak.sh` checks both: no order changed by later data.
+
+### Results (14 Nov 2026, the store's data, before costs, 5 slots of 5,000, on top of the live switches)
+
+| market | live | `adapt` | `risk` | `adapt-risk` |
+|---|---|---|---|---|
+| UK | +43.6% a year, Sharpe 1.44, worst fall 33.5% | +42.6%, 1.44, 37.2% | +32.4%, 1.41, **25.7%** | +32.1%, 1.43, 29.0% |
+| EU | +49.8%, 1.65, 39.6% | +35.3%, 1.31, 48.1% | +32.1%, 1.43, **34.5%** | +25.1%, 1.20, 39.0% |
+| US | −1.6%, 0.12, 65.4% | −4.7%, 0.00, 68.9% | −0.3%, 0.10, **49.0%** | −1.7%, 0.03, 53.5% |
+| APAC | +26.1%, 0.96, 43.9% | +25.0%, 0.92, 43.3% | +27.8%, **1.25**, **29.3%** | +18.6%, 0.91, 32.5% |
+| INDEX | +45.5%, 2.39, 15.5% | +44.1%, 2.32, 15.8% | +42.5%, 2.37, 15.4% | +40.9%, 2.30, 15.7% |
+
+The live column is the budget's sizing; the others are 5 slots of 5,000.
+
+- **`X_ADAPT` doesn't help.** The short window's fit is noisier than the break it was meant to catch: Europe's 2022
+  went from +45% to −18%. It stays a shadow.
+- **`X_RISK` cuts every market's worst fall,** by up to 16 points (the US 65% → 49%, APAC 44% → 29%), and halves
+  APAC's 2026 loss (−37% → −17%), for a lower return in the calm years. It is now live in every market. The
+  shadow `norisk` keeps the model without it in view.

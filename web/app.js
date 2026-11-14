@@ -250,8 +250,7 @@ const SHADOW_NOTE = {
   'resid-target': 'without the volatility regime',
   noroll: 'without rolling missing bars',
   adapt: 'with adaptive learning',
-  risk: "with the book's volatility target",
-  'adapt-risk': 'with adaptive learning and the volatility target',
+  norisk: "without the book's volatility target",
 };
 function sideBySide(m) {
   const el = $('sidebyside');
