@@ -172,9 +172,11 @@ def days_of(path):
     return out
 
 
-# The split's memory: the most recent days count most, exponentially (a day HALF_LIFE sessions old counts half
-# as much as the last one), so a market's money follows a change in its results within weeks, not a year.
-HALF_LIFE = 60
+# The split's memory: the period relevant to the multi-day hold only (SPLIT_WINDOW sessions: four 5-day holds),
+# not the whole year; within it the most recent days count most, exponentially (a day HALF_LIFE sessions old
+# counts half as much as the last one). The model itself still learns from its years of history.
+SPLIT_WINDOW = 20
+HALF_LIFE = 10
 
 
 def ew_weights(n, half_life=HALF_LIFE):
@@ -323,7 +325,7 @@ def forward_of(orders_path, tradelog_path, since):
     return exp * delivered, exp, delivered
 
 
-def allocate(records, cap=0.5, floor=0.0, forward=None, blend=0.5, half_life=HALF_LIFE):
+def allocate(records, cap=0.5, floor=0.0, forward=None, blend=0.5, half_life=HALF_LIFE, window=SPLIT_WINDOW):
     """The account's daily limit split over the markets to maximise its risk-adjusted return: each market's
     record (its daily results before costs over the last year, on the same days) gives its mean,
     shrunk by its t statistic, and the markets' covariance, shrunk halfway to its diagonal; the weights are
@@ -333,7 +335,7 @@ def allocate(records, cap=0.5, floor=0.0, forward=None, blend=0.5, half_life=HAL
     names = sorted(records)
     if not names:
         return {}
-    dates = sorted(set().union(*(records[m].keys() for m in names)))[-250:]
+    dates = sorted(set().union(*(records[m].keys() for m in names)))[-window:]
     x = {m: [records[m].get(d, 0.0) for d in dates] for m in names}
     n = len(dates)
     mu = {m: shrunk(x[m], half_life) for m in names}
@@ -549,9 +551,9 @@ def main():
         # backtests or the split of the money; the costs come off the next day's final orders only (apps/ofm_uk:
         # each order's expected return after its own costs, an order expected to lose after them not made).
         record = dict(zip(days[-250:], meta[-250:]))
-        score = shrunk(meta[-250:], HALF_LIFE)
+        score = shrunk(meta[-SPLIT_WINDOW:], HALF_LIFE)
         # The outlook: the next session's final orders, their chance to fill and what the model has delivered.
-        outlook, fexp, fdel = forward_of(f'data/budget/orders-{nxt}.json', f'data/budget/trades-{nxt}.csv', days[-250] if len(days) >= 250 else '')
+        outlook, fexp, fdel = forward_of(f'data/budget/orders-{nxt}.json', f'data/budget/trades-{nxt}.csv', days[-SPLIT_WINDOW] if len(days) >= SPLIT_WINDOW else '')
         daily, cur = account_of(args.config)
         share, scale = 1.0, 1.0
         alloc = {}
@@ -602,8 +604,8 @@ def main():
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; "
                          f"its record before costs {100 * score:+.3f}% a day shrunk)")
             lines.append(f"budget:   the outlook: the next session's orders {100 * fexp:+.3f}% a day expected (after their costs, times their chance to fill), "
-                         f"of which the backtest delivered {100 * fdel:.0f}% over the last year (recent trades counting most): {100 * outlook:+.3f}% a day")
-            lines.append("budget:   the split that maximises the account's risk-adjusted return (half the records before costs, half the outlook, the most recent days counting most (half-life 60 sessions); the markets' covariance; "
+                         f"of which the backtest delivered {100 * fdel:.0f}% over the last {SPLIT_WINDOW} sessions (recent trades counting most): {100 * outlook:+.3f}% a day")
+            lines.append("budget:   the split that maximises the account's risk-adjusted return (half the records before costs, half the outlook, over the last " + str(SPLIT_WINDOW) + " sessions, the most recent counting most (half-life " + str(HALF_LIFE) + "); the markets' covariance; "
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
                          + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
                          + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
