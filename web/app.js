@@ -265,10 +265,12 @@ function chartWhy(o) {
   const why = (o.why || []).map((w) => (REASON[w.k] ? REASON[w.k](w.v) : w.k));
   // Where its expected return comes from: the forecast's part, and the average trade's for a share that moves
   // this much a day (the order list is chosen by the expected return, which scales with the daily move).
-  const split = o.fromForecast != null && o.fromAverage != null
-    ? `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, and <b>${pct(o.fromAverage, 2)}</b> the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. ${
-      Math.abs(o.fromForecast) < Math.abs(o.fromAverage) ? 'It is on the list mostly for how much it moves, less for the forecast.' : 'It is on the list mostly for the forecast.'}</p>`
-    : '';
+  // With the same baseline for every share (sameBase: X_EXCESS), the forecast's part is what put it on the list.
+  const split = o.fromForecast == null || o.fromAverage == null ? ''
+    : o.sameBase
+      ? `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromAverage, 2)}</b> the average trade's, the same for every share today, and <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, for a share that moves ${pct(o.sigma, 1).slice(1)} a day. The forecast's part is what put it on the list.</p>`
+      : `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, and <b>${pct(o.fromAverage, 2)}</b> the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. ${
+        Math.abs(o.fromForecast) < Math.abs(o.fromAverage) ? 'It is on the list mostly for how much it moves, less for the forecast.' : 'It is on the list mostly for the forecast.'}</p>`;
   $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
     + split + (why.length ? `<strong>What the forecast saw</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
 }
@@ -456,6 +458,7 @@ const SHADOW_NOTE = {
   'robust-top': "the forecast's top fifth, with the robust volatility",
   previous: 'the live model before 14 Nov (without the robust volatility / top fifth)',
   forecast: 'the forecast counts for more (the same baseline for every share)',
+  noexcess: 'the live model before the forecast counted for more',
 };
 function sideBySide(m) {
   const el = $('sidebyside');

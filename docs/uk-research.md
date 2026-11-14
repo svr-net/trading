@@ -250,3 +250,17 @@ typical daily move (the median of the list), and only the forecast's part at the
 volatility alone, while the forecast still scales with how far the share moves. The order list, its costs check,
 the daily update of the positions held and the page's split all use it. Shadow `forecast` in every market;
 `uk_leak.sh`: no order changed by later data.
+
+### Results and the live models (14 Nov 2026; before costs)
+
+| market | live before (Sharpe, worst fall) | `forecast` |
+|---|---|---|
+| UK | 3.65, 17.9% | **4.30, 15.8%** |
+| EU | 1.82, 20.9% | **2.11**, 22.0% |
+| US | 0.27, 41.9% | **0.58, 35.2%** |
+| APAC | 1.11, 32.7% | **1.12, 22.5%** |
+| INDEX | 2.74, 9.3% | **2.86**, 10.6% |
+
+`X_EXCESS` is now live in every market. Every shadow stays on the page; `noexcess` keeps the live model before it.
+The page's orders carry `sameBase`: with the same baseline for every share, the pop-up says the forecast's part
+put the order on the list.
