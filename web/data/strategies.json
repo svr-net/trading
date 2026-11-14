@@ -263,6 +263,16 @@
      "X_TARGET": "5"
     },
     "ref": null
+   },
+   {
+    "name": "noroll",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5"
+    },
+    "ref": null
    }
   ],
   "forex": [
