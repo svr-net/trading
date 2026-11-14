@@ -261,6 +261,7 @@ const SHADOW_NOTE = {
   moo: "buy at the auction's price, whatever it is",
   caplearn: "each order's own buy cap, learnt",
   nocaplearn: 'without the learnt buy cap (the close plus 0.5 volatility)',
+  boll: 'with Bollinger bands',
 };
 function sideBySide(m) {
   const el = $('sidebyside');
