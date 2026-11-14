@@ -267,6 +267,8 @@ function chartWhy(o) {
   // this much a day (the order list is chosen by the expected return, which scales with the daily move).
   // With the same baseline for every share (sameBase: X_EXCESS), the forecast's part is what put it on the list.
   const split = o.fromForecast == null || o.fromAverage == null ? ''
+    : o.noEdge
+      ? `<p class="split">Today the forecast's past record gave it no weight, so every share has the same expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}. It was picked by the forecast's rank instead${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, from its top fifth.</p>`
     : o.sameBase
       ? `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromAverage, 2)}</b> the average trade's, the same for every share today, and <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, for a share that moves ${pct(o.sigma, 1).slice(1)} a day. The forecast's part is what put it on the list.</p>`
       : `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, and <b>${pct(o.fromAverage, 2)}</b> the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. ${
@@ -459,6 +461,8 @@ const SHADOW_NOTE = {
   previous: 'the live model before 14 Nov (without the robust volatility / top fifth)',
   forecast: 'the forecast counts for more (the same baseline for every share)',
   noexcess: 'the live model before the forecast counted for more',
+  edgeonly: 'no orders on a day the forecast has no weight',
+  nofallback: 'the live model before 14 Nov (no forecast-rank pick on a day the forecast has no weight)',
 };
 function sideBySide(m) {
   const el = $('sidebyside');
@@ -726,6 +730,7 @@ const LAB_SWITCHES = [
   ['X_ROBUSTVOL', '1', 'A volatility without one-off jumps'],
   ['X_TOPFRAC', '0.2', "Only the forecast's top fifth"],
   ['X_EXCESS', '1', 'The forecast counts for more'],
+  ['X_NOEDGE', 'rank', "On a day the forecast has no weight, pick by its rank (top fifth)"],
   ['X_BOLL', '1', 'Bollinger bands as inputs'],
   ['X_PSAR', '1', 'A PSAR exit at the close'],
   ['X_ADAPT', '1', 'Adaptive learning (three windows)'],

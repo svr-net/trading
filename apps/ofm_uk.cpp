@@ -118,6 +118,8 @@ struct Order {
   double fill = kNaN;   // how often its opening auction would have bought over the share's last 250 sessions
   double exitAbove = 0, holdDays = 0;  // --hold: sold at the first close this far above the price paid (else at the last), and the days such trades were held
   bool capped = false;  // its amount cut to the share's liquidity
+  double fc = 0;        // the forecast (the model's score at the close)
+  bool noEdge = false;  // X_NOEDGE=rank: chosen by the forecast's rank on a day its calibrated weight was 0
   double capK = kNaN;   // its own price cap in the opening auction, daily volatilities over the close (X_CAPLEARN; else --cap-sd)
   double fromForecast = 0, fromAverage = 0;  // its expected return: the forecast's part (b * forecast * sigma) and the average trade's (a * sigma)
 };
@@ -970,6 +972,11 @@ int main(int argc, char** argv) {
   };
   const double topFrac = std::getenv("X_TOPFRAC") ? std::clamp(std::atof(std::getenv("X_TOPFRAC")), 0.01, 1.0) : 1.0;
   double topCut = -1e18;
+  // X_NOEDGE: a day the calibration gives the forecast no weight (its slope shrunk to 0: no clear link to the
+  // outcome in its recent record; 14 Nov, every market). skip: no order that day. rank: only the forecast's top
+  // fifth may be ordered, by its rank (else the common baseline ties them and the learnt cap's gap adjustment
+  // and the order's size choose: 14 Nov, TRB back on the UK's list at rank 124).
+  const std::string xNoEdge = std::getenv("X_NOEDGE") ? std::getenv("X_NOEDGE") : "";
   const auto ordersAt = [&](std::size_t t, bool withCosts) {
     std::vector<Order> out;
     if (topFrac < 1 && !pred[t].empty()) {
@@ -981,6 +988,15 @@ int main(int argc, char** argv) {
     double a = 0, b = 0, lvAdj = 0, daysHeld = 0;
     const std::size_t lv = o.hold ? holdAt(t, lvAdj) : levelsAt(t, lvAdj);
     if (pred[t].empty() || !(o.hold ? calibrationH(t, lv, a, b, daysHeld) : calibration(t, lv, a, b))) return out;
+    const bool noEdge = !(b > 0) && !xNoEdge.empty();
+    if (noEdge && xNoEdge == "skip") return out;
+    double edgeCut = -1e18;
+    if (noEdge) {  // rank: the forecast's top fifth
+      std::vector<double> v = pred[t];
+      const std::size_t k = std::min(v.size() - 1, std::size_t(std::floor(0.8 * double(v.size()))));
+      std::nth_element(v.begin(), v.begin() + long(k), v.end());
+      edgeCut = v[k];
+    }
     const auto& u = uni[t];
     for (std::size_t j = 0; j < u.size(); ++j) {
       const std::size_t i = u[j];
@@ -989,6 +1005,8 @@ int main(int argc, char** argv) {
       r.expected = expectedOf(t, a, b, pred[t][j], r.sigma);  // the trade as placed: bought at the open, out at its exit
       r.fromForecast = b * pred[t][j] * r.sigma, r.fromAverage = r.expected - r.fromForecast;
       if (topFrac < 1 && pred[t][j] < topCut) continue;  // X_TOPFRAC: only the forecast's top part of the day's list
+      if (noEdge && pred[t][j] < edgeCut) continue;     // X_NOEDGE=rank, no weight today: the forecast's top fifth
+      r.fc = pred[t][j], r.noEdge = noEdge;
       r.value = noVolume ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX, INDEX: no volume to cap it by
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder || r.expected < o.hurdle) continue;
@@ -1008,7 +1026,10 @@ int main(int argc, char** argv) {
       if (withCosts && !(r.net > 0)) continue;  // its costs take all it is expected to gain: no order
       out.push_back(r);
     }
-    std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.net * x.value > y.net * y.value || (x.net * x.value == y.net * y.value && x.i < y.i); });
+    if (noEdge)  // no weight today: by the forecast's rank
+      std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.fc > y.fc || (x.fc == y.fc && x.i < y.i); });
+    else
+      std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.net * x.value > y.net * y.value || (x.net * x.value == y.net * y.value && x.i < y.i); });
     if (out.size() > o.slots) out.resize(o.slots);
     for (auto& r : out) {  // how often its opening auction would have bought over the share's last 250 sessions
       double n = 0, f = 0;
@@ -1492,7 +1513,7 @@ int main(int argc, char** argv) {
         std::string rec = b;
         rec.pop_back();  // the closing brace: the reasons go in before it
         f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << ",\"fromForecast\":" << r.fromForecast << ",\"fromAverage\":" << r.fromAverage
-          << ",\"sameBase\":" << (xExcess ? "true" : "false") << "}";
+          << ",\"sameBase\":" << (xExcess ? "true" : "false") << ",\"noEdge\":" << (r.noEdge ? "true" : "false") << "}";
         continue;
       }
       // the levels from the entry (the open), the limit from the close

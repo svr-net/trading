@@ -264,3 +264,13 @@ the daily update of the positions held and the page's split all use it. Shadow `
 `X_EXCESS` is now live in every market. Every shadow stays on the page; `noexcess` keeps the live model before it.
 The page's orders carry `sameBase`: with the same baseline for every share, the pop-up says the forecast's part
 put the order on the list.
+
+### A day the forecast has no weight (`X_NOEDGE`, 14 Nov)
+
+The calibration (a + b·forecast, shrunk by its t-statistic) can put the forecast's weight b at zero: on 13 Nov it did
+in every market, so every share had the same expected return and the order list followed how much each share moves
+(TRB, a pinned takeover share, came back on it at forecast rank 124). `X_NOEDGE` says what to do on such a day:
+`skip` makes no orders; `rank` keeps the forecast's top fifth and takes them by its rank, each sized and costed as
+before. `rank` is live in every market; the shadows `edgeonly` (`skip`) and `nofallback` (the live model before it)
+stay on the page beside it, so the three can be compared. An order picked this way says so in its chart's pop-up.
+The look-ahead check (tools/check/uk_leak.sh) covers it.
