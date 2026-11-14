@@ -8,7 +8,8 @@
     "env": {
      "X_RESID": "1",
      "X_VOLREGIME": "1",
-     "X_TARGET": "5"
+     "X_TARGET": "5",
+     "X_RISK": "1"
     },
     "ref": null
    },
@@ -79,7 +80,8 @@
     "env": {
      "X_RESID": "1",
      "X_VOLREGIME": "1",
-     "X_TARGET": "5"
+     "X_TARGET": "5",
+     "X_RISK": "1"
     },
     "ref": null
    },
@@ -90,30 +92,18 @@
      "X_RESID": "1",
      "X_VOLREGIME": "1",
      "X_TARGET": "5",
+     "X_RISK": "1",
      "X_ADAPT": "1"
     },
     "ref": null
    },
    {
-    "name": "risk",
+    "name": "norisk",
     "role": "shadow",
     "env": {
      "X_RESID": "1",
      "X_VOLREGIME": "1",
-     "X_TARGET": "5",
-     "X_RISK": "1"
-    },
-    "ref": null
-   },
-   {
-    "name": "adapt-risk",
-    "role": "shadow",
-    "env": {
-     "X_RESID": "1",
-     "X_VOLREGIME": "1",
-     "X_TARGET": "5",
-     "X_ADAPT": "1",
-     "X_RISK": "1"
+     "X_TARGET": "5"
     },
     "ref": null
    }
