@@ -44,6 +44,14 @@ d = tempfile.mkdtemp()
 json.dump({'slots': 2, 'orders': [{'expected': 0.006, 'holdDays': 3}, {'expected': 0.002, 'holdDays': 2}]}, open(f'{d}/o.json', 'w'))
 open(f'{d}/t.csv', 'w').write('date,ticker,expected,filled,ret\n2026-01-02,A,0.01,1,0.004\n2026-01-03,B,0.01,1,0.001\n2026-01-03,C,0.02,0,0\n2025-01-01,D,0.01,1,0.05\n')
 out, exp, dl = s.forward_of(f'{d}/o.json', f'{d}/t.csv', '2026-01-01')
-assert abs(exp - (0.002 + 0.001) / 2) < 1e-12 and abs(dl - 0.25) < 1e-12 and abs(out - exp * 0.25) < 1e-12, (out, exp, dl)
-print('outlook: the next orders and their chance to fill shift the split, discounted by what the backtest delivered; OK')
+wa = 0.5 ** (1 / s.HALF_LIFE)  # A traded a session before B: it counts a little less
+want = (wa * 0.004 + 0.001) / (wa * 0.01 + 0.01)
+assert abs(exp - (0.002 + 0.001) / 2) < 1e-12 and abs(dl - want) < 1e-12 and abs(out - exp * want) < 1e-12, (out, exp, dl)
+# The most recent days count most: of two markets with the same year, the one whose gains came lately gets more.
+late = {d: (0.004 if k >= 190 else -0.001) + r.gauss(0, 0.004) for k, d in enumerate(days)}
+early = {d: late[days[249 - k]] for k, d in enumerate(days)}  # the same days, in reverse order
+wl = s.allocate({'UK': late, 'EU': early}, cap=1.0)
+assert wl['UK'] > wl['EU'], wl
+assert s.allocate({'UK': late, 'EU': early}, cap=1.0, half_life=0)['UK'] < wl['UK'] + 1e-12, 'no weighting gave the recent gains more'
+print('recent days count most (exponential weighting); the outlook: the next orders and their chance to fill shift the split, discounted by what the backtest delivered; OK')
 print('allocate: the split maximises the risk-adjusted return, no money without an edge, capped, floored on paper; OK')
