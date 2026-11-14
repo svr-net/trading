@@ -263,8 +263,14 @@ function chartWhy(o) {
     ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank today', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
   const why = (o.why || []).map((w) => (REASON[w.k] ? REASON[w.k](w.v) : w.k));
+  // Where its expected return comes from: the forecast's part, and the average trade's for a share that moves
+  // this much a day (the order list is chosen by the expected return, which scales with the daily move).
+  const split = o.fromForecast != null && o.fromAverage != null
+    ? `<p class="split">Its expected return before costs, ${pct(o.fromForecast + o.fromAverage, 2)}: <b>${pct(o.fromForecast, 2)}</b> from the forecast${o.rank ? ` (rank ${o.rank} of ${o.of} today)` : ''}, and <b>${pct(o.fromAverage, 2)}</b> the average trade's for a share that moves ${pct(o.sigma, 1).slice(1)} a day. ${
+      Math.abs(o.fromForecast) < Math.abs(o.fromAverage) ? 'It is on the list mostly for how much it moves, less for the forecast.' : 'It is on the list mostly for the forecast.'}</p>`
+    : '';
   $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
-    + (why.length ? `<strong>Why it is on the list</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+    + split + (why.length ? `<strong>What the forecast saw</strong><ul>${why.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
 }
 function openChart(o, source) {
   const dlg = $('chart-dialog');
@@ -445,6 +451,9 @@ const SHADOW_NOTE = {
   nocaplearn: 'without the learnt buy cap (the close plus 0.5 volatility)',
   boll: 'with Bollinger bands',
   psar: 'with a PSAR stop at the close',
+  robustvol: "with a volatility that leaves out one-off jumps",
+  topfifth: "only the forecast's top fifth",
+  'robust-top': "the forecast's top fifth, with the robust volatility",
 };
 function sideBySide(m) {
   const el = $('sidebyside');

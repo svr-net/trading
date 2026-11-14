@@ -202,3 +202,22 @@ position is sold at the first close under it, keeping the learnt exit level and 
 every market. Expected to hurt a reversal book (Kaminski and Lo 2014, "When do stop-loss rules stop losses?": a
 stop pays when returns trend and costs when they revert); measured rather than assumed.
 `uk_leak.sh`: no order changed by later data, and some trades sold under it.
+
+## Orders chosen by the forecast, not by volatility (14 Nov 2026)
+
+The chart pop-up's ranks showed the orders were mostly not the forecast's best. The UK's ranked 88th to 148th of
+159; the EU's, 68th to 260th of 294. The reason is in how the orders are chosen: by expected return, which is
+(a + b × forecast) × the share's daily volatility. When the forecast adds little (b small), that is mostly the
+average trade's return times volatility, so the most volatile shares win. TRB is the clearest case: a takeover
+target whose price has been pinned near 100p since October, rated 4% a day because the bid's jump was still in
+its volatility.
+
+Two switches, as shadows in every market:
+- **`X_ROBUSTVOL=1`:** the daily volatility leaves out one-off jumps, meaning returns more than 5 robust deviations
+  (1.4826 × the median absolute return) from 0.
+- **`X_TOPFRAC=0.2`:** only the forecast's top fifth of the day's list may be ordered; the expected return
+  chooses among them.
+
+The shadows are `robustvol`, `topfifth` and `robust-top` (both). Each order on the page now carries its split,
+`fromForecast` and `fromAverage`, and the pop-up says which drove it. `uk_leak.sh`: no order changed by later
+data, and every top-fifth order in the forecast's top fifth.
