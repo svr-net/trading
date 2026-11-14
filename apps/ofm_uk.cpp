@@ -119,7 +119,8 @@ struct Order {
   double exitAbove = 0, holdDays = 0;  // --hold: sold at the first close this far above the price paid (else at the last), and the days such trades were held
   bool capped = false;  // its amount cut to the share's liquidity
   double fc = 0;        // the forecast (the model's score at the close)
-  bool noEdge = false;  // X_NOEDGE=rank: chosen by the forecast's rank on a day its calibrated weight was 0
+  bool noEdge = false;  // X_NOEDGE: chosen on a day the forecast's calibrated weight was 0
+  double place = 0;     // X_NOEDGE=merge: its place by the expected return and by the forecast, added
   double capK = kNaN;   // its own price cap in the opening auction, daily volatilities over the close (X_CAPLEARN; else --cap-sd)
   double fromForecast = 0, fromAverage = 0;  // its expected return: the forecast's part (b * forecast * sigma) and the average trade's (a * sigma)
 };
@@ -975,7 +976,8 @@ int main(int argc, char** argv) {
   // X_NOEDGE: a day the calibration gives the forecast no weight (its slope shrunk to 0: no clear link to the
   // outcome in its recent record; 14 Nov, every market). skip: no order that day. rank: only the forecast's top
   // fifth may be ordered, by its rank (else the common baseline ties them and the learnt cap's gap adjustment
-  // and the order's size choose: 14 Nov, TRB back on the UK's list at rank 124).
+  // and the order's size choose: 14 Nov, TRB back on the UK's list at rank 124). merge: every share, by its
+  // place by the expected return and by the forecast added (15 Nov: rank alone gave up most of the return).
   const std::string xNoEdge = std::getenv("X_NOEDGE") ? std::getenv("X_NOEDGE") : "";
   const auto ordersAt = [&](std::size_t t, bool withCosts) {
     std::vector<Order> out;
@@ -991,7 +993,7 @@ int main(int argc, char** argv) {
     const bool noEdge = !(b > 0) && !xNoEdge.empty();
     if (noEdge && xNoEdge == "skip") return out;
     double edgeCut = -1e18;
-    if (noEdge) {  // rank: the forecast's top fifth
+    if (noEdge && xNoEdge == "rank") {  // rank: the forecast's top fifth
       std::vector<double> v = pred[t];
       const std::size_t k = std::min(v.size() - 1, std::size_t(std::floor(0.8 * double(v.size()))));
       std::nth_element(v.begin(), v.begin() + long(k), v.end());
@@ -1024,7 +1026,20 @@ int main(int argc, char** argv) {
       r.cost = 0.0, r.net = r.expected;  // no cost in the modelling: they come off the finished list (below)
       out.push_back(r);
     }
-    if (noEdge)  // no weight today: by the forecast's rank
+    if (noEdge && xNoEdge == "merge") {
+      // merge, no weight today: the two lists in one, each share's place by its expected return (the model
+      // without the fallback) and by the forecast (the rank pick) added, the lower first (a Borda count);
+      // a tie by the expected return
+      std::vector<std::size_t> byE(out.size()), byF(out.size());
+      for (std::size_t k = 0; k < out.size(); ++k) byE[k] = byF[k] = k;
+      std::sort(byE.begin(), byE.end(), [&](std::size_t x, std::size_t y) { return out[x].expected > out[y].expected || (out[x].expected == out[y].expected && out[x].i < out[y].i); });
+      std::sort(byF.begin(), byF.end(), [&](std::size_t x, std::size_t y) { return out[x].fc > out[y].fc || (out[x].fc == out[y].fc && out[x].i < out[y].i); });
+      std::vector<double> place(out.size(), 0.0);
+      for (std::size_t k = 0; k < out.size(); ++k) place[byE[k]] += double(k), place[byF[k]] += double(k);
+      for (std::size_t k = 0; k < out.size(); ++k) out[k].place = place[k];
+      std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) {
+        return x.place < y.place || (x.place == y.place && (x.expected > y.expected || (x.expected == y.expected && x.i < y.i))); });
+    } else if (noEdge)  // rank, no weight today: by the forecast's rank
       std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.fc > y.fc || (x.fc == y.fc && x.i < y.i); });
     else  // the highest expected return (before costs) first
       std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.expected > y.expected || (x.expected == y.expected && x.i < y.i); });
@@ -1522,7 +1537,7 @@ int main(int argc, char** argv) {
         std::string rec = b;
         rec.pop_back();  // the closing brace: the reasons go in before it
         f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << ",\"fromForecast\":" << r.fromForecast << ",\"fromAverage\":" << r.fromAverage
-          << ",\"sameBase\":" << (xExcess ? "true" : "false") << ",\"noEdge\":" << (r.noEdge ? "true" : "false") << "}";
+          << ",\"sameBase\":" << (xExcess ? "true" : "false") << ",\"noEdge\":" << (r.noEdge ? "\"" + xNoEdge + "\"" : std::string("false")) << "}";
         continue;
       }
       // the levels from the entry (the open), the limit from the close

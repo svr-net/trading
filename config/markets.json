@@ -13,7 +13,7 @@
           "X_CAPLEARN": "1",
           "X_ROBUSTVOL": "1",
           "X_EXCESS": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -297,6 +297,24 @@
             "X_ROBUSTVOL": "1",
             "X_EXCESS": "1"
           }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "rank"
+          }
         }
       ],
       "budget": {
@@ -320,7 +338,7 @@
           "X_CAPLEARN": "1",
           "X_TOPFRAC": "0.2",
           "X_EXCESS": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -578,6 +596,24 @@
             "X_TOPFRAC": "0.2",
             "X_EXCESS": "1"
           }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "rank"
+          }
         }
       ],
       "budget": {
@@ -601,7 +637,7 @@
           "X_CAPLEARN": "1",
           "X_ROBUSTVOL": "1",
           "X_EXCESS": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -826,6 +862,24 @@
             "X_CAPLEARN": "1",
             "X_ROBUSTVOL": "1",
             "X_EXCESS": "1"
+          }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "rank"
           }
         }
       ],
@@ -851,7 +905,7 @@
           "X_ROBUSTVOL": "1",
           "X_TOPFRAC": "0.2",
           "X_EXCESS": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -1085,6 +1139,25 @@
             "X_TOPFRAC": "0.2",
             "X_EXCESS": "1"
           }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_CAPLEARN": "1",
+            "X_ROBUSTVOL": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "rank"
+          }
         }
       ],
       "budget": {
@@ -1107,7 +1180,7 @@
           "X_RISK": "1",
           "X_TOPFRAC": "0.2",
           "X_EXCESS": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -1311,6 +1384,23 @@
             "X_TOPFRAC": "0.2",
             "X_EXCESS": "1"
           }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_TOPFRAC": "0.2",
+            "X_EXCESS": "1",
+            "X_NOEDGE": "rank"
+          }
         }
       ],
       "budget": {
@@ -1331,7 +1421,7 @@
           "X_VOLREGIME": "1",
           "X_TARGET": "5",
           "X_RISK": "1",
-          "X_NOEDGE": "rank"
+          "X_NOEDGE": "merge"
         },
         "args": [
           "--hold",
@@ -1383,6 +1473,23 @@
             "X_VOLREGIME": "1",
             "X_TARGET": "5",
             "X_RISK": "1"
+          }
+        },
+        {
+          "name": "rankpick",
+          "app": "uk",
+          "args": [
+            "--hold",
+            "5",
+            "--capital",
+            "25000"
+          ],
+          "env": {
+            "X_RESID": "1",
+            "X_VOLREGIME": "1",
+            "X_TARGET": "5",
+            "X_RISK": "1",
+            "X_NOEDGE": "rank"
           }
         }
       ]
