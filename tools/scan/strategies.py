@@ -294,7 +294,7 @@ def solve(a, b):
 
 def forward_of(orders_path, tradelog_path, since):
     """The market's outlook for the next session: its final orders' expected daily return (each order's
-    expected return after its own costs, times its chance to fill in the opening auction, per day it is
+    expected return before costs, times its chance to fill in the opening auction, per day it is
     expected to be held, over the book's slots), discounted by how much of the model's expectation its
     backtest has delivered over the last year (the filled trades' results before costs over what was expected
     of them, 0 to 1: a model that promises more than it delivers counts for less). Returns (outlook, the
@@ -304,7 +304,10 @@ def forward_of(orders_path, tradelog_path, since):
     except (OSError, ValueError):
         return 0.0, 0.0, 0.0
     slots = max(1, int(book.get('slots') or len(book.get('orders', [])) or 1))
-    exp = sum(float(o.get('expected') or 0) / max(1.0, float(o.get('holdDays') or 1)) for o in book.get('orders', [])) / slots
+    # before costs, as the model learns (no cost in the modelling or the split): the order's expected return
+    # after its costs (times its chance to fill) with its costs (times the same chance) added back
+    exp = sum((float(o.get('expected') or 0) + float(o.get('fill') or 0) * float(o.get('cost') or 0))
+              / max(1.0, float(o.get('holdDays') or 1)) for o in book.get('orders', [])) / slots
     rows = []
     try:
         with open(tradelog_path) as f:
@@ -619,7 +622,7 @@ def main():
         if daily > 0:
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; "
                          f"its record before costs {100 * score:+.3f}% a day shrunk)")
-            lines.append(f"budget:   the outlook: the next session's orders {100 * fexp:+.3f}% a day expected (after their costs, times their chance to fill), "
+            lines.append(f"budget:   the outlook: the next session's orders {100 * fexp:+.3f}% a day expected (before costs, times their chance to fill), "
                          f"of which the backtest delivered {100 * fdel:.0f}% over the last {SPLIT_WINDOW} sessions (recent trades counting most): {100 * outlook:+.3f}% a day")
             lines.append("budget:   the split that maximises the account's risk-adjusted return (half the records before costs, half the outlook, over the last " + str(SPLIT_WINDOW) + " sessions, the most recent counting most (half-life " + str(HALF_LIFE) + "); the markets' covariance; "
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"

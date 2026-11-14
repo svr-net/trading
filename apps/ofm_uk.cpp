@@ -31,9 +31,9 @@
 //             IBKR's commission on the order's own amount (fixed: GBP 3 or 0.05% a side; tiered with
 //             --pricing tiered) and the 0.5% stamp duty on buying (not AIM shares, --stamp-free); no
 //             spread, as the orders trade in the auctions (one price for buyers and sellers); an order
-//             whose costs take all it is expected to gain is not placed. (The prices the trades see stay
-//             realistic: a stop sells half a spread below its level, a take-profit fills only when the
-//             high trades through it.)
+//             whose costs take all it is expected to gain is not placed. They are applied at the end, to
+//             the finished list: they choose no order and change no order's place on it. No spread either
+//             in the learning or the backtest (a stop sells at its level, a take-profit at its level).
 //   order     bought in the opening auction and only there: a limit at the last close plus --cap-sd
 //             (0.5) of its daily volatility (it never chases a gap up), good only until the auction
 //             is over, so it never buys a dip later in the day. The amount is the slot's capital, at
@@ -51,9 +51,9 @@
 //   paths     the levels are replayed on each share-day's 5-minute bars where --bars has them (each
 //             bar's low taken before its high: the stop first); else on the daily bar both ways, the
 //             low first and the high first, the worse taken (the bar cannot tell which came first).
-//   choice    the orders whose expected return (before costs) is at least --hurdle (0.05%), the largest
-//             expected gain in pounds first, at most --slots (X_NPICK, 5) a day; for the final orders,
-//             after each one's own costs. Some days none.
+//   choice    the orders whose expected return (before costs) is at least --hurdle (0.05%), the highest
+//             expected return first, at most --slots (X_NPICK, 5) a day; for the final orders, the costs
+//             then applied to that list (an order they make a loss is dropped). Some days none.
 // The backtest trades these orders day by day, before costs; an unfilled order and an unused slot earn 0.
 //
 //   ofm_uk --csv stocks.csv --costs UK [--capital 5000] [--slots 5] [--stamp-free aim.txt]
@@ -668,7 +668,7 @@ int main(int argc, char** argv) {
   // 5-minute path where there is one; else on the daily bar both ways (the low first, the high first),
   // the worse taken, as the bar cannot tell.
   const auto exitOf = [&](std::size_t d, std::size_t i, double entry, double sg, double spr, std::size_t g) {
-    const double L = p.L[at(d, i)], H = p.H[at(d, i)], C = p.C[at(d, i)], hs = 0.5 * spr;
+    const double L = p.L[at(d, i)], H = p.H[at(d, i)], C = p.C[at(d, i)], hs = 0.0 * spr;  // no cost in the modelling: no half spread on a stop or a take-profit
     const auto it = pathOf.find(at(d, i));
     if (it != pathOf.end()) return simulate(&pathPts[it->second.first], it->second.second, C, entry, sg, hs, g);
     const float lowFirst[2] = {float(L), float(H)}, highFirst[2] = {float(H), float(L)};
@@ -1021,16 +1021,25 @@ int main(int argc, char** argv) {
       r.level = lv, r.adj = lvAdj, r.stopSd = stopOf(lv), r.takeSd = takeOf(lv), r.mode = modeOf(lv);
       if (o.hold) r.stopSd = kNaN, r.takeSd = kNaN, r.mode = 0, r.exitAbove = kTh[lv] * r.sigma, r.holdDays = daysHeld;
       r.stop = o.hold ? kNaN : r.close * (1 - r.stopSd * r.sigma);  // shown from the close; placed from the price bought at
-      r.cost = withCosts ? costOf(r) : 0.0;
-      r.net = r.expected - r.cost;
-      if (withCosts && !(r.net > 0)) continue;  // its costs take all it is expected to gain: no order
+      r.cost = 0.0, r.net = r.expected;  // no cost in the modelling: they come off the finished list (below)
       out.push_back(r);
     }
     if (noEdge)  // no weight today: by the forecast's rank
       std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.fc > y.fc || (x.fc == y.fc && x.i < y.i); });
-    else
-      std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.net * x.value > y.net * y.value || (x.net * x.value == y.net * y.value && x.i < y.i); });
+    else  // the highest expected return (before costs) first
+      std::sort(out.begin(), out.end(), [](const Order& x, const Order& y) { return x.expected > y.expected || (x.expected == y.expected && x.i < y.i); });
     if (out.size() > o.slots) out.resize(o.slots);
+    // The final orders (withCosts): the broker's costs applied to the finished list, at the end. Each order's
+    // expected return less its own costs; one its costs take all it is expected to gain is not placed (and no
+    // other takes its place: the list is the model's, before costs). The order stays the model's.
+    if (withCosts) {
+      std::vector<Order> kept;
+      for (auto r : out) {
+        r.cost = costOf(r), r.net = r.expected - r.cost;
+        if (r.net > 0) kept.push_back(r);
+      }
+      out.swap(kept);
+    }
     for (auto& r : out) {  // how often its opening auction would have bought over the share's last 250 sessions
       double n = 0, f = 0;
       for (std::size_t q = t > 250 ? t - 250 : 0; q < t; ++q) {
