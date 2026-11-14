@@ -184,3 +184,4 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #chart-dialog-why ul { margin: 6px 0 4px; padding-left: 20px; }
 #chart-dialog-why li { margin: 3px 0; }
 #chart-dialog-profile { margin: 2px 0 0; }
+#chart-dialog-why .split { margin: 6px 0 8px; }

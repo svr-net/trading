@@ -119,6 +119,7 @@ struct Order {
   double exitAbove = 0, holdDays = 0;  // --hold: sold at the first close this far above the price paid (else at the last), and the days such trades were held
   bool capped = false;  // its amount cut to the share's liquidity
   double capK = kNaN;   // its own price cap in the opening auction, daily volatilities over the close (X_CAPLEARN; else --cap-sd)
+  double fromForecast = 0, fromAverage = 0;  // its expected return: the forecast's part (b * forecast * sigma) and the average trade's (a * sigma)
 };
 
 struct Fill {
@@ -196,6 +197,10 @@ int main(int argc, char** argv) {
   // thin share's (INDEX's Frankfurt-floor ETFs, 13 Nov: 27,141 share-days left out for gaps) signals,
   // volatility and history run on. The rolled panel pin feeds the inputs; the trades, their targets and the
   // backtest use the real bars p only, and a share is listed only on a session with a real bar.
+  // X_ROBUSTVOL=1: each share's daily volatility without its one-off jumps (a bid, a results day): the returns
+  // more than 5 robust deviations (1.4826 times the median absolute return) from 0 are left out of it, so a
+  // takeover target whose price is pinned reads as calm (14 Nov, TRB: 4% a day from its jump, flat since).
+  const bool xRobustVol = std::getenv("X_ROBUSTVOL") && std::string(std::getenv("X_ROBUSTVOL")) == "1";
   swing::Panel pin = p;
   std::size_t rolled = 0;
   if (o.roll)
@@ -290,10 +295,18 @@ int main(int argc, char** argv) {
           if (barDays.size() > 18) barDays.erase(barDays.begin());
           prev = t;
           if (rets.size() >= 40) {
-            double s = 0, s2 = 0;
-            for (double r : rets) s += r, s2 += r * r;
-            const double n = double(rets.size()), m = s / n;
-            sigma[at(t, i)] = std::sqrt(std::max(0.0, s2 / n - m * m));
+            double lim = 1e9;
+            if (xRobustVol) {
+              std::vector<double> ab(rets.size());
+              for (std::size_t q = 0; q < rets.size(); ++q) ab[q] = std::fabs(rets[q]);
+              std::nth_element(ab.begin(), ab.begin() + long(ab.size() / 2), ab.end());
+              lim = 5 * 1.4826 * ab[ab.size() / 2];
+            }
+            double s = 0, s2 = 0, n = 0;
+            for (double r : rets)
+              if (std::fabs(r) <= lim) s += r, s2 += r * r, n += 1;
+            const double m = n > 0 ? s / n : 0.0;
+            sigma[at(t, i)] = n >= 30 ? std::sqrt(std::max(0.0, s2 / n - m * m)) : kNaN;
           }
           if (vals.size() == 20) {
             std::vector<double> v = vals;
@@ -934,8 +947,19 @@ int main(int argc, char** argv) {
     eFilled = bestP > 0 ? best / bestP : e;
     return bestK;
   };
+  // X_TOPFRAC=f: only the shares in the forecast's top f of the day's list may be ordered (then the expected
+  // return, which scales with the share's volatility, chooses among them): the orders come from the model's
+  // forecast, not from the most volatile shares (14 Nov: UK orders ranked 88 to 148 of 159 on the forecast).
+  const double topFrac = std::getenv("X_TOPFRAC") ? std::clamp(std::atof(std::getenv("X_TOPFRAC")), 0.01, 1.0) : 1.0;
+  double topCut = -1e18;
   const auto ordersAt = [&](std::size_t t, bool withCosts) {
     std::vector<Order> out;
+    if (topFrac < 1 && !pred[t].empty()) {
+      std::vector<double> v = pred[t];
+      const std::size_t k = std::min(v.size() - 1, std::size_t(std::floor((1 - topFrac) * double(v.size()))));
+      std::nth_element(v.begin(), v.begin() + long(k), v.end());
+      topCut = v[k];
+    }
     double a = 0, b = 0, lvAdj = 0, daysHeld = 0;
     const std::size_t lv = o.hold ? holdAt(t, lvAdj) : levelsAt(t, lvAdj);
     if (pred[t].empty() || !(o.hold ? calibrationH(t, lv, a, b, daysHeld) : calibration(t, lv, a, b))) return out;
@@ -945,6 +969,8 @@ int main(int argc, char** argv) {
       Order r;
       r.i = i, r.close = p.C[at(t, i)], r.sigma = sigma[at(t, i)], r.spread = spread[at(t, i)];
       r.expected = (a + b * pred[t][j]) * r.sigma;  // the trade as placed: bought at the open, out at its stop, its take-profit or the close
+      r.fromForecast = b * pred[t][j] * r.sigma, r.fromAverage = a * r.sigma;
+      if (topFrac < 1 && pred[t][j] < topCut) continue;  // X_TOPFRAC: only the forecast's top part of the day's list
       r.value = noVolume ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX, INDEX: no volume to cap it by
       r.capped = r.value < o.capital;
       if (r.value < o.minOrder || r.expected < o.hurdle) continue;
@@ -1447,7 +1473,7 @@ int main(int argc, char** argv) {
                       (std::isfinite(r.fill) ? r.fill : 1.0) * r.net, r.net, r.expected, r.cost, r.limit / r.close - 1, r.exitAbove, H, r.holdDays, std::isfinite(r.fill) ? r.fill : 0.0, r.value);
         std::string rec = b;
         rec.pop_back();  // the closing brace: the reasons go in before it
-        f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << "}";
+        f << rec << whyOf(r.i) << ",\"sigma\":" << r.sigma << ",\"fromForecast\":" << r.fromForecast << ",\"fromAverage\":" << r.fromAverage << "}";
         continue;
       }
       // the levels from the entry (the open), the limit from the close
