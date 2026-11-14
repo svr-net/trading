@@ -91,3 +91,24 @@ the traded value. The trades, the fit's targets and the backtest still use the r
 listed only on a session with a real bar of its own. `tools/check/uk_leak.sh`, with one bar in seven missing:
 2,360 orders with the roll against 145 without, none on a rolled bar, none changed by later data. The shadow
 `noroll` (`--roll 0`) keeps the model without it in view.
+
+## Learning that does not collapse (14 Nov 2026)
+
+The US backtest lost 49% in 2022. The model then stood aside for about 290 sessions, until its 500-session
+calibration record showed an edge again. One window of 750 sessions learns a break slowly, and a book sized the
+same in calm and turbulent markets rides a bad run to its end. Two switches address this, measured as the shadows
+`adapt`, `risk` and `adapt-risk` beside each market's live model:
+
+- **`X_ADAPT=1`, forecast combination.** Following Timmermann (2006, Handbook of Economic Forecasting) and
+  Rapach, Strauss and Zhou (2010, RFS), three fits over the last 250, 750 and 1,500 sessions are combined each
+  day by their recent skill. Skill is each fit's daily rank correlation with the outcome, exponentially weighted
+  with a half-life of 60 sessions, from outcomes known by then; only positive weights count, else they're equal.
+  After a break, the short window's fit takes over within weeks. The calibration record that decides whether to
+  trade is 250 sessions instead of 500, so the book is back in sooner.
+- **`X_RISK=1`, the book's own volatility target.** Following Moreira and Muir (2017, JF) and Barroso and
+  Santa-Clara (2015, JFE, on momentum's crashes), each day's new orders are scaled by 1% over the book's daily
+  volatility over its last 60 sessions, between a quarter and the whole amount. A run of large losses shrinks
+  the bets until the book calms down. The costs of the final orders are worked out before the scaling, so a
+  scaled order's minimum commission is slightly understated.
+
+`tools/check/uk_leak.sh` checks both: no order changed by later data.

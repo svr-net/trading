@@ -434,30 +434,79 @@ int main(int argc, char** argv) {
   }
 
   // Walk-forward: the coefficients refitted every o.refit sessions from the sessions settled by then.
+  // X_ADAPT=1 (forecast combination; Timmermann 2006, Rapach, Strauss and Zhou 2010): three fits, over the
+  // last 250, 750 and 1,500 sessions, combined each day by their recent skill (each one's daily rank
+  // correlation with the outcome, exponentially weighted with a half-life of 60 sessions, from outcomes
+  // known by then; the positive ones only, else equally): after a break the short window's fit takes over
+  // within weeks, where one long window takes years (2022-23 in the US).
+  const bool xAdapt = std::getenv("X_ADAPT") && std::string(std::getenv("X_ADAPT")) == "1";
+  if (xAdapt) o.calWindow = std::min<std::size_t>(o.calWindow, 250);  // the calibration's record half as long: back in sooner
+  const std::vector<std::size_t> wins = xAdapt ? std::vector<std::size_t>{250, 750, 1500} : std::vector<std::size_t>{o.window};
+  std::vector<std::vector<std::vector<double>>> predK(wins.size(), std::vector<std::vector<double>>(T));
   std::vector<std::vector<double>> pred(T);
-  std::vector<double> beta;
   double fitted = 0;
   std::size_t fits = 0;
-  for (std::size_t t = 0; t < T; ++t) {
-    if (t % o.refit == 0 && t >= o.warm) {
-      // samples u with their target known at t: u + xTarget <= t
-      const std::size_t hi = t + 1 >= xTarget ? t + 1 - xTarget : 0, lo = hi > o.window ? hi - o.window : 0;
-      const double n = cum[hi * G + G - 1] - cum[lo * G + G - 1];
-      std::size_t daysWith = 0;
-      for (std::size_t u = lo; u < hi; ++u) daysWith += !Y[u].empty();
-      if (daysWith >= o.warm && n > 50.0 * double(D)) {
-        std::vector<double> gram(D * D), rhs(D), b;
-        for (std::size_t g = 0; g < D * D; ++g) gram[g] = cum[hi * G + g] - cum[lo * G + g];
-        for (std::size_t a = 0; a < D; ++a) rhs[a] = cum[hi * G + D * D + a] - cum[lo * G + D * D + a];
-        if (ridge::solve(gram, D, o.lambda * n / 12.0, rhs, 1, b)) beta = b, fitted = n, ++fits;
+  for (std::size_t k = 0; k < wins.size(); ++k) {
+    std::vector<double> beta;
+    for (std::size_t t = 0; t < T; ++t) {
+      if (t % o.refit == 0 && t >= o.warm) {
+        // samples u with their target known at t: u + xTarget <= t
+        const std::size_t hi = t + 1 >= xTarget ? t + 1 - xTarget : 0, lo = hi > wins[k] ? hi - wins[k] : 0;
+        const double n = cum[hi * G + G - 1] - cum[lo * G + G - 1];
+        std::size_t daysWith = 0;
+        for (std::size_t u = lo; u < hi; ++u) daysWith += !Y[u].empty();
+        if (daysWith >= std::min(o.warm, wins[k]) && n > 50.0 * double(D)) {
+          std::vector<double> gram(D * D), rhs(D), b;
+          for (std::size_t g = 0; g < D * D; ++g) gram[g] = cum[hi * G + g] - cum[lo * G + g];
+          for (std::size_t a = 0; a < D; ++a) rhs[a] = cum[hi * G + D * D + a] - cum[lo * G + D * D + a];
+          if (ridge::solve(gram, D, o.lambda * n / 12.0, rhs, 1, b)) beta = b, fitted = n, ++fits;
+        }
+      }
+      if (beta.empty() || Y[t].empty()) continue;
+      predK[k][t].assign(Y[t].size(), 0.0);
+      for (std::size_t j = 0; j < Y[t].size(); ++j) {
+        double s = 0;
+        for (std::size_t a = 0; a < D; ++a) s += beta[a] * X[t][j * D + a];
+        predK[k][t][j] = s;
       }
     }
-    if (beta.empty() || Y[t].empty()) continue;
-    pred[t].assign(Y[t].size(), 0.0);
-    for (std::size_t j = 0; j < Y[t].size(); ++j) {
-      double s = 0;
-      for (std::size_t a = 0; a < D; ++a) s += beta[a] * X[t][j * D + a];
-      pred[t][j] = s;
+  }
+  const auto rankIc = [&](const std::vector<double>& f, std::size_t u) {
+    std::vector<double> a, b;
+    for (std::size_t j = 0; j < f.size(); ++j)
+      if (std::isfinite(Y[u][j])) a.push_back(f[j]), b.push_back(Y[u][j]);
+    if (a.size() < 20) return kNaN;
+    rankInPlace(a), rankInPlace(b);
+    double sab = 0, saa = 0, sbb = 0;
+    for (std::size_t q = 0; q < a.size(); ++q) sab += a[q] * b[q], saa += a[q] * a[q], sbb += b[q] * b[q];
+    return saa > 0 && sbb > 0 ? sab / std::sqrt(saa * sbb) : kNaN;
+  };
+  if (wins.size() == 1) {
+    pred = predK[0];
+  } else {
+    std::vector<double> skill(wins.size(), 0.0);
+    const double decay = std::exp(std::log(0.5) / 60.0);
+    for (std::size_t t = 0; t < T; ++t) {
+      if (t >= xTarget) {  // the day whose outcome is known by t joins each fit's record of skill
+        const std::size_t u = t - xTarget;
+        for (std::size_t k = 0; k < wins.size(); ++k)
+          if (!predK[k][u].empty()) {
+            const double c = rankIc(predK[k][u], u);
+            if (std::isfinite(c)) skill[k] = decay * skill[k] + (1 - decay) * c;
+          }
+      }
+      double sw = 0;
+      std::vector<double> w(wins.size(), 0.0);
+      for (std::size_t k = 0; k < wins.size(); ++k)
+        if (!predK[k][t].empty()) w[k] = std::max(0.0, skill[k]), sw += w[k];
+      if (!(sw > 0))
+        for (std::size_t k = 0; k < wins.size(); ++k)
+          if (!predK[k][t].empty()) w[k] = 1.0, sw += 1.0;
+      if (!(sw > 0)) continue;
+      pred[t].assign(Y[t].size(), 0.0);
+      for (std::size_t k = 0; k < wins.size(); ++k)
+        if (w[k] > 0)
+          for (std::size_t j = 0; j < Y[t].size(); ++j) pred[t][j] += w[k] / sw * predK[k][t][j];
     }
   }
 
@@ -855,6 +904,20 @@ int main(int argc, char** argv) {
   struct Check { std::size_t i; Order r; Fill f; };
   std::vector<Check> lastCheck;
   double sumHeld = 0, nDropped = 0;  // --hold: the days the trades were held; the trades the daily update sold at the open
+  // X_RISK=1 (volatility targeting of the book itself; Moreira and Muir 2017, Barroso and Santa-Clara 2015 on
+  // momentum's crashes): each day's new orders scaled by 1% over the book's own daily volatility over its last
+  // 60 sessions (at least a quarter, at most the whole amount), so a run of large losses (the US, 2022: -49%)
+  // shrinks the bets until the book calms down, rather than stopping it or riding it.
+  const bool xRisk = std::getenv("X_RISK") && std::string(std::getenv("X_RISK")) == "1";
+  double riskScale = 1.0;
+  const auto riskOf = [&](const std::vector<double>& r) {
+    if (!xRisk || r.size() < 20) return 1.0;
+    const std::size_t n = std::min<std::size_t>(60, r.size());
+    double s = 0, s2 = 0;
+    for (std::size_t k = r.size() - n; k < r.size(); ++k) s += r[k], s2 += r[k] * r[k];
+    const double v = std::sqrt(std::max(0.0, s2 / double(n) - (s / double(n)) * (s / double(n))));
+    return v > 0 ? std::clamp(0.01 / v, 0.25, 1.0) : 1.0;
+  };
   if (o.hold) {
     // The book: at most --slots positions; each morning the day's orders take the free slots (shares not
     // held already), bought in the opening auction; every position marked to each close and sold at its
@@ -870,6 +933,8 @@ int main(int argc, char** argv) {
       if (live) ++levelDays[g];
       const std::size_t d = t + 1;
       std::vector<Order> ords = live ? ordersAt(t, false) : std::vector<Order>{};
+      riskScale = riskOf(ret);
+      for (auto& r : ords) r.value *= riskScale;
       for (const auto& r : ords) traceOrder(t, r);
       std::size_t free = o.slots > book.size() ? o.slots - book.size() : 0;
       double day = 0;
@@ -986,8 +1051,10 @@ int main(int argc, char** argv) {
   }
   // The next open's orders, from the last close: the model's (before costs, as every day of the backtest;
   // traced, for the look-ahead check), then the final orders with the broker's costs applied.
-  for (const auto& r : ordersAt(T - 1, false)) traceOrder(T - 1, r);
-  const auto next = ordersAt(T - 1, true);
+  riskScale = o.hold ? riskOf(ret) : 1.0;  // the book's volatility up to the last close
+  for (auto r : ordersAt(T - 1, false)) r.value *= riskScale, traceOrder(T - 1, r);
+  auto next = ordersAt(T - 1, true);
+  for (auto& r : next) r.value *= riskScale;
   if (trace) std::fclose(trace);
 
   struct Stats { double annual = 0, sharpe = 0, dd = 0, mean = 0; };
