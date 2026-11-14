@@ -259,6 +259,7 @@ const SHADOW_NOTE = {
   cap1: 'buy cap: the close plus 1 daily volatility',
   cap2: 'buy cap: the close plus 2 daily volatilities',
   moo: "buy at the auction's price, whatever it is",
+  caplearn: "each order's own buy cap, learnt",
 };
 function sideBySide(m) {
   const el = $('sidebyside');
