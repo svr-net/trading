@@ -192,3 +192,13 @@ ceiling.
 
 The model already had the distance under the 20-session mean (`below 20d mean`), but not scaled by the share's own
 spread. Shadow `boll` runs it on top of each market's live model. `uk_leak.sh`: no order changed by later data.
+
+## Parabolic SAR exit (14 Nov 2026)
+
+`X_PSAR=1` adds Wilder's (1978) Parabolic SAR as a trailing stop to each position, checked at the close as the
+exit level is. It starts at the low of the day the share was bought. Each day it rises towards the highest high
+since then, by 0.02 a step more at each new high, at most 0.2, and never above the last two days' lows. The
+position is sold at the first close under it, keeping the learnt exit level and the day-5 sale. Shadow `psar` in
+every market. Expected to hurt a reversal book (Kaminski and Lo 2014, "When do stop-loss rules stop losses?": a
+stop pays when returns trend and costs when they revert); measured rather than assumed.
+`uk_leak.sh`: no order changed by later data, and some trades sold under it.

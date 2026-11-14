@@ -997,7 +997,11 @@ int main(int argc, char** argv) {
   };
   struct Check { std::size_t i; Order r; Fill f; };
   std::vector<Check> lastCheck;
-  double sumHeld = 0, nDropped = 0;  // --hold: the days the trades were held; the trades the daily update sold at the open
+  double sumHeld = 0, nDropped = 0, nPsar = 0;  // --hold: the days the trades were held; the trades the daily update sold at the open; the PSAR's
+  // X_PSAR=1: each position also sold at the first close under its Parabolic SAR (Wilder 1978: from the low of the
+  // day it was bought, the stop rises towards the highest high since, by 0.02 a day more each new high, at most
+  // 0.2; never above the last two days' lows), checked at the close as the exit level is.
+  const bool xPsar = std::getenv("X_PSAR") && std::string(std::getenv("X_PSAR")) == "1";
   // X_RISK=1 (volatility targeting of the book itself; Moreira and Muir 2017, Barroso and Santa-Clara 2015 on
   // momentum's crashes): each day's new orders scaled by 1% over the book's own daily volatility over its last
   // 60 sessions (at least a quarter, at most the whole amount), so a run of large losses (the US, 2022: -49%)
@@ -1016,7 +1020,12 @@ int main(int argc, char** argv) {
     // The book: at most --slots positions; each morning the day's orders take the free slots (shares not
     // held already), bought in the opening auction; every position marked to each close and sold at its
     // exit level's first close, else at its H-th; an unused slot earns 0.
-    struct Pos { Order r; double entry, last; std::size_t k, from; };
+    struct Pos {
+      Order r;
+      double entry, last;
+      std::size_t k, from;
+      double sar = 0, ep = 0, af = 0.02, l1 = 0, l2 = 0;  // X_PSAR: the stop, the highest high since bought, the step, the last two lows
+    };
     std::vector<Pos> book;
     for (std::size_t t = 0; t + 1 < T; ++t) {
       double a = 0, b = 0, adj = 0, dh = 0;
@@ -1037,7 +1046,7 @@ int main(int argc, char** argv) {
       const auto settle = [&](const Pos& q, int how) {
         const bool target = how == 2;
         const double gr = q.last / q.entry - 1;
-        nFilled += 1, nTaken += target, nDropped += how == 3, sumNet += gr, sumGross += gr, sumCost += costOf(q.r), nWin += gr > 0, sumValue += q.r.value, sumHeld += double(q.k);
+        nFilled += 1, nTaken += target, nDropped += how == 3, nPsar += how == 4, sumNet += gr, sumGross += gr, sumCost += costOf(q.r), nWin += gr > 0, sumValue += q.r.value, sumHeld += double(q.k);
         if (tlog)
           std::fprintf(tlog, "%s,%s,%.6g,%.6g,0,%.6g,%.6g,%.6g,%.6g,1,%.6g,%d,%.6g,%.6g,%.6g\n", p.days[q.from].c_str(), p.tickers[q.r.i].c_str(), q.r.close, q.r.limit, q.r.exitAbove,
                        q.r.value, q.r.expected, costOf(q.r), q.entry, how, q.last, gr, gr);
@@ -1067,7 +1076,14 @@ int main(int argc, char** argv) {
         ps.k += 1;
         if (p.ok(d, ps.r.i)) day += ps.r.value * (p.C[at(d, ps.r.i)] / ps.last - 1) / unit, ps.last = p.C[at(d, ps.r.i)];
         const bool target = p.ok(d, ps.r.i) && ps.last >= ps.entry * (1 + ps.r.exitAbove);
-        if (target || ps.k >= H) settle(ps, target ? 2 : 0), book.erase(book.begin() + std::ptrdiff_t(q));
+        bool stopped = false;
+        if (xPsar && !target && p.ok(d, ps.r.i) && p.H[at(d, ps.r.i)] >= p.L[at(d, ps.r.i)]) {
+          ps.sar = std::min(ps.sar + ps.af * (ps.ep - ps.sar), std::min(ps.l1, ps.l2));
+          stopped = ps.last < ps.sar;
+          if (p.H[at(d, ps.r.i)] > ps.ep) ps.ep = p.H[at(d, ps.r.i)], ps.af = std::min(0.2, ps.af + 0.02);
+          ps.l2 = ps.l1, ps.l1 = p.L[at(d, ps.r.i)];
+        }
+        if (target || stopped || ps.k >= H) settle(ps, target ? 2 : stopped ? 4 : 0), book.erase(book.begin() + std::ptrdiff_t(q));
         else ++q;
       }
       // the day's orders into the free slots (bought in the opening auction, or not at all)
@@ -1084,6 +1100,7 @@ int main(int argc, char** argv) {
           continue;
         }
         Pos ps{r, p.O[at(d, r.i)], p.C[at(d, r.i)], 1, d};
+        ps.sar = ps.l1 = ps.l2 = std::min(p.L[at(d, r.i)], ps.entry), ps.ep = std::max(p.H[at(d, r.i)], ps.entry);  // the PSAR from the day it was bought
         nAuction += 1;
         day += r.value * (ps.last / ps.entry - 1) / unit;
         const bool target = ps.last >= ps.entry * (1 + r.exitAbove);
@@ -1198,10 +1215,10 @@ int main(int argc, char** argv) {
     std::printf("uk:   for scale: every share of the day's list bought at the open and sold at the close %+.1f%% a year (Sharpe %.2f), before costs\n", 100 * base.annual, base.sharpe);
     if (o.hold) {
       std::printf("uk:   held up to %zu sessions: orders %.0f on %zu of %zu sessions (%.2f a day, into the book's free slots); bought in the opening auction %.1f%%; "
-                  "trades %.0f, held %.2f sessions on average, %.1f%% sold at their exit level's first close, %.1f%% at the open by the daily update, the rest at their last close; "
+                  "trades %.0f, held %.2f sessions on average, %.1f%% sold at their exit level's first close, %.1f%% at the open by the daily update, %.1f%% under their PSAR, the rest at their last close; "
                   "%.0f%% cut to the share's liquidity\n",
                   H, nOrders, daysWithOrders, ret.size(), nOrders / double(ret.size()), nOrders > 0 ? 100 * nAuction / nOrders : 0.0, nFilled, nFilled > 0 ? sumHeld / nFilled : 0.0,
-                  nFilled > 0 ? 100 * nTaken / nFilled : 0.0, nFilled > 0 ? 100 * nDropped / nFilled : 0.0, nOrders > 0 ? 100 * nCapped / nOrders : 0.0);
+                  nFilled > 0 ? 100 * nTaken / nFilled : 0.0, nFilled > 0 ? 100 * nDropped / nFilled : 0.0, nFilled > 0 ? 100 * nPsar / nFilled : 0.0, nOrders > 0 ? 100 * nCapped / nOrders : 0.0);
       std::printf("uk:   exit levels used (the first close this many daily volatilities above the price paid):");
       for (std::size_t g = 0; g < nTh; ++g)
         if (levelDays[g]) std::printf(" %g on %zu sessions;", kTh[g], levelDays[g]);
