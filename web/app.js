@@ -82,10 +82,12 @@ function render(r, source) {
   $('asof').textContent = `${where} · ${r.stocks} most traded shares · after the close of ${day} · ${costs(r)}`
     + (r.orders.some((o) => o.fill != null) ? ` · about ${buys.toFixed(1)} of these orders expected to buy` : '');
   const levels = r.orders.some((o) => o.stop != null || o.take != null);  // without: every trade sold at the close
+  const stopOnly = r.model === 'strategy';  // the strategy engine's book: a stop (PSAR), never a target
   const holds = r.orders.some((o) => o.days != null);  // a multi-day book: sold at the first close at its exit level, else on its last day
   const atOpen = r.orders.length > 0 && r.orders.every((o) => o.entry === 'open');  // bought in the opening auction only: the column is the most it pays
   const head = [['Share'], [atOpen ? 'Buy at open' : 'Buy at', 'num']];
-  if (levels) head.push(['Stop', 'num'], ['Target', 'num']);
+  if (levels) head.push(['Stop', 'num']);
+  if (levels && !stopOnly) head.push(['Target', 'num']);
   if (holds) head.push(['Sell at', 'num']);
   const rebuys = r.orders.some((o) => o.rebuy > 0);  // a buy-back after a stop (learnt; none on most days)
   if (rebuys) head.push(['Buy-back', 'num']);
@@ -101,7 +103,8 @@ function render(r, source) {
       const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? (atOpen ? `≤ ${pct(o.limit, 1)}` : `open, ≤ ${pct(o.limit, 1)}`) : pct(o.limit, 1), 'num']];
       // The stop from the price bought at: fixed, trailing under the day's high, or to the price paid once up `breakeven`.
       const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
-      if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + how, o.stop == null ? 'num' : 'num neg'], [o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
+      if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + (o.stopKind === 'psar' ? ' PSAR' : how), o.stop == null ? 'num' : 'num neg']);
+      if (levels && !stopOnly) row.push([o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
       if (holds) row.push(o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
@@ -132,6 +135,7 @@ function render(r, source) {
       ? `<b>${esc(r.strategy)}</b>: ${esc(r.about || '')}. The list was made at the rebalance after the close of ${r.decided}; the book holds ${r.slots} positions. `
         + '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is tried again the next morning. '
         + '<b>Sell at</b>: <i>when dropped</i>, at the open of the morning after the strategy leaves it out of its list. '
+        + (r.orders.some((o) => o.stopKind === 'psar') ? '<b>Stop</b>: a Parabolic SAR stop at IBKR (good till cancelled), from the lows before the buy and rising each day with the price; after a stop the share is bought back once its SAR turns up again, while the strategy still wants it. ' : '')
         + `<b>Costs</b>: the order's own commission and ${taxes}, applied only at the end, to this list: they choose nothing and change no order's place. `
         + '<b>If it buys</b>: what the strategy\'s past trades at the same rank made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
       : r.model === 'uk' && r.book === 'hold'
@@ -242,10 +246,12 @@ function chartWhy(o) {
     ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Sell', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : 'when dropped'],
     ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
+  if (o.stop != null) facts.splice(4, 0, ['Stop', `${pct(o.stop, 1)}${o.stopKind === 'psar' ? ' (PSAR)' : ''}`]);
   const money = o.gross == null ? ''
     : `<p class="split">Expected before costs <b>${pct(o.gross, 2)}</b>: what the strategy's past trades at rank ${o.rank} made, held about ${Math.round(o.holdDays || 0)} sessions. `
       + `Its costs, <b>${pct(o.cost, 2)}</b>, come off at the end: <b>${pct(o.ifFilled, 2)}</b> if it buys${o.fill != null ? `, ${signed(o.expected, 2)[0]} with its ${Math.round(100 * o.fill)}% chance to buy` : ''}.`
-      + `${o.held ? " The strategy's book holds it already: the bridge buys it only if the account does not." : ''}</p>`;
+      + `${o.held ? " The strategy's book holds it already: the bridge buys it only if the account does not." : ''}</p>`
+      + (o.stopKind === 'psar' ? `<p class="split"><b>Stop</b>: a Parabolic SAR stop at IBKR, now ${pct(-o.stop, 1).slice(1)} under the last close; it starts under the lows before the buy and rises each day with the price. ${o.rebuy ? 'After a stop the share is bought back once its SAR turns up again, while the strategy still wants it.' : 'After a stop it is not bought back.'}</p>` : '');
   $('chart-dialog-why').innerHTML = `<div class="facts">${facts.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
     + (o.reason ? `<strong>Why it is on the list</strong><p class="split">${esc(o.reason)}</p>` : '') + money;
 }
@@ -696,13 +702,16 @@ function labSwitches(m) {
   const box = $('lab-switches');
   if (!box) return;
   fetch('data/strategies.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((idx) => {
-    const live = (idx?.markets?.[m] || []).find((s) => s.role === 'live')?.strategy;
+    const entry = (idx?.markets?.[m] || []).find((s) => s.role === 'live'), live = entry?.strategy, psar = !!entry?.params?.psar;
+    const stop = document.createElement('label'), sc = document.createElement('input');
+    sc.type = 'checkbox', sc.id = 'lab-psar', sc.checked = psar;
+    stop.append(sc, document.createTextNode(`A PSAR stop, bought back when its SAR turns up${psar ? ' (live)' : ''}`));
     box.replaceChildren(...LAB_STRATEGIES.map(([k, t]) => {
       const l = document.createElement('label'), c = document.createElement('input');
       c.type = 'radio', c.name = 'lab-strategy', c.value = k, c.checked = k === (live || 'momentum');
       l.append(c, document.createTextNode(`${t}${k === live ? ' (live)' : ''}`));
       return l;
-    }));
+    }), stop);
   });
 }
 let labWorker = null;
@@ -719,8 +728,9 @@ $('lab-run').addEventListener('click', async () => {
     status.textContent = /key|401|Failed to fetch|NetworkError|Load failed/i.test(String(e.message)) ? 'Connect your bridge under Broker (its address and key): the bars come from your IBKR account.' : `No bars: ${e.message}.`;
     return;
   }
-  const env = {}, chosen = $('lab-switches').querySelector('input:checked')?.value || 'momentum';
+  const env = {}, chosen = $('lab-switches').querySelector('input[name="lab-strategy"]:checked')?.value || 'momentum';
   const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--strategy', chosen, '--backend', 'serial'];
+  if ($('lab-psar')?.checked) args.push('--param', 'psar=1', '--param', 'rebuy=0');
   if (['EU', 'APAC', 'INDEX'].includes(M)) { files['venues.txt'] = await (await fetch('lab/venues.txt')).text(); args.push('--venues', '/venues.txt'); }
   if (M === 'UK') { files['aim.txt'] = await (await fetch('lab/aim.txt')).text(); args.push('--stamp-free', '/aim.txt'); }
   status.textContent = `Running the model on ${(csv.length / 1e6).toFixed(1)} MB of bars…`;

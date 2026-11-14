@@ -627,6 +627,47 @@ def strategy_book():
     return placed + closed + dropped
 
 
+def strategy_stops():
+    """The strategy engine's PSAR stop through submit.py --holds: a good-till-cancelled stop placed at the
+    strategy's level once the buy fills, moved up each morning to the day's level, and cancelled before the book
+    sells the position at the open; a position stopped at IBKR leaves the book."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(7, 50), LONDON)
+    d = tempfile.mkdtemp()
+    book = {'model': 'strategy', 'book': 'hold', 'days': 260, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'XXX', 'close': 100.0, 'entry': 'open', 'open': True, 'limit': 101.0, 'stop': None, 'take': None, 'exitAbove': None, 'days': 260,
+         'stopKind': 'psar', 'stopPrice': 94.0, 'capital': 1000.0, 'maxCapital': 1000.0}], 'updates': []}
+    path, state = os.path.join(d, 'UK.json'), os.path.join(d, 'holds-UK.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    b = SHARED[0]
+    buy = next(t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY')
+    b.fill(buy, 990, 100.0)
+    CLOCK[0] = CLOCK[0].replace(hour=16, minute=30)
+    closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    stops = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.orderType == 'STP' and t.orderStatus.status not in ('Cancelled', 'ApiCancelled')]
+    assert len(stops) == 1 and stops[0].order.auxPrice == 94.0 and stops[0].order.tif == 'GTC' and stops[0].order.totalQuantity == 990, ([vars(t.order) for t in stops], closed)
+    # the next morning: kept, its stop moved up to the day's PSAR level
+    st = json.load(open(state))
+    st['positions']['XXX']['offered'] = '2000-01-01'
+    json.dump(st, open(state, 'w'))
+    CLOCK[0] = CLOCK[0].replace(hour=7, minute=50)
+    book['orders'], book['updates'] = [], [{'ticker': 'XXX', 'keep': True, 'exitAbove': None, 'stopPrice': 96.5}]
+    json.dump(book, open(path, 'w'))
+    moved = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    live = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.orderType == 'STP' and t.orderStatus.status not in ('Cancelled', 'ApiCancelled')]
+    assert len(live) == 1 and live[0].order.auxPrice == 96.5, ([vars(t.order) for t in live], moved)
+    # dropped by the strategy: the stop cancelled, then sold at the open
+    book['updates'] = [{'ticker': 'XXX', 'keep': False, 'exitAbove': None, 'stopPrice': None}]
+    json.dump(book, open(path, 'w'))
+    dropped = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    live = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.orderType == 'STP' and t.orderStatus.status not in ('Cancelled', 'ApiCancelled')]
+    out = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'SELL' and t.order.orderRef.endswith('-exit')]
+    assert not live and len(out) == 1, (dropped, [vars(t.order) for t in live])
+    return placed + closed + moved + dropped
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -637,6 +678,8 @@ if __name__ == '__main__':
           'updated every morning (kept with its new exit level, or sold at the open); OK')
     print(strategy_book())
     print('strategy book: held with no exit level (nothing offered at the close), sold at the open when the strategy drops it; OK')
+    print(strategy_stops())
+    print('strategy book: a GTC stop at the PSAR level once bought, moved up each morning, cancelled before the sale at the open; OK')
     print(eu_book())
     print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
     print(us_book())

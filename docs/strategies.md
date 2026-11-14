@@ -80,3 +80,40 @@ The live choice follows the research, not this table: momentum for shares, trend
 Picking each market's best strategy from the same data it is judged on is the overfitting the research warns
 against. These are 5-position books, so the drawdowns are large; the budget's larger books (10 positions)
 spread the risk.
+
+## Stops and buy-backs (16 Nov 2026)
+
+The engine adds a stop to any strategy, along with a rule for buying back a share after it has been stopped out:
+
+- **`stop` with `rebuy`:** a fixed stop-loss, this fraction under the price paid. After a stop, the share is bought
+  back once its close is `rebuy` above the stop level; `rebuy: -1` means never.
+- **`psar: 1` with `rebuy`:** a Parabolic SAR trailing stop (Wilder 1978).
+  - It starts at the lowest low of the 5 sessions before the buy.
+  - Each day it rises by the step (0.02, growing by 0.02 at each new high, to at most 0.2) times the gap to the
+    highest high since the buy.
+  - It never rises above the last two lows.
+  - After a stop, the share's SAR on the way down is followed. The share is bought back once a close is above it,
+    while the strategy still wants the share (`rebuy` ≥ 0).
+
+A stop is hit when the day's low reaches it. The position is sold at the stop, or at the open if the share
+opened under it. At IBKR it is a good-till-cancelled stop sell (`tools/ibkr/submit.py --holds`):
+- placed once the buy fills;
+- moved each morning to the engine's level for the day (`stopPrice` in the orders file);
+- cancelled before the book sells the position any other way.
+
+Tested on the store's data (Nov 2018 to 13 Nov 2026), before costs. The cost estimate is the extra buys a year
+times each order's round trip at the 15 Nov order sizes:
+
+| Market | No stop | PSAR | PSAR with buy-back | PSAR with buy-back, about after costs |
+|---|---|---|---|---|
+| UK | +34%, 1.08, 44% | +6%, 0.75, 16% | +19%, 1.02, 28% | +7% (no stop: +30%) |
+| EU | +15%, 0.75, 36% | −1%, −0.07, 14% | +11%, 0.93, 20% | −13% (no stop: +7%) |
+| US (NYSE) | +28%, 0.79, 56% | −1%, −0.04, 25% | −5%, −0.11, 45% | −10% (no stop: +26%) |
+| APAC | +39%, 1.06, 56% | +6%, 0.71, 15% | +25%, 1.23, 25% | +7% (no stop: +34%) |
+| INDEX | +11%, 0.70, 30% | +4%, 0.53, 15% | +6%, 0.65, 14% | 0% (no stop: +6%) |
+
+Fixed stops (10%, 15%, 20%) did worse than PSAR with buy-back, with or without a buy-back.
+
+The PSAR stop with buy-back went live in every market on 16 Nov 2026, chosen to roughly halve the worst falls.
+It trades about three times as often, so the costs take most of its return before costs. The paper account's
+fills will show the real figure.

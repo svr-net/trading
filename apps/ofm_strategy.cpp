@@ -308,11 +308,16 @@ struct Costs {
 struct Row {  // an order of the backtest
   std::size_t t = 0, i = 0, rank = 0;  // decided after the close of t; its place on the list
   double limit = 0, expected = 0, entry = kNaN, exit = kNaN, ret = 0;
-  bool filled = false, closed = false;
+  bool filled = false, closed = false, stopped = false;
   std::size_t since = 0, days = 0;
 };
 
-struct Pos { std::size_t row; double mark; };
+// A position: its row, the price it is marked at, and its stop: a fixed level, or the Parabolic SAR (Wilder 1978)
+// from the day it was bought: the level, the highest high since (ep) and the step (af).
+struct Pos { std::size_t row; double mark, sar = 0, ep = 0, af = 0; };
+// A share whose position was stopped: its SAR on the way down (with psar: the highest high since as the level,
+// the lowest low as ep), and whether it has turned up again (a close above it).
+struct Stopped { double level = 0, sar = 0, ep = 0, af = 0; bool turned = false; };
 
 struct Learnt {  // the strategy's past trades by their place on the list, known on the day
   std::vector<double> sum, n;
@@ -374,6 +379,13 @@ int main(int argc, char** argv) {
   if (bf == strat::backends().end()) usage(("no back end '" + backendName + "' (see --list)").c_str());
   const auto backend = bf->second();
   strat::Params P = strategy->defaults();
+  // The engine's own, for every strategy: a stop-loss (stop: a position sold once the price falls this far under
+  // the price paid; 0: none) and the buy-back after one (rebuy: bought again, while the strategy still wants it,
+  // once the close is this far above the level it was stopped at; negative: never).
+  // psar: 1 makes the stop the Parabolic SAR (from the lowest low of the 5 sessions before the buy, rising each day
+  // by psarstep of the gap to the highest high, the step growing by psarstep at each new high to at most psarmax);
+  // its buy-back: once the share's SAR on the way down turns up again (a close above it).
+  P.emplace("stop", 0.0), P.emplace("rebuy", -1.0), P.emplace("psar", 0.0), P.emplace("psarstep", 0.02), P.emplace("psarmax", 0.2);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -427,7 +439,75 @@ int main(int argc, char** argv) {
 
   // ------------------------------------------------------------------ the walk-forward backtest, before costs
   const std::size_t start = warm;
-  const double capSd = P["capsd"], capMax = P["capmax"];
+  const double capSd = P["capsd"], capMax = P["capmax"], stopLoss = P["stop"], rebuy = P["rebuy"];
+  const bool psar = P["psar"] > 0, stops = psar || stopLoss > 0;
+  const double afStep = P["psarstep"], afMax = P["psarmax"];
+  std::map<std::size_t, Stopped> stoppedAt;  // share -> its stop (until bought back or dropped by the strategy)
+  std::size_t nStops = 0, nRebuys = 0;
+  const auto lowOf = [&](std::size_t a, std::size_t b, std::size_t i) {  // the lowest low of days a..b (real bars)
+    double m = kNaN;
+    for (std::size_t q = a; q <= b; ++q)
+      if (d.L[q * N + i] > 0) m = std::isfinite(m) ? std::min(m, d.L[q * N + i]) : d.L[q * N + i];
+    return m;
+  };
+  // A new position's stop, bought at `entry` on day u: a fixed level, or the SAR from the 5 sessions' lowest low before.
+  const auto openStop = [&](Pos& p, std::size_t u, std::size_t i, double entry) {
+    if (psar) {
+      const double lo = lowOf(u >= 5 ? u - 5 : 0, u - 1, i);
+      p.sar = std::isfinite(lo) && lo < entry ? lo : entry * 0.95, p.ep = entry, p.af = afStep;
+    } else {
+      p.sar = stopLoss > 0 ? entry * (1 - stopLoss) : 0.0;
+    }
+  };
+  // Day u's bar against the stop: hit if the low reached it (sold there, or at the open through a gap); else the
+  // SAR moves up for the next day (never above the last two lows).
+  const auto stopDay = [&](Pos& p, std::size_t u, std::size_t i, double& px) {
+    if (!stops) return false;
+    const double lo = d.L[u * N + i], hi = d.H[u * N + i], op = d.O[u * N + i];
+    if (lo > 0 && p.sar > 0 && lo <= p.sar) {
+      px = op > 0 ? std::min(op, p.sar) : p.sar;
+      return true;
+    }
+    if (psar && hi > 0) {
+      if (hi > p.ep) p.ep = hi, p.af = std::min(afMax, p.af + afStep);
+      double next = p.sar + p.af * (p.ep - p.sar);
+      const double l2 = lowOf(u >= 1 ? u - 1 : 0, u, i);
+      if (std::isfinite(l2)) next = std::min(next, l2);
+      p.sar = std::max(p.sar, next);
+    }
+    return false;
+  };
+  // A stopped share's state: with psar, its SAR on the way down from the highest high it reached while held.
+  const auto stoppedFrom = [&](const Pos& p, double level) {
+    Stopped x;
+    x.level = level;
+    if (psar) x.sar = std::max(p.ep, level), x.ep = level, x.af = afStep;
+    return x;
+  };
+  // A stopped share through day t (at its close): with psar, turned once the close is above its falling SAR; else
+  // the SAR falls toward the lowest low (never under the last two highs).
+  const auto stoppedDay = [&](Stopped& x, std::size_t t, std::size_t i) {
+    if (!psar || x.turned) return;
+    const double c = d.C[t * N + i], lo = d.L[t * N + i];
+    if (!(c > 0)) return;
+    if (c > x.sar) {
+      x.turned = true;
+      return;
+    }
+    if (lo > 0 && lo < x.ep) x.ep = lo, x.af = std::min(afMax, x.af + afStep);
+    double next = x.sar + x.af * (x.ep - x.sar);
+    double h2 = 0;
+    for (std::size_t q = t >= 1 ? t - 1 : 0; q <= t; ++q) h2 = std::max(h2, d.H[q * N + i] > 0 ? d.H[q * N + i] : 0.0);
+    x.sar = std::min(x.sar, std::max(next, h2));
+  };
+  // May a stopped share be bought again after the close of t: never (rebuy < 0); with psar once its SAR has turned
+  // up; with a fixed stop once the close is rebuy above the level it was stopped at.
+  const auto mayBuy = [&](std::size_t t, std::size_t i) {
+    const auto s_ = stoppedAt.find(i);
+    if (s_ == stoppedAt.end()) return true;
+    if (rebuy < 0) return false;
+    return psar ? s_->second.turned : d.Cf[t * N + i] >= s_->second.level * (1 + rebuy);
+  };
   const auto capOf = [&](std::size_t t, std::size_t i) {
     const double s = d.sigma[t * N + i];
     return std::min(capMax, capSd * (std::isfinite(s) ? s : 0.02));
@@ -473,6 +553,15 @@ int main(int argc, char** argv) {
         it = book.erase(it);
         continue;
       }
+      double px = 0;
+      if (stopDay(it->second, u, i, px)) {  // the stop-loss: sold at its level (or the open, through a gap)
+        day += px / it->second.mark - 1;
+        r.exit = px, r.ret = px / r.entry - 1, r.closed = true, r.stopped = true, r.days = u - r.since;
+        stoppedAt[i] = stoppedFrom(it->second, px), ++nStops;
+        done.push_back(it->second.row);
+        it = book.erase(it);
+        continue;
+      }
       if (C > 0) day += C / it->second.mark - 1, it->second.mark = C;
       if (u - r.since + 1 >= maxDays) {  // its last day: sold at the close
         r.exit = it->second.mark, r.ret = r.exit / r.entry - 1, r.closed = true, r.days = u - r.since;
@@ -483,10 +572,12 @@ int main(int argc, char** argv) {
       lastHeld[i] = u;
       ++it;
     }
+    for (auto it = stoppedAt.begin(); it != stoppedAt.end();) it = inTarget(it->first) ? std::next(it) : stoppedAt.erase(it);  // dropped: forgotten
     std::size_t free = k > book.size() ? k - book.size() : 0;
     for (std::size_t rank = 0; rank < target.size() && free > 0; ++rank) {
       const std::size_t i = target[rank];
-      if (book.count(i)) continue;
+      if (book.count(i) || !mayBuy(t, i)) continue;
+      const bool again = stoppedAt.count(i) > 0;
       Row r;
       r.t = t, r.i = i, r.rank = rank, r.expected = learnt.expected(rank);
       r.limit = d.Cf[t * N + i] * (1 + capOf(t, i));
@@ -494,14 +585,25 @@ int main(int argc, char** argv) {
       const double O = d.O[u * N + i], C = d.Cf[u * N + i];
       if (O > 0 && O <= r.limit) {
         r.filled = true, r.entry = O, r.since = u;
-        const double mark = C > 0 ? C : O;
-        day += mark / O - 1;
-        book[i] = Pos{rows.size(), mark};
-        lastHeld[i] = u;
+        if (again) stoppedAt.erase(i), ++nRebuys;
         --free;
+        double px = 0;
+        Pos p{rows.size(), C > 0 ? C : O};
+        openStop(p, u, i, O);
+        if (stopDay(p, u, i, px)) {  // stopped the day it was bought
+          day += px / O - 1;
+          r.exit = px, r.ret = px / O - 1, r.closed = true, r.stopped = true, r.days = 0;
+          stoppedAt[i] = stoppedFrom(p, px), ++nStops;
+          done.push_back(rows.size());
+        } else {
+          day += p.mark / O - 1;
+          book[i] = p;
+          lastHeld[i] = u;
+        }
       }
       rows.push_back(r);
     }
+    for (auto& [i, x] : stoppedAt) stoppedDay(x, u, i);  // the stopped shares through day u's close
     daily.push_back(day / double(k));
     dailyDays.push_back(d.days[u]);
     for (std::size_t x : done) learnt.add(rows[x]);
@@ -542,6 +644,7 @@ int main(int argc, char** argv) {
   std::vector<Order> orders;
   for (std::size_t rank = 0; rank < target.size(); ++rank) {
     const std::size_t i = target[rank];
+    if (!book.count(i) && !mayBuy(L, i)) continue;  // stopped and not recovered: not bought back yet
     Order x{i, rank, d.Cf[L * N + i], 0, 0, learnt.expected(rank), 0, 0, 0, book.count(i) > 0};
     x.limit = x.close * (1 + capOf(L, i));
     x.value = noVolume ? o.capital : std::min(o.capital, o.advShare * d.value[L * N + i]);
@@ -564,6 +667,21 @@ int main(int argc, char** argv) {
     if (x.net > 0) final.push_back(x);
   }
 
+  // Each share's stop for the next session (absolute, the store's price unit): a position held, its stop as it
+  // stands after the last close; one to be bought, the stop it starts with (psar: the lowest low of the last 5
+  // sessions; a fixed stop: from the price paid, so the bridge sets it from the fill: stopLoss).
+  const auto stopPrice = [&](std::size_t i) {
+    if (!stops) return kNaN;
+    const auto b = book.find(i);
+    if (b != book.end()) return b->second.sar;
+    if (psar) {
+      const double lo = lowOf(L >= 4 ? L - 4 : 0, L, i);
+      return std::isfinite(lo) && lo < d.Cf[L * N + i] ? lo : d.Cf[L * N + i] * 0.95;
+    }
+    return d.Cf[L * N + i] * (1 - stopLoss);
+  };
+  const std::string stopKind = psar ? "psar" : stopLoss > 0 ? "fixed" : "none";
+
   // ------------------------------------------------------------------ report
   const std::string cur = uk ? "GBP" : M == "US" || M == "FOREX" ? "USD" : M == "APAC" ? "AUD" : "EUR";
   std::printf("strategy: %s (%s) on %s, back end %s; %zu shares, %s .. %s%s%s\n", o.strategy.c_str(), strategy->about().c_str(), M.c_str(), backend->about().c_str(), N,
@@ -571,6 +689,12 @@ int main(int argc, char** argv) {
   if (units) std::printf("strategy: %zu bars put in their share's latest price unit (pence and pounds)\n", units);
   std::printf("strategy: the account (%s .. %s, %zu slots of %s %.0f, rebalanced every %zu sessions): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, before costs\n",
               dailyDays.empty() ? "-" : dailyDays.front().c_str(), dailyDays.empty() ? "-" : dailyDays.back().c_str(), k, cur.c_str(), o.capital, reb, 100 * annual, sharpe, 100 * dd);
+  if (stops)
+    std::printf("strategy:   %s: %zu positions stopped; %s\n",
+                psar ? "a Parabolic SAR stop (trailing, from the lows before the buy)" : ("a stop-loss " + std::to_string(int(std::lround(100 * stopLoss))) + "% under the price paid").c_str(), nStops,
+                rebuy < 0 ? "never bought back"
+                          : (std::string(psar ? "bought back once its SAR turned up again: " : ("bought back once the close was " + std::to_string(int(std::lround(100 * rebuy))) + "% over the stop level: ").c_str()) +
+                             std::to_string(nRebuys) + " times").c_str());
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
               rows.empty() ? 0.0 : 100 * nFilled / double(rows.size()), nFilled ? 100 * sumTrade / nFilled : 0.0, nFilled ? 100 * nWin / nFilled : 0.0, learnt.holdDays(double(reb)));
   std::printf("strategy: next session (after the close of %s; the list from the rebalance after the close of %s): %zu on the list, %zu after costs\n", d.days[L].c_str(),
@@ -593,13 +717,15 @@ int main(int argc, char** argv) {
     f << ",\"backtest\":{\"from\":" << jstr(dailyDays.empty() ? "" : dailyDays.front()) << ",\"to\":" << jstr(dailyDays.empty() ? "" : dailyDays.back())
       << ",\"annualReturn\":" << jnum(annual) << ",\"sharpe\":" << jnum(sharpe) << ",\"maxDrawdown\":" << jnum(dd) << ",\"orders\":" << rows.size()
       << ",\"trades\":" << nFilled << ",\"avgTrade\":" << jnum(nFilled ? sumTrade / nFilled : 0.0) << ",\"winRate\":" << jnum(nFilled ? nWin / nFilled : 0.0)
-      << ",\"holdDays\":" << jnum(holdDays) << "}";
+      << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
+      << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false") << ",\"rebuys\":" << nRebuys << "}";
     f << ",\"orders\":[";
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
-        << ",\"stop\":null,\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
+        << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false")
+        << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i])
         << ",\"score\":" << jnum(score[x.i]) << ",\"reason\":" << jstr(strategy->reason(last, P, x.i)) << "}";
@@ -636,7 +762,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"stop\":null,\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
+        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1 << "}";
@@ -648,7 +774,7 @@ int main(int argc, char** argv) {
     for (std::size_t i : target) named.insert(i);
     for (const auto& [i, day] : lastHeld)
       if (L - std::min(L, day) <= 260) named.insert(i);
-    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) ? "true" : "false") << ",\"exitAbove\":null}";
+    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) ? "true" : "false") << ",\"exitAbove\":null,\"stopPrice\":" << (book.count(i) ? jnum(stopPrice(i)) : "null") << "}";
     f << "]}\n";
   }
   return 0;
