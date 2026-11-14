@@ -231,6 +231,51 @@
      "X_TARGET": "5"
     },
     "ref": null
+   },
+   {
+    "name": "cap1",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "cap2",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "moo",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1"
+    },
+    "ref": null
+   },
+   {
+    "name": "caplearn",
+    "role": "shadow",
+    "env": {
+     "X_RESID": "1",
+     "X_VOLREGIME": "1",
+     "X_TARGET": "5",
+     "X_RISK": "1",
+     "X_CAPLEARN": "1"
+    },
+    "ref": null
    }
   ],
   "us": [
