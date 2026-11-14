@@ -274,7 +274,35 @@ def solve(a, b):
     return [m[i][n] / m[i][i] for i in range(n)]
 
 
-def allocate(records, cap=0.5, floor=0.0):
+def forward_of(orders_path, tradelog_path, since):
+    """The market's outlook for the next session: its final orders' expected daily return (each order's
+    expected return after its own costs, times its chance to fill in the opening auction, per day it is
+    expected to be held, over the book's slots), discounted by how much of the model's expectation its
+    backtest has delivered over the last year (the filled trades' results before costs over what was expected
+    of them, 0 to 1: a model that promises more than it delivers counts for less). Returns (outlook, the
+    orders' expected daily return, the share delivered)."""
+    try:
+        book = json.load(open(orders_path))
+    except (OSError, ValueError):
+        return 0.0, 0.0, 0.0
+    slots = max(1, int(book.get('slots') or len(book.get('orders', [])) or 1))
+    exp = sum(float(o.get('expected') or 0) / max(1.0, float(o.get('holdDays') or 1)) for o in book.get('orders', [])) / slots
+    got = want = 0.0
+    try:
+        with open(tradelog_path) as f:
+            head = next(f).strip().split(',')
+            cd, ce, cf, cr = (head.index(k) for k in ('date', 'expected', 'filled', 'ret'))
+            for line in f:
+                c = line.strip().split(',')
+                if len(c) > max(cd, ce, cf, cr) and c[cd] >= since and float(c[cf] or 0) > 0:
+                    got += float(c[cr]); want += float(c[ce])
+    except (OSError, StopIteration, ValueError):
+        pass
+    delivered = min(1.0, max(0.0, got / want)) if want > 0 else 0.0
+    return exp * delivered, exp, delivered
+
+
+def allocate(records, cap=0.5, floor=0.0, forward=None, blend=0.5):
     """The account's daily limit split over the markets to maximise its risk-adjusted return: each market's
     record (its daily results before costs over the last year, on the same days) gives its mean,
     shrunk by its t statistic, and the markets' covariance, shrunk halfway to its diagonal; the weights are
@@ -288,6 +316,8 @@ def allocate(records, cap=0.5, floor=0.0):
     x = {m: [records[m].get(d, 0.0) for d in dates] for m in names}
     n = len(dates)
     mu = {m: shrunk(x[m]) for m in names}
+    if forward:  # the outlook (forward_of): half the mean, where a market has one
+        mu = {m: (1 - blend) * v + blend * float(forward[m]) if m in forward else v for m, v in mu.items()}
     mean = {m: sum(x[m]) / n if n else 0.0 for m in names}
     cov = {(a, b): (sum((p - mean[a]) * (q - mean[b]) for p, q in zip(x[a], x[b])) / n if n > 1 else 0.0) for a in names for b in names}
     active = [m for m in names if mu[m] > 0 and cov[(m, m)] > 0]
@@ -497,16 +527,21 @@ def main():
         # each order's expected return after its own costs, an order expected to lose after them not made).
         record = dict(zip(days[-250:], meta[-250:]))
         score = shrunk(meta[-250:])
+        # The outlook: the next session's final orders, their chance to fill and what the model has delivered.
+        outlook, fexp, fdel = forward_of(f'data/budget/orders-{nxt}.json', f'data/budget/trades-{nxt}.csv', days[-250] if len(days) >= 250 else '')
         daily, cur = account_of(args.config)
         share, scale = 1.0, 1.0
         alloc = {}
         if daily > 0:  # this market's share of the account's daily limit: the split that maximises the account's risk-adjusted return
             recs, held = published_records(args.market, args.config)
             recs[args.market] = record
+            fwd = {m: float(b['forward']['outlook']) for m, b in published_budgets(args.config).items()
+                   if m != args.market and m in recs and isinstance(b.get('forward'), dict)}
+            fwd[args.market] = outlook
             room = max(0.0, 1.0 - sum(held.values()))  # markets without a published record yet keep their share
             acc = json.load(open(args.config)).get('account') or {}
             floor = float(acc.get('paper_floor', 0.05)) if paper_of(args.config) else 0.0
-            alloc = {m: v * room for m, v in allocate(recs, cap=float(acc.get('market_cap', 0.5)), floor=floor).items()}
+            alloc = {m: v * room for m, v in allocate(recs, cap=float(acc.get('market_cap', 0.5)), floor=floor, forward=fwd).items()}
             share = alloc.get(args.market, 0.0)
             # Growing only into its part of what is free: the markets run at the same time (UK and EU at 05:30)
             # each see the others' latest shares, so each may take at most its own last share plus the free
@@ -543,7 +578,9 @@ def main():
         if daily > 0:
             lines.append(f"budget:   the account's limit {daily:g} {cur} a day across the markets; this market's share {100 * share:.0f}% ({total:,.0f} {CURRENCY[args.market]}; "
                          f"its record before costs {100 * score:+.3f}% a day shrunk)")
-            lines.append("budget:   the split that maximises the account's risk-adjusted return (records before costs, the markets' covariance; "
+            lines.append(f"budget:   the outlook: the next session's orders {100 * fexp:+.3f}% a day expected (after their costs, times their chance to fill), "
+                         f"of which the backtest delivered {100 * fdel:.0f}% over the last year: {100 * outlook:+.3f}% a day")
+            lines.append("budget:   the split that maximises the account's risk-adjusted return (half the records before costs, half the outlook; the markets' covariance; "
                          f"at most {100 * float((json.load(open(args.config)).get('account') or {}).get('market_cap', 0.5)):.0f}% a market"
                          + (', at least 5% each on paper' if paper_of(args.config) else '') + '): '
                          + ', '.join(f'{m} {100 * v:.0f}%' for m, v in sorted(alloc.items(), key=lambda kv: -kv[1])))
@@ -564,7 +601,8 @@ def main():
             shutil.copy(f'data/budget/orders-{nxt}.json', f'data/eoddata/orders/{args.market}.json')
         with open('report/budget.json', 'w') as f:
             json.dump({'market': args.market, 'date': days[-1] if days else '', 'score': score, 'share': share, 'allocation': alloc,
-                       'record': {d: round(v, 8) for d, v in record.items()}, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
+                       'record': {d: round(v, 8) for d, v in record.items()},
+                       'forward': {'outlook': outlook, 'expectedDaily': fexp, 'delivered': fdel}, 'total': total, 'currency': CURRENCY.get(args.market), 'slots': slots, 'next': nxt, 'amount': total / nxt,
                        'chosen': {str(k): picks.count(k) for k in slots}, 'annual': {str(k): stats([series[k][d] for d in days])[0] for k in slots},
                        'auto': {'annual': a, 'sharpe': sh},
                        'expected': {'daily': ed, 'yearly': ey, 'ordersPerDay': opd, 'filled': fr, 'lastYearDaily': ed1, 'lastYearYearly': ey1}}, f, indent=1)
