@@ -240,3 +240,13 @@ forecast is the edge. Now live:
 
 PSAR hurt everywhere, as Kaminski and Lo predict for a reversal book. Every shadow stays on the page. `previous`
 keeps the live model before this change; `boll`, `psar`, `norisk` and `nocaplearn` now sit on the new live model.
+
+## The forecast counting for more (14 Nov 2026)
+
+Even the top-fifth orders took most of their expected return from the average trade's part,
+(intercept × the share's own volatility), not from the forecast. `X_EXCESS=1` computes that part at the day's
+typical daily move (the median of the list), and only the forecast's part at the share's own:
+`a × median σ + b × forecast × σ`. Every share gets the same baseline, so a volatile share no longer wins for its
+volatility alone, while the forecast still scales with how far the share moves. The order list, its costs check,
+the daily update of the positions held and the page's split all use it. Shadow `forecast` in every market;
+`uk_leak.sh`: no order changed by later data.

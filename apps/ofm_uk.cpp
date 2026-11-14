@@ -950,6 +950,24 @@ int main(int argc, char** argv) {
   // X_TOPFRAC=f: only the shares in the forecast's top f of the day's list may be ordered (then the expected
   // return, which scales with the share's volatility, chooses among them): the orders come from the model's
   // forecast, not from the most volatile shares (14 Nov: UK orders ranked 88 to 148 of 159 on the forecast).
+  // X_EXCESS=1: the forecast counts for more. The expected return is the average trade's part at the day's typical
+  // daily move (the median of the list) plus the forecast's part at the share's own: every share the same
+  // baseline, so a volatile share no longer wins for its volatility alone (14 Nov: most of each order's expected
+  // return was the average trade's, times its own volatility).
+  const bool xExcess = std::getenv("X_EXCESS") && std::string(std::getenv("X_EXCESS")) == "1";
+  std::vector<double> sigMed(T, kNaN);
+  if (xExcess)
+    for (std::size_t t = 0; t < T; ++t) {
+      std::vector<double> v;
+      for (std::size_t i : uni[t])
+        if (sigma[at(t, i)] > 0) v.push_back(sigma[at(t, i)]);
+      if (v.empty()) continue;
+      std::nth_element(v.begin(), v.begin() + long(v.size() / 2), v.end());
+      sigMed[t] = v[v.size() / 2];
+    }
+  const auto expectedOf = [&](std::size_t t, double a, double b, double pr, double sg) {
+    return xExcess && std::isfinite(sigMed[t]) ? a * sigMed[t] + b * pr * sg : (a + b * pr) * sg;
+  };
   const double topFrac = std::getenv("X_TOPFRAC") ? std::clamp(std::atof(std::getenv("X_TOPFRAC")), 0.01, 1.0) : 1.0;
   double topCut = -1e18;
   const auto ordersAt = [&](std::size_t t, bool withCosts) {
@@ -968,8 +986,8 @@ int main(int argc, char** argv) {
       const std::size_t i = u[j];
       Order r;
       r.i = i, r.close = p.C[at(t, i)], r.sigma = sigma[at(t, i)], r.spread = spread[at(t, i)];
-      r.expected = (a + b * pred[t][j]) * r.sigma;  // the trade as placed: bought at the open, out at its stop, its take-profit or the close
-      r.fromForecast = b * pred[t][j] * r.sigma, r.fromAverage = a * r.sigma;
+      r.expected = expectedOf(t, a, b, pred[t][j], r.sigma);  // the trade as placed: bought at the open, out at its exit
+      r.fromForecast = b * pred[t][j] * r.sigma, r.fromAverage = r.expected - r.fromForecast;
       if (topFrac < 1 && pred[t][j] < topCut) continue;  // X_TOPFRAC: only the forecast's top part of the day's list
       r.value = noVolume ? o.capital : std::min(o.capital, o.advShare * adv[at(t, i)]);  // FOREX, INDEX: no volume to cap it by
       r.capped = r.value < o.capital;
@@ -1099,7 +1117,7 @@ int main(int argc, char** argv) {
           Pos& ps = book[q];
           const auto it = std::lower_bound(uni[t].begin(), uni[t].end(), ps.r.i);
           if (it == uni[t].end() || *it != ps.r.i || !(sigma[at(t, ps.r.i)] > 0)) { ++q; continue; }  // no forecast for it: kept as planned
-          const double sg = sigma[at(t, ps.r.i)], e = (a + b * pred[t][std::size_t(it - uni[t].begin())]) * sg;
+          const double sg = sigma[at(t, ps.r.i)], e = expectedOf(t, a, b, pred[t][std::size_t(it - uni[t].begin())], sg);
           if (e > 0) {
             ps.r.exitAbove = kTh[g] * sg;
             ++q;
@@ -1386,7 +1404,7 @@ int main(int argc, char** argv) {
       if (!pred[T - 1].empty() && calibrationH(T - 1, ug, ua, ub, udh))
         for (std::size_t j = 0, n = 0; j < uni[T - 1].size(); ++j) {
           const std::size_t i = uni[T - 1][j];
-          const double sg = sigma[at(T - 1, i)], e = (ua + ub * pred[T - 1][j]) * sg;
+          const double sg = sigma[at(T - 1, i)], e = expectedOf(T - 1, ua, ub, pred[T - 1][j], sg);
           if (!(sg > 0)) continue;
           std::snprintf(b, sizeof b, "%s{\"ticker\":\"%s\",\"keep\":%s,\"exitAbove\":%.6g,\"expected\":%.6g}", n++ ? "," : "", p.tickers[i].c_str(), e > 0 ? "true" : "false", kTh[ug] * sg, e);
           f << b;
