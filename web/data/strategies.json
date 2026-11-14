@@ -14,7 +14,10 @@
     "name": "momentum",
     "role": "live",
     "strategy": "momentum",
-    "params": {}
+    "params": {
+     "psar": 1,
+     "rebuy": 0
+    }
    }
   ],
   "us": [
