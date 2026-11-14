@@ -7,12 +7,12 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=53">
+<link rel="stylesheet" href="style.css?v=54">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Automatic day trades with Interactive Brokers</div>
+    <div class="eyebrow">Automatic trades with Interactive Brokers, held up to 5 days</div>
     <h1>Daily Trades</h1>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
@@ -86,11 +86,12 @@
 
   <section class="view" id="view-about" hidden aria-labelledby="about-title">
     <h2 id="about-title">How it works</h2>
-    <p class="hint">Every evening a model learnt from each share's daily prices and volumes ranks the most traded shares by how much they are likely to rise during the next day, and picks up to 10. For each it sets a buy price a little below the last close and a safety stop at a fall it makes only on a rare day, both learnt from that share's own daily moves; it is sold at the close otherwise. The bridge on your NAS places the orders before the open, sells what is left at the close and records the fills; Results compares them with what the model expected.</p>
-    <p class="hint">Costs: Interactive Brokers' fixed commissions (£5,000 a trade in the UK, 1,000 elsewhere in each market's currency), UK stamp duty (none on AIM shares) and the European transaction taxes. Prices are not published under the data licence.</p>
+    <p class="hint"><b>The model.</b> Every evening, after each market's close, one model per market (the UK, Europe, the US, Asia-Pacific and INDEX, UCITS index ETFs on Xetra) ranks its most traded shares from their daily prices and volumes. It looks for shares that fell on their own rather than with the market (<i>residual reversal</i>), and weights them more when the market is turbulent (<i>Nagel's liquidity premium</i>). It is fitted on the return over the 5 days a position can be held, and refitted every month on the years before only. A day with no bar for a share is filled with its last close for the model's inputs only: it never buys or sells on one.</p>
+    <p class="hint"><b>The orders.</b> Each pick is bought in the next opening auction only, at most a little above the last close, never later in the day. It is offered at each close at or above its exit level: the first close that reaches it sells it, and otherwise it is sold on its fifth day. Every morning the day's model updates the positions held: one it would no longer buy is sold at the open, and the others get their exit level set again. The bridge on your NAS places all of this at Interactive Brokers (a paper account for now) and records the fills; Results compares them with what the model expected.</p>
+    <p class="hint"><b>Costs and money.</b> The model learns and is backtested before costs; Interactive Brokers' commissions, UK stamp duty (none on AIM shares) and the European taxes come off each final order's expected return, and an order expected to lose after them is not made. The account's daily limit is split over the markets by their records after costs over the last year: the most to the best risk-adjusted, at most half to one market, and on paper at least 5% each. Each market's earlier models run beside it as shadows, so a change is measured before it is kept. Prices are not published under the data licence.</p>
     <footer>Research tool, not investment advice.</footer>
   </section>
 </div>
-<script type="module" src="app.js?v=53"></script>
+<script type="module" src="app.js?v=54"></script>
 </body>
 </html>

@@ -218,6 +218,12 @@ function showMarket(m) {
 }
 // The market's strategies (data/strategies.json, from config/markets.json): the live one and its
 // shadows, each with its backtest and its record since tracking began (the same days for each).
+// What the uk model's shadows leave out of the live one (config/markets.json; docs/uk-research.md).
+const SHADOW_NOTE = {
+  'hold5-base': 'without the research switches',
+  'resid-target': 'without the volatility regime',
+  noroll: 'without rolling missing bars',
+};
 function sideBySide(m) {
   const el = $('sidebyside');
   el.replaceChildren();
@@ -242,7 +248,7 @@ function sideBySide(m) {
         const B = r?.backtest || {};
         const [rec, n] = record(t);
         const E = r?.expected;  // a day's recommended orders on average (unfilled 0), and compounded over 252 days
-        return [[`${s.name}${s.role === 'live' ? ' (live)' : ' (shadow)'}`], E ? signed(E.daily, 3) : ['–', 'num'], E ? signed(E.yearly, 1) : ['–', 'num'], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
+        return [[`${s.name}${s.role === 'live' ? ' (live)' : ` (shadow${SHADOW_NOTE[s.name] ? `: ${SHADOW_NOTE[s.name]}` : ''})`}`], E ? signed(E.daily, 3) : ['–', 'num'], E ? signed(E.yearly, 1) : ['–', 'num'], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
           [B.orders ? `${Math.round(100 * B.trades / B.orders)}%` : '–', 'num'], n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num'],
           [r ? String((r.orders || []).length) : '–', 'num']];
       }));

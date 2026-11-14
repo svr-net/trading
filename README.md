@@ -21,6 +21,11 @@ FINRA's fees on the sale; there is no tax on buying. The research model (`base`)
 own exchange's opening auction: the ASX opens in alphabetical groups from 10:00 to about 10:09 Sydney time
 (good until 10:12), the SGX at 09:00 Singapore time (good until 09:02). An order's amount is in the ASX's AUD
 (an SGX order's taken as SGD, about the same). The research model (`base`) runs on as its shadow.
+**Every market's live model** runs with three research switches (`X_RESID=1` residual reversal, `X_VOLREGIME=1`
+reversal scaled by the market's volatility, `X_TARGET=5` the fit's target the 5-day hold's; `docs/uk-research.md`
+has the papers and the results), and rolls missing bars forward for its inputs (`--roll 5`: never traded on).
+Each market's `hold5-base` (no switch) and `noroll` (`--roll 0`) shadows keep the alternatives in view.
+
 **The account's split over the markets** (`tools/scan/strategies.py`): the daily limit goes where it does the
 most for the whole account. Each market's record is its last year of daily results after its orders' broker
 costs (the model and backtests run before costs; the money is decided on what they would have kept); the

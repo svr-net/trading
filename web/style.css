@@ -155,3 +155,8 @@ td.warn { color: var(--hedged); }
 /* Phones: the orders keep the share, what it pays, when it sells and its expected return; the chance to
    buy, the costs and the gain if it buys (also in the notes) show on wider screens. */
 @media (max-width: 560px) { #plan .opt { display: none; } }
+/* Six markets on a phone: the switch fits the screen (it was 450px wide on a 390px phone). */
+@media (max-width: 560px) {
+  .market-switch { display: flex; width: auto; max-width: 100%; }
+  .market-switch button { flex: 1 1 auto; padding: 7px 6px; font-size: 13px; }
+}
