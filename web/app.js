@@ -161,8 +161,12 @@ function render(r, source) {
   // honest the simulation has been: how often the real period fell in its 5-95% band at the resets on the real market.
   const MC = B.mc, mcTile = MC?.next ? `
     <div class="tile"><span class="k">Next ${MC.horizon} sessions, ${MC.paths} simulated futures</span><span class="v">${pct(MC.next.p50, 1)}</span><span class="s">median · 90% between ${pct(MC.next.p5, 1)} and ${pct(MC.next.p95, 1)} · a loss in ${Math.round(100 * MC.next.pLoss)}% · before costs. Honesty: the real period fell in the 5–95% band ${Math.round(100 * MC.coverage)}% of ${MC.resets} times (90% if honest)</span></div>` : '';
+  // The strategy's own edge: the gap to the opposite picks on the same list (the rest is the list's hindsight: its
+  // shares are today's, so those that collapsed or were delisted are missing).
+  const opp = B.opposite, edgeTile = opp ? `
+    <div class="tile"><span class="k">The strategy's own edge</span><span class="v">${pct(B.annualReturn - opp.annualReturn)}</span><span class="s">a year: the backtest less what the opposite picks made on the same shares (${pct(opp.annualReturn)} a year). That part is the share list's hindsight: today's shares, without those that failed. Expect nearer the edge than the backtest.</span></div>` : '';
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>${perTrade}${mcTile}`;
+    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)} · before costs, on today's shares (see the edge)</span></div>${edgeTile}${perTrade}${mcTile}`;
   $('odds').textContent = B.trades
     ? `In the backtest ${Math.round(100 * B.trades / B.orders)}% of orders bought (the rest stayed in cash), their average was ${pct(B.avgTrade, 2)} and ${Math.round(100 * B.winRate)}% of them gained.`
     : '';

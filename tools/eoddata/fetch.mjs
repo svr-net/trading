@@ -120,6 +120,15 @@ const ranked = quotes
   .map((q) => ({ code: field(q, 'symbolCode', 'code', 'symbol'), value: Number(field(q, 'close')) * Number(field(q, 'volume')) }))
   .filter((q) => q.code && Number.isFinite(q.value) && q.value > 0 && isShare(q.code))
   .sort((a, b) => b.value - a.value);
+// --pool store: every share the store keeps for the exchange, not only today's most traded: the strategy engine
+// then picks each day's most traded as of that day (no list chosen with hindsight); a share no longer quoted
+// today (delisted, suspended) is in too, with its bars to its last day. Today's most traded first.
+if (opt('pool', 'top') === 'store') {
+  const have = new Set(ranked.map((r) => r.code));
+  let dir = [];
+  try { dir = fs.readdirSync(path.join(S.ROOT, 'store', exchange)).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5)); } catch { dir = []; }
+  for (const code of dir.sort()) if (!have.has(code) && isShare(code)) ranked.push({ code, value: 0 }), have.add(code);
+}
 const currencies = {};
 for (const c of currencyOf.values()) currencies[c] = (currencies[c] || 0) + 1;
 console.log(`  currencies: ${JSON.stringify(currencies)}`);
@@ -152,6 +161,10 @@ async function barsOf(code) {
     return bars;
   }
   const L = S.lastDate(bars), qb = quoteBar.get(code);
+  if (!qb && opt('pool', 'top') === 'store' && bars.size) {  // not quoted today (delisted, suspended): its stored bars as they are
+    ++counts.current;
+    return bars;
+  }
   if (refresh || !L || L < from) {
     S.merge(bars, asList(await get(`/Quote/List/${exchange}/${encodeURIComponent(code)}`, { Interval: 'd', FromDateStamp: from, ToDateStamp: stamp })));
     ++counts.full;
@@ -176,6 +189,7 @@ let notOrdinary = 0;  // in the pool (the most traded) but not ordinary shares: 
 for (const [i, { code }] of ranked.entries()) {
   if (kept.length + notOrdinary >= universe) break;
   const stored = await barsOf(code).catch((e) => {
+    if (cached && opt('pool', 'top') === 'store') return new Map();  // the store's own shares: one it lacks is skipped
     if (cached) { console.error(`cached: ${e.message}`); process.exit(3); }
     console.warn(`  skip ${code}: ${e.message}`);
     return new Map();
@@ -202,7 +216,8 @@ for (const [i, { code }] of ranked.entries()) {
       if (add.length) { bars.unshift(...add.sort((p, q) => (p.d < q.d ? -1 : 1))); ++movedExchange; }
     }
   }
-  if (bars.length < minDays) { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
+  if (bars.length < minDays && opt('pool', 'top') !== 'store') { console.log(`  ${code}: ${bars.length} days, dropped`); continue; }
+  if (bars.length < 60) continue;  // too short for any strategy
   for (const { date, ratio } of splits.get(code) || [])
     for (const b of bars) if (b.d < date) { b.o /= ratio; b.h /= ratio; b.l /= ratio; b.c /= ratio; b.v *= ratio; }
   // Splits the list lacks, read from the prices: a day whose close-to-close and close-to-open ratios
@@ -222,7 +237,11 @@ for (const [i, { code }] of ranked.entries()) {
         if (argv.includes('--verbose')) console.log(`  ${code}: split ${q >= 1 ? q : '1/' + Math.round(1 / q)} read on ${bars[k].d}`);
       }
   }
-  const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6));
+  // A move of over 60% in a day that stays (a split the list lacks, unexplained): the share dropped. One that comes
+  // back within 5 days is a bad price, not a split: the share is kept (its bad bar's low or high is impossible for the
+  // day, and the strategy engine rolls the last close over it), so a real crash is not left out of the backtests.
+  const jump = bars.findIndex((b, k) => k > 0 && Math.abs(Math.log(b.c / bars[k - 1].c)) > Math.log(1.6)
+    && !bars.slice(k + 1, k + 6).some((x) => Math.abs(Math.log(x.c / bars[k - 1].c)) < Math.log(1.25)));
   if (jump > 0) { console.log(`  ${code}: unexplained move on ${bars[jump].d} (${bars[jump - 1].c} -> ${bars[jump].c}), dropped`); continue; }
   if (!isOrdinary(code)) { ++notOrdinary; continue; }
   for (const b of bars) rows.push(`${b.d},${code},${b.o},${b.h},${b.l},${b.c},${Number.isFinite(b.v) ? b.v : 0}`);

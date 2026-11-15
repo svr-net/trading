@@ -646,6 +646,18 @@ def main():
                 if subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT).returncode:
                     sys.stdout.write(open(f'data/budget/report-{nxt}.txt').read())
                     sys.exit(f"strategies: the live strategy {s['name']}'s final run at {total / nxt:,.0f} a trade failed")
+        # The opposite picks on the same list and book (invert=1): the gap is the strategy's own edge; what they also
+        # make is the share list's hindsight (shares that survived to today). Reported beside the backtest.
+        opposite = None
+        try:
+            env = {x: v for x, v in os.environ.items() if not x.startswith('X_')}
+            env.update(s.get('env', {}), X_NPICK=str(nxt))
+            cmd = [*engine(s), '--param', 'invert=1', *with_capital(final_args, max(total, 1.0) / nxt, 'opposite'), '--json', 'data/budget/opposite.json']
+            if subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                ob = json.load(open('data/budget/opposite.json'))['backtest']
+                opposite = {'annualReturn': ob['annualReturn'], 'sharpe': ob['sharpe'], 'maxDrawdown': ob['maxDrawdown']}
+        except (OSError, ValueError, KeyError):
+            opposite = None
         shutil.copy(f'data/budget/report-{nxt}.json', 'report/ofm.json')
         with open('report/ofm.txt', 'w') as o:
             o.write('\n'.join(lines) + '\n' + open(f'data/budget/report-{nxt}.txt').read())
@@ -673,6 +685,8 @@ def main():
             # the money the market has for the next session (its share of the account's daily limit): with
             # none, the bridge places nothing, and the page says the orders are only what the model would place
             rj['budget'] = {'total': total, 'trades': nxt, 'amount': total / nxt, 'share': share, 'currency': CURRENCY.get(args.market)}
+            if opposite:
+                rj['backtest']['opposite'] = opposite
             json.dump(rj, open('report/ofm.json', 'w'))
         except (OSError, ValueError):
             pass

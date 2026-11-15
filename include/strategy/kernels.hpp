@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 #include "strategy/backend.hpp"
@@ -77,6 +78,7 @@ struct UniverseSpec {
   double minPrice = 0, minValue = 0;
   std::size_t warmup = 260;  // sessions since a share's first bar
   bool needValue = true;     // false: a market without volumes (FOREX, INDEX)
+  std::size_t top = 0;       // the day's most traded only (by the median traded value of the 20 bars before; 0: all)
 };
 
 // One day's universe and market return, fused: each share tradable after the close of t (a real bar, a price
@@ -84,13 +86,29 @@ struct UniverseSpec {
 // volatility), and the day's mean return over the tradable shares.
 inline void fusedDay(Data& d, std::size_t t, const UniverseSpec& u, std::vector<char>& in) {
   const std::size_t N = d.N;
-  double s = 0, n = 0;
+  std::vector<double> vals;
   for (std::size_t i = 0; i < N; ++i) {
     const std::size_t k = t * N + i;
     const bool ok = std::isfinite(d.C[k]) && d.C[k] >= u.minPrice && d.first[i] < d.T && t >= d.first[i] + u.warmup &&
                     std::isfinite(d.sigma[k]) && d.sigma[k] > 0 && (!u.needValue || (std::isfinite(d.value[k]) && d.value[k] >= u.minValue));
     in[k] = ok ? 1 : 0;
-    if (ok && std::isfinite(d.ret[k])) s += d.ret[k], n += 1;
+    if (ok && u.top && u.needValue) vals.push_back(d.value[k]);
+  }
+  // As of the day: only its `top` most traded (a list as it stood then, not today's most traded applied backwards).
+  if (u.top && u.needValue && vals.size() > u.top) {
+    std::nth_element(vals.begin(), vals.begin() + long(u.top - 1), vals.end(), std::greater<double>());
+    const double cut = vals[u.top - 1];
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+      const std::size_t k = t * N + i;
+      if (in[k] && !(d.value[k] >= cut && kept < u.top)) in[k] = 0;
+      else if (in[k]) ++kept;
+    }
+  }
+  double s = 0, n = 0;
+  for (std::size_t i = 0; i < N; ++i) {
+    const std::size_t k = t * N + i;
+    if (in[k] && std::isfinite(d.ret[k])) s += d.ret[k], n += 1;
   }
   d.mkt[t] = n > 0 ? s / n : 0.0;
 }
