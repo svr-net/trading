@@ -51,7 +51,11 @@
     "role": "live",
     "strategy": "trend",
     "params": {
-     "mc": 1
+     "mc": 1,
+     "mcselect": 1,
+     "mcnn": 1,
+     "mcobj": 1,
+     "mccandk": 2
     }
    }
   ],
