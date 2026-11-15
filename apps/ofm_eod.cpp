@@ -11,7 +11,9 @@
 //   ofm_eod market   --list tools/eoddata/index.txt --out data/stocks.csv [--years 9] [--inverse] [--cached]
 //                    a market of named series, each from the first of its exchanges with bars (INDEX, FOREX)
 //   ofm_eod profiles --exchanges LSE,... --out data/eoddata/profiles [--universe data/stocks.csv] [--fundamentals DIR] [--probe]
-//   ofm_eod aim      [tools/eoddata/aim.txt]                the AIM shares (no stamp duty) from stockanalysis.com
+//                    [--max-age 7] [--refresh]   the profiles once a week, the fundamentals once a day (kept in the store)
+//   ofm_eod aim      [tools/eoddata/aim.txt] [--cache data/eoddata/lists/aim.txt] [--refresh]
+//                    the AIM shares (no stamp duty) from stockanalysis.com, once a day (kept in the store)
 //   ofm_eod symbols  [--exchanges] [--find EX:PRE,PRE;EX:...]
 //   ofm_eod snapshot --symbols EX:CODE,... [--from 2019-01]  5-minute bars by month into the store
 #include <zlib.h>
@@ -504,20 +506,33 @@ int cmdProfiles(const std::vector<std::string>& a) {
     return n;
   };
   const std::string stamp = today();
+  // Incremental: the day's fundamentals once a day (fundamentals/<EX>/<date>.csv.gz kept), the profiles (sectors,
+  // names, descriptions: they rarely change) once every --max-age days (7; the date kept in profiles/<EX>.fetched).
+  const bool refresh = flag(a, "refresh"), probe = flag(a, "probe");
+  const int maxAge = std::atoi(opt(a, "max-age", "7").c_str());
   for (const auto& ex : split(opt(a, "exchanges", "LSE"), ',')) {
     if (ex.empty()) continue;
+    const fs::path stampFile = out.empty() ? fs::path() : fs::path(out) / (ex + ".fetched");
+    std::string last;
+    const bool profOld = !out.empty() && (refresh || !fs::exists(fs::path(out) / (ex + ".json")) || !tryRead(stampFile, last) || !isDay(last.substr(0, 10)) ||
+                                          daysBetween(last.substr(0, 10), stamp) >= maxAge);
+    const bool fundOld = !fundDir.empty() && (refresh || !fs::exists(fs::path(fundDir) / ex / (stamp + ".csv.gz")));
+    if (!probe && !profOld && !fundOld) {
+      std::cout << ex << ": profiles from " << last.substr(0, 10) << " and today's fundamentals already in the store (nothing downloaded)\n";
+      continue;
+    }
     long st = 0;
-    const json p = list("/Profile/List/" + ex, st);
+    const json p = (profOld || probe) ? list("/Profile/List/" + ex, st) : json::array();
     std::set<std::string> sectors, industries;
     for (const auto& x : p) {
       if (!str(field(x, {"sector"})).empty()) sectors.insert(str(field(x, {"sector"})));
       if (!str(field(x, {"industry"})).empty()) industries.insert(str(field(x, {"industry"})));
     }
-    std::cout << ex << " profiles: HTTP " << st << ", " << p.size() << " symbols, sector on " << filled(p, "sector") << ", industry on " << filled(p, "industry") << "; "
+    if (profOld || probe) std::cout << ex << " profiles: HTTP " << st << ", " << p.size() << " symbols, sector on " << filled(p, "sector") << ", industry on " << filled(p, "industry") << "; "
               << sectors.size() << " sectors, " << industries.size() << " industries\n";
     long fst = 0;
-    const json f = (!out.empty() || !fundDir.empty() || flag(a, "probe")) ? list("/Fundamental/List/" + ex, fst) : json::array();
-    if (!out.empty() && !p.empty()) {  // with the share's name (the store's symbol list), description and key fundamentals
+    const json f = (profOld || fundOld || probe) ? list("/Fundamental/List/" + ex, fst) : json::array();
+    if (profOld && !p.empty()) {  // with the share's name (the store's symbol list), description and key fundamentals
       std::map<std::string, std::string> names;
       const fs::path dir = fs::path(out).parent_path() / ex;
       std::string newest;
@@ -547,9 +562,10 @@ int cmdProfiles(const std::vector<std::string>& a) {
         rows.push_back(r);
       }
       writeFile(fs::path(out) / (ex + ".json"), rows.dump());
+      writeFile(stampFile, stamp + "\n");
       std::cout << ex << " profiles kept: " << rows.size() << ", a name on " << nName << ", a description on " << nDesc << ", fundamentals on " << nFund << "\n";
     }
-    if (!fundDir.empty()) {  // the day's fundamentals of the scan's shares, a history building up
+    if (fundOld && fst == 200) {  // the day's fundamentals of the scan's shares, a history building up
       std::string csv = "code";
       for (const auto& n : FUND) csv += "," + n;
       csv += "\n";
@@ -588,6 +604,15 @@ int cmdProfiles(const std::vector<std::string>& a) {
 
 int cmdAim(const std::vector<std::string>& a) {
   const std::string out = a.size() > 1 && a[1].rfind("--", 0) != 0 ? a[1] : "tools/eoddata/aim.txt";
+  // Incremental: the list downloaded once a day and kept in the store (--cache, lists/aim.txt beside lists/aim.fetched);
+  // a later run that day reads the kept copy.
+  const std::string cache = opt(a, "cache");
+  std::string when, kept;
+  if (!cache.empty() && !flag(a, "refresh") && tryRead(cache + ".fetched", when) && when.substr(0, 10) == today() && tryRead(cache, kept) && !kept.empty()) {
+    writeFile(out, kept);
+    std::cout << "AIM list: today's from the store (nothing downloaded)\n";
+    return 0;
+  }
   std::set<std::string> tickers;
   const std::regex link("/quote/aim/([A-Za-z0-9.]+)/");
   for (int page = 1; page <= 5; ++page) {
@@ -604,11 +629,13 @@ int cmdAim(const std::vector<std::string>& a) {
     for (std::string w; in >> w;) old.push_back(w);
   }
   if (double(tickers.size()) < std::max(300.0, 0.8 * double(old.size()))) {  // far shorter: the page changed; the last kept
+    if (!cache.empty() && tryRead(cache, kept) && !kept.empty()) writeFile(out, kept);  // the store's last good list
     std::cout << "AIM list: " << tickers.size() << " tickers found, kept the last (" << old.size() << ")\n";
   } else {
     std::string s;
     for (const auto& t : tickers) s += t + "\n";
     writeFile(out, s);
+    if (!cache.empty()) writeFile(cache, s), writeFile(cache + ".fetched", today() + "\n");
     std::cout << "AIM list: " << tickers.size() << " tickers (was " << old.size() << ")\n";
   }
   return 0;
