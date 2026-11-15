@@ -69,7 +69,10 @@ Every market's book is chosen by the nested Monte Carlo (`include/strategy/monte
   volatility scale, learnt from point-in-time features. It is trained walk-forward, only on resets whose outcome was
   known by then, by the CRPS of the simulated futures against the real return, with exact gradients through the
   paths.
-- **The choice:** the strategy proposes 2 candidates a slot, and the simulation keeps the k with the highest expected
+- **Every strategy injected:** the eight strategies (momentum, residual momentum, 52-week high, trend, low
+  volatility, no lottery shares, short-term and long-term reversal) each score every share at every reset. Their
+  ranks are inputs to the network, so it learns which strategy to trust for which share, in which market.
+- **The choice:** each strategy proposes its best 2 a slot, and the simulation keeps the k with the highest expected
   return. The same futures give each order's expected return, its 5-95% band and its chance of a loss. The real
   future after every reset is checked against the simulated ones (the calibration).
 - **Costs:** none while modelling. The broker's costs come off the final order list only.

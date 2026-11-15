@@ -6,8 +6,9 @@
 // mu + s * x), from what is known at t0 only:
 //   features  the share's 12-1, 6-1 and 1-month returns, its 63- and 252-session volatility and its distance from
 //             the 52-week high (each as its rank among the day's tradable shares, -0.5..0.5), the market's 12-month
-//             return and 63-session volatility
-//   network   9 -> 16 tanh -> 2; mu = 0.002 tanh(o0) (at most 0.2% a day), s = exp(0.7 tanh(o1))
+//             return and 63-session volatility; with mcpool, every strategy's score of the share (its rank that
+//             day): the network learns which strategy to trust for which share, in which market
+//   network   17 -> 16 tanh -> 2; mu = 0.002 tanh(o0) (at most 0.2% a day), s = exp(0.7 tanh(o1))
 //   loss      the CRPS of the share's simulated futures against its real return over the horizon: the mean of
 //             |X_p - y| less half the mean of |X_p - X_q|, X_p = mu h + s S_p (S_p: the path's sum of the drawn
 //             real days' moves, the share's own trend taken out and the market's put in)
@@ -27,7 +28,8 @@
 
 namespace strat {
 
-constexpr std::size_t kNF = 9, kNH = 16, kNP = 32;  // features, hidden units, the paths a training sample keeps
+constexpr std::size_t kNS = 8;            // the strategies' scores a sample can carry (mcpool: every strategy's rank)
+constexpr std::size_t kNF = 9 + kNS, kNH = 16, kNP = 32;  // features, hidden units, the paths a training sample keeps
 
 struct NnShape {
   double mu = 0, scale = 1;
