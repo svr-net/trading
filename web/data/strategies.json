@@ -11,7 +11,8 @@
      "mcselect": 1,
      "mcnn": 1,
      "mcobj": 1,
-     "mccandk": 2
+     "mccandk": 2,
+     "mcpool": 1
     }
    }
   ],
