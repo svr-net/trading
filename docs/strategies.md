@@ -165,3 +165,12 @@ percentile should be 50.
   US +2.5% a period against the real +0.05%.
 - **Stops:** the PSAR stop is hit in 83–98% of the futures of the momentum books' shares within a month, against
   about 9% for the INDEX ETFs.
+
+## The PSAR stop switched off (16 Nov 2026)
+
+With the PSAR stop and buy-back live, the first scans published almost no orders: UK 0 of 5, US 0 of 10, EU, APAC
+and INDEX one each. The stop sells shares on ordinary dips and buys them back higher. Before any cost, that cut
+the backtests (UK +34% to +19% a year, US +28% to −5%, APAC +39% to +25%). It also left each trade expecting so
+little that the final cost step dropped most orders. Costs were applied only at the end, as always. The stop is
+now off in every market (`params: {mc: 1}`), and the Monte Carlo still gives each order's expected return and
+range. The stop remains in the engine and the bridge, to switch on per market if wanted.
