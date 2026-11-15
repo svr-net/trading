@@ -2,12 +2,12 @@
  "market": "UK",
  "date": "2026-11-13",
  "score": 0.0,
- "share": 0.4,
+ "share": 0.15,
  "allocation": {
   "APAC": 0.15,
   "EU": 0.15,
   "INDEX": 0.15,
-  "UK": 0.4,
+  "UK": 0.15,
   "US": 0.15
  },
  "record": {
@@ -263,18 +263,18 @@
   "2026-11-13": 0.00511883
  },
  "forward": {
-  "outlook": 0.0006574329775081839,
-  "expectedDaily": 0.0007125452796070126,
+  "outlook": 0.0,
+  "expectedDaily": 0.0,
   "delivered": 0.9226543159064576
  },
- "total": 12681.36,
+ "total": 4755.51,
  "currency": "GBP",
  "slots": [
   5,
   10
  ],
  "next": 5,
- "amount": 2536.272,
+ "amount": 951.1020000000001,
  "chosen": {
   "5": 894,
   "10": 1180
