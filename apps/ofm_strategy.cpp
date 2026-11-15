@@ -55,6 +55,7 @@ struct Options {
   std::string csv, market = "UK", strategy, backend, stampFree, venues, overrideCsv, jsonOut, ordersOut, traceOut, synthetic;
   std::map<std::string, double> params;
   double capital = 5000, minValue = -1, minPrice = -1, advShare = 0.01, minOrder = 500;
+  long top = -1;
   std::size_t slots = 5, roll = 5;
   bool tiered = false, list = false;
   unsigned seed = 7;
@@ -100,7 +101,8 @@ Options parse(int argc, char** argv) {
     else if (a == "--seed") o.seed = unsigned(std::atoi(next().c_str()));
     else if (a == "--list") o.list = true;
     // the scan's arguments for the earlier models, not used here
-    else if (a == "--lag" || a == "--exit" || a == "--segments" || a == "--top" || a == "--hold" || a == "--bars") next();
+    else if (a == "--top") o.top = std::atol(next().c_str());
+    else if (a == "--lag" || a == "--exit" || a == "--segments" || a == "--hold" || a == "--bars") next();
     else if (a == "--scan") {
     } else usage(("unknown argument " + a).c_str());
   }
@@ -231,6 +233,24 @@ std::size_t repairUnits(strat::Data& d) {
     }
   }
   return fixed;
+}
+
+// Bad prices rolled forward: a bar whose low or high is impossible for its open and close (the low under half of
+// the lower, the high over twice the higher, or the low above the high) is dropped: the share has no bar that day,
+// and its last real close carries over it (the strategies' signals, the book's marks; no trade on it). Judged on the
+// day's own bar only: nothing later decides it (no look-ahead).
+std::size_t rollOutliers(strat::Data& d) {
+  std::size_t n = 0;
+  const auto drop = [&](std::size_t k) { d.O[k] = d.H[k] = d.L[k] = d.C[k] = d.V[k] = kNaN, ++n; };
+  for (std::size_t i = 0; i < d.N; ++i) {
+    for (std::size_t t = 0; t < d.T; ++t) {
+      const std::size_t k = t * d.N + i;
+      if (!(d.C[k] > 0)) continue;
+      const double o = d.O[k], h = d.H[k], l = d.L[k], c = d.C[k], lo = std::min(o, c), hi = std::max(o, c);
+      if (!(l > 0 && h > 0 && o > 0) || l > h || l < 0.5 * lo || h > 2.0 * hi) drop(k);
+    }
+  }
+  return n;
 }
 
 // A generated market for the checks: random walks with persistent drifts, volumes, and a few gaps.
@@ -391,6 +411,10 @@ int main(int argc, char** argv) {
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
   P.emplace("mc", 0.0), P.emplace("mcpaths", 500.0), P.emplace("mchorizon", 0.0), P.emplace("mcblock", 5.0), P.emplace("mcwindow", 750.0), P.emplace("mcseed", 1.0), P.emplace("mcdrift", 1.0);
+  // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
+  // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
+  // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
+  P.emplace("invert", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -401,12 +425,15 @@ int main(int argc, char** argv) {
   const double unit = uk ? 100.0 : 1.0;  // London's prices in pence
   const double minPrice = o.minPrice >= 0 ? o.minPrice : uk ? 20 : (M == "US" || M == "EU") ? 1 : M == "APAC" ? 0.1 : 0;
   const double minValue = o.minValue >= 0 ? o.minValue : noVolume ? 0 : M == "US" ? 1e6 : 250000;
+  // Each day's most traded only, as of that day (--top; 0 for all): UK 300, US 1000, EU 500, APAC 400.
+  const std::size_t top = o.top >= 0 ? std::size_t(o.top) : M == "UK" ? 300 : M == "US" ? 1000 : M == "EU" ? 500 : M == "APAC" ? 400 : 0;
 
   strat::Data d;
   toPanel(readBars(o.csv), d);
   std::string note;
   if (!o.overrideCsv.empty()) note = overrideBars(d, o.overrideCsv);
   const std::size_t units = repairUnits(d);
+  const std::size_t outliers = rollOutliers(d);
   const std::size_t T = d.T, N = d.N, k = o.slots;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
   if (T < warm + 30) usage("too few days for the strategy's warm-up");
@@ -414,7 +441,7 @@ int main(int argc, char** argv) {
   strat::PrepareSpec ps;
   ps.roll = o.roll, ps.unit = unit;
   strat::UniverseSpec us;
-  us.minPrice = minPrice, us.minValue = minValue, us.warmup = warm, us.needValue = !noVolume;
+  us.minPrice = minPrice, us.minValue = minValue, us.warmup = warm, us.needValue = !noVolume, us.top = noVolume ? 0 : top;
   std::vector<char> in;
   strat::prepare(d, ps, us, in, *backend);
 
@@ -535,7 +562,7 @@ int main(int argc, char** argv) {
     strategy->score(v, P, score);
     std::vector<std::pair<double, std::size_t>> c;
     for (std::size_t i = 0; i < N; ++i)
-      if (in[t * N + i] && std::isfinite(score[i])) c.emplace_back(score[i], i);
+      if (in[t * N + i] && std::isfinite(score[i])) c.emplace_back(P["invert"] > 0 ? -score[i] : score[i], i);
     std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
     of = c.size(), decided = t;
     target.clear();
@@ -754,6 +781,8 @@ int main(int argc, char** argv) {
   std::printf("strategy: %s (%s) on %s, back end %s; %zu shares, %s .. %s%s%s\n", o.strategy.c_str(), strategy->about().c_str(), M.c_str(), backend->about().c_str(), N,
               d.days.front().c_str(), d.days.back().c_str(), note.empty() ? "" : "; ", note.c_str());
   if (units) std::printf("strategy: %zu bars put in their share's latest price unit (pence and pounds)\n", units);
+  if (outliers) std::printf("strategy: %zu bad bars dropped (an impossible low or high for the day), the last real close rolled over them\n", outliers);
+  if (top) std::printf("strategy: each day the %zu most traded shares as of that day (of %zu in the data), not today's list applied backwards\n", top, N);
   std::printf("strategy: the account (%s .. %s, %zu slots of %s %.0f, rebalanced every %zu sessions): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, before costs\n",
               dailyDays.empty() ? "-" : dailyDays.front().c_str(), dailyDays.empty() ? "-" : dailyDays.back().c_str(), k, cur.c_str(), o.capital, reb, 100 * annual, sharpe, 100 * dd);
   if (stops)

@@ -174,3 +174,39 @@ the backtests (UK +34% to +19% a year, US +28% to −5%, APAC +39% to +25%). It 
 little that the final cost step dropped most orders. Costs were applied only at the end, as always. The stop is
 now off in every market (`params: {mc: 1}`), and the Monte Carlo still gives each order's expected return and
 range. The stop remains in the engine and the bridge, to switch on per market if wanted.
+
+## Review: what was wrong, and what was fixed (16 Nov 2026)
+
+1. **The PSAR stop:** a wrong tool, not a calculation error. I logged all 444 stops in the UK backtest.
+   - Every stop was a real touch of the day's low.
+   - But the PSAR sat a median 0.78 daily volatilities under the close (a quarter within 0.43). A share's ordinary
+     daily low reaches that far, so it sold on normal noise, after a median of 8 days.
+   - **Fixed:** switched off. A stop meant to survive normal moves needs about 2–3 daily volatilities.
+2. **Bad prices:** 0.01–0.08% of bars had a low or high that is impossible for the day's open and close (for
+   example AstraZeneca's low at 109p on a day it traded at 7,372p).
+   - **Fixed:** such a bar is dropped, and the last real close is rolled forward over it, for the signals, the
+     marks, the stops and the simulation's days. The rule looks at the day's own bar only, never a later one.
+   - The exporter no longer drops a share for a one-day move of over 60% that comes back within 5 days. Its bad
+     bar is rolled over instead, so real crashes stay in the data.
+3. **Share lists chosen with hindsight:** each market's list was today's most traded shares, applied back to 2018.
+   - **Fixed as far as the data allows:** the scan now takes every share the store keeps, and the engine picks
+     each day's most traded as of that day (UK 300, US 1,000, EU 500, APAC 400).
+   - **What remains:** the store was built from shares listed today, so most that collapsed or were delisted are
+     missing. The backtests therefore still overstate.
+   - The scan now measures this every run. It also runs the strategy's opposite picks (`invert: 1`) on the same
+     list and book. The gap is the strategy's own edge; what the opposite picks also make comes from the list.
+     On the store's data:
+
+| Market | Momentum | Opposite picks | Own edge, a year |
+|---|---|---|---|
+| UK | +30% | +26% | about +4% |
+| EU | +10% | +4% | about +6% |
+| US | +33% | +16% | about +17% |
+| APAC | +40% | −3% | about +43% |
+
+   These are 5–10 position books, before costs. In the UK the opposite picks earn nearly as much as momentum, so
+   the edge, not the backtest, is the figure to expect. A full fix needs share lists that include delisted shares.
+4. **Expected returns:** the Monte Carlo's ranges are close to honest, but its means don't predict (correlation
+   about 0 across resets). The order list is still sorted by expected return, as instructed, so the order within
+   the list carries little information.
+5. **Costs:** they come off only the final order list. Nothing else in the engine uses them.

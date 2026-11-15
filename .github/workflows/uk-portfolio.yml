@@ -27,7 +27,7 @@ on:
       series: { description: 'Futures, index and currency series (EXCHANGE:CODE, comma separated)', default: 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP,FOREX:EURAUD' }
       refresh: { description: 'Download every history again (normally only the missing days are fetched)', type: boolean, default: false }
       email: { description: 'Email the daily report (needs the SMTP secrets)', type: boolean, default: false }
-      pool: { description: 'The most traded shares kept per exchange (default: 500 UK, 2000 US, 300 each EU exchange, 500 ASX and SGX)', default: '' }
+      pool: { description: 'At most this many shares per exchange (default: every share the store keeps)', default: '' }
       us_exchanges: { description: 'US exchanges (comma separated)', default: 'NYSE,NASDAQ' }
 
 permissions:
@@ -118,7 +118,9 @@ jobs:
           esac
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
-            ARGS=(--exchange "$EX" --universe "${{ inputs.pool || (matrix.market == 'US' && '2000' || matrix.market == 'EU' && '300' || '500') }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
+            # Every share the store keeps (--pool store), not only today's most traded: the strategy engine picks each
+            # day's most traded as of that day, so the share lists are not chosen with hindsight (16 Nov).
+            ARGS=(--exchange "$EX" --pool store --universe "${{ inputs.pool || '100000' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
             if [ "${{ inputs.refresh }}" = "true" ]; then
               node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
             else
