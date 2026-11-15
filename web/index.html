@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=54">
+<link rel="stylesheet" href="style.css?v=82">
 </head>
 <body>
 <div class="wrap">
@@ -105,13 +105,16 @@
 </div>
 <dialog id="chart-dialog" aria-labelledby="chart-dialog-title">
   <div class="dialog-head"><h3 id="chart-dialog-title">Chart</h3><button type="button" id="chart-dialog-close" aria-label="Close">✕</button></div>
+  <p class="chart-name" id="chart-dialog-name"></p>
   <p class="muted" id="chart-dialog-profile"></p>
+  <p class="chart-about" id="chart-dialog-about" hidden></p>
   <div id="chart-dialog-why"></div>
   <p class="muted" id="chart-dialog-note"></p>
-  <canvas id="ohlc" height="340" aria-label="Daily candles, volume, Bollinger bands and PSAR"></canvas>
+  <div class="chart-range" id="chart-range" role="group" aria-label="Chart range"><button type="button" data-n="63">3M</button><button type="button" data-n="126">6M</button><button type="button" data-n="252">1Y</button><button type="button" data-n="520">2Y</button></div>
+  <canvas id="ohlc" height="440" aria-label="Daily candles, volume, Bollinger bands and PSAR"></canvas>
   <div class="legend" id="ohlc-legend"></div>
-  <p class="hint">Daily bars from your Interactive Brokers account, through your bridge: shown only here, never published. <b>Bollinger bands</b>: the 20-day mean and 2 standard deviations either side. <b>PSAR</b>: the dots, under the price in a rise, over it in a fall (0.02 a step, at most 0.2). <b>Buy cap</b>: the most this order pays in the opening auction. <b>Exit</b>: its exit level, from a buy at the last close.</p>
+  <p class="hint">Daily bars from your Interactive Brokers account, through your bridge: shown only here, never published. <b>Bollinger bands</b>: the 20-day mean and 2 standard deviations either side. <b>PSAR</b>: the dots, under the price in a rise, over it in a fall (0.02 a step, at most 0.2). <b>Buy cap</b>: the most this order pays in the opening auction. <b>Stop</b>: its stop today (the PSAR's level), from the last close. 3M to 2Y: the sessions shown (a line for the close once the candles would be too thin).</p>
 </dialog>
-<script type="module" src="app.js?v=81"></script>
+<script type="module" src="app.js?v=82"></script>
 </body>
 </html>

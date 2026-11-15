@@ -235,7 +235,7 @@ function drawChart(r) {
   legend.innerHTML = series.map((s) => `<span><i style="background:${color[s.name]}"></i>${s.name} ${s.final}</span>`).join('')
     + (flat.length ? '<span class="flat-key">shaded: no trades (the model stood aside: no edge in its record)</span>' : '');
 }
-window.addEventListener('resize', () => { if (shown) drawChart(shown); if (chartShown) drawOHLC(...chartShown); });
+window.addEventListener('resize', () => { if (shown) drawChart(shown); if (chartShown) drawRange(); });
 // A share's chart (Orders: tap a share): its daily bars from IBKR through the bridge (prices are never
 // published here: the data licence), with Bollinger bands (20 days, 2 standard deviations), the Parabolic SAR
 // (Wilder: 0.02 a step, at most 0.2), the volume, and the order's buy cap and exit level.
@@ -263,7 +263,7 @@ function chartWhy(o) {
 function openChart(o, source) {
   const dlg = $('chart-dialog');
   $('chart-dialog-title').textContent = o.ticker;
-  $('chart-dialog-profile').textContent = '';
+  $('chart-dialog-profile').textContent = '', $('chart-dialog-name').textContent = '', $('chart-dialog-about').hidden = true;
   chartWhy(o);
   $('chart-dialog-note').textContent = 'Loading its daily bars from your bridge…';
   $('ohlc-legend').innerHTML = '';
@@ -272,7 +272,7 @@ function openChart(o, source) {
   cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
   if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
   if (source === 'FOREX') { $('chart-dialog-note').textContent = 'Currency pairs are research only: the bridge keeps no bars for them.'; return; }
-  bridge(`/chart?market=${encodeURIComponent(source)}&ticker=${encodeURIComponent(o.ticker)}&days=140`)
+  bridge(`/chart?market=${encodeURIComponent(source)}&ticker=${encodeURIComponent(o.ticker)}&days=520`)
     .then((j) => {
       if (!j.bars?.length) throw new Error(j.error || 'no bars');
       $('chart-dialog-note').textContent = `${j.bars.length} daily bars to ${j.bars[j.bars.length - 1].d}${source === 'UK' ? ' (pence)' : ''}`;
@@ -288,9 +288,14 @@ function openChart(o, source) {
       });
       if (rescaled) $('chart-dialog-note').textContent += ` · ${rescaled} bar${rescaled === 1 ? '' : 's'} quoted in ${ref < j.bars[0].c ? 'pounds' : 'pence'} by IBKR put in the same units`;
       const pf = j.profile || {};
-      $('chart-dialog-profile').textContent = [pf.exchange, pf.sector, pf.industry].filter(Boolean).join(' · ');
+      $('chart-dialog-name').textContent = pf.name || '';
+      const cur = { UK: '£', US: '$', APAC: 'A$' }[source] || '€';
+      const big = (v) => (v >= 1e12 ? `${(v / 1e12).toFixed(1)}tn` : v >= 1e9 ? `${(v / 1e9).toFixed(1)}bn` : v >= 1e6 ? `${(v / 1e6).toFixed(0)}m` : `${Math.round(v)}`);
+      $('chart-dialog-profile').textContent = [pf.exchange, pf.sector, pf.industry, pf.marketCap ? `market value ${cur}${big(pf.marketCap)}` : '',
+        pf.pe ? `P/E ${pf.pe.toFixed(1)}` : '', pf.dividendYield ? `dividend ${(pf.dividendYield > 1 ? pf.dividendYield : 100 * pf.dividendYield).toFixed(1)}%` : ''].filter(Boolean).join(' · ');
+      if (pf.description) $('chart-dialog-about').textContent = pf.description, $('chart-dialog-about').hidden = false;
       chartShown = [j.bars, o];
-      drawOHLC(j.bars, o);
+      drawRange();
     })
     .catch((e) => {
       $('chart-dialog-note').textContent = /key|401|Failed to fetch|NetworkError|Load failed/i.test(String(e.message))
@@ -298,6 +303,16 @@ function openChart(o, source) {
         : `No chart: ${e.message}.`;
     });
 }
+// The chart's range (3M, 6M, 1Y, 2Y: the last that many sessions of the bars the bridge sent), kept in this browser.
+let chartRange = null;
+function drawRange() {
+  chartRange ??= Number(stored('chartRange', '252')) || 252;  // read once, on the first chart (stored is defined later in this file)
+  for (const b of document.querySelectorAll('#chart-range button')) b.setAttribute('aria-pressed', String(Number(b.dataset.n) === chartRange));
+  if (!chartShown) return;
+  const [bars, o] = chartShown;
+  drawOHLC(bars, o, chartRange);  // all the bars (the indicators need the ones before), the last chartRange shown
+}
+for (const b of document.querySelectorAll('#chart-range button')) b.addEventListener('click', () => { chartRange = Number(b.dataset.n); store('chartRange', String(chartRange)); drawRange(); });
 $('chart-dialog-close').addEventListener('click', () => { const d = $('chart-dialog'); if (d.close) d.close(); else d.removeAttribute('open'); chartShown = null; });
 $('chart-dialog').addEventListener('click', (e) => { if (e.target === e.currentTarget && e.currentTarget.close) { e.currentTarget.close(); chartShown = null; } });  // a tap outside
 function indicators(bars) {
@@ -328,7 +343,7 @@ function indicators(bars) {
   }
   return { bb, sar };
 }
-function drawOHLC(bars, o) {
+function drawOHLC(bars, o, n) {
   const css = getComputedStyle(document.documentElement), col = (v) => css.getPropertyValue(v).trim();
   const canvas = $('ohlc'), dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -337,16 +352,17 @@ function drawOHLC(bars, o) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
   const { bb, sar } = indicators(bars);
-  const show = Math.min(bars.length, w < 500 ? 60 : 90), from = bars.length - show;
+  const show = Math.min(bars.length, n || (w < 500 ? 60 : 90)), from = bars.length - show;
   const last = bars[bars.length - 1].c;
   const cap = o.limit != null && o.limit < 1 ? last * (1 + o.limit) : null;  // the order's limit, from the last close
   const exit = o.exitAbove != null ? last * (1 + o.exitAbove) : null;
+  const stopAt = o.stop != null ? last * (1 + o.stop) : null;  // the order's stop (the PSAR's level), from the last close
   let lo = Infinity, hi = -Infinity, vmax = 0;
   for (let i = from; i < bars.length; i++) {
     const b = bars[i];
     lo = Math.min(lo, b.l, bb[i]?.lo ?? Infinity, sar[i]?.v ?? Infinity), hi = Math.max(hi, b.h, bb[i]?.up ?? -Infinity, sar[i]?.v ?? -Infinity), vmax = Math.max(vmax, b.v);
   }
-  for (const x of [cap, exit]) if (x != null) lo = Math.min(lo, x), hi = Math.max(hi, x);
+  for (const x of [cap, exit, stopAt]) if (x != null) lo = Math.min(lo, x), hi = Math.max(hi, x);
   const pad = { l: 8, r: 54, t: 8, b: 20 }, volH = (h - pad.t - pad.b) * 0.2, priceH = h - pad.t - pad.b - volH - 6;
   const span = hi - lo || 1;
   const Y = (p) => pad.t + (hi - p) / span * priceH, step = (w - pad.l - pad.r) / show, X = (i) => pad.l + (i - from + 0.5) * step;
@@ -358,9 +374,16 @@ function drawOHLC(bars, o) {
     ctx.fillText(p >= 100 ? p.toFixed(0) : p.toFixed(2), w - pad.r + 4, y + 4);
   }
   let lastMonth = '';
+  const quarters = show > 140;  // a long range: a label a quarter (the year at January), else every month
   for (let i = from; i < bars.length; i++) {  // the months along the bottom
-    const mth = bars[i].d.slice(0, 7);
-    if (mth !== lastMonth) { if (lastMonth) ctx.fillText(new Date(`${bars[i].d}T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short' }), X(i) - 10, h - 5); lastMonth = mth; }
+    const mth = bars[i].d.slice(0, 7), m = Number(mth.slice(5));
+    if (mth !== lastMonth) {
+      if (lastMonth && (!quarters || (m - 1) % 3 === 0)) {
+        const t = quarters && m === 1 ? mth.slice(0, 4) : new Date(`${bars[i].d}T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short' });
+        ctx.fillText(t, X(i) - 10, h - 5);
+      }
+      lastMonth = mth;
+    }
   }
   const band = (key, dash) => {  // a Bollinger line
     ctx.beginPath(); ctx.setLineDash(dash); ctx.strokeStyle = col('--accent'); ctx.lineWidth = 1.2;
@@ -375,16 +398,25 @@ function drawOHLC(bars, o) {
   ctx.fill(); ctx.globalAlpha = 1;
   band('up', []), band('lo', []), band('m', [4, 3]);
   const vTop = pad.t + priceH + 6;
+  const thin = step < 2.5;  // too many sessions for candles: the close as a line
+  if (thin) {
+    ctx.strokeStyle = col('--ink'); ctx.lineWidth = 1.2; ctx.beginPath();
+    for (let i = from; i < bars.length; i++) { if (i === from) ctx.moveTo(X(i), Y(bars[i].c)); else ctx.lineTo(X(i), Y(bars[i].c)); }
+    ctx.stroke();
+  }
   for (let i = from; i < bars.length; i++) {  // the candles and the volume
     const b = bars[i], x = X(i), upDay = b.c >= b.o, c = upDay ? col('--good') : col('--bad');
     ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, Y(b.h)); ctx.lineTo(x, Y(b.l)); ctx.stroke();
-    const bw = Math.max(1, step * 0.6), y0 = Y(Math.max(b.o, b.c)), y1 = Y(Math.min(b.o, b.c));
-    ctx.fillRect(x - bw / 2, y0, bw, Math.max(1, y1 - y0));
+    const bw = Math.max(1, step * 0.6);
+    if (!thin) {
+      ctx.beginPath(); ctx.moveTo(x, Y(b.h)); ctx.lineTo(x, Y(b.l)); ctx.stroke();
+      const y0 = Y(Math.max(b.o, b.c)), y1 = Y(Math.min(b.o, b.c));
+      ctx.fillRect(x - bw / 2, y0, bw, Math.max(1, y1 - y0));
+    }
     if (vmax > 0) { ctx.globalAlpha = 0.45; ctx.fillRect(x - bw / 2, vTop + volH * (1 - b.v / vmax), bw, volH * b.v / vmax); ctx.globalAlpha = 1; }
   }
   ctx.fillStyle = col('--hedged');  // the PSAR's dots
-  for (let i = from; i < bars.length; i++) if (sar[i]) { ctx.beginPath(); ctx.arc(X(i), Y(sar[i].v), Math.max(1.5, Math.min(2.5, step * 0.18)), 0, 2 * Math.PI); ctx.fill(); }
+  for (let i = from; i < bars.length; i++) if (sar[i]) { ctx.beginPath(); ctx.arc(X(i), Y(sar[i].v), thin ? 1 : Math.max(1.5, Math.min(2.5, step * 0.18)), 0, 2 * Math.PI); ctx.fill(); }
   const level = (p, c, label, left) => {  // the order's levels, dashed, labelled at either end (they are often close)
     if (p == null) return;
     ctx.setLineDash([6, 4]); ctx.strokeStyle = c; ctx.lineWidth = 1.5;
@@ -393,8 +425,10 @@ function drawOHLC(bars, o) {
   };
   level(cap, col('--ink'), 'buy cap', true);
   level(exit, col('--good'), 'exit', false);
+  level(stopAt, col('--bad'), 'stop', false);
   const legendKey = (c, t) => `<span><i style="background:${c}"></i>${t}</span>`;
-  $('ohlc-legend').innerHTML = legendKey(col('--accent'), 'Bollinger 20, 2') + legendKey(col('--hedged'), 'PSAR') + legendKey(col('--ink'), 'buy cap') + legendKey(col('--good'), 'exit');
+  $('ohlc-legend').innerHTML = legendKey(col('--accent'), 'Bollinger 20, 2') + legendKey(col('--hedged'), 'PSAR') + (cap != null ? legendKey(col('--ink'), 'buy cap') : '')
+    + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
 const VIEWS = ['orders', 'results', 'backtest', 'broker', 'lab', 'about'];
