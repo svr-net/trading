@@ -1,12 +1,16 @@
 {
-  "about": "Each market's strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy. 'live' makes the orders the bridge places. A strategy: name (lowercase, digits, -), strategy (one of the engine's injectable strategies, strategies/*.cpp: momentum, trend, lowvol, reversal; ofm_strategy --list), optional params ({name: number}, overriding the strategy's defaults), optional backend (the compute back end, backends/*.cpp: threads or serial), optional only (\"aim\": the UK's AIM shares only), optional args. The engine learns and backtests before any cost; the broker's costs come off the final order list only. Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions, T/k each, and keeps the k whose year before was best, chosen day by day. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets, each market's share following its record. \"paper\": true gives every market at least a small share whatever its record.",
+  "about": "Each market's strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy. 'live' makes the orders the bridge places. A strategy: name (lowercase, digits, -), strategy (one of the engine's injectable strategies, strategies/*.cpp: momentum, trend, lowvol, reversal; ofm_strategy --list), optional params ({name: number}, overriding the strategy's defaults), optional backend (the compute back end, backends/*.cpp: threads or serial), optional only (\"aim\": the UK's AIM shares only), optional args. Every market's params turn on the nested Monte Carlo with the differential neural overlay choosing the book (mc, mcselect, mcnn, mcobj, mccandk: apps/ofm_strategy). The engine learns and backtests before any cost; the broker's costs come off the final order list only. Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions, T/k each, and keeps the k whose year before was best, chosen day by day. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets, each market's share following its record. \"paper\": true gives every market at least a small share whatever its record.",
   "markets": {
     "UK": {
       "live": {
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": [],
@@ -23,7 +27,11 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": [],
@@ -40,7 +48,11 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": [],
@@ -57,7 +69,11 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": [],
@@ -74,7 +90,11 @@
         "name": "trend",
         "strategy": "trend",
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": [],
@@ -95,7 +115,11 @@
           "25000"
         ],
         "params": {
-          "mc": 1
+          "mc": 1,
+          "mcselect": 1,
+          "mcnn": 1,
+          "mcobj": 1,
+          "mccandk": 2
         }
       },
       "shadows": []

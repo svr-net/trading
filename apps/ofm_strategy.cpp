@@ -45,6 +45,7 @@
 #include "strategy/backend.hpp"
 #include "strategy/kernels.hpp"
 #include "strategy/montecarlo.hpp"
+#include "strategy/neural.hpp"
 #include "strategy/strategy.hpp"
 
 using strat::kNaN;
@@ -411,6 +412,17 @@ int main(int argc, char** argv) {
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
   P.emplace("mc", 0.0), P.emplace("mcpaths", 500.0), P.emplace("mchorizon", 0.0), P.emplace("mcblock", 5.0), P.emplace("mcwindow", 750.0), P.emplace("mcseed", 1.0), P.emplace("mcdrift", 1.0);
+  // mcselect: 1 lets the nested Monte Carlo choose the book at every reset (the backtest's and the live one): the
+  // strategy's mccand best (0: mccandk a slot) simulated on the same futures, the k with the most expected
+  // log growth together kept (include/strategy/montecarlo.hpp: mcChoose). mcskip: the window ends that many
+  // sessions before the reset (the futures drawn from [t0 - mcwindow, t0 - mcskip]).
+  P.emplace("mcselect", 0.0), P.emplace("mccand", 0.0), P.emplace("mccandk", 4.0), P.emplace("mcskip", 0.0);  // mccandk: candidates a slot when mccand is 0
+  // mcnn: 1 overlays the differential neural network (include/strategy/neural.hpp) on the nested Monte Carlo: at
+  // every reset each share's futures shaped (a drift and a volatility scale on its drawn real days) by what the
+  // network learnt, walk-forward, from the resets whose outcome was known by then.
+  P.emplace("mcnn", 0.0);
+  // mcobj: the simulation's choice by 0 the expected log growth of the book together, 1 each share's expected return.
+  P.emplace("mcobj", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -544,6 +556,33 @@ int main(int argc, char** argv) {
     const double s = d.sigma[t * N + i];
     return std::min(capMax, capSd * (std::isfinite(s) ? s : 0.02));
   };
+  const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
+  strat::McSpec mc;
+  mc.paths = std::max<std::size_t>(20, std::size_t(P["mcpaths"])), mc.horizon = P["mchorizon"] > 0 ? std::size_t(P["mchorizon"]) : reb;
+  mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
+  mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
+  mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
+  const std::size_t nCand = P["mccand"] > 0 ? std::size_t(P["mccand"]) : std::max<std::size_t>(k + 1, std::size_t(std::max(1.0, P["mccandk"]) * double(k)));
+  std::size_t mcChosen = 0, mcFromTop = 0;  // the simulation's picks, and how many of them the strategy's own top k held too
+  const bool nnOn = P["mcnn"] > 0;
+  strat::DiffNet net;
+  std::vector<strat::NnSample> nnSamples;
+  std::size_t nnFirstTrained = 0;  // the first reset the network had learnt at (its held-out check starts there)
+  std::vector<double> nnF;
+  std::vector<char> nnOk;
+  std::size_t nnAt = SIZE_MAX;
+  // The network's shapes for a list of shares at day t (its features then): mu and scale each (0 and 1 without it).
+  const auto shapesFor = [&](std::size_t t, const std::vector<std::size_t>& list, std::vector<double>& mu, std::vector<double>& sc) {
+    mu.assign(list.size(), 0.0), sc.assign(list.size(), 1.0);
+    if (!nnOn || !net.trained) return;
+    if (nnAt != t) strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
+    for (std::size_t j = 0; j < list.size(); ++j)
+      if (nnOk[list[j]]) {
+        const strat::NnShape x = net.shape(&nnF[list[j] * strat::kNF]);
+        mu[j] = x.mu, sc[j] = x.scale;
+      }
+  };
+  std::vector<std::vector<double>> resetMu, resetSc;  // each reset's shapes (for its check on the real future)
   std::vector<Row> rows;
   std::map<std::size_t, Pos> book;
   std::vector<std::size_t> target;
@@ -566,8 +605,31 @@ int main(int argc, char** argv) {
     std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
     of = c.size(), decided = t;
     target.clear();
-    for (std::size_t r = 0; r < std::min(k, c.size()); ++r) target.push_back(c[r].second);
+    if (nnOn) {  // the network learns from the resets whose outcome is known by t's close, then today's samples are kept
+      net.train(nnSamples, t, mc.horizon, 40000, 2);
+      if (net.trained && !nnFirstTrained) nnFirstTrained = t;
+      strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
+      for (std::size_t i = 0; i < N; ++i) {
+        strat::NnSample x;
+        if (nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, x)) nnSamples.push_back(x);
+      }
+    }
+    std::vector<double> mu, sc;
+    if (mcSelect && !c.empty()) {  // the simulation chooses: the candidates on the same futures, the most log growth together
+      std::vector<std::size_t> cand;
+      std::vector<double> caps;
+      for (std::size_t r = 0; r < std::min(nCand, c.size()); ++r) cand.push_back(c[r].second), caps.push_back(capOf(t, c[r].second));
+      strat::McReset rr;
+      shapesFor(t, cand, mu, sc);
+      strat::mcRun(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
+      for (std::size_t j : strat::mcChoose(rr, cand.size(), mc.paths, k, P["mcobj"] > 0)) target.push_back(cand[j]), mcFromTop += j < k;
+      mcChosen += target.size();
+    } else {
+      for (std::size_t r = 0; r < std::min(k, c.size()); ++r) target.push_back(c[r].second);
+    }
     resets.emplace_back(t, target);
+    shapesFor(t, target, mu, sc);
+    resetMu.push_back(mu), resetSc.push_back(sc);
   };
   const auto inTarget = [&](std::size_t i) { return std::find(target.begin(), target.end(), i) != target.end(); };
 
@@ -673,11 +735,6 @@ int main(int argc, char** argv) {
   }
 
   // ------------------------------------------------------------------ the nested Monte Carlo
-  const bool mcOn = P["mc"] > 0;
-  strat::McSpec mc;
-  mc.paths = std::max<std::size_t>(20, std::size_t(P["mcpaths"])), mc.horizon = P["mchorizon"] > 0 ? std::size_t(P["mchorizon"]) : reb;
-  mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
-  mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
   // The resets on the real market: at each rebalance with a full horizon after it, the simulated futures of the book
   // and the real one through the same simulator.
   double mcCover = 0, mcPit = 0, mcSim = 0, mcReal = 0, mcSxy = 0, mcSxx = 0, mcSyy = 0, mcN = 0;
@@ -689,7 +746,7 @@ int main(int argc, char** argv) {
       if (t0 + mc.horizon >= T || list.empty()) continue;
       std::vector<double> caps;
       for (std::size_t i : list) caps.push_back(capOf(t0, i));
-      strat::mcRun(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr);
+      strat::mcRun(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr, resetMu[x], resetSc[x]);
       const double real = strat::mcReal(d, t0, list, caps, k, mc);
       double below = 0, m = 0;
       for (double b : rr.book) below += b < real ? 1.0 : b == real ? 0.5 : 0.0, m += b;
@@ -737,7 +794,9 @@ int main(int argc, char** argv) {
       held.push_back(h);
     }
     strat::McReset rr;
-    strat::mcRun(d, L, target, caps, held, k, mc, L, *backend, rr);
+    std::vector<double> mu, sc;
+    shapesFor(L, target, mu, sc);
+    strat::mcRun(d, L, target, caps, held, k, mc, L, *backend, rr, mu, sc);
     for (auto& x : orders) {
       const std::size_t j = std::size_t(std::find(target.begin(), target.end(), x.i) - target.begin());
       std::vector<double> v(rr.share.begin() + long(j * mc.paths), rr.share.begin() + long((j + 1) * mc.paths));
@@ -799,6 +858,16 @@ int main(int argc, char** argv) {
                 "the simulated mean %+.2f%% a period against the real %+.2f%% (correlation %.2f)\n",
                 mcN, mc.paths, mc.horizon, mc.block, mc.window, mcN ? 100 * mcCover / mcN : 0.0, mcN ? 100 * mcPit / mcN : 0.0, mcN ? 100 * mcSim / mcN : 0.0,
                 mcN ? 100 * mcReal / mcN : 0.0, mcCorr);
+    if (nnOn) {
+      const auto [a, b] = net.score(nnSamples, nnFirstTrained, T, mc.horizon);
+      std::printf("strategy: the differential neural network on the Monte Carlo: trained at %zu resets on %zu share-resets (walk-forward); its futures' CRPS "
+                  "%.4f against the plain Monte Carlo's %.4f (lower is better: %+.1f%%)\n",
+                  net.trained, nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
+    }
+    if (mcSelect)
+      std::printf("strategy: the book chosen by the simulation at every reset: of the strategy's %zu best, the %zu with the most expected log growth together on "
+                  "the same futures (the days drawn from the %zu sessions up to %zu before, %s); %.0f%% of its picks were in the strategy's own top %zu\n",
+                  nCand, k, mc.window, mc.skip, mc.drift ? "each share's own trend taken out" : "each share's own moves kept", mcChosen ? 100.0 * double(mcFromTop) / double(mcChosen) : 0.0, k);
     if (std::isfinite(mcNext[0]))
       std::printf("strategy: the book over the next %zu sessions (from the last close): mean %+.2f%%, 5%% %+.2f%%, median %+.2f%%, 95%% %+.2f%%, a loss on %.0f%% of the futures\n",
                   mc.horizon, 100 * mcNext[0], 100 * mcNext[1], 100 * mcNext[2], 100 * mcNext[3], 100 * mcNext[4]);

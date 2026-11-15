@@ -34,15 +34,18 @@ struct McSpec {
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
+  // skip: the window ends this many sessions before t0 (the days drawn from [t0 - window, t0 - skip]): a
+  // momentum book skips the last month (its short-term reversal)
+  std::size_t skip = 0;
 };
 
 // A share's drift adjustment for a reset (a factor on each simulated day's bar): exp(market's mean daily log move
 // over the window - the share's own), both from the window before t0 only; 1 with drift 0.
 inline double mcAdjust(const Data& d, std::size_t t0, std::size_t i, const McSpec& s) {
   if (!s.drift) return 1.0;
-  const std::size_t lo = t0 > s.window ? t0 - s.window : 1;
+  const std::size_t hi = t0 > s.skip + 1 ? t0 - s.skip : 1, lo = hi > s.window ? hi - s.window : 1;
   double si = 0, ni = 0, sm = 0, nm = 0;
-  for (std::size_t q = lo; q <= t0; ++q) {
+  for (std::size_t q = lo; q <= hi; ++q) {
     const double r = d.ret[q * d.N + i];
     if (std::isfinite(r)) si += r, ni += 1;
     sm += d.mkt[q], nm += 1;
@@ -76,19 +79,22 @@ inline void mcDays(std::size_t t0, std::size_t T, const McSpec& s, std::uint64_t
     for (std::size_t j = 1; j <= s.horizon && t0 + j < T; ++j) out.push_back(t0 + j);
     return;
   }
-  const std::size_t lo = t0 > s.window ? t0 - s.window : 1, B = std::max<std::size_t>(1, s.block);
-  const std::size_t span = t0 + 1 > lo + B ? t0 + 1 - lo - B + 1 : 1;
+  const std::size_t hi = t0 > s.skip + 1 ? t0 - s.skip : 1;  // the last day that may be drawn (never after t0)
+  const std::size_t lo = hi > s.window ? hi - s.window : 1, B = std::max<std::size_t>(1, s.block);
+  const std::size_t span = hi + 1 > lo + B ? hi + 1 - lo - B + 1 : 1;
   std::uint64_t h = key;
   while (out.size() < s.horizon) {
     h = mcMix(h);
     const std::size_t b = lo + std::size_t(h % span);
-    for (std::size_t j = 0; j < B && out.size() < s.horizon; ++j) out.push_back(std::min(t0, b + j));
+    for (std::size_t j = 0; j < B && out.size() < s.horizon; ++j) out.push_back(std::min(hi, b + j));
   }
 }
 
 // One share's slot on a path: from the real close of t0 (and its real lows and highs before), the day bars of `days`
 // applied in turn; the book's rules for the buy (the cap), the stop and the buy-back. The fused trade kernel.
-inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, double cap, const McSpec& s, const McHeld& h, double adj = 1.0) {
+// scale: the network's volatility scale (mcnn), each drawn day's relative bar raised to it (1: the real days as they were).
+inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, double cap, const McSpec& s, const McHeld& h, double adj = 1.0,
+                      double scale = 1.0) {
   const std::size_t N = d.N;
   McTrade out;
   double last = d.Cf[t0 * N + i];
@@ -118,8 +124,9 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   for (std::size_t q : days) {
     const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0, C = d.C[q * N + i];
     if (!(pc > 0 && C > 0 && d.O[q * N + i] > 0 && d.H[q * N + i] > 0 && d.L[q * N + i] > 0)) continue;  // no bar that day: flat
-    const double base = last * adj / pc;  // the day's bar on the path's price (adj: the drift adjustment, real days only)
-    const double o = base * d.O[q * N + i], hi = base * d.H[q * N + i], lo = base * d.L[q * N + i], c = base * C;
+    const double base = last * adj;  // the day's bar on the path's price (adj: the drift adjustment, real days only)
+    const auto bar = [&](double x) { return scale == 1.0 ? base * x / pc : base * std::pow(x / pc, scale); };
+    const double o = bar(d.O[q * N + i]), hi = bar(d.H[q * N + i]), lo = bar(d.L[q * N + i]), c = bar(C);
     if (!in && pending && o <= last * (1 + cap)) {  // bought at the open, under the cap
       in = true, pending = false, mark = o;
       if (s.psar) {
@@ -176,19 +183,22 @@ struct McReset {
   std::vector<char> stop;
 };
 
+// mu, scale: each listed share's shape from the network (mcnn; empty: the plain Monte Carlo): a daily log drift
+// added to the drawn days and their scale.
 inline void mcRun(const Data& d, std::size_t t0, const std::vector<std::size_t>& list, const std::vector<double>& caps, const std::vector<McHeld>& held,
-                  std::size_t k, const McSpec& s, std::uint64_t resetKey, const Backend& b, McReset& r) {
+                  std::size_t k, const McSpec& s, std::uint64_t resetKey, const Backend& b, McReset& r, const std::vector<double>& mu = {},
+                  const std::vector<double>& scale = {}) {
   const std::size_t P = s.paths, S = list.size();
   r.book.assign(P, 0.0), r.share.assign(S * P, 0.0), r.stop.assign(S * P, 0);
-  std::vector<double> adj(S);
-  for (std::size_t j = 0; j < S; ++j) adj[j] = mcAdjust(d, t0, list[j], s);
+  std::vector<double> adj(S), sc(S, 1.0);
+  for (std::size_t j = 0; j < S; ++j) adj[j] = mcAdjust(d, t0, list[j], s) * (j < mu.size() ? std::exp(mu[j]) : 1.0), sc[j] = j < scale.size() ? scale[j] : 1.0;
   b.parallelFor(P, [&](std::size_t a, std::size_t e) {
     std::vector<std::size_t> days;
     for (std::size_t p = a; p < e; ++p) {
       mcDays(t0, d.T, s, mcMix(s.seed ^ mcMix(resetKey * 1000003ULL + p)), false, days);
       double sum = 0;
       for (std::size_t j = 0; j < S; ++j) {
-        const McTrade x = mcSlot(d, t0, list[j], days, caps[j], s, held[j], adj[j]);
+        const McTrade x = mcSlot(d, t0, list[j], days, caps[j], s, held[j], adj[j], sc[j]);
         r.share[j * P + p] = x.ret, r.stop[j * P + p] = x.stopped ? 1 : 0, sum += x.ret;
       }
       r.book[p] = sum / double(std::max<std::size_t>(1, k));
@@ -204,6 +214,33 @@ inline double mcReal(const Data& d, std::size_t t0, const std::vector<std::size_
   const McHeld fresh;
   for (std::size_t j = 0; j < list.size(); ++j) sum += mcSlot(d, t0, list[j], days, caps[j], s, fresh).ret;
   return sum / double(std::max<std::size_t>(1, k));
+}
+
+// The book the simulation chooses: of the candidates (their slot returns on the same paths, share[j * paths + p]),
+// the k that together give the most expected log growth, mean over the paths of log(1 + book), the book's slots
+// 1/k each (an unbought slot cash). Greedy: each step adds the candidate that raises it most; ties to the earlier
+// candidate (the strategy's higher score). The paths keep the days the market moved together, so shares that fall
+// together add less than their means. No costs (they come off the final orders only). Returns candidate positions.
+// mean: true chooses by the expected return alone (the k highest simulated means), no penalty for risk.
+inline std::vector<std::size_t> mcChoose(const McReset& r, std::size_t candidates, std::size_t paths, std::size_t k, bool mean = false) {
+  std::vector<std::size_t> chosen;
+  std::vector<char> used(candidates, 0);
+  std::vector<double> sum(paths, 0.0);
+  const double kk = double(std::max<std::size_t>(1, k));
+  for (std::size_t step = 0; step < std::min(k, candidates); ++step) {
+    std::size_t best = candidates;
+    double bestV = -1e300;
+    for (std::size_t j = 0; j < candidates; ++j) {
+      if (used[j]) continue;
+      double v = 0;
+      for (std::size_t p = 0; p < paths; ++p) v += mean ? r.share[j * paths + p] : std::log(std::max(1e-9, 1.0 + (sum[p] + r.share[j * paths + p]) / kk));
+      if (v > bestV + 1e-12) bestV = v, best = j;
+    }
+    if (best == candidates) break;
+    used[best] = 1, chosen.push_back(best);
+    for (std::size_t p = 0; p < paths; ++p) sum[p] += r.share[best * paths + p];
+  }
+  return chosen;
 }
 
 inline double mcQuantile(std::vector<double> x, double q) {

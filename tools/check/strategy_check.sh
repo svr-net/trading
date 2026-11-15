@@ -35,6 +35,18 @@ for s in $names; do
     cmp -s "$W/$s-mc-$first.cmp" "$W/$s-mc-$b.cmp" || { echo "FAIL: $s: the Monte Carlo differs between the back ends $first and $b"; exit 1; }
   done
   jq -e '.backtest.mc.resets > 5 and .backtest.mc.coverage >= 0 and .backtest.mc.next.p5 <= .backtest.mc.next.p95' "$W/$s-mc-$first.json" > /dev/null || { echo "FAIL: $s: no Monte Carlo in the report"; exit 1; }
+  # the Monte Carlo with the neural overlay choosing the book: the same on every back end, no look-ahead
+  NN="--param mc=1 --param mcselect=1 --param mcnn=1 --param mcobj=1 --param mccandk=2 --param mcpaths=100"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $NN --json "$W/$s-nn-$b.json" --trace "$W/$s-nn-$b.tr" > "$W/$s-nn-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-nn-$b.json" > "$W/$s-nn-$b.cmp"
+    cmp -s "$W/$s-nn-$first.cmp" "$W/$s-nn-$b.cmp" || { echo "FAIL: $s: the neural Monte Carlo differs between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $NN --trace "$W/$s-nn-cut.tr" > /dev/null
+  nn=$(wc -l < "$W/$s-nn-cut.tr")
+  [ "$nn" -gt 10 ] || { echo "FAIL: $s: only $nn orders with the neural Monte Carlo"; exit 1; }
+  head -n "$nn" "$W/$s-nn-$first.tr" | cmp -s - "$W/$s-nn-cut.tr" || { echo "FAIL: $s with the neural Monte Carlo: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "chosen by the simulation" "$W/$s-nn-$first.out" && grep -q "differential neural network" "$W/$s-nn-$first.out" || { cat "$W/$s-nn-$first.out"; echo "FAIL: $s: the neural Monte Carlo did not run"; exit 1; }
   # the PSAR stop and its buy-back: no look-ahead either
   X_TRADELOG="$W/$s-psar.log" "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar.tr" > "$W/$s-psar.out"
   "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar-cut.tr" > /dev/null
@@ -45,5 +57,5 @@ for s in $names; do
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
     || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
-  echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+  echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back, $nn with the neural Monte Carlo choosing); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
 done
