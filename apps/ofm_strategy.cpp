@@ -261,7 +261,7 @@ void writeSynthetic(const std::string& path, unsigned seed) {
   std::uniform_real_distribution<double> u(0, 1);
   std::ofstream f(path);
   f << "date,ticker,open,high,low,close,volume\n";
-  const int N = 80, T = 900;
+  const int N = 80, T = 1400;  // long enough for the longest warm-up (ltrev: 3 years)
   std::vector<double> c(N, 100), mu(N, 0);
   for (int t = 0; t < T; ++t) {
     const int y = 2019 + t / 252, m = 1 + (t % 252) / 21, dd = 1 + (t % 21);
@@ -423,6 +423,12 @@ int main(int argc, char** argv) {
   P.emplace("mcnn", 0.0);
   // mcobj: the simulation's choice by 0 the expected log growth of the book together, 1 each share's expected return.
   P.emplace("mcobj", 0.0);
+  // mcpool: 1 injects every strategy (strategies/*.cpp) into the network's Monte Carlo: each one's score of every
+  // share is an input to the network, and each one's best mccandk a slot join the candidates the simulation chooses
+  // from. mcgate: 1 makes it autonomous: at each reset the book held is the arm (the simulation's choice, or one
+  // strategy's own top picks) with the best real record over the last mcgaten resets known by then (shrunk by its
+  // t statistic); the simulation's until enough are known.
+  P.emplace("mcpool", 0.0), P.emplace("mcgate", 0.0), P.emplace("mcgaten", 12.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -571,18 +577,27 @@ int main(int argc, char** argv) {
   std::vector<double> nnF;
   std::vector<char> nnOk;
   std::size_t nnAt = SIZE_MAX;
-  // The network's shapes for a list of shares at day t (its features then): mu and scale each (0 and 1 without it).
-  const auto shapesFor = [&](std::size_t t, const std::vector<std::size_t>& list, std::vector<double>& mu, std::vector<double>& sc) {
-    mu.assign(list.size(), 0.0), sc.assign(list.size(), 1.0);
-    if (!nnOn || !net.trained) return;
-    if (nnAt != t) strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
-    for (std::size_t j = 0; j < list.size(); ++j)
-      if (nnOk[list[j]]) {
-        const strat::NnShape x = net.shape(&nnF[list[j] * strat::kNF]);
-        mu[j] = x.mu, sc[j] = x.scale;
-      }
-  };
   std::vector<std::vector<double>> resetMu, resetSc;  // each reset's shapes (for its check on the real future)
+  // The injected strategies (mcpool): every registered one, each with its own defaults.
+  const bool pool = mcSelect && P["mcpool"] > 0, gate = mcSelect && P["mcgate"] > 0;
+  std::vector<std::string> poolNames;
+  std::vector<std::unique_ptr<strat::Strategy>> poolS;
+  std::vector<strat::Params> poolP;
+  if (pool)
+    for (const auto& [name, make] : strat::registry()) {
+      if (poolS.size() >= strat::kNS) break;
+      poolNames.push_back(name), poolS.push_back(make()), poolP.push_back(poolS.back()->defaults());
+      poolP.back()["invert"] = P["invert"];
+    }
+  // The gate's arms: 0 the simulation's choice, 1.. each pooled strategy's own top k (or the live one's alone).
+  struct Arm {
+    std::vector<std::pair<std::size_t, std::vector<std::size_t>>> lists;  // each reset's day and the book it would hold
+    std::size_t used = 0;
+  };
+  std::vector<Arm> arms(1 + (pool ? poolS.size() : 1));
+  std::vector<std::string> armNames{"the simulation"};
+  if (pool) for (const auto& n : poolNames) armNames.push_back(n);
+  else armNames.push_back(o.strategy);
   std::vector<Row> rows;
   std::map<std::size_t, Pos> book;
   std::vector<std::size_t> target;
@@ -595,35 +610,119 @@ int main(int argc, char** argv) {
   std::size_t decided = start;  // the last rebalance: the target's day
   std::vector<std::pair<std::size_t, std::vector<std::size_t>>> resets;  // each rebalance: its day and its list (the Monte Carlo's resets)
 
+  // Every pooled strategy's ranked list at day t: (score, share) best first (the live one's alone without mcpool).
+  const auto ranked = [&](const strat::Strategy& st, const strat::Params& pp, std::size_t t, std::vector<std::pair<double, std::size_t>>& c) {
+    const strat::View v(d, t, &in[t * N], *backend);
+    std::vector<double> sc_;
+    st.score(v, pp, sc_);
+    if (&st == strategy.get()) score = sc_;  // the live strategy's scores (the report's ranks and reasons)
+    c.clear();
+    for (std::size_t i = 0; i < N; ++i)
+      if (in[t * N + i] && std::isfinite(sc_[i])) c.emplace_back(P["invert"] > 0 ? -sc_[i] : sc_[i], i);
+    std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+  };
+  std::vector<std::vector<std::pair<double, std::size_t>>> poolRanked;
+  // The network's inputs at day t: the share's own and the market's, and with mcpool each strategy's rank of it.
+  const auto features = [&](std::size_t t) {
+    if (nnAt == t) return;
+    strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
+    if (!pool) return;
+    poolRanked.assign(poolS.size(), {});
+    for (std::size_t q = 0; q < poolS.size(); ++q) {
+      ranked(*poolS[q], poolP[q], t, poolRanked[q]);
+      const auto& c = poolRanked[q];
+      for (std::size_t r = 0; r < c.size(); ++r) nnF[c[r].second * strat::kNF + 9 + q] = c.size() > 1 ? 0.5 - double(r) / double(c.size() - 1) : 0.0;
+    }
+  };
+  // The network's shapes for a list of shares at day t (its features then): mu and scale each (0 and 1 without it).
+  const auto shapesFor = [&](std::size_t t, const std::vector<std::size_t>& list, std::vector<double>& mu, std::vector<double>& sc) {
+    mu.assign(list.size(), 0.0), sc.assign(list.size(), 1.0);
+    if (!nnOn || !net.trained) return;
+    features(t);
+    for (std::size_t j = 0; j < list.size(); ++j)
+      if (nnOk[list[j]]) {
+        const strat::NnShape x = net.shape(&nnF[list[j] * strat::kNF]);
+        mu[j] = x.mu, sc[j] = x.scale;
+      }
+  };
+  // The gate's record of an arm at t: its books' real returns over the horizon, the last mcgaten known by t's close,
+  // shrunk by their t statistic (nothing known: NaN).
+  const std::size_t gateN = std::max<std::size_t>(3, std::size_t(P["mcgaten"]));
+  const auto armRecord = [&](const Arm& a, std::size_t t) {
+    std::vector<double> x;
+    for (auto it = a.lists.rbegin(); it != a.lists.rend() && x.size() < gateN; ++it) {
+      if (it->first + mc.horizon > t || it->second.empty()) continue;  // its future not over by t's close
+      std::vector<double> caps;
+      for (std::size_t i : it->second) caps.push_back(capOf(it->first, i));
+      x.push_back(strat::mcReal(d, it->first, it->second, caps, k, mc));
+    }
+    if (x.size() < 3) return kNaN;
+    double m = 0, v2 = 0;
+    for (double y : x) m += y;
+    m /= double(x.size());
+    for (double y : x) v2 += (y - m) * (y - m);
+    const double sdv = std::sqrt(v2 / double(x.size())), tt = sdv > 0 ? m / sdv * std::sqrt(double(x.size())) : 0;
+    return tt != 0 ? m * std::max(0.0, 1 - 1 / (tt * tt)) : 0.0;
+  };
   const auto decide = [&](std::size_t t) {
     if ((t - start) % reb != 0 && t != start) return;
-    const strat::View v(d, t, &in[t * N], *backend);
-    strategy->score(v, P, score);
     std::vector<std::pair<double, std::size_t>> c;
-    for (std::size_t i = 0; i < N; ++i)
-      if (in[t * N + i] && std::isfinite(score[i])) c.emplace_back(P["invert"] > 0 ? -score[i] : score[i], i);
-    std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
+    ranked(*strategy, P, t, c);
     of = c.size(), decided = t;
     target.clear();
     if (nnOn) {  // the network learns from the resets whose outcome is known by t's close, then today's samples are kept
       net.train(nnSamples, t, mc.horizon, 40000, 2);
       if (net.trained && !nnFirstTrained) nnFirstTrained = t;
-      strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
+    }
+    if (nnOn || pool) features(t);
+    if (nnOn)
       for (std::size_t i = 0; i < N; ++i) {
         strat::NnSample x;
         if (nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, x)) nnSamples.push_back(x);
       }
-    }
     std::vector<double> mu, sc;
-    if (mcSelect && !c.empty()) {  // the simulation chooses: the candidates on the same futures, the most log growth together
+    if (mcSelect && !c.empty()) {  // the simulation chooses: the candidates on the same futures
       std::vector<std::size_t> cand;
       std::vector<double> caps;
-      for (std::size_t r = 0; r < std::min(nCand, c.size()); ++r) cand.push_back(c[r].second), caps.push_back(capOf(t, c[r].second));
+      const auto add = [&](std::size_t i) {
+        if (std::find(cand.begin(), cand.end(), i) == cand.end()) cand.push_back(i), caps.push_back(capOf(t, i));
+      };
+      if (pool) {  // each strategy's best mccandk a slot, in turn (the first of each, then the second, ...)
+        const std::size_t each = std::max<std::size_t>(1, std::size_t(std::max(1.0, P["mccandk"]) * double(k)));
+        for (std::size_t r = 0; r < each; ++r)
+          for (const auto& pr : poolRanked)
+            if (r < pr.size()) add(pr[r].second);
+      } else {
+        for (std::size_t r = 0; r < std::min(nCand, c.size()); ++r) add(c[r].second);
+      }
       strat::McReset rr;
       shapesFor(t, cand, mu, sc);
       strat::mcRun(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
-      for (std::size_t j : strat::mcChoose(rr, cand.size(), mc.paths, k, P["mcobj"] > 0)) target.push_back(cand[j]), mcFromTop += j < k;
-      mcChosen += target.size();
+      std::vector<std::size_t> simBook;
+      for (std::size_t j : strat::mcChoose(rr, cand.size(), mc.paths, k, P["mcobj"] > 0)) simBook.push_back(cand[j]);
+      for (std::size_t i : simBook) {
+        const auto at = std::find_if(c.begin(), c.end(), [&](const auto& x) { return x.second == i; });
+        mcFromTop += at != c.end() && std::size_t(at - c.begin()) < k;
+      }
+      mcChosen += simBook.size();
+      // The arms' books at t: the simulation's, and each strategy's own top k.
+      arms[0].lists.emplace_back(t, simBook);
+      for (std::size_t q = 1; q < arms.size(); ++q) {
+        const auto& pr = pool ? poolRanked[q - 1] : c;
+        std::vector<std::size_t> b;
+        for (std::size_t r = 0; r < std::min(k, pr.size()); ++r) b.push_back(pr[r].second);
+        arms[q].lists.emplace_back(t, b);
+      }
+      std::size_t pick = 0;
+      if (gate) {  // autonomous: the arm with the best real record known by now (the simulation's until one is known)
+        double best = armRecord(arms[0], t);
+        for (std::size_t q = 1; q < arms.size(); ++q) {
+          const double r = armRecord(arms[q], t);
+          if (std::isfinite(r) && (!std::isfinite(best) || r > best + 1e-12)) best = r, pick = q;
+        }
+      }
+      ++arms[pick].used;
+      target = arms[pick].lists.back().second;
     } else {
       for (std::size_t r = 0; r < std::min(k, c.size()); ++r) target.push_back(c[r].second);
     }
@@ -863,6 +962,18 @@ int main(int argc, char** argv) {
       std::printf("strategy: the differential neural network on the Monte Carlo: trained at %zu resets on %zu share-resets (walk-forward); its futures' CRPS "
                   "%.4f against the plain Monte Carlo's %.4f (lower is better: %+.1f%%)\n",
                   net.trained, nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
+    }
+    if (gate) {
+      std::string used;
+      for (std::size_t q = 0; q < arms.size(); ++q) used += (q ? ", " : "") + armNames[q] + " " + std::to_string(arms[q].used);
+      std::printf("strategy: autonomous: at each reset the book held is the one (the simulation's or a strategy's own top %zu) with the best real record over "
+                  "the last %zu resets known by then; held: %s (of %zu resets)\n", k, gateN, used.c_str(), resets.size());
+    }
+    if (pool) {
+      std::string names;
+      for (std::size_t q = 0; q < poolNames.size(); ++q) names += (q ? ", " : "") + poolNames[q];
+      std::printf("strategy: the strategies injected into the network's Monte Carlo: %s (each one's score of every share an input to the network, each "
+                  "one's best %.0f a slot among the candidates)\n", names.c_str(), std::max(1.0, P["mccandk"]));
     }
     if (mcSelect)
       std::printf("strategy: the book chosen by the simulation at every reset: of the strategy's %zu best, the %zu with the most expected log growth together on "
