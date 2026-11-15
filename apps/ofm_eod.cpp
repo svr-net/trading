@@ -165,7 +165,7 @@ int cmdShares(const std::vector<std::string>& a) {
     const fs::path sd = store::root() / "store" / exchange;
     if (fs::exists(sd))
       for (const auto& e : fs::directory_iterator(sd))
-        if (e.path().extension() == ".json") dir.push_back(e.path().stem().string());
+        if (e.path().extension() == ".json" && e.path().filename().string()[0] != '.') dir.push_back(e.path().stem().string());
     std::sort(dir.begin(), dir.end());
     for (const auto& code : dir)
       if (!have.count(code) && isShare(code)) ranked.push_back({code, 0}), have.insert(code);
@@ -210,7 +210,33 @@ int cmdShares(const std::vector<std::string>& a) {
     }
   }
   if (latest.empty()) latest = stamp;
-  int nFull = 0, nGap = 0, nQuote = 0, nCurrent = 0;
+  int nFull = 0, nGap = 0, nQuote = 0, nCurrent = 0, nKnown = 0;
+  // What EODData could not give, kept in the store (store/<EX>/.unavailable.json) so that no run asks again: a code
+  // with no history (HTTP 404: a warrant, a unit, a code gone) for 30 days; a gap the API had nothing for until the
+  // exchange has a newer day.
+  const fs::path memoFile = store::root() / "store" / store::safe(exchange) / ".unavailable.json";
+  json memo = json::object();
+  {
+    std::string t;
+    if (!refresh && tryRead(memoFile, t)) try {
+        memo = json::parse(t);
+      } catch (...) {
+        memo = json::object();
+      }
+  }
+  bool memoChanged = false;
+  const auto known = [&](const std::string& code) {
+    if (!memo.contains(code)) return false;
+    const json& m = memo[code];
+    const std::string why = m.value("why", std::string()), on = m.value("on", std::string());
+    if (why == "404") return isDay(on) && daysBetween(on, stamp) < 30;
+    if (why == "nothing") return m.value("latest", std::string()) == latest;
+    return false;
+  };
+  const auto remember = [&](const std::string& code, const char* why) {
+    memo[code] = {{"why", why}, {"on", stamp}, {"latest", latest}};
+    memoChanged = true;
+  };
   const auto barsOf = [&](const std::string& code, bool& ok) {
     ok = true;
     Bars bars = store::load(exchange, code);
@@ -224,21 +250,33 @@ int cmdShares(const std::vector<std::string>& a) {
       return bars;
     }
     const std::string L = store::lastDate(bars);
+    const bool fullNeeded = refresh || L.empty() || L < from;
+    const bool gapNeeded = !fullNeeded && !(qb != quoteBar.end() && qb->second.first >= L && previousWeekday(qb->second.first) <= L) &&
+                           (L < previousWeekday(latest) || (qb != quoteBar.end() && qb->second.first > L));
+    if ((fullNeeded || gapNeeded) && known(code)) {  // asked before: EODData had nothing
+      ++nKnown;
+      if (bars.empty()) ok = false;
+      return bars;
+    }
     try {
-      if (refresh || L.empty() || L < from) {
-        store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", from}, {"ToDateStamp", stamp}})));
+      if (fullNeeded) {
+        if (!store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", from}, {"ToDateStamp", stamp}}))) && bars.empty())
+          remember(code, "404");
         ++nFull;
       } else if (qb != quoteBar.end() && qb->second.first >= L && previousWeekday(qb->second.first) <= L) {
         bars[qb->second.first] = qb->second.second;  // the latest day, from the quote list
         ++nQuote;
       } else if (L < previousWeekday(latest) || (qb != quoteBar.end() && qb->second.first > L)) {
-        store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", addDays(L, 1)}, {"ToDateStamp", stamp}})));
+        if (!store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", addDays(L, 1)}, {"ToDateStamp", stamp}}))))
+          remember(code, "nothing");
         ++nGap;
       } else {
         ++nCurrent;
       }
     } catch (const std::exception& e) {
-      std::cerr << "  skip " << code << ": " << e.what() << "\n";
+      const std::string why = e.what();
+      if (why.find("HTTP 404") != std::string::npos) remember(code, fullNeeded ? "404" : "nothing");
+      else std::cerr << "  skip " << code << ": " << why << "\n";
       ok = false;
       return Bars{};
     }
@@ -334,7 +372,9 @@ int cmdShares(const std::vector<std::string>& a) {
     kept.push_back({{"code", code}, {"name", nameOf[code]}, {"days", bars.size()}});
     if (kept.size() % 20 == 0) std::cout << "  kept " << kept.size() << "\n";
   }
-  std::cout << "  store: " << nFull << " full histories downloaded, " << nGap << " gaps filled, " << nQuote << " days from the quote list, " << nCurrent << " up to date\n";
+  if (memoChanged) writeFile(memoFile, memo.dump(1));
+  std::cout << "  store: " << nFull << " full histories downloaded, " << nGap << " gaps filled, " << nQuote << " days from the quote list, " << nCurrent << " up to date, " << nKnown
+            << " not asked again (EODData had nothing before; " << memo.size() << " kept in .unavailable.json)\n";
   if (!cached)
     for (const char* p : {"symbols-", "quotes-", "splits-"}) store::prune(cache.dir, p, 1);
   writeFile(out, csv);
