@@ -146,7 +146,7 @@ jobs:
           mkdir -p report
           PUBLISH=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then PUBLISH=(--publish-orders); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
-          STAMP=(); if [ "$MARKET" = UK ]; then ofm ofm_eod aim tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
+          STAMP=(); if [ "$MARKET" = UK ]; then ofm ofm_eod aim tools/eoddata/aim.txt --cache data/eoddata/lists/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
           # EU, APAC and INDEX (Xetra): each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC|INDEX) STAMP=(--venues tools/venues.txt);; esac
           # IBKR's own daily bars (the bridge fetches them into the store on Saturdays: two years, their open
