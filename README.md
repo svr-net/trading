@@ -58,6 +58,22 @@ generated market. It confirms that:
 
 `tools/check/wasm_same.mjs` checks that the WebAssembly build gives the native results.
 
+## The nested Monte Carlo and its neural overlay
+
+Every market's book is chosen by the nested Monte Carlo (`include/strategy/montecarlo.hpp`, `neural.hpp`):
+
+- **Resets on the real market:** at every rebalance the simulation restarts from the real daily bars up to that
+  close. 500 futures of 21 sessions are built from blocks of 5 whole real days drawn from the 750 sessions before,
+  so the days the whole market moved together are kept.
+- **Differential neural network:** for every share at every reset, it shapes those futures with a daily drift and a
+  volatility scale, learnt from point-in-time features. It is trained walk-forward, only on resets whose outcome was
+  known by then, by the CRPS of the simulated futures against the real return, with exact gradients through the
+  paths.
+- **The choice:** the strategy proposes 2 candidates a slot, and the simulation keeps the k with the highest expected
+  return. The same futures give each order's expected return, its 5-95% band and its chance of a loss. The real
+  future after every reset is checked against the simulated ones (the calibration).
+- **Costs:** none while modelling. The broker's costs come off the final order list only.
+
 ## Data
 
 EODData's daily bars (key in the `EODDATA_API_KEY` secret) are kept in the private repository `svr-net/eod`
