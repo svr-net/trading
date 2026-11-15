@@ -469,6 +469,13 @@ int cmdMarket(const std::vector<std::string>& a) {
 
 // ------------------------------------------------------------------ profiles (was profiles.mjs)
 
+// At most n bytes, never cutting a UTF-8 character in two (a cut one makes the JSON unwritable).
+std::string utf8Cut(const std::string& t, std::size_t n) {
+  if (t.size() <= n) return t;
+  while (n > 0 && (static_cast<unsigned char>(t[n]) & 0xC0) == 0x80) --n;
+  return t.substr(0, n);
+}
+
 int cmdProfiles(const std::vector<std::string>& a) {
   if (!std::getenv("EODDATA_API_KEY")) die("Set EODDATA_API_KEY in the environment.");
   const std::string out = opt(a, "out"), fundDir = opt(a, "fundamentals"), uni = opt(a, "universe");
@@ -551,7 +558,7 @@ int cmdProfiles(const std::vector<std::string>& a) {
         const std::string code = str(field(x, {"symbolCode", "code"}));
         if (code.empty()) continue;
         json r{{"code", code}, {"name", names.count(code) ? names[code] : str(field(x, {"name"}))}, {"sector", str(field(x, {"sector"}))}, {"industry", str(field(x, {"industry"}))},
-               {"description", str(field(x, {"description", "summary", "businessSummary"})).substr(0, 600)}};
+               {"description", utf8Cut(str(field(x, {"description", "summary", "businessSummary"})), 600)}};
         const auto fi = fund.find(code);
         if (fi != fund.end())
           for (const auto& [key, name] : std::vector<std::pair<const char*, const char*>>{{"marketCap", "marketCapitalization"}, {"pe", "trailingPE"}, {"dividendYield", "dividendYield"}}) {
@@ -561,7 +568,7 @@ int cmdProfiles(const std::vector<std::string>& a) {
         nName += !r["name"].get<std::string>().empty(), nDesc += !r["description"].get<std::string>().empty(), nFund += r.contains("marketCap");
         rows.push_back(r);
       }
-      writeFile(fs::path(out) / (ex + ".json"), rows.dump());
+      writeFile(fs::path(out) / (ex + ".json"), rows.dump(-1, ' ', false, json::error_handler_t::replace));  // a bad byte from the API: U+FFFD
       writeFile(stampFile, stamp + "\n");
       std::cout << ex << " profiles kept: " << rows.size() << ", a name on " << nName << ", a description on " << nDesc << ", fundamentals on " << nFund << "\n";
     }
