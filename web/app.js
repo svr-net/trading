@@ -157,8 +157,12 @@ function render(r, source) {
   // The same trades in the expected gain's terms: per trade that bought, from its buy price.
   const perTrade = B.trades ? `
     <div class="tile"><span class="k">Per trade that bought</span><span class="v">${pct(B.avgTrade, 2)}</span><span class="s">average from the buy price · ${Math.round(100 * B.trades / B.orders)}% of orders bought · ${Math.round(100 * B.winRate)}% of trades gained</span></div>` : '';
+  // The nested Monte Carlo (apps/ofm_strategy mc=1): the book's next period over the simulated futures, and how
+  // honest the simulation has been: how often the real period fell in its 5-95% band at the resets on the real market.
+  const MC = B.mc, mcTile = MC?.next ? `
+    <div class="tile"><span class="k">Next ${MC.horizon} sessions, ${MC.paths} simulated futures</span><span class="v">${pct(MC.next.p50, 1)}</span><span class="s">median · 90% between ${pct(MC.next.p5, 1)} and ${pct(MC.next.p95, 1)} · a loss in ${Math.round(100 * MC.next.pLoss)}% · before costs. Honesty: the real period fell in the 5–95% band ${Math.round(100 * MC.coverage)}% of ${MC.resets} times (90% if honest)</span></div>` : '';
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>${perTrade}`;
+    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)}</span></div>${perTrade}${mcTile}`;
   $('odds').textContent = B.trades
     ? `In the backtest ${Math.round(100 * B.trades / B.orders)}% of orders bought (the rest stayed in cash), their average was ${pct(B.avgTrade, 2)} and ${Math.round(100 * B.winRate)}% of them gained.`
     : '';
@@ -247,8 +251,9 @@ function chartWhy(o) {
     ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
   if (o.stop != null) facts.splice(4, 0, ['Stop', `${pct(o.stop, 1)}${o.stopKind === 'psar' ? ' (PSAR)' : ''}`]);
+  if (o.mc) facts.push(['Chance of a loss', `${Math.round(100 * o.mc.pLoss)}%`], ['Chance of a stop', `${Math.round(100 * o.mc.pStop)}%`]);
   const money = o.gross == null ? ''
-    : `<p class="split">Expected before costs <b>${pct(o.gross, 2)}</b>: what the strategy's past trades at rank ${o.rank} made, held about ${Math.round(o.holdDays || 0)} sessions. `
+    : `<p class="split">Expected before costs <b>${pct(o.gross, 2)}</b>: ${o.mc ? `the mean over the simulated futures of the next ${o.mc.horizon} sessions (90% of them between ${pct(o.mc.p5, 1)} and ${pct(o.mc.p95, 1)}), its stop and buy-back included` : `what the strategy's past trades at rank ${o.rank} made, held about ${Math.round(o.holdDays || 0)} sessions`}. `
       + `Its costs, <b>${pct(o.cost, 2)}</b>, come off at the end: <b>${pct(o.ifFilled, 2)}</b> if it buys${o.fill != null ? `, ${signed(o.expected, 2)[0]} with its ${Math.round(100 * o.fill)}% chance to buy` : ''}.`
       + `${o.held ? " The strategy's book holds it already: the bridge buys it only if the account does not." : ''}</p>`
       + (o.stopKind === 'psar' ? `<p class="split"><b>Stop</b>: a Parabolic SAR stop at IBKR, now ${pct(-o.stop, 1).slice(1)} under the last close; it starts under the lows before the buy and rises each day with the price. ${o.rebuy ? 'After a stop the share is bought back once its SAR turns up again, while the strategy still wants it.' : 'After a stop it is not bought back.'}</p>` : '');

@@ -117,3 +117,51 @@ Fixed stops (10%, 15%, 20%) did worse than PSAR with buy-back, with or without a
 The PSAR stop with buy-back went live in every market on 16 Nov 2026, chosen to roughly halve the worst falls.
 It trades about three times as often, so the costs take most of its return before costs. The paper account's
 fills will show the real figure.
+
+## The nested Monte Carlo (16 Nov 2026)
+
+`mc: 1` (`include/strategy/montecarlo.hpp`) models with a nested Monte Carlo:
+
+- **Outer loop, resets on the real market:** at every rebalance in the history, the simulation is reset to the
+  real daily OHLCV up to that close. That means the real prices, the real tradable shares and the strategy's real
+  list.
+- **Inner loop:** `mcpaths` futures (500) of `mchorizon` sessions (default: the rebalance period). Each future is
+  built from blocks of `mcblock` (5) whole real days, drawn from the `mcwindow` (750) sessions before the reset,
+  never later.
+  - Every share takes its own bar of each drawn day (open, high, low and close relative to its close before), so
+    a market-wide fall hits every share on the same day, and runs of volatile days are kept.
+  - With `mcdrift: 1`, the default, each share's own mean daily move over the window is replaced by the market's.
+    The futures then carry the share's risk without assuming its past trend continues.
+  - The book runs on every future: the buy under its cap, the stop (fixed or PSAR) on the day's low, and the
+    buy-back.
+- **Real check:** the one real future after each reset goes through the same simulator, which shows whether the
+  simulation is honest.
+- **Orders:** each order's expected return before costs is its mean over the futures from the last close; costs
+  still come off at the end. The page also shows each order's 5% and 95% outcomes and its chances of a loss and
+  of a stop, plus the book's.
+
+**Fused kernel:** each future's draw and every share's trade on it are computed in one pass, run in parallel over
+the futures by the back end. The random draws are counter-based (a hash of the seed, the reset and the path), so
+every back end gives the same numbers, and the check enforces it.
+
+**First run on the store's data** (live settings, PSAR with buy-back). "Inside the band" is the share of resets
+where the real period fell inside the simulated 5–95% band; an honest simulation scores 90%. The average
+percentile should be 50.
+
+| Market | Inside the band | Average percentile | Simulated mean against real, a period |
+|---|---|---|---|
+| UK | 82% of 98 | 56 | +0.3% against +1.3% |
+| EU | 86% of 116 | 51 | +0.5% against +0.7% |
+| US | 89% of 97 | 48 | +1.0% against +0.1% |
+| APAC | 84% of 99 | 55 | +0.7% against +2.5% |
+| INDEX | 92% of 401 | 49 | +0.2% against +0.1% |
+
+**What the first run shows:**
+- **Ranges:** close to honest. The bands are slightly narrow in the UK, EU and APAC, so real crashes are a little
+  under-represented.
+- **No forecasting skill:** across resets, the simulated mean doesn't predict the real one (correlation about 0).
+  The simulation measures risk; it doesn't forecast.
+- **Own-trend version:** keeping each share's own trend (`mcdrift: 0`) made the means too optimistic, for example
+  US +2.5% a period against the real +0.05%.
+- **Stops:** the PSAR stop is hit in 83–98% of the futures of the momentum books' shares within a month, against
+  about 9% for the INDEX ETFs.
