@@ -6,8 +6,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
@@ -25,8 +23,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
@@ -44,8 +40,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
@@ -63,8 +57,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
@@ -82,8 +74,6 @@
         "name": "trend",
         "strategy": "trend",
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
@@ -105,8 +95,6 @@
           "25000"
         ],
         "params": {
-          "psar": 1,
-          "rebuy": 0,
           "mc": 1
         }
       },
