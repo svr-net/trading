@@ -519,7 +519,7 @@ def chart_bars(market, ticker, days=120):
     if not (os.path.exists(path) and os.path.getsize(path) > 100):
         kept = store_get(f'ibkr/{market}/daily.csv')
         if not kept or len(kept) < 100:
-            return []
+            return store_bars(market, ticker)[-max(1, min(int(days), 520)):]  # no IBKR file for the market: the store's bars
         with open(path, 'wb') as f:
             f.write(kept)
     mtime = os.path.getmtime(path)
