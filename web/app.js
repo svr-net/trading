@@ -311,10 +311,21 @@ function openChart(o, source) {
 let chartRange = null;
 function drawRange() {
   chartRange ??= Number(stored('chartRange', '252')) || 252;  // read once, on the first chart (stored is defined later in this file)
-  for (const b of document.querySelectorAll('#chart-range button')) b.setAttribute('aria-pressed', String(Number(b.dataset.n) === chartRange));
+  const buttons = [...document.querySelectorAll('#chart-range button')], len = chartShown ? chartShown[0].length : Infinity;
+  // A range longer than the bars the bridge has would draw the same bars as a shorter one: the first range that
+  // shows them all stays, the longer ones are off (and the chosen range, if longer, falls back to it).
+  const all = buttons.find((b) => Number(b.dataset.n) >= len);
+  for (const b of buttons) {
+    const n = Number(b.dataset.n), off = all ? n > Number(all.dataset.n) : false;
+    b.disabled = off;
+    b.title = off ? `Only ${len} sessions of bars for this share` : '';
+  }
+  const shown = all && chartRange > Number(all.dataset.n) ? Number(all.dataset.n) : chartRange;
+  for (const b of buttons) b.setAttribute('aria-pressed', String(Number(b.dataset.n) === shown));
   if (!chartShown) return;
   const [bars, o] = chartShown;
-  drawOHLC(bars, o, chartRange);  // all the bars (the indicators need the ones before), the last chartRange shown
+  drawOHLC(bars, o, shown);  // all the bars (the indicators need the ones before), the last `shown` drawn
+  $('chart-range-note').textContent = len < shown ? `all ${len} sessions the bridge has` : `the last ${Math.min(shown, len)} of ${len} sessions`;
 }
 for (const b of document.querySelectorAll('#chart-range button')) b.addEventListener('click', () => { chartRange = Number(b.dataset.n); store('chartRange', String(chartRange)); drawRange(); });
 $('chart-dialog-close').addEventListener('click', () => { const d = $('chart-dialog'); if (d.close) d.close(); else d.removeAttribute('open'); chartShown = null; });

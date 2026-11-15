@@ -50,3 +50,14 @@ assert bridge.chart_bars('INDEX', 'FRA:IUSN', 5)[-1]['c'] == 5.5, 'an index ETF 
 print('chart: a share IBKR\'s file lacks drawn from the store\'s bars; OK')
 print('chart: a share\'s sector and industry from the store\'s profiles, read once; none when it has none; OK')
 print('chart: a share\'s last bars from the kept IBKR file, by its ticker or code; none when it is not there; OK')
+# IBKR's file shorter than asked: the store's older bars before it, in IBKR's units (here the store in pounds, IBKR in pence)
+older = [{'d': f'2026-09-{d:02d}', 'o': 1.0, 'h': 1.1, 'l': 0.9, 'c': 1.0, 'v': 5} for d in range(1, 31)] + [{'d': '2026-10-01', 'o': 1.0, 'h': 1.0, 'l': 1.0, 'c': 1.02, 'v': 5}]
+bridge.store_bars = lambda m, t: older
+long = bridge.chart_bars('EU', 'AMS:ASM', 520)
+assert len(long) == 60 and long[0]['d'] == '2026-09-01' and long[30]['d'] == '2026-10-01', [b['d'] for b in long[:2]]
+assert abs(long[0]['c'] - 100.0) < 1e-9 and long[30]['c'] == 102.0, (long[0], long[30])  # 1.0 pound = 100 pence
+assert len(bridge.chart_bars('EU', 'AMS:ASM', 5)) == 5, 'a short range still the last bars'
+bridge.store_bars = lambda m, t: [{'d': '2026-09-01', 'o': 9e9, 'h': 9e9, 'l': 9e9, 'c': 9e9, 'v': 1}, {'d': '2026-10-01', 'o': 9e9, 'h': 9e9, 'l': 9e9, 'c': 9e9, 'v': 1}]
+assert len(bridge.chart_bars('EU', 'AMS:ASM', 520)) == 30, 'another share\'s prices joined on'
+print('chart: IBKR bars by ticker or code, the last n, oldest first; the store for a share or market IBKR lacks; the store\'s older bars before a short IBKR file, in its units: OK')
+
