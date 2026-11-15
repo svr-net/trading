@@ -50,24 +50,19 @@ jobs:
       EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || matrix.market == 'INDEX' && 'FRA' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      # The model's build, tests and no-look-ahead checks (generated data only) run in the background while
-      # the data downloads; the model step waits for them, and nothing is published if they fail.
-      - name: Build the model and run its checks (in the background)
-        run: |
-          nohup sh -c 'sudo apt-get install -y --no-install-recommends ninja-build >/dev/null && cmake -S . -B build -G Ninja && cmake --build build --target ofm_strategy && sh tools/check/strategy_check.sh build/ofm_strategy; echo $? > build.rc' > build.log 2>&1 &
-      # The EODData store (tools/eoddata/store.mjs and intraday.mjs): every symbol's daily bars and
-      # 5-minute months, kept in the private repository svr-net/eod (never published: EODData's
-      # licence), checked out at data/eoddata by every run on every branch. A run adds only what is
-      # missing and pushes it back (the last step), so each bar is downloaded once, for every run.
-      # EOD_TOKEN: a token with read and write access to svr-net/eod's contents.
-      # The store itself is cached on the runner (GitHub's cache), encrypted with EOD_TOKEN: the
-      # repository is public and a pull request from a fork may restore the main branch's caches, but
-      # gets no secrets, so EODData's prices stay unreadable to it. A run restores the last one and
-      # fetches only the commits since; a full checkout only when there is none (or it cannot be read).
-      # The cache is saved at the job's end, without the credentials this run's git used.
+      # The native tools (docker/native/Dockerfile, Alpine): the strategy engine, the loaders and the scan, in C++.
+      # The image is made only when every strategy's checks pass (no look-ahead, every back end the same, the final
+      # orders by expected return with their costs) and the scan's own; nothing is published otherwise.
+      - uses: ./.github/actions/ofm-tools
+      # The EODData store: every symbol's daily bars and 5-minute months, kept in the private repository
+      # svr-net/eod (never published: EODData's licence), at data/eoddata, read and written through libgit2
+      # (ofm_eod sync and push). A run adds only what is missing and pushes it back (the push step), so each
+      # bar is downloaded once, for every run. EOD_TOKEN: a token with read and write access to svr-net/eod.
+      # The store itself is cached on the runner (GitHub's cache), encrypted with EOD_TOKEN: the repository
+      # is public and a pull request from a fork may restore the main branch's caches, but gets no secrets,
+      # so EODData's prices stay unreadable to it. A run restores the last one and fetches only main's
+      # newest commit; a fresh clone when there is none (or it cannot be read). The token is never stored
+      # in the clone (libgit2 asks for it at each fetch and push).
       - name: The EOD store from the runner's cache (encrypted)
         id: store
         uses: actions/cache/restore@v4
@@ -76,56 +71,40 @@ jobs:
           key: eodstore-${{ matrix.market }}-${{ github.run_id }}
           restore-keys: |
             eodstore-${{ matrix.market }}-
-      - name: Bring the cached store up to date (svr-net/eod)
-        id: fetched
+      - name: The cached store opened
         if: steps.store.outputs.cache-matched-key != ''
         continue-on-error: true
         env:
           EOD_TOKEN: ${{ secrets.EOD_TOKEN }}
         run: |
           set -o pipefail
-          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:EOD_TOKEN -in data/eodstore.enc | zstd -dcq | tar -x -C data
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:EOD_TOKEN -in data/eodstore.enc | zstd -dcq | tar -x -C data || rm -rf data/eoddata
           rm -f data/eodstore.enc
-          cd data/eoddata
-          git config http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$EOD_TOKEN" | base64 -w0)"
-          git fetch -q --depth 1 origin main
-          git reset -q --hard FETCH_HEAD
-          git clean -fdq
-          echo "EOD store: from the cache, brought up to $(git log -1 --format=%cs) ($(git rev-parse --short HEAD))" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: No cached store to use
-        if: steps.store.outputs.cache-matched-key == '' || steps.fetched.outcome != 'success'
-        run: rm -rf data/eoddata data/eodstore.enc
-      - name: Check out the EOD store (svr-net/eod)
-        if: steps.store.outputs.cache-matched-key == '' || steps.fetched.outcome != 'success'
-        uses: actions/checkout@v4
-        with:
-          repository: svr-net/eod
-          token: ${{ secrets.EOD_TOKEN }}
-          path: data/eoddata
-          fetch-depth: 1
+      - name: Bring the store up to date (svr-net/eod, libgit2)
+        env:
+          EOD_TOKEN: ${{ secrets.EOD_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p data
+          ofm ofm_eod sync --dir data/eoddata | tee -a "$GITHUB_STEP_SUMMARY" || { rm -rf data/eoddata; ofm ofm_eod sync --dir data/eoddata | tee -a "$GITHUB_STEP_SUMMARY"; }
       - name: Update the share bars (only the days missing from the store)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
-          mkdir -p data
+          REFRESH=(); if [ "${{ inputs.refresh }}" = "true" ]; then REFRESH=(--refresh); fi
           echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
           # INDEX and FOREX: named series (each from the first of its EODData exchanges with bars; FOREX's
           # pairs each with its inverse, so the model can take either side), not an exchange's shares.
           case "$MARKET" in
-            INDEX) python3 tools/eoddata/series_list.py tools/eoddata/index.txt data/stocks.csv --years "${{ inputs.years || '9' }}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
-            FOREX) python3 tools/eoddata/series_list.py tools/eoddata/forex.txt data/stocks.csv --years "${{ inputs.years || '9' }}" --inverse | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
+            INDEX) ofm ofm_eod market --list tools/eoddata/index.txt --out data/stocks.csv --years "${{ inputs.years || '9' }}" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
+            FOREX) ofm ofm_eod market --list tools/eoddata/forex.txt --out data/stocks.csv --years "${{ inputs.years || '9' }}" --inverse | tee -a "$GITHUB_STEP_SUMMARY"; exit 0;;
           esac
           for EX in $(echo "$EXCHANGES" | tr ',' ' '); do
             case "$EX" in LSE) CUR=GBP;; ASX) CUR=AUD;; SGX) CUR=SGD;; OSL) CUR=NOK;; PAR|AMS|BRU|LIS|MSE|FRA) CUR=EUR;; *) CUR="";; esac
             # Every share the store keeps (--pool store), not only today's most traded: the strategy engine picks each
             # day's most traded as of that day, so the share lists are not chosen with hindsight (16 Nov).
-            ARGS=(--exchange "$EX" --pool store --universe "${{ inputs.pool || '100000' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv")
-            if [ "${{ inputs.refresh }}" = "true" ]; then
-              node tools/eoddata/fetch.mjs --refresh "${ARGS[@]}"
-            else
-              node tools/eoddata/fetch.mjs "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
-            fi
+            ofm ofm_eod shares --exchange "$EX" --pool store --universe "${{ inputs.pool || '100000' }}" --years "${{ inputs.years || '9' }}" --currency "$CUR" --out "data/$EX.csv" "${REFRESH[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
             # Markets of several exchanges: tickers as EXCHANGE:CODE (each exchange's costs, IBKR's venue).
             case "$MARKET" in EU|APAC) tail -n +2 "data/$EX.csv" | awk -F, -v OFS=, -v ex="$EX" '{$2=ex":"$2; print}' >> data/stocks.csv;; *) tail -n +2 "data/$EX.csv" >> data/stocks.csv;; esac
           done
@@ -138,16 +117,15 @@ jobs:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         # In the background (the model does not read them): the push step waits for it.
         # Not for INDEX or FOREX (ETFs and currency pairs: no company fundamentals).
-        run: case "$MARKET" in INDEX|FOREX) exit 0;; esac; nohup sh -c 'node tools/eoddata/profiles.mjs --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals; echo $? > profiles.rc' > profiles.log 2>&1 &
+        run: case "$MARKET" in INDEX|FOREX) exit 0;; esac; nohup sh -c 'ofm ofm_eod profiles --exchanges "$EXCHANGES" --universe data/stocks.csv --out data/eoddata/profiles --fundamentals data/eoddata/fundamentals; echo $? > profiles.rc' > profiles.log 2>&1 &
       - name: Update futures, index and currency series (only the days missing)
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
           set -o pipefail
           SYMBOLS="${{ inputs.series || 'EUREX:FY.C,EUREX:FX.C,EUREX:DY.C,EUREX:JD.C,LIFFE:L7.C,LIFFE:IB.C,LIFFE:XZ26,INDEX:SG2C,INDEX:XDB,FOREX:GBPUSD,FOREX:EURGBP,FOREX:EURAUD' }}"
-          MODE=""
-          if [ "${{ inputs.refresh }}" = "true" ]; then MODE="--refresh"; fi
-          node tools/eoddata/fetch_series.mjs $MODE --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
+          MODE=(); if [ "${{ inputs.refresh }}" = "true" ]; then MODE=(--refresh); fi
+          ofm ofm_eod series "${MODE[@]}" --years 20 --out data/futures.csv --symbols "$SYMBOLS" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Summary (no prices)
         run: |
           {
@@ -160,31 +138,21 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
       # The strategy engine (apps/ofm_strategy): each market's injectable strategy (strategies/*.cpp, chosen in
       # config/markets.json) on the fused kernels of the chosen back end; learnt and backtested before any cost,
-      # the broker's costs applied to the final order list only. Results only.
-      # Before anything is published: every strategy's checks on a generated market (no look-ahead, every back
-      # end the same, the final orders by expected return with their costs).
-      - name: Tests and no-look-ahead checks (the build started above)
-        run: |
-          for i in $(seq 1 600); do if [ -f build.rc ]; then break; fi; sleep 2; done
-          cat build.log
-          exit "$(cat build.rc 2>/dev/null || echo 1)"
+      # the broker's costs applied to the final order list only (by expected return; an order negative after
+      # costs dropped). The scan (apps/ofm_scan) runs it for the budget and splits the account's money. Results only.
       - name: The model and the daily trades (results only)
-        env:
-          # The repeat runs (21:30 and 05:30 UTC: the same markets' data again, for a late EODData day) refresh
-          # the live orders only; the shadows run once a day, in each market's evening scan.
-          SHADOWS: ${{ (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '0' || '1' }}
         run: |
           set -o pipefail
           mkdir -p report
           PUBLISH=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then PUBLISH=(--publish-orders); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
-          STAMP=(); if [ "$MARKET" = UK ]; then node tools/eoddata/aim.mjs tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
+          STAMP=(); if [ "$MARKET" = UK ]; then ofm ofm_eod aim tools/eoddata/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
           # EU, APAC and INDEX (Xetra): each exchange's costs, taxes and amount a trade (tools/venues.txt: EUR 5,000 in Europe, AUD/SGD 5,000 in Asia-Pacific).
           case "$MARKET" in EU|APAC|INDEX) STAMP=(--venues tools/venues.txt);; esac
           # IBKR's own daily bars (the bridge fetches them into the store on Saturdays: two years, their open
           # the opening auction's price) in place of the store's where it has them: EODData's open for a thin
           # share is not the auction's (4 Nov HCM: the store's open 2.4% under the limit, IBKR filled at the
-          # limit), so the model learns and backtests on prices that traded. Every strategy gets them.
+          # limit), so the model learns and backtests on prices that traded.
           IB="data/eoddata/ibkr/$MARKET/daily.csv"
           if [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ]; then STAMP+=(--override "$IB"); echo "IBKR bars: $(($(wc -l < "$IB") - 1)) rows in place of the store's"; else echo "IBKR bars: none for $MARKET in the store; the store's bars are used"; fi
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
@@ -192,7 +160,7 @@ jobs:
           # exchanges' amounts are in tools/venues.txt).
           CAPITAL=5000
           # The market's strategy (config/markets.json), run by the strategy engine: its orders are the ones the bridge places.
-          python3 tools/scan/strategies.py --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
+          ofm ofm_scan run --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
           grep -E "^strategies|^budget|^strategy:" report/strategies.log || true  # the strategy's headline in the log
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The day's fundamentals (started above)
@@ -203,27 +171,17 @@ jobs:
           for i in $(seq 1 900); do if [ -f profiles.rc ]; then break; fi; sleep 1; done
           tee -a "$GITHUB_STEP_SUMMARY" < profiles.log
           exit "$(cat profiles.rc 2>/dev/null || echo 1)"
-      # What this run downloaded goes back to svr-net/eod. The other market's job may push first:
-      # rebase and retry; a file both jobs updated (the shared series) keeps the version already
-      # pushed, which holds the same days.
-      - name: Push the new data to the EOD store (svr-net/eod)
+      # What this run downloaded goes back to svr-net/eod (libgit2: one commit, never forced). Another market's
+      # job may push first: this run's changes are made again on top of its commit (a file both updated, the
+      # shared series, keeps this run's version, which holds the same days or more).
+      - name: Push the new data to the EOD store (svr-net/eod, libgit2)
         if: ${{ always() }}
         # A failure here (e.g. an expired EOD_TOKEN) is reported but does not stop the page's scan.
         continue-on-error: true
-        run: |
-          cd data/eoddata
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A .
-          if git diff --cached --quiet; then echo "EOD store: nothing new"; exit 0; fi
-          git commit -q -m "$MARKET data $(date -u +%Y-%m-%d)"
-          for k in 1 2 3 4 5; do
-            git pull -q --rebase -X ours origin main && git push -q origin HEAD:main && { echo "EOD store: pushed"; exit 0; }
-            git rebase --abort 2>/dev/null || true
-            sleep $((k * 5))
-          done
-          exit 1
-      # The store for the next run's cache: without the credentials this run's git used, encrypted.
+        env:
+          EOD_TOKEN: ${{ secrets.EOD_TOKEN }}
+        run: ofm ofm_eod push --dir data/eoddata --message "$MARKET data $(date -u +%Y-%m-%d)" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The store for the next run's cache, encrypted (the clone holds no credentials).
       - name: Encrypt the EOD store for the runner's cache
         id: sealed
         if: ${{ always() }}
@@ -233,7 +191,6 @@ jobs:
         run: |
           set -o pipefail
           test -d data/eoddata/.git
-          git -C data/eoddata config --unset-all http.https://github.com/.extraheader || true
           tar -C data -cf - eoddata | zstd -T0 -3 -q | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:EOD_TOKEN -out data/eodstore.enc
           echo "EOD store: $(du -h data/eodstore.enc | cut -f1) encrypted for the cache"
       - name: Cache the EOD store for the next run
@@ -258,20 +215,12 @@ jobs:
           TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # The other market's job may push first: rebase and retry.
+          # The other market's job may push first: start again from main's newest commit and retry.
           for k in 1 2 3 4 5; do
             git fetch -q origin main && git reset -q --hard origin/main
             jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' report/ofm.json > "web/data/$M.json"  # the page names the exchanges scanned
-            python3 tools/report/daily_email.py track report/ofm.json "$TRACK"
-            # The shadows (results only, as the live one's) and the market's entry in the strategies' index.
-            for f in report/shadow-*.json; do
-              [ -f "$f" ] || continue
-              n=${f#report/shadow-}; n=${n%.json}
-              jq -c --arg ex "$EXCHANGES" '.exchanges = ($ex | split(","))' "$f" > "web/data/$M-$n.json"
-              python3 tools/report/daily_email.py track "$f" "web/data/track-$M-$n.json"
-              git add "web/data/$M-$n.json"; [ -f "web/data/track-$M-$n.json" ] && git add "web/data/track-$M-$n.json"  # no track yet: a shadow with no trades (13 Nov: INDEX)
-            done
-            python3 -c "import json,sys; p='web/data/strategies.json'; d=json.load(open(p)) if __import__('os').path.exists(p) else {'about':'Each market\'s strategy (config/markets.json); results only.','markets':{}}; s=json.load(open('report/strategies.json')); d['markets'][s['market'].lower()]=[{'name':x['name'],'role':x['role'],'strategy':x.get('strategy'),'params':x.get('params',{})} for x in s['strategies']]; json.dump(d,open(p,'w'),indent=1)"
+            ofm ofm_scan track report/ofm.json "$TRACK"
+            ofm ofm_scan index report/strategies.json web/data/strategies.json  # the market's entry in the strategies' index
             # The market's share of the account's daily limit and its record (results only), read by the other markets' scans.
             if [ -f report/budget.json ]; then cp report/budget.json "web/data/budget-$M.json"; git add "web/data/budget-$M.json"; fi
             git add "web/data/$M.json" "$TRACK" web/data/strategies.json
@@ -293,4 +242,4 @@ jobs:
         run: |
           M=$(echo "$MARKET" | tr 'A-Z' 'a-z')
           TRACK=web/data/track.json; [ "$M" = "uk" ] || TRACK="web/data/track-$M.json"
-          python3 tools/report/daily_email.py send report/ofm.json "$TRACK"
+          ofm ofm_scan mail report/ofm.json "$TRACK"

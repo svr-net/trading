@@ -1,0 +1,27 @@
+# The native tools (ofm_strategy, ofm_eod, ofm_scan) as the Alpine image ofm-tools (docker/native/Dockerfile), its
+# layers from GitHub's cache: the toolchain is built once, a code change rebuilds only its own layer, and the image is
+# made only when every strategy's checks pass (the Dockerfile's check stage). Then `ofm <tool> <args>` on the PATH runs
+# a tool in the image on the working directory (tools/ofm.sh).
+name: ofm-tools
+description: Build the native tools' Alpine image (cached) and put the ofm runner on the PATH
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+    - name: The native tools on Alpine (cached layers; the strategies' checks included)
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: docker/native/Dockerfile
+        target: tools
+        tags: ofm-tools
+        load: true
+        cache-from: type=gha,scope=native
+        cache-to: type=gha,mode=max,scope=native
+    - name: The ofm runner
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/ofm-bin"
+        install -m 755 tools/ofm.sh "$RUNNER_TEMP/ofm-bin/ofm"
+        echo "$RUNNER_TEMP/ofm-bin" >> "$GITHUB_PATH"
+        docker run --rm ofm-tools ofm_strategy --list

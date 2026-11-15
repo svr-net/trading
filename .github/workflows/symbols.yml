@@ -11,9 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - uses: ./.github/actions/ofm-tools
       - env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
-        run: node tools/eoddata/symbols.mjs --exchanges --find "${{ inputs.find }}" | head -400 | tee -a "$GITHUB_STEP_SUMMARY"
+        run: ofm ofm_eod symbols --exchanges --find "${{ inputs.find }}" | head -400 | tee -a "$GITHUB_STEP_SUMMARY"

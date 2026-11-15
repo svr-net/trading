@@ -17,23 +17,21 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
-      - name: Build (the strategy engine with every strategy and back end)
+      # The native tools on Alpine (docker/native/Dockerfile; cached layers): the strategy engine with every strategy and
+      # back end, the loaders and the scan. The image is made only when every strategy passes its checks on a generated
+      # market (no look-ahead, every back end the same, costs at the end; tools/check/strategy_check.sh) and the scan
+      # its own (ofm_scan test: the account's split over the markets, the walk-forward choice).
+      - uses: ./.github/actions/ofm-tools
+      - name: The tools run from the image (ofm)
         run: |
-          cmake -S . -B build -G Ninja
-          cmake --build build
-          ./build/ofm_strategy --list
-      - name: Every strategy on a generated market (no look-ahead, every back end the same, costs at the end; tools/check/strategy_check.sh)
-        run: sh tools/check/strategy_check.sh build/ofm_strategy
+          ofm ofm_scan test
+          ofm ofm_strategy --list
       - name: The orders through submit.py on a stand-in IBKR (tools/ibkr/test/levels.py)
         run: python3 tools/ibkr/test/levels.py
       - name: The daily-bars fetch gives way to the bridge's other steps (tools/ibkr/test/pause.py)
         run: python3 tools/ibkr/test/pause.py
       - name: The bridge's chart bars for the page (tools/ibkr/test/chart.py)
         run: python3 tools/ibkr/test/chart.py
-      - name: The account's split over the markets (tools/scan/test_allocate.py)
-        run: python3 tools/scan/test_allocate.py
 
   bridge-update:
     # The restarter replacing the bridge with GitHub's newest image, on a stand-in NAS.
