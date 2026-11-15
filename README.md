@@ -61,15 +61,27 @@ generated market. It confirms that:
 ## Data
 
 EODData's daily bars (key in the `EODDATA_API_KEY` secret) are kept in the private repository `svr-net/eod`
-(`EOD_TOKEN`). Every run checks it out and downloads only what is missing (`tools/eoddata`). IBKR's own daily
-bars replace the store's where it has them. EODData's licence does not allow redistributing prices, so only
+(`EOD_TOKEN`). Every run brings its clone up to date and downloads only what is missing, and pushes what it added,
+through libgit2 and libcurl (`apps/ofm_eod`: `sync`, `shares`, `series`, `market`, `profiles`, `aim`, `symbols`,
+`snapshot`, `push`). IBKR's own daily bars replace the store's where it has them. EODData's licence does not allow redistributing prices, so only
 results are published.
 
 ## Schedule
 
 `.github/workflows/uk-portfolio.yml` runs on weekday evenings. It updates the data, runs each market's strategy
-(`tools/scan/strategies.py`, which also sizes the book and splits the account's money over the markets),
-publishes the results to the page, and writes the orders to the private store for the bridge.
+(`apps/ofm_scan run`, which also sizes the book and splits the account's money over the markets),
+publishes the results to the page (`ofm_scan track`, `index`), writes the orders to the private store for the
+bridge and emails the report (`ofm_scan mail`).
+
+## Native tools (Docker, Alpine)
+
+The engine, the loaders and the scan are C++ only. `docker/native/Dockerfile` builds them on Alpine in cached
+layers (the toolchain once; a code change rebuilds only the sources' layer) and makes the runtime image
+`ofm-tools` only when every strategy's checks and the scan's (`ofm_scan test`) pass. The workflows build it with
+GitHub's layer cache (`.github/actions/ofm-tools`) and run each tool in it with `tools/ofm.sh`.
+
+Locally: `docker buildx build -f docker/native/Dockerfile --target tools -t ofm-tools --load .`, then
+`sh tools/ofm.sh ofm_scan test`.
 
 ## The bridge (`tools/ibkr`)
 

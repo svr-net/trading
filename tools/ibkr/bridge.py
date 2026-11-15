@@ -519,7 +519,7 @@ def chart_bars(market, ticker, days=120):
     if not (os.path.exists(path) and os.path.getsize(path) > 100):
         kept = store_get(f'ibkr/{market}/daily.csv')
         if not kept or len(kept) < 100:
-            return []
+            return store_bars(market, ticker)[-max(1, min(int(days), 520)):]  # no IBKR file for the market: the store's bars
         with open(path, 'wb') as f:
             f.write(kept)
     mtime = os.path.getmtime(path)
@@ -539,7 +539,35 @@ def chart_bars(market, ticker, days=120):
         hit = CHART_CACHE[market] = (mtime, by)
     by = hit[1]
     bars = by.get(ticker) or by.get(ticker.split(':')[-1]) or next((v for k, v in by.items() if k.split(':')[-1] == ticker.split(':')[-1]), [])
-    return bars[-max(1, min(int(days), 500)):]
+    if not bars:  # a share IBKR's file does not have (the strategies pick from every share the store keeps): the store's bars
+        bars = store_bars(market, ticker)
+    return bars[-max(1, min(int(days), 520)):]
+
+
+STORE_BARS = {}  # (exchange, code) -> (when read, bars)
+
+
+def store_bars(market, ticker):
+    """A share's daily bars from the private store (store/<EXCHANGE>/<CODE>.json; an index ETF's store/series/<EXCHANGE>_<CODE>.json;
+    EODData's, kept at most 12 hours
+    here), oldest first, for the chart of a share IBKR's kept file lacks: never published (the data licence)."""
+    ex = ticker.split(':')[0] if ':' in ticker else None
+    code = ticker.split(':')[-1]
+    for e in ([ex] if ex else PROFILE_EXCHANGES.get(market, [])):
+        hit = STORE_BARS.get((e, code))
+        if not hit or time.time() - hit[0] > 12 * 3600:
+            bars = []
+            try:
+                body = store_get(f'store/{e}/{code}.json') or store_get(f'store/series/{e}_{code}.json')  # a share; an index ETF (INDEX)
+                for d, b in sorted((json.loads(body) if body else {}).items()):
+                    if all(isinstance(b.get(k), (int, float)) and b[k] > 0 for k in ('o', 'h', 'l', 'c')):
+                        bars.append({'d': d[:10], 'o': float(b['o']), 'h': float(b['h']), 'l': float(b['l']), 'c': float(b['c']), 'v': float(b.get('v') or 0)})
+            except Exception:  # noqa: BLE001  not in the store: no chart
+                bars = []
+            hit = STORE_BARS[(e, code)] = (time.time(), bars)
+        if hit[1]:
+            return hit[1]
+    return []
 
 
 PROFILES = {}  # exchange -> (when read, {code: {sector, industry}})
@@ -1259,7 +1287,7 @@ class Handler(BaseHTTPRequestHandler):
                 days = 120
             bars = chart_bars(m, t, days) if t else []
             if not bars:
-                return self.reply(404, {'error': f'no IBKR bars kept for {t or "?"} ({m}): they come with the next bars fetch'})
+                return self.reply(404, {'error': f'no daily bars for {t or "?"} ({m}) from IBKR or the store'})
             return self.reply(200, {'market': m, 'ticker': t, 'bars': bars, 'profile': profile_of(m, t)})
         if u.path == '/orders':
             m = self.market(parse_qs(u.query).get('market', [''])[0])
