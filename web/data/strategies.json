@@ -55,8 +55,6 @@
     "role": "live",
     "strategy": "trend",
     "params": {
-     "psar": 1,
-     "rebuy": 0,
      "mc": 1
     }
    }
