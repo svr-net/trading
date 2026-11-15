@@ -539,9 +539,27 @@ def chart_bars(market, ticker, days=120):
         hit = CHART_CACHE[market] = (mtime, by)
     by = hit[1]
     bars = by.get(ticker) or by.get(ticker.split(':')[-1]) or next((v for k, v in by.items() if k.split(':')[-1] == ticker.split(':')[-1]), [])
+    want = max(1, min(int(days), 520))
     if not bars:  # a share IBKR's file does not have (the strategies pick from every share the store keeps): the store's bars
         bars = store_bars(market, ticker)
-    return bars[-max(1, min(int(days), 520)):]
+    elif len(bars) < want:  # IBKR's file is shorter than asked (a share fetched only lately): the store's older bars before it
+        bars = with_older(bars, store_bars(market, ticker))
+    return bars[-want:]
+
+
+def with_older(bars, older):
+    """IBKR's bars with the store's from before IBKR's first day, put in IBKR's units (pence or pounds, a split since):
+    each scaled by IBKR's close over the store's on the first day both have."""
+    if not bars or not older:
+        return bars
+    first = bars[0]['d']
+    store_close = {b['d']: b['c'] for b in older}
+    same = next((b for b in bars if b['d'] in store_close), None)
+    k = same['c'] / store_close[same['d']] if same and store_close[same['d']] > 0 else 1.0
+    if not 0.004 < k < 250:  # not the same share's prices: IBKR's alone
+        return bars
+    add = [{'d': b['d'], 'o': b['o'] * k, 'h': b['h'] * k, 'l': b['l'] * k, 'c': b['c'] * k, 'v': b['v']} for b in older if b['d'] < first]
+    return add + bars
 
 
 STORE_BARS = {}  # (exchange, code) -> (when read, bars)

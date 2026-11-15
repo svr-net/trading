@@ -191,3 +191,5 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #chart-dialog .chart-range { display: flex; gap: 6px; margin: 6px 0; }
 #chart-dialog .chart-range button { padding: 4px 10px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; font: 13px var(--mono); }
 #chart-dialog .chart-range button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+#chart-dialog .chart-range button:disabled { opacity: 0.35; cursor: not-allowed; }
+#chart-dialog .chart-range .hint { align-self: center; margin: 0 0 0 6px; }
