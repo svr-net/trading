@@ -28,6 +28,13 @@ for s in $names; do
   n=$(wc -l < "$W/$s-cut.tr")
   [ "$n" -gt 10 ] || { echo "FAIL: $s: only $n orders on the shorter market"; exit 1; }
   head -n "$n" "$W/$s-$first.tr" | cmp -s - "$W/$s-cut.tr" || { echo "FAIL: $s: an order changed with later data (look-ahead)"; exit 1; }
+  # the nested Monte Carlo: the same on every back end (counter-based draws)
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --param mc=1 --param mcpaths=200 --json "$W/$s-mc-$b.json" > "$W/$s-mc-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-mc-$b.json" > "$W/$s-mc-$b.cmp"
+    cmp -s "$W/$s-mc-$first.cmp" "$W/$s-mc-$b.cmp" || { echo "FAIL: $s: the Monte Carlo differs between the back ends $first and $b"; exit 1; }
+  done
+  jq -e '.backtest.mc.resets > 5 and .backtest.mc.coverage >= 0 and .backtest.mc.next.p5 <= .backtest.mc.next.p95' "$W/$s-mc-$first.json" > /dev/null || { echo "FAIL: $s: no Monte Carlo in the report"; exit 1; }
   # the PSAR stop and its buy-back: no look-ahead either
   X_TRADELOG="$W/$s-psar.log" "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar.tr" > "$W/$s-psar.out"
   "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --trace "$W/$s-psar-cut.tr" > /dev/null
@@ -38,5 +45,5 @@ for s in $names; do
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
     || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
-  echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back); the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+  echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
 done

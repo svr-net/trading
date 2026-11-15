@@ -44,6 +44,7 @@
 
 #include "strategy/backend.hpp"
 #include "strategy/kernels.hpp"
+#include "strategy/montecarlo.hpp"
 #include "strategy/strategy.hpp"
 
 using strat::kNaN;
@@ -386,6 +387,10 @@ int main(int argc, char** argv) {
   // by psarstep of the gap to the highest high, the step growing by psarstep at each new high to at most psarmax);
   // its buy-back: once the share's SAR on the way down turns up again (a close above it).
   P.emplace("stop", 0.0), P.emplace("rebuy", -1.0), P.emplace("psar", 0.0), P.emplace("psarstep", 0.02), P.emplace("psarmax", 0.2);
+  // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
+  // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
+  // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
+  P.emplace("mc", 0.0), P.emplace("mcpaths", 500.0), P.emplace("mchorizon", 0.0), P.emplace("mcblock", 5.0), P.emplace("mcwindow", 750.0), P.emplace("mcseed", 1.0), P.emplace("mcdrift", 1.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -522,6 +527,7 @@ int main(int argc, char** argv) {
   FILE* trace = o.traceOut.empty() ? nullptr : std::fopen(o.traceOut.c_str(), "w");
   std::size_t of = 0;  // the day's tradable shares with a score
   std::size_t decided = start;  // the last rebalance: the target's day
+  std::vector<std::pair<std::size_t, std::vector<std::size_t>>> resets;  // each rebalance: its day and its list (the Monte Carlo's resets)
 
   const auto decide = [&](std::size_t t) {
     if ((t - start) % reb != 0 && t != start) return;
@@ -534,6 +540,7 @@ int main(int argc, char** argv) {
     of = c.size(), decided = t;
     target.clear();
     for (std::size_t r = 0; r < std::min(k, c.size()); ++r) target.push_back(c[r].second);
+    resets.emplace_back(t, target);
   };
   const auto inTarget = [&](std::size_t i) { return std::find(target.begin(), target.end(), i) != target.end(); };
 
@@ -638,8 +645,39 @@ int main(int argc, char** argv) {
     for (std::size_t x = 0; x < daily.size(); ++x) g << dailyDays[x] << ',' << jnum(daily[x], "%.8g") << '\n';
   }
 
+  // ------------------------------------------------------------------ the nested Monte Carlo
+  const bool mcOn = P["mc"] > 0;
+  strat::McSpec mc;
+  mc.paths = std::max<std::size_t>(20, std::size_t(P["mcpaths"])), mc.horizon = P["mchorizon"] > 0 ? std::size_t(P["mchorizon"]) : reb;
+  mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
+  mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
+  // The resets on the real market: at each rebalance with a full horizon after it, the simulated futures of the book
+  // and the real one through the same simulator.
+  double mcCover = 0, mcPit = 0, mcSim = 0, mcReal = 0, mcSxy = 0, mcSxx = 0, mcSyy = 0, mcN = 0;
+  if (mcOn) {
+    strat::McReset rr;
+    for (std::size_t x = 0; x < resets.size(); ++x) {
+      const std::size_t t0 = resets[x].first;
+      const auto& list = resets[x].second;
+      if (t0 + mc.horizon >= T || list.empty()) continue;
+      std::vector<double> caps;
+      for (std::size_t i : list) caps.push_back(capOf(t0, i));
+      strat::mcRun(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr);
+      const double real = strat::mcReal(d, t0, list, caps, k, mc);
+      double below = 0, m = 0;
+      for (double b : rr.book) below += b < real ? 1.0 : b == real ? 0.5 : 0.0, m += b;
+      m /= double(rr.book.size());
+      const double p5 = strat::mcQuantile(rr.book, 0.05), p95 = strat::mcQuantile(rr.book, 0.95);
+      mcCover += real >= p5 && real <= p95, mcPit += below / double(rr.book.size()), mcSim += m, mcReal += real, mcN += 1;
+      mcSxy += m * real, mcSxx += m * m, mcSyy += real * real;
+    }
+  }
+  const double mcCorr = mcN > 2 ? (mcSxy / mcN - mcSim / mcN * mcReal / mcN) /
+                                       std::sqrt(std::max(1e-30, (mcSxx / mcN - (mcSim / mcN) * (mcSim / mcN)) * (mcSyy / mcN - (mcReal / mcN) * (mcReal / mcN))))
+                                 : kNaN;
+
   // ------------------------------------------------------------------ the next session's orders
-  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; };
+  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; double p5 = kNaN, p95 = kNaN, pLoss = kNaN, pStop = kNaN; };
   const std::size_t L = T - 1;
   std::vector<Order> orders;
   for (std::size_t rank = 0; rank < target.size(); ++rank) {
@@ -656,6 +694,35 @@ int main(int argc, char** argv) {
     }
     x.fill = n > 0 ? f / n : kNaN;
     orders.push_back(x);
+  }
+  // The Monte Carlo from the last close (a reset on today's real market): each order's expected return over the
+  // horizon (its slot's mean over the paths, with the stop and the buy-back), its 5% and 95%, its chances of a loss
+  // and of a stop; and the book's.
+  double mcNext[5] = {kNaN, kNaN, kNaN, kNaN, kNaN};  // mean, 5%, 50%, 95%, chance of a loss
+  if (mcOn && !target.empty()) {
+    std::vector<double> caps;
+    std::vector<strat::McHeld> held;
+    for (std::size_t i : target) {
+      caps.push_back(capOf(L, i));
+      strat::McHeld h;
+      const auto b = book.find(i);
+      if (b != book.end()) h.held = true, h.mark = d.Cf[L * N + i], h.sar = b->second.sar, h.ep = b->second.ep, h.af = b->second.af;
+      held.push_back(h);
+    }
+    strat::McReset rr;
+    strat::mcRun(d, L, target, caps, held, k, mc, L, *backend, rr);
+    for (auto& x : orders) {
+      const std::size_t j = std::size_t(std::find(target.begin(), target.end(), x.i) - target.begin());
+      std::vector<double> v(rr.share.begin() + long(j * mc.paths), rr.share.begin() + long((j + 1) * mc.paths));
+      double m = 0, loss = 0, st = 0;
+      for (std::size_t p = 0; p < mc.paths; ++p) m += v[p], loss += v[p] < 0, st += rr.stop[j * mc.paths + p];
+      x.gross = m / double(mc.paths), x.pLoss = loss / double(mc.paths), x.pStop = st / double(mc.paths);
+      x.p5 = strat::mcQuantile(v, 0.05), x.p95 = strat::mcQuantile(v, 0.95);
+    }
+    double m = 0, loss = 0;
+    for (double b : rr.book) m += b, loss += b < 0;
+    mcNext[0] = m / double(mc.paths), mcNext[1] = strat::mcQuantile(rr.book, 0.05), mcNext[2] = strat::mcQuantile(rr.book, 0.5),
+    mcNext[3] = strat::mcQuantile(rr.book, 0.95), mcNext[4] = loss / double(mc.paths);
   }
   // The list in order of expected return before costs, highest first.
   std::stable_sort(orders.begin(), orders.end(), [](const Order& a, const Order& b) { return a.gross > b.gross; });
@@ -697,6 +764,16 @@ int main(int argc, char** argv) {
                              std::to_string(nRebuys) + " times").c_str());
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
               rows.empty() ? 0.0 : 100 * nFilled / double(rows.size()), nFilled ? 100 * sumTrade / nFilled : 0.0, nFilled ? 100 * nWin / nFilled : 0.0, learnt.holdDays(double(reb)));
+  if (mcOn) {
+    std::printf("strategy: nested Monte Carlo: %.0f resets on the real market, %zu futures of %zu sessions each (blocks of %zu real days from the %zu before); "
+                "the real book fell in the simulated 5-95%% band %.0f%% of the time (90%% if honest), at percentile %.0f on average (50 if honest); "
+                "the simulated mean %+.2f%% a period against the real %+.2f%% (correlation %.2f)\n",
+                mcN, mc.paths, mc.horizon, mc.block, mc.window, mcN ? 100 * mcCover / mcN : 0.0, mcN ? 100 * mcPit / mcN : 0.0, mcN ? 100 * mcSim / mcN : 0.0,
+                mcN ? 100 * mcReal / mcN : 0.0, mcCorr);
+    if (std::isfinite(mcNext[0]))
+      std::printf("strategy: the book over the next %zu sessions (from the last close): mean %+.2f%%, 5%% %+.2f%%, median %+.2f%%, 95%% %+.2f%%, a loss on %.0f%% of the futures\n",
+                  mc.horizon, 100 * mcNext[0], 100 * mcNext[1], 100 * mcNext[2], 100 * mcNext[3], 100 * mcNext[4]);
+  }
   std::printf("strategy: next session (after the close of %s; the list from the rebalance after the close of %s): %zu on the list, %zu after costs\n", d.days[L].c_str(),
               d.days[decided].c_str(), orders.size(), final.size());
   for (const auto& x : orders)
@@ -704,7 +781,7 @@ int main(int argc, char** argv) {
                 100 * costs.roundTrip(x.value, d.tickers[x.i], x.close / unit), 100 * (x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit)),
                 x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit) > 0 ? "" : " (dropped)", x.held ? " (held already)" : "");
 
-  const double holdDays = learnt.holdDays(double(reb));
+  const double holdDays = mcOn ? double(mc.horizon) : learnt.holdDays(double(reb));
   const strat::View last(d, decided, &in[decided * N], *backend);  // the target's day: its ranks and reasons
   if (!o.jsonOut.empty()) {
     std::ofstream f(o.jsonOut);
@@ -718,7 +795,13 @@ int main(int argc, char** argv) {
       << ",\"annualReturn\":" << jnum(annual) << ",\"sharpe\":" << jnum(sharpe) << ",\"maxDrawdown\":" << jnum(dd) << ",\"orders\":" << rows.size()
       << ",\"trades\":" << nFilled << ",\"avgTrade\":" << jnum(nFilled ? sumTrade / nFilled : 0.0) << ",\"winRate\":" << jnum(nFilled ? nWin / nFilled : 0.0)
       << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
-      << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false") << ",\"rebuys\":" << nRebuys << "}";
+      << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false") << ",\"rebuys\":" << nRebuys;
+    if (mcOn)
+      f << ",\"mc\":{\"resets\":" << mcN << ",\"paths\":" << mc.paths << ",\"horizon\":" << mc.horizon << ",\"block\":" << mc.block << ",\"window\":" << mc.window
+        << ",\"coverage\":" << jnum(mcN ? mcCover / mcN : kNaN) << ",\"pit\":" << jnum(mcN ? mcPit / mcN : kNaN) << ",\"simMean\":" << jnum(mcN ? mcSim / mcN : kNaN)
+        << ",\"realMean\":" << jnum(mcN ? mcReal / mcN : kNaN) << ",\"corr\":" << jnum(mcCorr) << ",\"next\":{\"mean\":" << jnum(mcNext[0]) << ",\"p5\":" << jnum(mcNext[1])
+        << ",\"p50\":" << jnum(mcNext[2]) << ",\"p95\":" << jnum(mcNext[3]) << ",\"pLoss\":" << jnum(mcNext[4]) << "}}";
+    f << "}";  // the backtest
     f << ",\"orders\":[";
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
@@ -728,7 +811,9 @@ int main(int argc, char** argv) {
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i])
-        << ",\"score\":" << jnum(score[x.i]) << ",\"reason\":" << jstr(strategy->reason(last, P, x.i)) << "}";
+        << ",\"score\":" << jnum(score[x.i]) << ",\"reason\":" << jstr(strategy->reason(last, P, x.i));
+      if (mcOn) f << ",\"mc\":{\"p5\":" << jnum(x.p5) << ",\"p95\":" << jnum(x.p95) << ",\"pLoss\":" << jnum(x.pLoss) << ",\"pStop\":" << jnum(x.pStop) << ",\"horizon\":" << mc.horizon << "}";
+      f << "}";
     }
     f << "],\"recent\":[";
     for (std::size_t x = daily.size() > 20 ? daily.size() - 20 : 0, q = 0; x < daily.size(); ++x, ++q)
