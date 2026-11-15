@@ -1,5 +1,7 @@
-// Each share's sector and industry from EODData's profiles (/Profile/List/<EXCHANGE>), for the
-// model's industry groups, into the private store (they are EODData's data); and, with --probe,
+// Each share's sector and industry from EODData's profiles (/Profile/List/<EXCHANGE>), with its name (the
+// exchange's symbol list kept in the store, <EXCHANGE>/symbols-<date>.json), its description where the profile has
+// one, and its market value, P/E and dividend yield (the day's fundamentals), for the page's chart of an order
+// (through the bridge, never published), into the private store (they are EODData's data); and, with --probe,
 // whether the key reaches the profiles and the fundamentals: counts and how many shares have each
 // field, never the values.
 //   EODDATA_API_KEY=... node tools/eoddata/profiles.mjs --exchanges LSE,NYSE,NASDAQ --out data/eoddata/profiles [--probe]
@@ -33,6 +35,17 @@ const FUND = ['marketCapitalization', 'ebitda', 'peg', 'bookValue', 'dividendPer
   'priceToBook', 'sharesOutstanding', 'grossMargin', 'profitMargin', 'operatingMargin', 'returnOnAssets', 'returnOnEquity', 'revenue', 'grossProfit', 'trailingPE',
   'forwardPE', 'totalCash', 'totalCashPerShare', 'totalDebt', 'bookValuePerShare'];
 const stamp = new Date().toISOString().slice(0, 10);
+// The newest symbol list the store keeps for an exchange (the share's name), from the profiles folder's parent.
+const namesOf = (ex) => {
+  try {
+    const dir = path.join(path.dirname(out || '.'), ex);
+    const f = fs.readdirSync(dir).filter((x) => /^symbols-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort().pop();
+    if (!f) return new Map();
+    const body = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    const items = Array.isArray(body) ? body : field(body, 'data', 'items', 'symbols') || [];
+    return new Map(items.map((s) => [field(s, 'code', 'symbolCode', 'symbol'), String(field(s, 'name', 'description') || '')]));
+  } catch { return new Map(); }
+};
 for (const ex of String(opt('exchanges', 'LSE')).split(',').filter(Boolean)) {
   const p = await list(`/Profile/List/${ex}`);
   const sectors = new Set(p.items.map((x) => field(x, 'sector')).filter(Boolean));
@@ -40,8 +53,18 @@ for (const ex of String(opt('exchanges', 'LSE')).split(',').filter(Boolean)) {
   console.log(`${ex} profiles: HTTP ${p.status}, ${p.items.length} symbols, sector on ${filled(p.items, 'sector')}, industry on ${filled(p.items, 'industry')}; ${sectors.size} sectors, ${industries.size} industries`);
   if (out && p.items.length) {
     fs.mkdirSync(out, { recursive: true });
-    const rows = p.items.map((x) => ({ code: field(x, 'symbolCode', 'code'), sector: field(x, 'sector') || '', industry: field(x, 'industry') || '' })).filter((r) => r.code);
+    const names = namesOf(ex);
+    const fl = await list(`/Fundamental/List/${ex}`);
+    const fund = new Map(fl.items.map((x) => [field(x, 'symbolCode', 'code'), x]));
+    const num = (x, n) => { const v = Number(field(x || {}, n)); return Number.isFinite(v) && v !== 0 ? v : undefined; };
+    const rows = p.items.map((x) => {
+      const code = field(x, 'symbolCode', 'code'), f = fund.get(code);
+      return { code, name: names.get(code) || field(x, 'name') || '', sector: field(x, 'sector') || '', industry: field(x, 'industry') || '',
+        description: String(field(x, 'description', 'summary', 'businessSummary') || '').slice(0, 600),
+        marketCap: num(f, 'marketCapitalization'), pe: num(f, 'trailingPE'), dividendYield: num(f, 'dividendYield') };
+    }).filter((r) => r.code);
     fs.writeFileSync(path.join(out, `${ex}.json`), JSON.stringify(rows));
+    console.log(`${ex} profiles kept: ${rows.length}, a name on ${rows.filter((r) => r.name).length}, a description on ${rows.filter((r) => r.description).length}, fundamentals on ${rows.filter((r) => r.marketCap).length}`);
   }
   if (fundDir) {
     const f = await list(`/Fundamental/List/${ex}`);

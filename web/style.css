@@ -185,3 +185,9 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #chart-dialog-why li { margin: 3px 0; }
 #chart-dialog-profile { margin: 2px 0 0; }
 #chart-dialog-why .split { margin: 6px 0 8px; }
+
+#chart-dialog .chart-name { margin: 2px 0 0; font-weight: 600; }
+#chart-dialog .chart-about { margin: 4px 0; font-size: 14px; color: var(--muted); }
+#chart-dialog .chart-range { display: flex; gap: 6px; margin: 6px 0; }
+#chart-dialog .chart-range button { padding: 4px 10px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; font: 13px var(--mono); }
+#chart-dialog .chart-range button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }

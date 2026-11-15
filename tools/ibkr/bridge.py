@@ -547,8 +547,9 @@ PROFILE_EXCHANGES = {'UK': ['LSE'], 'US': ['NYSE', 'NASDAQ'], 'EU': ['PAR', 'AMS
 
 
 def profile_of(market, ticker):
-    """The share's sector and industry (EODData's profiles in the private store, profiles/<EXCHANGE>.json, read
-    at most twice a day), for the page's chart of an order: never published (the data licence). {} when none."""
+    """The share's name, sector, industry, description, market value, P/E and dividend yield (EODData's profiles in
+    the private store, profiles/<EXCHANGE>.json, read at most twice a day), for the page's chart of an order: never
+    published (the data licence). {} when none."""
     ex = ticker.split(':')[0] if ':' in ticker else None
     code = ticker.split(':')[-1]
     for e in ([ex] if ex else PROFILE_EXCHANGES.get(market, [])):
@@ -557,7 +558,8 @@ def profile_of(market, ticker):
             rows = {}
             try:
                 body = store_get(f'profiles/{e}.json')
-                rows = {r['code']: {'sector': r.get('sector', ''), 'industry': r.get('industry', '')} for r in json.loads(body or b'[]') if r.get('code')}
+                keep = ('name', 'sector', 'industry', 'description', 'marketCap', 'pe', 'dividendYield')
+                rows = {r['code']: {k: r[k] for k in keep if r.get(k) not in (None, '')} for r in json.loads(body or b'[]') if r.get('code')}
             except Exception:  # noqa: BLE001  no profile: the chart without it
                 rows = {}
             hit = PROFILES[e] = (time.time(), rows)
