@@ -64,6 +64,7 @@ if (key) {
       if (!c || !c.check) continue;
       const detail = String(c.detail || '').replace(/\d+\.\d{2,}/g, '#').replace(/\b[DU]\d{5,}\b/g, 'ACCOUNT');
       console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : 'warn'} ${c.check}: ${detail}`);
+      if (c.check === 'IBKR accepts orders' && c.ok === false) problems.push('IBKR refuses the orders (paper trading not acknowledged)');
     }
     for (const m of ['UK', 'EU']) {
       const o = await get(`/orders?market=${m}`, true);

@@ -4,13 +4,15 @@
 //
 //   sync  open the clone (or make it: depth 1), fetch main's newest commit, the working copy reset to it (the files
 //         the run will read and add to)
-//   push  every change in the working copy (new, changed and deleted files) in one commit on main, pushed (never
-//         forced); when another market's job pushed first, the run's changes are made again on top of the newer
+//   push  every change in the working copy (new, changed and deleted files) on main, pushed (never forced), in
+//         commits of at most 250 files each pushed on its own (libgit2 sends every changed file whole: a day's
+//         4,000 US files in one upload broke off, 16 Nov); when another market's job pushed first, the run's changes are made again on top of the newer
 //         commit (a file both changed keeps this run's version, as `git pull --rebase -X ours` did), at most 5 tries
 #pragma once
 
 #include <git2.h>
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -190,7 +192,7 @@ inline git_oid replay(git_repository* r, const git_oid& ours, const git_oid& bas
   check(git_signature_now(&sig, "github-actions[bot]", "41898282+github-actions[bot]@users.noreply.github.com"), "signature");
   const git_commit* parents[] = {baseCommit};
   git_oid out;
-  check(git_commit_create(&out, r, nullptr, sig, sig, nullptr, message.c_str(), t, 1, parents), "commit");
+  check(git_commit_create(&out, r, nullptr, sig, sig, nullptr, message.empty() ? git_commit_message(mine) : message.c_str(), t, 1, parents), "commit");
   git_signature_free(sig);
   git_tree_free(t), git_tree_free(a), git_tree_free(b), git_tree_free(baseTree);
   git_diff_free(diff);
@@ -198,7 +200,11 @@ inline git_oid replay(git_repository* r, const git_oid& ours, const git_oid& bas
   return out;
 }
 
-inline std::string pushMain(git_repository* r) {
+// Pushes the commit `id` to origin's main (through a temporary branch; never forced). "" or the refusal.
+inline std::string pushCommit(git_repository* r, const git_oid& id) {
+  git_reference* tmp = nullptr;
+  check(git_reference_create(&tmp, r, "refs/heads/ofm-push", &id, 1, "ofm-eod: push"), "push ref");
+  git_reference_free(tmp);
   git_remote* remote = nullptr;
   check(git_remote_lookup(&remote, r, "origin"), "origin");
   git_push_options po;
@@ -207,7 +213,7 @@ inline std::string pushMain(git_repository* r) {
   Push result;
   po.callbacks.push_update_reference = pushUpdate;
   po.callbacks.payload = &result;
-  char spec[] = "refs/heads/main:refs/heads/main";
+  char spec[] = "refs/heads/ofm-push:refs/heads/main";
   char* specs[] = {spec};
   git_strarray refspecs{specs, 1};
   const int rc = git_remote_push(remote, &refspecs, &po);
@@ -219,31 +225,96 @@ inline std::string pushMain(git_repository* r) {
   return result.refused;
 }
 
-// Commits and pushes the working copy's changes. Returns what happened, in words.
-inline std::string push(const std::string& dir, const std::string& message, int depth = 1) {
+// The working copy's changed paths (new, changed and deleted files), sorted.
+inline std::vector<std::string> changedPaths(git_repository* r) {
+  git_status_options so;
+  git_status_options_init(&so, GIT_STATUS_OPTIONS_VERSION);
+  so.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+  so.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX;
+  git_status_list* list = nullptr;
+  check(git_status_list_new(&list, r, &so), "status");
+  std::vector<std::string> out;
+  for (std::size_t k = 0; k < git_status_list_entrycount(list); ++k) {
+    const git_status_entry* e = git_status_byindex(list, k);
+    const git_diff_delta* d = e->index_to_workdir ? e->index_to_workdir : e->head_to_index;
+    if (!d) continue;
+    out.push_back(d->new_file.path ? d->new_file.path : d->old_file.path);
+    if (d->old_file.path && d->new_file.path && std::string(d->old_file.path) != d->new_file.path) out.push_back(d->old_file.path);
+  }
+  git_status_list_free(list);
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+// Commits and pushes the working copy's changes. libgit2 sends no thin packs (every changed file whole), so a large
+// change goes as a chain of commits of at most `chunk` files, each pushed on its own: every upload stays small. When
+// another job pushed first, the commits not yet pushed are made again on top of its commit (a file both changed
+// keeps this run's version), at most 5 times. Returns what happened, in words.
+inline std::string push(const std::string& dir, const std::string& message, int depth = 1, std::size_t chunk = 250) {
   init();
   git_repository* r = nullptr;
   check(git_repository_open(&r, dir.c_str()), "open the store");
-  git_oid ours, parent;
-  if (!commitWorkingCopy(r, message, ours, parent)) {
+  const std::vector<std::string> paths = changedPaths(r);
+  if (paths.empty()) {
     git_repository_free(r);
     return "nothing new";
   }
-  std::string last;
-  for (int k = 0; k < 5; ++k) {
-    last = pushMain(r);
-    if (last.empty()) {
-      git_repository_free(r);
-      return k ? "pushed (made again on top of " + std::to_string(k) + " newer commit" + (k > 1 ? "s" : "") + ")" : "pushed";
+  // The chain of commits, each adding the next `chunk` paths to the last.
+  std::vector<git_oid> chain;
+  git_index* idx = nullptr;
+  check(git_repository_index(&idx, r), "index");
+  git_signature* sig = nullptr;
+  check(git_signature_now(&sig, "github-actions[bot]", "41898282+github-actions[bot]@users.noreply.github.com"), "signature");
+  const std::size_t parts = (paths.size() + chunk - 1) / chunk;
+  for (std::size_t c = 0; c < parts; ++c) {
+    for (std::size_t k = c * chunk; k < std::min(paths.size(), (c + 1) * chunk); ++k) {
+      const fs::path f = fs::path(dir) / paths[k];
+      if (fs::exists(f)) check(git_index_add_bypath(idx, paths[k].c_str()), "add");
+      else git_index_remove_bypath(idx, paths[k].c_str());
     }
-    std::this_thread::sleep_for(std::chrono::seconds(2 * (k + 1)));
-    fetchMain(r, depth);  // someone pushed first: this run's changes again on top of theirs
-    const git_oid next = replay(r, ours, originMain(r), message);
-    resetTo(r, next);
-    ours = next;
+    check(git_index_write(idx), "index write");
+    git_oid tree, parentId, id;
+    check(git_index_write_tree(&tree, idx), "tree");
+    check(git_reference_name_to_id(&parentId, r, "HEAD"), "HEAD");
+    git_commit* parent = nullptr;
+    check(git_commit_lookup(&parent, r, &parentId), "parent");
+    git_tree* t = nullptr;
+    check(git_tree_lookup(&t, r, &tree), "tree");
+    const std::string msg = parts > 1 ? message + " (" + std::to_string(c + 1) + "/" + std::to_string(parts) + ")" : message;
+    const git_commit* ps[] = {parent};
+    check(git_commit_create(&id, r, "HEAD", sig, sig, nullptr, msg.c_str(), t, 1, ps), "commit");
+    git_tree_free(t), git_commit_free(parent);
+    chain.push_back(id);
   }
+  git_signature_free(sig);
+  git_index_free(idx);
+  std::size_t done = 0, again = 0;
+  std::string last;
+  while (done < chain.size()) {
+    last = pushCommit(r, chain[done]);
+    if (last.empty()) {
+      ++done;
+      continue;
+    }
+    if (++again > 5) {
+      git_repository_free(r);
+      throw std::runtime_error("push to svr-net/eod refused 5 times (" + last + "; " + std::to_string(done) + " of " + std::to_string(chain.size()) + " parts pushed)");
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(2 * again));
+    fetchMain(r, depth);  // someone pushed first (or the upload broke off): the rest again on top of origin's main
+    git_oid base = originMain(r);
+    for (std::size_t k = done; k < chain.size(); ++k) {
+      const git_oid next = replay(r, chain[k], base, "");
+      chain[k] = next, base = next;
+    }
+  }
+  resetTo(r, chain.back());  // the working copy at the pushed tip (this run's files and everyone else's)
+  git_reference* tmp = nullptr;
+  if (git_reference_lookup(&tmp, r, "refs/heads/ofm-push") == 0) git_reference_delete(tmp), git_reference_free(tmp);
   git_repository_free(r);
-  throw std::runtime_error("push to svr-net/eod refused 5 times (" + last + ")");
+  return std::string("pushed") + (chain.size() > 1 ? " in " + std::to_string(chain.size()) + " parts of at most " + std::to_string(chunk) + " files" : "") +
+         (again ? " (made again on top of newer commits " + std::to_string(again) + " time" + (again > 1 ? "s" : "") + ")" : "");
 }
 
 }  // namespace eod::git
