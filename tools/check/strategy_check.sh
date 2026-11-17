@@ -37,7 +37,7 @@ for s in $names; do
   jq -e '.backtest.mc.resets > 5 and .backtest.mc.coverage >= 0 and .backtest.mc.next.p5 <= .backtest.mc.next.p95' "$W/$s-mc-$first.json" > /dev/null || { echo "FAIL: $s: no Monte Carlo in the report"; exit 1; }
   # the Monte Carlo with the neural overlay, every strategy injected and the autonomous gate choosing the book:
   # the same on every back end, no look-ahead
-  NN="--param mc=1 --param mcselect=1 --param mcnn=1 --param mcobj=1 --param mccandk=2 --param mcpool=1 --param mcgate=1 --param mcpaths=100"
+  NN="--param mc=1 --param mcselect=1 --param mcnn=1 --param mcobj=1 --param mccandk=2 --param mcpool=1 --param mcgate=1 --param mcnnstep=5 --param mcpaths=100"
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $NN --json "$W/$s-nn-$b.json" --trace "$W/$s-nn-$b.tr" > "$W/$s-nn-$b.out"
     sed 's/"backend":"[a-z]*"//' "$W/$s-nn-$b.json" > "$W/$s-nn-$b.cmp"

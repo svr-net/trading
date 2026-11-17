@@ -68,7 +68,9 @@ Every market's book is chosen by the nested Monte Carlo (`include/strategy/monte
 - **Differential neural network:** for every share at every reset, it shapes those futures with a daily drift and a
   volatility scale, learnt from point-in-time features. It is trained walk-forward, only on resets whose outcome was
   known by then, by the CRPS of the simulated futures against the real return, with exact gradients through the
-  paths.
+  paths. It learns every week (`mcnnstep=5`) from the bars realised since, its training cases still taken at the
+  resets: learning only at the monthly resets left it up to a month behind; taking a day's cases every day crowded
+  its window with the last months (both tested walk-forward, 17 Nov).
 - **Every strategy injected:** the eight strategies (momentum, residual momentum, 52-week high, trend, low
   volatility, no lottery shares, short-term and long-term reversal) each score every share at every reset. Their
   ranks are inputs to the network, so it learns which strategy to trust for which share, in which market.
