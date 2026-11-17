@@ -62,11 +62,16 @@ jobs:
           set -euo pipefail
           mkdir -p out
           for name in trading-bridge trading-caddy; do
+            # Each processor's image by its own digest (pulling the tag a second time for another platform fails on
+            # the newer runners: "unable to create manifests file: content digest not found", 17 Nov).
+            ref="ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}"
             for arch in amd64 arm64; do
-              docker pull -q --platform "linux/$arch" "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}"
-              docker tag "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}" "ghcr.io/svr-net/$name:latest"
+              digest=$(docker buildx imagetools inspect --raw "$ref" | jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' | head -1)
+              [ -n "$digest" ] || { echo "no $arch image for $ref"; exit 1; }
+              docker pull -q "ghcr.io/svr-net/$name@$digest"
+              docker tag "ghcr.io/svr-net/$name@$digest" "ghcr.io/svr-net/$name:latest"
               docker save "ghcr.io/svr-net/$name:latest" | gzip -6 > "out/$name-$arch.tar.gz"
-              docker image rm -f "ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}" "ghcr.io/svr-net/$name:latest" >/dev/null
+              docker image rm -f "ghcr.io/svr-net/$name@$digest" "ghcr.io/svr-net/$name:latest" >/dev/null
             done
           done
           ls -l out
