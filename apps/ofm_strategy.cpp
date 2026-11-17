@@ -429,6 +429,10 @@ int main(int argc, char** argv) {
   // strategy's own top picks) with the best real record over the last mcgaten resets known by then (shrunk by its
   // t statistic); the simulation's until enough are known.
   P.emplace("mcpool", 0.0), P.emplace("mcgate", 0.0), P.emplace("mcgaten", 12.0);
+  // mcnnstep: the network learns every that many sessions (0: at the resets only): each day's realised bars become
+  // known after its close, and with 1 the network takes them in the same evening (new samples every session, a pass
+  // over the newest), not up to a month later at the next reset.
+  P.emplace("mcnnstep", 0.0), P.emplace("mcnnsample", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -664,22 +668,32 @@ int main(int argc, char** argv) {
     const double sdv = std::sqrt(v2 / double(x.size())), tt = sdv > 0 ? m / sdv * std::sqrt(double(x.size())) : 0;
     return tt != 0 ? m * std::max(0.0, 1 - 1 / (tt * tt)) : 0.0;
   };
+  // The network learns at t (once a day at most): from every sample whose outcome is known by t's close, then the
+  // day's own samples kept (their outcome known only later).
+  std::size_t learntAt = SIZE_MAX;
+  const auto learn = [&](std::size_t t, int epochs) {
+    if (!nnOn || learntAt == t) return;
+    learntAt = t;
+    net.train(nnSamples, t, mc.horizon, 40000, epochs);
+    if (net.trained && !nnFirstTrained) nnFirstTrained = t;
+    // New samples only at the resets (P["mcnnsample"] 1: every learning day): a day's samples overlap the last
+    // day's almost wholly, and taken daily they crowd the window with the last months (UK: CRPS +2.8%, 17 Nov).
+    if (P["mcnnsample"] <= 0 && (t - start) % reb != 0) return;
+    features(t);
+    for (std::size_t i = 0; i < N; ++i) {
+      strat::NnSample x;
+      if (nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, x)) nnSamples.push_back(x);
+    }
+  };
+  const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
   const auto decide = [&](std::size_t t) {
     if ((t - start) % reb != 0 && t != start) return;
     std::vector<std::pair<double, std::size_t>> c;
     ranked(*strategy, P, t, c);
     of = c.size(), decided = t;
     target.clear();
-    if (nnOn) {  // the network learns from the resets whose outcome is known by t's close, then today's samples are kept
-      net.train(nnSamples, t, mc.horizon, 40000, 2);
-      if (net.trained && !nnFirstTrained) nnFirstTrained = t;
-    }
-    if (nnOn || pool) features(t);
-    if (nnOn)
-      for (std::size_t i = 0; i < N; ++i) {
-        strat::NnSample x;
-        if (nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, x)) nnSamples.push_back(x);
-      }
+    learn(t, 2);
+    if (pool) features(t);
     std::vector<double> mu, sc;
     if (mcSelect && !c.empty()) {  // the simulation chooses: the candidates on the same futures
       std::vector<std::size_t> cand;
@@ -733,6 +747,7 @@ int main(int argc, char** argv) {
   const auto inTarget = [&](std::size_t i) { return std::find(target.begin(), target.end(), i) != target.end(); };
 
   for (std::size_t t = start; t + 1 < T; ++t) {
+    if (nnStep && (t - start) % nnStep == 0 && (t - start) % reb != 0) learn(t, 1);  // between the resets: the day's bars
     decide(t);
     const std::size_t u = t + 1;
     double day = 0;
@@ -959,9 +974,10 @@ int main(int argc, char** argv) {
                 mcN ? 100 * mcReal / mcN : 0.0, mcCorr);
     if (nnOn) {
       const auto [a, b] = net.score(nnSamples, nnFirstTrained, T, mc.horizon);
-      std::printf("strategy: the differential neural network on the Monte Carlo: trained at %zu resets on %zu share-resets (walk-forward); its futures' CRPS "
+      std::printf("strategy: the differential neural network on the Monte Carlo: trained on %zu days%s on %zu share-days (walk-forward); its futures' CRPS "
                   "%.4f against the plain Monte Carlo's %.4f (lower is better: %+.1f%%)\n",
-                  net.trained, nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
+                  net.trained, nnStep ? (" (every " + std::to_string(nnStep) + " session" + (nnStep > 1 ? "s" : "") + ", the day's bars taken in)").c_str() : " (the resets)",
+                  nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
     }
     if (gate) {
       std::string used;
