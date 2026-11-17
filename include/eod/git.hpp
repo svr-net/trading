@@ -13,6 +13,7 @@
 #include <git2.h>
 
 #include <algorithm>
+#include <iostream>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -291,30 +292,64 @@ inline std::string push(const std::string& dir, const std::string& message, int 
   git_index_free(idx);
   std::size_t done = 0, again = 0;
   std::string last;
+  git_repository* w = r;  // the repository pushed from (a fresh clone if the store's own cannot fetch)
+  const std::string side = (fs::path(dir).lexically_normal().string() + ".push");
   while (done < chain.size()) {
-    last = pushCommit(r, chain[done]);
+    last = pushCommit(w, chain[done]);
     if (last.empty()) {
       ++done;
       continue;
     }
     if (++again > 5) {
+      if (w != r) git_repository_free(w);
       git_repository_free(r);
       throw std::runtime_error("push to svr-net/eod refused 5 times (" + last + "; " + std::to_string(done) + " of " + std::to_string(chain.size()) + " parts pushed)");
     }
     std::this_thread::sleep_for(std::chrono::seconds(2 * again));
-    fetchMain(r, depth);  // someone pushed first (or the upload broke off): the rest again on top of origin's main
-    git_oid base = originMain(r);
+    // Someone pushed first (or the upload broke off): the rest again on top of origin's main. A shallow clone holding
+    // commits of its own can fail to fetch ("incomplete pack header", 17 Nov): then a fresh shallow clone beside it,
+    // borrowing this run's objects from the store's (an alternate), does the fetching and the pushing.
+    try {
+      if (w == r && std::getenv("OFM_TEST_PUSH_FETCH_FAIL")) throw std::runtime_error("fetch svr-net/eod: a test failure");  // tests only
+      fetchMain(w, depth);
+    } catch (const std::exception& e) {
+      if (w != r) throw;
+      std::cerr << "ofm_eod: push: " << e.what() << "; pushing from a fresh clone\n";
+      git_remote* remote = nullptr;
+      check(git_remote_lookup(&remote, r, "origin"), "origin");
+      const std::string url = git_remote_url(remote);
+      git_remote_free(remote);
+      fs::remove_all(side);
+      git_clone_options co;
+      git_clone_options_init(&co, GIT_CLONE_OPTIONS_VERSION);
+      co.fetch_opts = fetchOptions(depth);
+      co.checkout_opts.checkout_strategy = GIT_CHECKOUT_NONE;  // no working copy needed: only trees and commits
+      co.checkout_branch = "main";
+      check(git_clone(&w, url.c_str(), side.c_str(), &co), "clone svr-net/eod (for the push)");
+      git_odb* odb = nullptr;
+      check(git_repository_odb(&odb, w), "odb");
+      check(git_odb_add_disk_alternate(odb, (fs::path(git_repository_path(r)) / "objects").string().c_str()), "alternate");
+      git_odb_free(odb);
+    }
+    git_oid base = originMain(w);
     for (std::size_t k = done; k < chain.size(); ++k) {
-      const git_oid next = replay(r, chain[k], base, "");
+      const git_oid next = replay(w, chain[k], base, "");
       chain[k] = next, base = next;
     }
   }
-  resetTo(r, chain.back());  // the working copy at the pushed tip (this run's files and everyone else's)
-  git_reference* tmp = nullptr;
-  if (git_reference_lookup(&tmp, r, "refs/heads/ofm-push") == 0) git_reference_delete(tmp), git_reference_free(tmp);
+  const bool viaSide = w != r;
+  if (!viaSide) {
+    resetTo(r, chain.back());  // the working copy at the pushed tip (this run's files and everyone else's)
+    git_reference* tmp = nullptr;
+    if (git_reference_lookup(&tmp, r, "refs/heads/ofm-push") == 0) git_reference_delete(tmp), git_reference_free(tmp);
+  } else {
+    git_repository_free(w);  // pushed from the side clone: the store's own clone keeps this run's files; the next sync
+    fs::remove_all(side);    // (or a fresh clone) brings it to the pushed tip
+  }
   git_repository_free(r);
   return std::string("pushed") + (chain.size() > 1 ? " in " + std::to_string(chain.size()) + " parts of at most " + std::to_string(chunk) + " files" : "") +
-         (again ? " (made again on top of newer commits " + std::to_string(again) + " time" + (again > 1 ? "s" : "") + ")" : "");
+         (again ? " (made again on top of newer commits " + std::to_string(again) + " time" + (again > 1 ? "s" : "") + ")" : "") +
+         (viaSide ? " through a fresh clone" : "");
 }
 
 }  // namespace eod::git
