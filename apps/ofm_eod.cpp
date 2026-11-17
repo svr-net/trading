@@ -237,6 +237,63 @@ int cmdShares(const std::vector<std::string>& a) {
     memo[code] = {{"why", why}, {"on", stamp}, {"latest", latest}};
     memoChanged = true;
   };
+  // A missing day of every share at once: the exchange's quote list for that day (one request), used only when every
+  // bar in it carries that day (an API that ignored the date and sent the latest day instead is caught there); the
+  // shares are then filled from it, not asked one by one (16 Nov: a failed push left two days of gaps, 5,500 shares
+  // asked one at a time, over an hour). A day list that does not check out: the shares one by one, as before.
+  std::map<std::string, std::map<std::string, Bar>> dayBars;
+  std::set<std::string> dayBad;
+  int nDay = 0, dayRequests = 0;
+  const auto dayList = [&](const std::string& d) -> const std::map<std::string, Bar>* {
+    if (dayBad.count(d)) return nullptr;
+    const auto hit = dayBars.find(d);
+    if (hit != dayBars.end()) return &hit->second;
+    std::map<std::string, Bar> m;
+    bool good = true;
+    try {
+      ++dayRequests;
+      const json list = asList(cache.get("/Quote/List/" + exchange, {{"DateStamp", d}}, "dayquotes-" + d + ".json"));
+      for (const auto& q : list) {
+        std::string qd;
+        Bar b;
+        if (!store::bar(q, qd, b)) continue;
+        if (qd != d) {
+          good = false;
+          break;
+        }
+        m[str(field(q, {"symbolCode", "code", "symbol"}))] = b;
+      }
+    } catch (const std::exception& e) {
+      good = false;
+    }
+    if (!good || m.size() < 20) {
+      dayBad.insert(d);
+      std::cerr << "  " << d << ": the exchange's quote list for that day was not that day's; the shares one by one\n";
+      return nullptr;
+    }
+    return &(dayBars[d] = std::move(m));
+  };
+  // A share's gap after L filled from the day lists (at most 10 weekdays): false when a day's list is not usable.
+  const auto fromDays = [&](const std::string& code, const std::string& L, Bars& bars) {
+    std::vector<std::string> days;
+    for (std::string d = addDays(L, 1); d <= latest && days.size() <= 10; d = addDays(d, 1)) {
+      const std::time_t t = parseDay(d);
+      const int wd = std::gmtime(&t)->tm_wday;
+      if (wd != 0 && wd != 6) days.push_back(d);
+    }
+    if (days.empty() || days.size() > 10) return false;
+    std::vector<const std::map<std::string, Bar>*> lists;
+    for (const auto& d : days) {
+      const auto* m = dayList(d);
+      if (!m) return false;
+      lists.push_back(m);
+    }
+    for (std::size_t k = 0; k < days.size(); ++k) {
+      const auto it = lists[k]->find(code);
+      if (it != lists[k]->end()) bars[days[k]] = it->second;  // not in the day's list: no trade that day
+    }
+    return true;
+  };
   const auto barsOf = [&](const std::string& code, bool& ok) {
     ok = true;
     Bars bars = store::load(exchange, code);
@@ -267,9 +324,13 @@ int cmdShares(const std::vector<std::string>& a) {
         bars[qb->second.first] = qb->second.second;  // the latest day, from the quote list
         ++nQuote;
       } else if (L < previousWeekday(latest) || (qb != quoteBar.end() && qb->second.first > L)) {
-        if (!store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", addDays(L, 1)}, {"ToDateStamp", stamp}}))))
-          remember(code, "nothing");
-        ++nGap;
+        if (fromDays(code, L, bars)) {
+          ++nDay;
+        } else {
+          if (!store::merge(bars, asList(api("/Quote/List/" + exchange + "/" + escape(code), {{"Interval", "d"}, {"FromDateStamp", addDays(L, 1)}, {"ToDateStamp", stamp}}))))
+            remember(code, "nothing");
+          ++nGap;
+        }
       } else {
         ++nCurrent;
       }
@@ -373,10 +434,12 @@ int cmdShares(const std::vector<std::string>& a) {
     if (kept.size() % 20 == 0) std::cout << "  kept " << kept.size() << "\n";
   }
   if (memoChanged) writeFile(memoFile, memo.dump(1));
-  std::cout << "  store: " << nFull << " full histories downloaded, " << nGap << " gaps filled, " << nQuote << " days from the quote list, " << nCurrent << " up to date, " << nKnown
+  std::cout << "  store: " << nDay << " gaps filled from " << dayBars.size() << " day lists (" << dayRequests << " requests), " << nFull << " full histories downloaded, " << nGap << " gaps filled one by one, " << nQuote << " days from the quote list, " << nCurrent << " up to date, " << nKnown
             << " not asked again (EODData had nothing before; " << memo.size() << " kept in .unavailable.json)\n";
-  if (!cached)
+  if (!cached) {
     for (const char* p : {"symbols-", "quotes-", "splits-"}) store::prune(cache.dir, p, 1);
+    store::prune(cache.dir, "dayquotes-", 0);  // the day lists: this run's only
+  }
   writeFile(out, csv);
   const std::string cur = str(field(exchangeInfo, {"currency", "currencyCode"}));
   writeFile(std::regex_replace(out, std::regex("\\.csv$"), ".symbols.json"),
