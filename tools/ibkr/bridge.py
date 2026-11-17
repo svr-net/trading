@@ -787,6 +787,13 @@ def diag():
     g = GATEWAY
     add('IB Gateway watchdog', g['ok'], ('not checked yet' if g['ok'] is None else 'API answers' if g['ok'] else 'API does not answer')
         + f" (checked {g['checked']}); restarts {g['restarts']}" + (f", last {g['restarted']}: {g['note']}" if g['restarted'] else ''))
+    # IBKR refusing the orders themselves (16 Nov: after IB Gateway restarted, every buy "dead" with 2139, "Real
+    # paper-trading has not been acknowledged yet"): an error, the trading has stopped until it is acknowledged.
+    refused = [x for x in LAST if 'Real paper-trading has not been acknowledged' in x[4] or '2139:' in x[4]]
+    if refused:
+        w, mk, a, ok, sm = refused[0]
+        add('IBKR accepts orders', False, f'{w} {mk} {a}: IBKR refused the orders (2139: real paper-trading has not been acknowledged): log in to the '
+            'paper account once (Client Portal or TWS, paper mode) and accept the paper-trading notice, then restart IB Gateway')
     failed = [x for x in LAST if not x[3]]
     add('Last automatic actions', None if failed else True, '; '.join(f'{w} {mk} {a}: {"ok" if ok else "FAILED"} {sm}' for w, mk, a, ok, sm in LAST[:8]) or 'none yet')
     adir = os.path.join(HISTORY, 'auction')

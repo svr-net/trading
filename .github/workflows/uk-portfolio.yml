@@ -63,14 +63,19 @@ jobs:
       # so EODData's prices stay unreadable to it. A run restores the last one and fetches only main's
       # newest commit; a fresh clone when there is none (or it cannot be read). The token is never stored
       # in the clone (libgit2 asks for it at each fetch and push).
+      # One copy a day for every market (the whole store either way): six markets saving their own after every run
+      # (1-2.7 GB each) overflowed the repository's 10 GB of cache, and runs found none (16 Nov).
+      - name: The day (the cache's key)
+        id: day
+        run: echo "d=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - name: The EOD store from the runner's cache (encrypted)
         id: store
         uses: actions/cache/restore@v4
         with:
           path: data/eodstore.enc
-          key: eodstore-${{ matrix.market }}-${{ github.run_id }}
+          key: eodstore-${{ steps.day.outputs.d }}
           restore-keys: |
-            eodstore-${{ matrix.market }}-
+            eodstore-
       - name: The cached store opened
         if: steps.store.outputs.cache-matched-key != ''
         continue-on-error: true
@@ -184,7 +189,7 @@ jobs:
       # The store for the next run's cache, encrypted (the clone holds no credentials).
       - name: Encrypt the EOD store for the runner's cache
         id: sealed
-        if: ${{ always() }}
+        if: ${{ always() && steps.store.outputs.cache-hit != 'true' }}
         continue-on-error: true
         env:
           EOD_TOKEN: ${{ secrets.EOD_TOKEN }}
@@ -199,7 +204,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data/eodstore.enc
-          key: eodstore-${{ matrix.market }}-${{ github.run_id }}
+          key: eodstore-${{ steps.day.outputs.d }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.market }}-report
