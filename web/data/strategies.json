@@ -74,7 +74,8 @@
      "mcnn": 1,
      "mcobj": 1,
      "mccandk": 2,
-     "mcpool": 1
+     "mcpool": 1,
+     "mcnnstep": 5
     }
    }
   ],
