@@ -482,7 +482,7 @@ def apac_book():
     d = tempfile.mkdtemp()
     book = {'model': 'uk', 'book': 'hold', 'days': 5, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
         {'ticker': 'ASX:BHP', 'close': 45.0, 'entry': 'open', 'open': True, 'limit': 45.5, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5, 'capital': 5000.0, 'maxCapital': 9000.0},
-        {'ticker': 'SGX:D05', 'close': 50.0, 'entry': 'open', 'open': True, 'limit': 50.4, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5, 'capital': 5000.0, 'maxCapital': 9000.0}]}
+        {'ticker': 'SGX:D05', 'close': 50.0, 'entry': 'open', 'open': True, 'limit': 50.4, 'stop': None, 'take': None, 'exitAbove': 0.01, 'days': 5, 'capital': 6000.0, 'maxCapital': 9000.0}]}
     path, state = os.path.join(d, 'APAC.json'), os.path.join(d, 'holds-APAC.json')
     json.dump(book, open(path, 'w'))
     _broker(Broker).events = []
@@ -494,6 +494,9 @@ def apac_book():
         ends[sym] = (u.hour, u.minute)
         assert buy.order.tif == 'GTD', vars(buy.order)
     assert ends == {'BHP': (10, 12), 'D05': (9, 2)}, (ends, placed)
+    # SGX takes round lots of 100 only (18 Nov: BUY 1,009 5TP refused): SGD 6,000 at 50.4 is 119 shares, bought as 100
+    d05 = next(t for t in SHARED[0]._trades if t.contract.symbol == 'D05' and t.order.action == 'BUY')
+    assert d05.order.totalQuantity == 100, vars(d05.order)
     return placed
 
 

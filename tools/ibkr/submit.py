@@ -177,6 +177,20 @@ def ib_symbol(ticker, market):
     return ticker.replace('.', ' ') if market == 'US' else ticker
 
 
+# Board lots: an exchange that takes orders in round lots only (SGX: 100 shares; 18 Nov, BUY 1,009 5TP refused,
+# "it should be a multiple of 100"). Elsewhere single shares.
+BOARD_LOT = {'SGX': 100}
+
+
+def shares_for(o, money, price):
+    """The shares `money` buys at `price`, rounded down to the exchange's board lot (0: not even one lot)."""
+    if not price or price <= 0:
+        return 0
+    ex = o['ticker'].split(':')[0] if ':' in o.get('ticker', '') else ''
+    lot = BOARD_LOT.get(ex, 1)
+    return math.floor(money / price / lot + 1e-9) * lot
+
+
 def per_share(o, market):
     # The price of one share in the account's currency: EODData quotes LSE shares in pence.
     return o['limit'] / 100.0 if market == 'UK' else o['limit']
@@ -578,7 +592,7 @@ def holds(args):
                 lines.append(f'{sym}: not found at IBKR')
                 continue
             px = o.get('limit') or o.get('close')
-            qty = math.floor(capital_of(o, args) / per_share(dict(o, limit=px), args.market)) if px and px > 0 else 0
+            qty = shares_for(o, capital_of(o, args), per_share(dict(o, limit=px), args.market)) if px and px > 0 else 0
             if qty < 1:
                 lines.append(f'{sym}: the amount buys no share')
                 continue
@@ -758,7 +772,7 @@ def main():
         print(f'{args.market}: {len(book["orders"])} orders for the open after the close of {book["asOf"]}')
         if args.dry_run:
             for o in book['orders']:
-                q = math.floor(capital_of(o, args) / per_share(o, args.market)) if o['limit'] > 0 else 0
+                q = shares_for(o, capital_of(o, args), per_share(o, args.market)) if o['limit'] > 0 else 0
                 if o.get('entry') == 'open':
                     kind = {'trail': f"a trailing stop {100 * float(o.get('trailRel') or 0):.2f}% under the high, from ",
                             'breakeven': f"a break-even stop (to the entry once up {100 * float(o.get('breakevenRel') or 0):.2f}%), from "}.get(o.get('stopMode'), 'a fixed ')
@@ -940,7 +954,7 @@ def main():
             print(f"  {sym}: levels out of order (limit {o['limit']}, stop {o.get('stop')}, take {o.get('take')}); skipped")
             continue
         lim = round_to(o['limit'] * scale, tick(o['limit'] * scale), 'down')
-        qty = math.floor(capital_of(o, args) / per_share(o, args.market)) if lim > 0 else 0
+        qty = shares_for(o, capital_of(o, args), per_share(o, args.market)) if lim > 0 else 0
         if qty < 1:
             print(f'  {sym}: capital {capital_of(o, args)} buys no share at {per_share(o, args.market)}; skipped')
             continue
