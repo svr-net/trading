@@ -31,6 +31,11 @@ struct McSpec {
   std::uint64_t seed = 1;
   bool psar = false;
   double stopLoss = 0, rebuy = -1, afStep = 0.02, afMax = 0.2;
+  // vstop: the volatility stop, vstop times the share's daily volatility at the reset under the price paid, then
+  // under the highest close (a chandelier); a close under it sells at the next open, and the price touching 1.5 times
+  // that distance under it sells at once (the catastrophic stop at the broker); bought back once a close is rebuy
+  // over the level it left at. 0: none.
+  double vstop = 0;
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
@@ -56,7 +61,8 @@ inline double mcAdjust(const Data& d, std::size_t t0, std::size_t i, const McSpe
 // A position's state at the reset (a share the book holds already): its stop and the price it is marked at.
 struct McHeld {
   bool held = false;
-  double mark = 0, sar = 0, ep = 0, af = 0;
+  double mark = 0, sar = 0, ep = 0, af = 0;  // vstop: the catastrophic level, the close's level, the distance
+  bool exitNext = false;                    // vstop: a close under its level: sold at the first open
 };
 
 struct McTrade {
@@ -120,6 +126,10 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   const bool stops = s.psar || s.stopLoss > 0;
   bool in = h.held, pending = !h.held, stopped = false, turned = false;
   double w = 1, mark = h.held ? h.mark : 0, sar = h.sar, ep = h.ep, af = h.af;
+  // the volatility stop's state: the distance (a fraction of the price), the highest close, a sale due at the open
+  const double sig0 = std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
+  double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
+  bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
   for (std::size_t q : days) {
     const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0, C = d.C[q * N + i];
@@ -127,6 +137,30 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
     const double base = last * adj;  // the day's bar on the path's price (adj: the drift adjustment, real days only)
     const auto bar = [&](double x) { return scale == 1.0 ? base * x / pc : base * std::pow(x / pc, scale); };
     const double o = bar(d.O[q * N + i]), hi = bar(d.H[q * N + i]), lo = bar(d.L[q * N + i]), c = bar(C);
+    if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
+      if (!in && pending && o <= last * (1 + cap)) {
+        in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, 0.02, 0.5);
+        ep = o * (1 - vd), sar = o * (1 - 1.5 * vd), hic = o, exitNext = false;
+      }
+      if (in) {
+        if (exitNext) {  // a close under its level yesterday: sold at this open
+          w *= o / mark, in = false, out.stopped = stopped = true, exitNext = false, level = ep;
+        } else if (lo <= sar) {  // the catastrophic stop: at its level, or the open through a gap
+          w *= std::min(o, sar) / mark, in = false, out.stopped = stopped = true, level = ep;
+        } else {
+          w *= c / mark, mark = c;
+          if (c < ep) {
+            exitNext = true;
+          } else {
+            hic = std::max(hic, c), ep = std::max(ep, hic * (1 - vd)), sar = std::max(sar, ep * (1 - 0.5 * vd));
+          }
+        }
+      } else if (stopped && s.rebuy >= 0 && c >= level * (1 + s.rebuy)) {
+        pending = true, stopped = false;
+      }
+      last = c;
+      continue;
+    }
     if (!in && pending && o <= last * (1 + cap)) {  // bought at the open, under the cap
       in = true, pending = false, mark = o;
       if (s.psar) {
