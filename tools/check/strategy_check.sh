@@ -54,6 +54,20 @@ for s in $names; do
   np=$(wc -l < "$W/$s-psar-cut.tr")
   head -n "$np" "$W/$s-psar.tr" | cmp -s - "$W/$s-psar-cut.tr" || { echo "FAIL: $s with the PSAR stop: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "positions stopped" "$W/$s-psar.out" || { cat "$W/$s-psar.out"; echo "FAIL: $s: the PSAR stop did not run"; exit 1; }
+  # the volatility stop, learnt for each share, with the slots it frees refilled: no look-ahead, and it runs
+  VS="--param mc=1 --param mcselect=1 --param mcnn=1 --param mcpool=1 --param mcpaths=100 --param vstop=3 --param vstopadapt=1 --param refill=1 --param rebuy=0"
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 $VS --trace "$W/$s-vs.tr" > "$W/$s-vs.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $VS --trace "$W/$s-vs-cut.tr" > /dev/null
+  nv=$(wc -l < "$W/$s-vs-cut.tr")
+  head -n "$nv" "$W/$s-vs.tr" | cmp -s - "$W/$s-vs-cut.tr" || { echo "FAIL: $s with the volatility stop: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "a volatility stop" "$W/$s-vs.out" && grep -q "volatility stop learnt" "$W/$s-vs.out" && grep -q "slot freed by a stop" "$W/$s-vs.out" || { cat "$W/$s-vs.out"; echo "FAIL: $s: the volatility stop did not run"; exit 1; }
+  # the volatility-adjusted SAR, its band learnt for each share, with buy-backs and refills: no look-ahead, and it runs
+  PV="--param mc=1 --param mcselect=1 --param mcnn=1 --param mcpool=1 --param mcpaths=100 --param psar=1 --param psarvol=3 --param psarvoladapt=1 --param refill=1 --param rebuy=0"
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 $PV --trace "$W/$s-pv.tr" > "$W/$s-pv.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $PV --trace "$W/$s-pv-cut.tr" > /dev/null
+  np2=$(wc -l < "$W/$s-pv-cut.tr")
+  head -n "$np2" "$W/$s-pv.tr" | cmp -s - "$W/$s-pv-cut.tr" || { echo "FAIL: $s with the volatility-adjusted SAR: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "volatility-adjusted Parabolic SAR" "$W/$s-pv.out" && grep -q "volatility band learnt" "$W/$s-pv.out" || { cat "$W/$s-pv.out"; echo "FAIL: $s: the volatility-adjusted SAR did not run"; exit 1; }
   jq -e '.costs.net == false and .costs.atEnd == true
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
