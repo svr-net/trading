@@ -277,23 +277,34 @@ def report(market):
     return True, f"{len(rec['trades'])} shares traded"
 
 
-def store_put(path, data, message):
-    """Writes one file to the private store (svr-net/eod) with EOD_TOKEN (Contents read and write)."""
+def store_put(path, data, message, tries=3):
+    """Writes one file to the private store (svr-net/eod) with EOD_TOKEN (Contents read and write). A large file
+    (IBKR's daily bars: 6-12 MB, 8-16 MB as base64) takes minutes to upload from the NAS: the upload may take up to
+    10 minutes, and a timeout or a conflict (the file changed meanwhile) is tried again with the file's newest sha
+    (18 Nov: every bars upload "The write operation timed out" with 30 seconds)."""
     url = f'https://api.github.com/repos/svr-net/eod/contents/{path}'
     head = {'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'ofm-bridge'}
-    sha = None
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=20) as r:
-            sha = json.load(r).get('sha')
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-    body = {'message': message, 'content': base64.b64encode(data).decode()}
-    if sha:
-        body['sha'] = sha
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**head, 'Content-Type': 'application/json'}, method='PUT')
-    with urllib.request.urlopen(req, timeout=30):
-        pass
+    content = base64.b64encode(data).decode()
+    for attempt in range(tries):
+        try:
+            sha = None
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=60) as r:
+                    sha = json.load(r).get('sha')
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+            body = {'message': message, 'content': content}
+            if sha:
+                body['sha'] = sha
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**head, 'Content-Type': 'application/json'}, method='PUT')
+            with urllib.request.urlopen(req, timeout=max(60, 60 + len(content) // 25000)):  # about 25 kB/s at the least
+                return
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            retry = not isinstance(e, urllib.error.HTTPError) or e.code in (409, 422, 500, 502, 503, 504)
+            if not retry or attempt + 1 >= tries:
+                raise
+            time.sleep(10 * (attempt + 1))
 
 
 def store_get(path):
