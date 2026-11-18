@@ -252,7 +252,7 @@ inline std::vector<std::string> changedPaths(git_repository* r) {
 // change goes as a chain of commits of at most `chunk` files, each pushed on its own: every upload stays small. When
 // another job pushed first, the commits not yet pushed are made again on top of its commit (a file both changed
 // keeps this run's version), at most 5 times. Returns what happened, in words.
-inline std::string push(const std::string& dir, const std::string& message, int depth = 1, std::size_t chunk = 250) {
+inline std::string push(const std::string& dir, const std::string& message, int depth = 1, std::size_t chunk = 250, std::uintmax_t bytes = 40u << 20) {
   init();
   git_repository* r = nullptr;
   check(git_repository_open(&r, dir.c_str()), "open the store");
@@ -267,9 +267,20 @@ inline std::string push(const std::string& dir, const std::string& message, int 
   check(git_repository_index(&idx, r), "index");
   git_signature* sig = nullptr;
   check(git_signature_now(&sig, "github-actions[bot]", "41898282+github-actions[bot]@users.noreply.github.com"), "signature");
-  const std::size_t parts = (paths.size() + chunk - 1) / chunk;
+  // The parts: at most `chunk` files and `bytes` bytes each (a file larger than that alone), so that no upload is
+  // large (a market's share bars, markets/<MARKET>/, first pushed: hundreds of MB).
+  std::vector<std::size_t> cut{0};
+  std::uintmax_t size = 0;
+  for (std::size_t k = 0; k < paths.size(); ++k) {
+    std::error_code ec;
+    const std::uintmax_t b = fs::is_regular_file(fs::path(dir) / paths[k], ec) ? fs::file_size(fs::path(dir) / paths[k], ec) : 0;
+    if (k > cut.back() && (k - cut.back() >= chunk || size + b > bytes)) cut.push_back(k), size = 0;
+    size += b;
+  }
+  cut.push_back(paths.size());
+  const std::size_t parts = cut.size() - 1;
   for (std::size_t c = 0; c < parts; ++c) {
-    for (std::size_t k = c * chunk; k < std::min(paths.size(), (c + 1) * chunk); ++k) {
+    for (std::size_t k = cut[c]; k < cut[c + 1]; ++k) {
       const fs::path f = fs::path(dir) / paths[k];
       if (fs::exists(f)) check(git_index_add_bypath(idx, paths[k].c_str()), "add");
       else git_index_remove_bypath(idx, paths[k].c_str());
@@ -347,7 +358,7 @@ inline std::string push(const std::string& dir, const std::string& message, int 
     fs::remove_all(side);    // (or a fresh clone) brings it to the pushed tip
   }
   git_repository_free(r);
-  return std::string("pushed") + (chain.size() > 1 ? " in " + std::to_string(chain.size()) + " parts of at most " + std::to_string(chunk) + " files" : "") +
+  return std::string("pushed") + (chain.size() > 1 ? " in " + std::to_string(chain.size()) + " parts of at most " + std::to_string(chunk) + " files or " + std::to_string(bytes >> 20) + " MB" : "") +
          (again ? " (made again on top of newer commits " + std::to_string(again) + " time" + (again > 1 ? "s" : "") + ")" : "") +
          (viaSide ? " through a fresh clone" : "");
 }
