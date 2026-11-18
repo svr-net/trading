@@ -102,8 +102,10 @@ inline void mcDays(std::size_t t0, std::size_t T, const McSpec& s, std::uint64_t
 // One share's slot on a path: from the real close of t0 (and its real lows and highs before), the day bars of `days`
 // applied in turn; the book's rules for the buy (the cap), the stop and the buy-back. The fused trade kernel.
 // scale: the network's volatility scale (mcnn), each drawn day's relative bar raised to it (1: the real days as they were).
+// pre: the path's bars as ratios to their day's previous close raised to `scale` (mcRatios; 4 a day), computed once
+// and shared by every stop setting run on the same path; null: computed here. The same numbers either way.
 inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, double cap, const McSpec& s, const McHeld& h, double adj = 1.0,
-                      double scale = 1.0) {
+                      double scale = 1.0, const double* pre = nullptr) {
   const std::size_t N = d.N;
   McTrade out;
   double last = d.Cf[t0 * N + i];
@@ -134,12 +136,16 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
   bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
+  std::size_t kq = 0;
   for (std::size_t q : days) {
+    const double* r4 = pre && scale != 1.0 ? pre + 4 * kq : nullptr;
+    ++kq;
     const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0, C = d.C[q * N + i];
     if (!(pc > 0 && C > 0 && d.O[q * N + i] > 0 && d.H[q * N + i] > 0 && d.L[q * N + i] > 0)) continue;  // no bar that day: flat
     const double base = last * adj;  // the day's bar on the path's price (adj: the drift adjustment, real days only)
     const auto bar = [&](double x) { return scale == 1.0 ? base * x / pc : base * std::pow(x / pc, scale); };
-    const double o = bar(d.O[q * N + i]), hi = bar(d.H[q * N + i]), lo = bar(d.L[q * N + i]), c = bar(C);
+    const double o = r4 ? base * r4[0] : bar(d.O[q * N + i]), hi = r4 ? base * r4[1] : bar(d.H[q * N + i]), lo = r4 ? base * r4[2] : bar(d.L[q * N + i]),
+                 c = r4 ? base * r4[3] : bar(C);
     if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
       if (!in && pending && o <= last * (1 + cap)) {
         in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, 0.02, 0.5);
@@ -214,6 +220,21 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   }
   out.ret = w - 1;
   return out;
+}
+
+// A path's bars for share i as mcSlot's `pre`: each day's open, high, low and close over the previous close, raised
+// to scale (the network's); computed once a path, shared by every stop setting simulated on it.
+inline void mcRatios(const Data& d, std::size_t i, const std::vector<std::size_t>& days, double scale, std::vector<double>& out) {
+  const std::size_t N = d.N;
+  out.assign(4 * days.size(), 0.0);
+  if (scale == 1.0) return;  // mcSlot computes these itself then
+  for (std::size_t k = 0; k < days.size(); ++k) {
+    const std::size_t q = days[k];
+    const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0;
+    if (!(pc > 0)) continue;
+    out[4 * k] = std::pow(d.O[q * N + i] / pc, scale), out[4 * k + 1] = std::pow(d.H[q * N + i] / pc, scale);
+    out[4 * k + 2] = std::pow(d.L[q * N + i] / pc, scale), out[4 * k + 3] = std::pow(d.C[q * N + i] / pc, scale);
+  }
 }
 
 // One reset's simulated book returns (a slot each for the listed shares, 1/k each; cash 0), path by path on the

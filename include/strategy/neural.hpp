@@ -59,7 +59,9 @@ class DiffNet {
   }
 
   // One pass over the samples usable at day t0 (ready <= t0), the newest `limit` of them, in minibatches.
-  void train(const std::vector<NnSample>& all, std::size_t t0, std::size_t horizon, std::size_t limit, int epochs) {
+  // b: the back end the samples' gradients are computed on (each its own, then summed in their order: the same
+  // numbers on every back end); null: one thread.
+  void train(const std::vector<NnSample>& all, std::size_t t0, std::size_t horizon, std::size_t limit, int epochs, const Backend* b = nullptr) {
     std::vector<std::size_t> idx;
     for (std::size_t j = 0; j < all.size(); ++j)
       if (all[j].ready <= t0) idx.push_back(j);  // its horizon ended by t0's close: known then
@@ -74,9 +76,28 @@ class DiffNet {
       for (std::size_t a = 0; a < idx.size(); a += kBatch) {
         Grad g;
         zero(g);
-        const std::size_t b = std::min(idx.size(), a + kBatch);
-        for (std::size_t q = a; q < b; ++q) accumulate(all[idx[q]], horizon, g);
-        step(g, double(b - a));
+        const std::size_t end = std::min(idx.size(), a + kBatch);
+        if (b) {  // each sample's gradient on its own (in parallel), then summed in the samples' order
+          per_.resize(kBatch);
+          b->parallelFor(end - a, [&](std::size_t x, std::size_t y) {
+            for (std::size_t q = x; q < y; ++q) zero(per_[q]), accumulate(all[idx[a + q]], horizon, per_[q]);
+          });
+          // then each parameter's sum over the samples, in their order (in parallel over the parameters)
+          constexpr std::size_t nP = sizeof(Grad) / sizeof(double);
+          static_assert(sizeof(Grad) == nP * sizeof(double), "a gradient is its parameters' doubles, nothing else");
+          double* gp = reinterpret_cast<double*>(&g);
+          const std::size_t nS = end - a;
+          b->parallelFor(nP, [&](std::size_t x, std::size_t y) {
+            for (std::size_t k = x; k < y; ++k) {
+              double sum = gp[k];
+              for (std::size_t q = 0; q < nS; ++q) sum += reinterpret_cast<const double*>(&per_[q])[k];
+              gp[k] = sum;
+            }
+          });
+        } else {
+          for (std::size_t q = a; q < end; ++q) accumulate(all[idx[q]], horizon, g);
+        }
+        step(g, double(end - a));
       }
     }
     ++trained;
@@ -106,7 +127,10 @@ class DiffNet {
     double W1[kNH][kNF], b1[kNH], W2[2][kNH], b2[2];
   };
   Grad m, v;
+  std::vector<Grad> per_;  // a batch's per-sample gradients (train on a back end)
   std::size_t t = 0;
+
+
 
   template <class G>
   static void zero(G& g) {
@@ -182,7 +206,7 @@ class DiffNet {
 
 // The features of every tradable share at day t (known after its close), ranked across the day's shares; false
 // for a share without a full year. out[i * kNF + k].
-inline void nnFeatures(const Data& d, std::size_t t, const char* in, std::vector<double>& out, std::vector<char>& ok) {
+inline void nnFeatures(const Data& d, std::size_t t, const char* in, std::vector<double>& out, std::vector<char>& ok, const Backend* be = nullptr) {
   const std::size_t N = d.N;
   out.assign(N * kNF, 0.0), ok.assign(N, 0);
   if (t < 260) return;
@@ -190,25 +214,31 @@ inline void nnFeatures(const Data& d, std::size_t t, const char* in, std::vector
     const double x = d.Cf[a * N + i], y = d.Cf[b * N + i];
     return x > 0 && y > 0 ? std::log(y / x) : kNaN;
   };
-  const auto vol = [&](std::size_t n, std::size_t i) {
-    double s = 0, s2 = 0, c = 0;
-    for (std::size_t q = t + 1 - n; q <= t; ++q) {
-      const double r = d.ret[q * N + i];
-      if (std::isfinite(r)) s += r, s2 += r * r, c += 1;
-    }
-    return c > n / 2 ? std::sqrt(std::max(0.0, s2 / c - (s / c) * (s / c))) : kNaN;
-  };
   std::vector<std::vector<double>> raw(6, std::vector<double>(N, kNaN));
-  for (std::size_t i = 0; i < N; ++i) {
-    if (!in[i]) continue;
-    double hi = 0;
-    for (std::size_t q = t - 251; q <= t; ++q) hi = std::max(hi, d.Cf[q * N + i] > 0 ? d.Cf[q * N + i] : 0.0);
-    raw[0][i] = lr(t - 252, t - 21, i), raw[1][i] = lr(t - 126, t - 21, i), raw[2][i] = lr(t - 21, t, i);
-    raw[3][i] = vol(63, i), raw[4][i] = vol(252, i), raw[5][i] = hi > 0 && d.Cf[t * N + i] > 0 ? std::log(d.Cf[t * N + i] / hi) : kNaN;
-    bool all = true;
-    for (std::size_t k = 0; k < 6; ++k) all = all && std::isfinite(raw[k][i]);
-    ok[i] = all;
-  }
+  // One fused pass over each share's last year (in parallel on the back end): the year's high close and the 63- and
+  // 252-session volatilities together.
+  const auto share = [&](std::size_t a, std::size_t e) {
+    for (std::size_t i = a; i < e; ++i) {
+      if (!in[i]) continue;
+      double hi = 0, s63 = 0, q63 = 0, c63 = 0, s252 = 0, q252 = 0, c252 = 0;
+      for (std::size_t q = t - 251; q <= t; ++q) {
+        const double c = d.Cf[q * N + i], r = d.ret[q * N + i];
+        hi = std::max(hi, c > 0 ? c : 0.0);
+        if (std::isfinite(r)) {
+          s252 += r, q252 += r * r, c252 += 1;
+          if (q + 63 > t) s63 += r, q63 += r * r, c63 += 1;
+        }
+      }
+      const auto sd = [](double s1, double s2, double c, double n) { return c > std::floor(n / 2) ? std::sqrt(std::max(0.0, s2 / c - (s1 / c) * (s1 / c))) : kNaN; };
+      raw[0][i] = lr(t - 252, t - 21, i), raw[1][i] = lr(t - 126, t - 21, i), raw[2][i] = lr(t - 21, t, i);
+      raw[3][i] = sd(s63, q63, c63, 63), raw[4][i] = sd(s252, q252, c252, 252), raw[5][i] = hi > 0 && d.Cf[t * N + i] > 0 ? std::log(d.Cf[t * N + i] / hi) : kNaN;
+      bool all = true;
+      for (std::size_t k = 0; k < 6; ++k) all = all && std::isfinite(raw[k][i]);
+      ok[i] = all;
+    }
+  };
+  if (be) be->parallelFor(N, share);
+  else share(0, N);
   for (std::size_t k = 0; k < 6; ++k) {  // ranks -0.5..0.5 among the shares with every feature
     std::vector<std::pair<double, std::size_t>> v;
     for (std::size_t i = 0; i < N; ++i)

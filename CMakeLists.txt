@@ -18,6 +18,16 @@ target_link_libraries(ofm_strategy PRIVATE Threads::Threads)
 if(NOT MSVC)
   target_compile_options(ofm_strategy PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
 endif()
+# The engine's kernels for the CPUs that run it: on x86-64, x86-64-v3 (AVX2, FMA; every GitHub runner) by default
+# (OFM_ARCH= for the baseline). No fused multiply-add contraction and no reordered sums: the same numbers as the
+# serial back end and the WebAssembly Lab, bit for bit.
+set(OFM_ARCH "x86-64-v3" CACHE STRING "the engine's -march on x86-64 (empty: the compiler's default)")
+if(NOT MSVC AND NOT EMSCRIPTEN)
+  target_compile_options(ofm_strategy PRIVATE -ffp-contract=off)
+  if(OFM_ARCH AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    target_compile_options(ofm_strategy PRIVATE -march=${OFM_ARCH})
+  endif()
+endif()
 
 # The loaders and the scan (apps/ofm_eod, apps/ofm_scan): the store svr-net/eod through libgit2, EODData's API and
 # the report's mail through libcurl, JSON through nlohmann-json (Ubuntu: libgit2-dev libcurl4-openssl-dev
