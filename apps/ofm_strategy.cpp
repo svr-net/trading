@@ -336,10 +336,11 @@ struct Row {  // an order of the backtest
 
 // A position: its row, the price it is marked at, and its stop: a fixed level, or the Parabolic SAR (Wilder 1978)
 // from the day it was bought: the level, the highest high since (ep) and the step (af).
-struct Pos { std::size_t row; double mark, sar = 0, ep = 0, af = 0; };
+// step, mx: its SAR's step and largest step (psaradapt: chosen for the share by the simulation at the reset)
+struct Pos { std::size_t row; double mark, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2; };
 // A share whose position was stopped: its SAR on the way down (with psar: the highest high since as the level,
 // the lowest low as ep), and whether it has turned up again (a close above it).
-struct Stopped { double level = 0, sar = 0, ep = 0, af = 0; bool turned = false; };
+struct Stopped { double level = 0, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2; bool turned = false; };
 
 struct Learnt {  // the strategy's past trades by their place on the list, known on the day
   std::vector<double> sum, n;
@@ -408,6 +409,11 @@ int main(int argc, char** argv) {
   // by psarstep of the gap to the highest high, the step growing by psarstep at each new high to at most psarmax);
   // its buy-back: once the share's SAR on the way down turns up again (a close above it).
   P.emplace("stop", 0.0), P.emplace("rebuy", -1.0), P.emplace("psar", 0.0), P.emplace("psarstep", 0.02), P.emplace("psarmax", 0.2);
+  // psaradapt: 1 makes the SAR's step and largest step each share's own, learnt at every reset: the nested Monte Carlo
+  // (with the network's shapes, mcnn) runs the share's futures under each pair of a grid (steps 0.005-0.03, largest
+  // 0.1 or 0.2) with the stop and its buy-back, and the pair with the most expected log growth is the share's until
+  // the next reset (a position keeps the pair it was bought with).
+  P.emplace("psaradapt", 0.0);
   // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
@@ -496,6 +502,11 @@ int main(int argc, char** argv) {
   const double capSd = P["capsd"], capMax = P["capmax"], stopLoss = P["stop"], rebuy = P["rebuy"];
   const bool psar = P["psar"] > 0, stops = psar || stopLoss > 0;
   const double afStep = P["psarstep"], afMax = P["psarmax"];
+  std::map<std::size_t, std::pair<double, double>> sarPick;  // psaradapt: each share's SAR step and largest step
+  const auto sarOf = [&](std::size_t i) {
+    const auto it = sarPick.find(i);
+    return it != sarPick.end() ? it->second : std::make_pair(afStep, afMax);
+  };
   std::map<std::size_t, Stopped> stoppedAt;  // share -> its stop (until bought back or dropped by the strategy)
   std::size_t nStops = 0, nRebuys = 0;
   const auto lowOf = [&](std::size_t a, std::size_t b, std::size_t i) {  // the lowest low of days a..b (real bars)
@@ -508,7 +519,9 @@ int main(int argc, char** argv) {
   const auto openStop = [&](Pos& p, std::size_t u, std::size_t i, double entry) {
     if (psar) {
       const double lo = lowOf(u >= 5 ? u - 5 : 0, u - 1, i);
-      p.sar = std::isfinite(lo) && lo < entry ? lo : entry * 0.95, p.ep = entry, p.af = afStep;
+      const auto sp = sarOf(i);
+      p.step = sp.first, p.mx = sp.second;
+      p.sar = std::isfinite(lo) && lo < entry ? lo : entry * 0.95, p.ep = entry, p.af = p.step;
     } else {
       p.sar = stopLoss > 0 ? entry * (1 - stopLoss) : 0.0;
     }
@@ -523,7 +536,7 @@ int main(int argc, char** argv) {
       return true;
     }
     if (psar && hi > 0) {
-      if (hi > p.ep) p.ep = hi, p.af = std::min(afMax, p.af + afStep);
+      if (hi > p.ep) p.ep = hi, p.af = std::min(p.mx, p.af + p.step);
       double next = p.sar + p.af * (p.ep - p.sar);
       const double l2 = lowOf(u >= 1 ? u - 1 : 0, u, i);
       if (std::isfinite(l2)) next = std::min(next, l2);
@@ -535,7 +548,7 @@ int main(int argc, char** argv) {
   const auto stoppedFrom = [&](const Pos& p, double level) {
     Stopped x;
     x.level = level;
-    if (psar) x.sar = std::max(p.ep, level), x.ep = level, x.af = afStep;
+    if (psar) x.sar = std::max(p.ep, level), x.ep = level, x.af = p.step, x.step = p.step, x.mx = p.mx;
     return x;
   };
   // A stopped share through day t (at its close): with psar, turned once the close is above its falling SAR; else
@@ -548,7 +561,7 @@ int main(int argc, char** argv) {
       x.turned = true;
       return;
     }
-    if (lo > 0 && lo < x.ep) x.ep = lo, x.af = std::min(afMax, x.af + afStep);
+    if (lo > 0 && lo < x.ep) x.ep = lo, x.af = std::min(x.mx, x.af + x.step);
     double next = x.sar + x.af * (x.ep - x.sar);
     double h2 = 0;
     for (std::size_t q = t >= 1 ? t - 1 : 0; q <= t; ++q) h2 = std::max(h2, d.H[q * N + i] > 0 ? d.H[q * N + i] : 0.0);
@@ -572,6 +585,9 @@ int main(int argc, char** argv) {
   mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
+  const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
+  const std::vector<std::pair<double, double>> sarGrid{{0.005, 0.1}, {0.01, 0.1}, {0.02, 0.1}, {0.03, 0.1}, {0.005, 0.2}, {0.01, 0.2}, {0.02, 0.2}, {0.03, 0.2}};
+  std::map<std::pair<double, double>, std::size_t> sarChosen;
   const std::size_t nCand = P["mccand"] > 0 ? std::size_t(P["mccand"]) : std::max<std::size_t>(k + 1, std::size_t(std::max(1.0, P["mccandk"]) * double(k)));
   std::size_t mcChosen = 0, mcFromTop = 0;  // the simulation's picks, and how many of them the strategy's own top k held too
   const bool nnOn = P["mcnn"] > 0;
@@ -742,6 +758,31 @@ int main(int argc, char** argv) {
     }
     resets.emplace_back(t, target);
     shapesFor(t, target, mu, sc);
+    if (sarAdapt) {  // each target share's SAR from its simulated futures: the pair with the most expected log growth
+      for (std::size_t j = 0; j < target.size(); ++j) {
+        const std::size_t i = target[j];
+        const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu[j]), cap = capOf(t, i);
+        double best = -1e300;
+        std::pair<double, double> pick{afStep, afMax};
+        for (const auto& [st, mx] : sarGrid) {
+          strat::McSpec sv = mc;
+          sv.afStep = st, sv.afMax = mx;
+          std::vector<double> g(mc.paths, 0.0);
+          backend->parallelFor(mc.paths, [&](std::size_t a, std::size_t e) {
+            std::vector<std::size_t> days;
+            for (std::size_t q = a; q < e; ++q) {
+              strat::mcDays(t, d.T, sv, strat::mcMix(sv.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
+              g[q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, sv, strat::McHeld{}, adj, sc[j]).ret));
+            }
+          });
+          double m = 0;
+          for (double x : g) m += x;
+          if (m > best + 1e-12) best = m, pick = {st, mx};
+        }
+        sarPick[i] = pick;
+        ++sarChosen[pick];
+      }
+    }
     resetMu.push_back(mu), resetSc.push_back(sc);
   };
   const auto inTarget = [&](std::size_t i) { return std::find(target.begin(), target.end(), i) != target.end(); };
@@ -985,6 +1026,12 @@ int main(int argc, char** argv) {
       std::printf("strategy: autonomous: at each reset the book held is the one (the simulation's or a strategy's own top %zu) with the best real record over "
                   "the last %zu resets known by then; held: %s (of %zu resets)\n", k, gateN, used.c_str(), resets.size());
     }
+    if (sarAdapt) {
+      std::string used;
+      for (const auto& [k2, n] : sarChosen) used += (used.empty() ? "" : ", ") + std::to_string(k2.first).substr(0, 5) + "/" + std::to_string(k2.second).substr(0, 3) + " " + std::to_string(n);
+      std::printf("strategy: the SAR learnt for each share at each reset (its step and largest step with the most expected log growth on its simulated futures, "
+                  "the stop and the buy-back included): chosen (step/largest, times): %s\n", used.c_str());
+    }
     if (pool) {
       std::string names;
       for (std::size_t q = 0; q < poolNames.size(); ++q) names += (q ? ", " : "") + poolNames[q];
@@ -1072,7 +1119,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
+        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1 << "}";
