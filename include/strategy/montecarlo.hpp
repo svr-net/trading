@@ -36,6 +36,9 @@ struct McSpec {
   // that distance under it sells at once (the catastrophic stop at the broker); bought back once a close is rebuy
   // over the level it left at. 0: none.
   double vstop = 0;
+  // psarVol: the volatility-adjusted SAR (with psar): it starts psarVol times the share's daily volatility under the
+  // price paid, and rises as the SAR does but never closer than that under the close. 0: the plain SAR.
+  double psarVol = 0;
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
@@ -163,7 +166,9 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
     }
     if (!in && pending && o <= last * (1 + cap)) {  // bought at the open, under the cap
       in = true, pending = false, mark = o;
-      if (s.psar) {
+      if (s.psar && s.psarVol > 0) {
+        sar = o * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)), ep = o, af = s.afStep;
+      } else if (s.psar) {
         const double l5 = lowOf(5);
         sar = l5 > 0 && l5 < o ? l5 : 0.95 * o, ep = o, af = s.afStep;
       } else {
@@ -182,6 +187,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
           double next = sar + af * (ep - sar);
           lows[nl % 8] = lo, highs[nl % 8] = hi, ++nl;
           next = std::min(next, lowOf(2));
+          if (s.psarVol > 0) next = std::min(next, c * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)));  // the volatility band
           sar = std::max(sar, next);
           last = c;
           continue;
