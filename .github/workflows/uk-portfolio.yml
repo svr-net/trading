@@ -113,6 +113,19 @@ jobs:
             # Markets of several exchanges: tickers as EXCHANGE:CODE (each exchange's costs, IBKR's venue).
             case "$MARKET" in EU|APAC) tail -n +2 "data/$EX.csv" | awk -F, -v OFS=, -v ex="$EX" '{$2=ex":"$2; print}' >> data/stocks.csv;; *) tail -n +2 "data/$EX.csv" >> data/stocks.csv;; esac
           done
+      # The market's share bars as the strategies read them, kept in the store (svr-net/eod, never published) by
+      # month: markets/<MARKET>/<yyyy-mm>.csv, so that a backtest elsewhere reads them as they are instead of building
+      # them again. Only the months that changed are pushed (the current one; all after a split read from the prices).
+      - name: Keep the market's share bars in the store (markets/<MARKET>/, by month)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          case "$MARKET" in INDEX|FOREX) exit 0;; esac
+          D="data/eoddata/markets/$MARKET"
+          rm -rf "$D" && mkdir -p "$D"
+          tail -n +2 data/stocks.csv | sort -t, -k1,1 -s | awk -F, -v d="$D" '
+            { m = substr($1, 1, 7); if (m != cur) { if (f) close(f); cur = m; f = d "/" m ".csv"; print "date,ticker,open,high,low,close,volume" > f } print > f }'
+          echo "share bars kept in the store: $(ls "$D" | wc -l) months in markets/$MARKET ($(du -sh "$D" | cut -f1))" | tee -a "$GITHUB_STEP_SUMMARY"
       # EODData serves only today's fundamentals: each day's, for the model's shares, are kept in the
       # store (fundamentals/<EXCHANGE>/<date>.csv.gz) so that a history builds up; with the latest
       # profiles (sectors, industries). A failure here does not stop the scan.
