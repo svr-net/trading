@@ -1342,6 +1342,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == '/place':
+            if not body.get('dryRun') and live_is_hold(m):  # a multi-day book: its placing again (buys still working are kept)
+                if (m, 'hold-place') in RUNNING:
+                    return self.reply(409, {'ok': False, 'log': f'{m}: the book is being placed already'})
+                mark_done(m, 'place')
+                job(m, 'hold-place', place_holds)
+                return self.reply(202, {'ok': True, 'log': f'{m}: placing the multi-day book again (a minute or two; buys already working are kept). Diagnostics shows the result.'})
             if not body.get('dryRun'):  # in the background (minutes), then the buy-back watch; the status shows it when done
                 in_background(m, 'place', replace_orders)  # the running watch lets go of the client first
                 return self.reply(202, {'ok': True, 'log': f'{m}: placing the orders (a few minutes; already placed shares are skipped), then watching the stops for buy-backs. Diagnostics shows the result.'})
