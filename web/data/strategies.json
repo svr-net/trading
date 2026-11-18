@@ -120,8 +120,10 @@
      "mcnnstep": 5,
      "psar": 1,
      "rebuy": 0,
+     "refill": 1,
      "psarstep": 0.01,
-     "psarmax": 0.1
+     "psarmax": 0.1,
+     "psarvol": 3
     }
    }
   ]
