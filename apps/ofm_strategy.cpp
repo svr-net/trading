@@ -28,6 +28,8 @@
 // private store only), X_TRADELOG every order of the backtest and its .days the daily results (the budget's
 // split), --trace each day's orders (the look-ahead check: a run on fewer days must give the same lines).
 #include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -128,44 +130,111 @@ std::string slurp(const std::string& path) {
   return s.str();
 }
 
-// Every row of a CSV of bars; days and tickers in the order first seen (sorted after).
-Raw readBars(const std::string& path) {
+// Every row of a CSV of bars, in the file's order; days and tickers in the order first seen (sorted after). b: the
+// back end the rows are parsed on (the text cut at line ends into chunks, each parsed with its own names, then
+// merged in order: the same bars as one thread's); null: one thread.
+Raw readBars(const std::string& path, const strat::Backend* b = nullptr) {
   std::string text = slurp(path);
   text.push_back('\n');
+  int col[7] = {0, 1, 2, 3, 4, 5, 6};
+  std::size_t body = 0;
+  {  // the header: which column is which
+    const std::size_t e = text.find('\n');
+    std::string h = text.substr(0, e);
+    if (!h.empty() && h.back() == '\r') h.pop_back();
+    std::vector<std::string> names;
+    for (std::size_t a = 0;;) {
+      const std::size_t c = h.find(',', a);
+      names.push_back(h.substr(a, c == std::string::npos ? std::string::npos : c - a));
+      if (c == std::string::npos) break;
+      a = c + 1;
+    }
+    const char* want[7] = {"date", "ticker", "open", "high", "low", "close", "volume"};
+    for (int k = 0; k < 7; ++k)
+      for (std::size_t j = 0; j < names.size(); ++j)
+        if (names[j] == want[k]) col[k] = int(j);
+    body = e + 1;
+  }
+  // The chunks: about 8 a thread, each ending at a line's end.
+  const std::size_t parts = b ? 64 : 1, len = text.size() - body;
+  std::vector<std::size_t> cut{body};
+  for (std::size_t q = 1; q < parts; ++q) {
+    std::size_t at = body + len * q / parts;
+    at = text.find('\n', std::max(at, cut.back()));
+    if (at == std::string::npos || at + 1 >= text.size()) break;
+    if (at + 1 > cut.back()) cut.push_back(at + 1);
+  }
+  cut.push_back(text.size());
+  struct Part {
+    std::vector<std::string> days, tickers;
+    std::vector<Bar> bars;
+  };
+  std::vector<Part> part(cut.size() - 1);
+  const auto num = [](const char* a, const char* e) {  // the same value strtod gives (both rounded exactly); 0 if none
+    while (a < e && (*a == ' ' || *a == '+')) ++a;
+#if defined(__EMSCRIPTEN__)  // the Lab's toolchain: strtod on the field (from_chars for doubles may be missing)
+    char buf[64];
+    const std::size_t n = std::min<std::size_t>(sizeof buf - 1, std::size_t(e - a));
+    std::memcpy(buf, a, n), buf[n] = '\0';
+    return std::strtod(buf, nullptr);
+#else
+    double x = 0;
+    const auto r = std::from_chars(a, e, x);
+    return r.ec == std::errc() ? x : 0.0;
+#endif
+  };
+  const auto parse = [&](std::size_t x, std::size_t y) {
+    for (std::size_t q = x; q < y; ++q) {
+      Part& out = part[q];
+      std::unordered_map<std::string, std::uint32_t> dIx, tIx;
+      const char* p = text.data() + cut[q];
+      const char* const stop = text.data() + cut[q + 1];
+      const char* f[16];
+      const char* fe[16];
+      while (p < stop) {
+        const char* e = static_cast<const char*>(std::memchr(p, '\n', std::size_t(stop - p)));
+        if (!e) e = stop;
+        const char* le = e > p && e[-1] == '\r' ? e - 1 : e;
+        std::size_t nf = 0;
+        f[0] = p;
+        for (const char* c = p; c < le && nf < 15; ++c)
+          if (*c == ',') fe[nf] = c, f[++nf] = c + 1;
+        fe[nf++] = le;
+        p = e + 1;
+        if (nf < 7 || std::max({col[0], col[1], col[2], col[3], col[4], col[5], col[6]}) >= int(nf)) continue;
+        const std::string day(f[col[0]], std::min<std::size_t>(10, std::size_t(fe[col[0]] - f[col[0]])));
+        const std::string tk(f[col[1]], std::size_t(fe[col[1]] - f[col[1]]));
+        auto di = dIx.emplace(day, std::uint32_t(out.days.size()));
+        if (di.second) out.days.push_back(day);
+        auto ti = tIx.emplace(tk, std::uint32_t(out.tickers.size()));
+        if (ti.second) out.tickers.push_back(tk);
+        Bar bar{di.first->second, ti.first->second, num(f[col[2]], fe[col[2]]), num(f[col[3]], fe[col[3]]), num(f[col[4]], fe[col[4]]),
+                num(f[col[5]], fe[col[5]]), num(f[col[6]], fe[col[6]])};
+        if (bar.o > 0 && bar.h > 0 && bar.l > 0 && bar.c > 0 && bar.h >= bar.l) out.bars.push_back(bar);
+      }
+    }
+  };
+  if (b) b->parallelFor(part.size(), parse);
+  else parse(0, part.size());
+  // Merged in the file's order: each chunk's names mapped to the whole file's.
   Raw r;
   std::unordered_map<std::string, std::uint32_t> dIx, tIx;
-  std::size_t p = 0;
-  std::vector<char*> f;
-  int col[7] = {0, 1, 2, 3, 4, 5, 6};
-  bool header = true;
-  while (p < text.size()) {
-    const std::size_t e = text.find('\n', p);
-    char* line = &text[p];
-    text[e] = '\0';
-    if (e > p && text[e - 1] == '\r') text[e - 1] = '\0';
-    f.clear();
-    f.push_back(line);
-    for (char* c = line; *c; ++c)
-      if (*c == ',') *c = '\0', f.push_back(c + 1);
-    p = e + 1;
-    if (header) {
-      header = false;
-      const char* names[7] = {"date", "ticker", "open", "high", "low", "close", "volume"};
-      for (int k = 0; k < 7; ++k)
-        for (std::size_t j = 0; j < f.size(); ++j)
-          if (std::strcmp(f[j], names[k]) == 0) col[k] = int(j);
-      continue;
+  std::size_t total = 0;
+  for (const auto& pt : part) total += pt.bars.size();
+  r.bars.reserve(total);
+  for (const auto& pt : part) {
+    std::vector<std::uint32_t> dm(pt.days.size()), tm(pt.tickers.size());
+    for (std::size_t k = 0; k < pt.days.size(); ++k) {
+      auto it = dIx.emplace(pt.days[k], std::uint32_t(r.days.size()));
+      if (it.second) r.days.push_back(pt.days[k]);
+      dm[k] = it.first->second;
     }
-    if (f.size() < 7) continue;
-    std::string day(f[col[0]], std::min<std::size_t>(10, std::strlen(f[col[0]])));
-    std::string tk(f[col[1]]);
-    auto d = dIx.emplace(day, std::uint32_t(r.days.size()));
-    if (d.second) r.days.push_back(day);
-    auto t = tIx.emplace(tk, std::uint32_t(r.tickers.size()));
-    if (t.second) r.tickers.push_back(tk);
-    Bar b{d.first->second, t.first->second, std::strtod(f[col[2]], nullptr), std::strtod(f[col[3]], nullptr), std::strtod(f[col[4]], nullptr),
-          std::strtod(f[col[5]], nullptr), std::strtod(f[col[6]], nullptr)};
-    if (b.o > 0 && b.h > 0 && b.l > 0 && b.c > 0 && b.h >= b.l) r.bars.push_back(b);
+    for (std::size_t k = 0; k < pt.tickers.size(); ++k) {
+      auto it = tIx.emplace(pt.tickers[k], std::uint32_t(r.tickers.size()));
+      if (it.second) r.tickers.push_back(pt.tickers[k]);
+      tm[k] = it.first->second;
+    }
+    for (Bar bar : pt.bars) bar.d = dm[bar.d], bar.i = tm[bar.i], r.bars.push_back(bar);
   }
   return r;
 }
@@ -475,11 +544,18 @@ int main(int argc, char** argv) {
   const std::size_t top = o.top >= 0 ? std::size_t(o.top) : M == "UK" ? 300 : M == "US" ? 1000 : M == "EU" ? 500 : M == "APAC" ? 400 : 0;
 
   strat::Data d;
-  toPanel(readBars(o.csv), d);
+  const auto now = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+  const double ld0 = now();
+  Raw raw = readBars(o.csv, backend.get());
+  const double ld1 = now();
+  toPanel(raw, d);
+  raw = Raw();
+  const double ld2 = now();
   std::string note;
   if (!o.overrideCsv.empty()) note = overrideBars(d, o.overrideCsv);
   const std::size_t units = repairUnits(d);
   const std::size_t outliers = rollOutliers(d);
+  if (std::getenv("X_PROFILE")) std::fprintf(stderr, "profile: reading %.2fs, the panel %.2fs, repairs %.2fs\n", ld1 - ld0, ld2 - ld1, now() - ld2);
   const std::size_t T = d.T, N = d.N, k = o.slots;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
   if (T < warm + 30) usage("too few days for the strategy's warm-up");
@@ -694,10 +770,18 @@ int main(int argc, char** argv) {
     std::sort(c.begin(), c.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
   };
   std::vector<std::vector<std::pair<double, std::size_t>>> poolRanked;
+  // X_PROFILE: each stage's wall time, to stderr (the work's own clock; never in the results)
+  struct Prof {
+    double feat = 0, rank = 0, train = 0, sample = 0, select = 0, adapt = 0, check = 0;
+  } prof;
+  const auto clock = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
   // The network's inputs at day t: the share's own and the market's, and with mcpool each strategy's rank of it.
   const auto features = [&](std::size_t t) {
     if (nnAt == t) return;
-    strat::nnFeatures(d, t, &in[t * N], nnF, nnOk), nnAt = t;
+    const double c0 = clock();
+    strat::nnFeatures(d, t, &in[t * N], nnF, nnOk, backend.get()), nnAt = t;
+    const double c1 = clock();
+    prof.feat += c1 - c0;
     if (!pool) return;
     poolRanked.assign(poolS.size(), {});
     for (std::size_t q = 0; q < poolS.size(); ++q) {
@@ -705,6 +789,7 @@ int main(int argc, char** argv) {
       const auto& c = poolRanked[q];
       for (std::size_t r = 0; r < c.size(); ++r) nnF[c[r].second * strat::kNF + 9 + q] = c.size() > 1 ? 0.5 - double(r) / double(c.size() - 1) : 0.0;
     }
+    prof.rank += clock() - c1;
   };
   // The network's shapes for a list of shares at day t (its features then): mu and scale each (0 and 1 without it).
   const auto shapesFor = [&](std::size_t t, const std::vector<std::size_t>& list, std::vector<double>& mu, std::vector<double>& sc) {
@@ -742,16 +827,25 @@ int main(int argc, char** argv) {
   const auto learn = [&](std::size_t t, int epochs) {
     if (!nnOn || learntAt == t) return;
     learntAt = t;
-    net.train(nnSamples, t, mc.horizon, 40000, epochs);
+    const double c0 = clock();
+    net.train(nnSamples, t, mc.horizon, 40000, epochs, backend.get());
+    prof.train += clock() - c0;
     if (net.trained && !nnFirstTrained) nnFirstTrained = t;
     // New samples only at the resets (P["mcnnsample"] 1: every learning day): a day's samples overlap the last
     // day's almost wholly, and taken daily they crowd the window with the last months (UK: CRPS +2.8%, 17 Nov).
     if (P["mcnnsample"] <= 0 && (t - start) % reb != 0) return;
     features(t);
-    for (std::size_t i = 0; i < N; ++i) {
-      strat::NnSample x;
-      if (nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, x)) nnSamples.push_back(x);
+    const double c1 = clock();
+    {  // each share's sample in parallel, then kept in the shares' order
+      std::vector<strat::NnSample> got(N);
+      std::vector<char> has(N, 0);
+      backend->parallelFor(N, [&](std::size_t a, std::size_t e) {
+        for (std::size_t i = a; i < e; ++i) has[i] = nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, got[i]);
+      });
+      for (std::size_t i = 0; i < N; ++i)
+        if (has[i]) nnSamples.push_back(got[i]);
     }
+    prof.sample += clock() - c1;
   };
   const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
   const auto decide = [&](std::size_t t) {
@@ -779,7 +873,9 @@ int main(int argc, char** argv) {
       }
       strat::McReset rr;
       shapesFor(t, cand, mu, sc);
+      const double cs = clock();
       strat::mcRun(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
+      prof.select += clock() - cs;
       std::vector<std::size_t> simBook;
       simReserve.clear();
       {
@@ -820,27 +916,43 @@ int main(int argc, char** argv) {
         if (std::find(target.begin(), target.end(), i) == target.end()) reserve.push_back(i);
     resets.emplace_back(t, target);
     shapesFor(t, target, mu, sc);
+    const double ca = clock();
+    // A share's best stop setting of `specs`: every setting on the same futures in one pass a path (its days drawn and
+    // its bars scaled once), in parallel over the paths; the setting with the most expected log growth (the first of
+    // equals), from each setting's sum over the paths in their order.
+    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs) {
+      const std::size_t G = specs.size(), Pn = mc.paths;
+      std::vector<double> g(G * Pn, 0.0);
+      backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
+        std::vector<std::size_t> days;
+        std::vector<double> pre;
+        for (std::size_t q = a; q < e; ++q) {
+          strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
+          strat::mcRatios(d, i, days, scale, pre);
+          for (std::size_t s2 = 0; s2 < G; ++s2)
+            g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, specs[s2], strat::McHeld{}, adj, scale, pre.data()).ret));
+        }
+      });
+      std::size_t pick = 0;
+      double best = -1e300;
+      for (std::size_t s2 = 0; s2 < G; ++s2) {
+        double m = 0;
+        for (std::size_t q = 0; q < Pn; ++q) m += g[s2 * Pn + q];
+        if (m > best + 1e-12) best = m, pick = s2;
+      }
+      return pick;
+    };
     if (sarAdapt) {  // each target share's SAR from its simulated futures: the pair with the most expected log growth
+      std::vector<strat::McSpec> specs;
+      for (const auto& [st, mx] : sarGrid) {
+        strat::McSpec sv = mc;
+        sv.afStep = st, sv.afMax = mx;
+        specs.push_back(sv);
+      }
       for (std::size_t j = 0; j < target.size(); ++j) {
         const std::size_t i = target[j];
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu[j]), cap = capOf(t, i);
-        double best = -1e300;
-        std::pair<double, double> pick{afStep, afMax};
-        for (const auto& [st, mx] : sarGrid) {
-          strat::McSpec sv = mc;
-          sv.afStep = st, sv.afMax = mx;
-          std::vector<double> g(mc.paths, 0.0);
-          backend->parallelFor(mc.paths, [&](std::size_t a, std::size_t e) {
-            std::vector<std::size_t> days;
-            for (std::size_t q = a; q < e; ++q) {
-              strat::mcDays(t, d.T, sv, strat::mcMix(sv.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
-              g[q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, sv, strat::McHeld{}, adj, sc[j]).ret));
-            }
-          });
-          double m = 0;
-          for (double x : g) m += x;
-          if (m > best + 1e-12) best = m, pick = {st, mx};
-        }
+        const auto pick = sarGrid[bestSetting(i, adj, cap, sc[j], specs)];
         sarPick[i] = pick;
         ++sarChosen[pick];
       }
@@ -850,29 +962,21 @@ int main(int argc, char** argv) {
       all.insert(all.end(), reserve.begin(), reserve.end());
       std::vector<double> mu2, sc2;
       shapesFor(t, all, mu2, sc2);
+      std::vector<strat::McSpec> specs;
+      for (double m : vGrid) {
+        strat::McSpec sv = mc;
+        (psarVol ? sv.psarVol : sv.vstop) = m;
+        specs.push_back(sv);
+      }
       for (std::size_t j = 0; j < all.size(); ++j) {
         const std::size_t i = all[j];
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
-        double best = -1e300, pick = P["vstop"];
-        for (double m : vGrid) {
-          strat::McSpec sv = mc;
-          (psarVol ? sv.psarVol : sv.vstop) = m;
-          std::vector<double> g(mc.paths, 0.0);
-          backend->parallelFor(mc.paths, [&](std::size_t a, std::size_t e) {
-            std::vector<std::size_t> days;
-            for (std::size_t q = a; q < e; ++q) {
-              strat::mcDays(t, d.T, sv, strat::mcMix(sv.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
-              g[q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, sv, strat::McHeld{}, adj, sc2[j]).ret));
-            }
-          });
-          double m2 = 0;
-          for (double x : g) m2 += x;
-          if (m2 > best + 1e-12) best = m2, pick = m;
-        }
+        const double pick = vGrid[bestSetting(i, adj, cap, sc2[j], specs)];
         vPick[i] = pick;
         ++vChosen[pick];
       }
     }
+    prof.adapt += clock() - ca;
     resetMu.push_back(mu), resetSc.push_back(sc);
   };
   const auto inTarget = [&](std::size_t i) {
@@ -991,6 +1095,7 @@ int main(int argc, char** argv) {
     for (std::size_t x = 0; x < daily.size(); ++x) g << dailyDays[x] << ',' << jnum(daily[x], "%.8g") << '\n';
   }
 
+  const double cCheck = clock();
   // ------------------------------------------------------------------ the nested Monte Carlo
   // The resets on the real market: at each rebalance with a full horizon after it, the simulated futures of the book
   // and the real one through the same simulator.
@@ -1088,6 +1193,10 @@ int main(int argc, char** argv) {
   // Each share's stop for the next session (absolute, the store's price unit): a position held, its stop as it
   // stands after the last close; one to be bought, the stop it starts with (psar: the lowest low of the last 5
   // sessions; a fixed stop: from the price paid, so the bridge sets it from the fill: stopLoss).
+  prof.check = clock() - cCheck;
+  if (std::getenv("X_PROFILE"))
+    std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs\n",
+                 prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check);
   const auto stopPrice = [&](std::size_t i) {
     if (!stops) return kNaN;
     const auto b = book.find(i);
