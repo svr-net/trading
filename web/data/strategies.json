@@ -29,7 +29,10 @@
      "mcobj": 1,
      "mccandk": 2,
      "mcpool": 1,
-     "mcnnstep": 5
+     "mcnnstep": 5,
+     "psar": 1,
+     "rebuy": 0,
+     "psaradapt": 1
     }
    }
   ],
