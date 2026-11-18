@@ -506,6 +506,7 @@ def holds(args):
     A stop (apps/ofm_strategy: "stopPrice", the store's price unit; the Parabolic SAR): a good-till-cancelled stop
     sell at IBKR for each position (orderRef ofm-<MARKET>S-...), placed once its buy fills, moved each morning to
     the day's level from the update, and cancelled before the book sells the position any other way."""
+    from datetime import datetime, timezone
     from ib_async import IB, LimitOrder, MarketOrder, StopOrder
     path = args.hold_state
     st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
@@ -543,7 +544,12 @@ def holds(args):
         for sym in [s_ for s_ in st['positions'] if s_ not in held]:
             lines.append(f'{sym}: sold (no longer held)')
             st['positions'].pop(sym)
+        before = st.get('pending', {})
         st['pending'] = {}
+        # A second placing the same day (the page's "Place orders" after the morning's): the book's buys of
+        # today still working at IBKR are kept, never placed twice.
+        working = {t.contract.symbol for t in ib.reqAllOpenOrders()
+                   if t.order.orderRef == ref and t.order.action == 'BUY' and t.orderStatus.status not in DEAD}
         book = json.load(open(args.orders)) if args.orders else {'orders': []}
         # The daily update (apps/ofm_strategy: "updates", every share on the day's list): each position the
         # model would no longer buy is sold now (before the open: in the opening auction); the others keep,
@@ -584,6 +590,12 @@ def holds(args):
             if free <= 0:
                 lines.append(f'{sym}: every slot of the book held, not bought')
                 continue
+            if sym in working:
+                if sym in before:
+                    st['pending'][sym] = before[sym]
+                free -= 1
+                lines.append(f'{sym}: its buy of today is already working at IBKR, kept')
+                continue
             if sym in held or sym in st['positions'] or sym in daily:
                 lines.append(f'{sym}: held already or in the day\'s orders, not bought')
                 continue
@@ -608,6 +620,9 @@ def holds(args):
                 order = LimitOrder('BUY', qty, lim, orderRef=ref, tif='GTD')
                 order.goodTillDate = auction_end_utc(args.market, o['ticker'])
                 how = f'in the opening auction, at most {lim:g}'
+                if order.goodTillDate <= datetime.now(timezone.utc).strftime('%Y%m%d-%H:%M:%S'):  # placed by hand after the auction
+                    order = LimitOrder('BUY', qty, lim, orderRef=ref, tif='DAY')
+                    how = f'at most {lim:g} (a day order: the opening auction is over)'
             elif o.get('open') or not o.get('limit'):
                 order, how = MarketOrder('BUY', qty, orderRef=ref, tif='DAY'), 'in the opening auction'
             else:  # the limit in IBKR's price scale (LSE: pence or pounds), as the day's orders are placed

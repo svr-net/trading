@@ -390,6 +390,11 @@ def hold_book():
     buy = next(t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY')
     # GBP 1,000 at 1.01 a share (pence): 990 shares, at most 101, the opening auction only
     assert buy.order.orderType == 'LMT' and buy.order.tif == 'GTD' and buy.order.lmtPrice == 101.0 and buy.order.totalQuantity == 990, (vars(buy.order), placed)
+    # placed again by hand ("Place orders" on the page): the buy still working is kept, not placed twice
+    again = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    buys = [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY']
+    assert len(buys) == 1 and 'already working at IBKR, kept' in again, (again, len(buys))
+    assert 'XXX' in json.load(open(state))['pending'], again
     b.fill(buy, 990, 100.0)  # the auction at 100
     CLOCK[0] = CLOCK[0].replace(hour=16, minute=30)
     closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
@@ -450,7 +455,16 @@ def eu_book():
     # EUR 6,000 at EUR 503 a share: 11 shares (euros, not pence); on Paris's exchange (SBF); until 09:02 Paris
     assert buy.order.tif == 'GTD' and buy.order.lmtPrice == 503.0 and buy.order.totalQuantity == 11 and buy.contract.exchange == 'SBF', (vars(buy.order), placed)
     assert (until.hour, until.minute) == (9, 2), until
-    return placed
+    # placed by hand after the auction (the page's "Place orders"): a day order at most the limit, not a
+    # good-till time already past
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(10, 30), ZoneInfo('Europe/Paris'))
+    _broker(Broker).events = []
+    late_state = os.path.join(d, 'holds-EU-late.json')
+    late = run(['--market', 'EU', '--holds', 'place', '--orders', path, '--hold-state', late_state])
+    buy2 = next(t for t in SHARED[0]._trades if t.contract.symbol == 'MC' and t.order.action == 'BUY')
+    assert buy2.order.tif == 'DAY' and buy2.order.lmtPrice == 503.0 and 'the opening auction is over' in late, (vars(buy2.order), late)
+    return placed + late
 
 
 def us_book():
