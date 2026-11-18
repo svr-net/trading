@@ -490,6 +490,12 @@ int main(int argc, char** argv) {
   // refill: 1 gives a slot freed by a stop (or an order not filled) to the next share on the list (the simulation's
   // next choices, as many as the slots), so the money stays invested; the reserves are bought only into free slots.
   P.emplace("vstop", 0.0), P.emplace("vstopadapt", 0.0), P.emplace("refill", 0.0);
+  // recover: with vstop, each share's stop at its most probable recovery point, learnt at every reset: over its
+  // futures in the nested Monte Carlo (the network's shapes), the depth under the price paid that `recover` of the
+  // futures ending in profit stayed within before recovering (the winners' maximum adverse excursion); a fall past it
+  // is one winners seldom make: sold, and bought back once a close is over that level again. It trails the highest
+  // close by the same distance. stopmax: the stop's largest distance under the price, whatever the share.
+  P.emplace("recover", 0.0), P.emplace("stopmax", 0.5);
   // psarvol: the volatility-adjusted SAR (with psar): it starts psarvol times the share's daily volatility (60
   // sessions, at the buy) under the price paid, instead of the lows before it, and rises as the SAR does but never
   // closer than that under the close: a calm share's stop close, a volatile one's further, and a rising share not sold
@@ -602,9 +608,13 @@ int main(int argc, char** argv) {
     const auto it = vPick.find(i);
     return it != vPick.end() ? it->second : psarVol ? P["psarvol"] : P["vstop"];
   };
+  std::map<std::size_t, double> recPick;  // recover: each share's recovery point (a fraction under the price)
+  const double stopMax = std::clamp(P["stopmax"], 0.02, 0.5);
   const auto vDist = [&](std::size_t t, std::size_t i) {  // the stop's distance under the price (a fraction)
+    const auto r = recPick.find(i);
+    if (r != recPick.end()) return r->second;
     const double sg = d.sigma[t * N + i];
-    return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), 0.02, 0.5);
+    return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), 0.02, stopMax);
   };
   const double afStep = P["psarstep"], afMax = P["psarmax"];
   std::map<std::size_t, std::pair<double, double>> sarPick;  // psaradapt: each share's SAR step and largest step
@@ -707,6 +717,9 @@ int main(int argc, char** argv) {
   mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
   mc.vstop = vstop ? P["vstop"] : 0.0;
+  mc.stopMax = std::clamp(P["stopmax"], 0.02, 0.5);
+  const double recoverQ = vstop && P["recover"] > 0 ? std::min(0.99, P["recover"]) : 0.0;
+  double recSum = 0, recN = 0;
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
@@ -874,7 +887,14 @@ int main(int argc, char** argv) {
       strat::McReset rr;
       shapesFor(t, cand, mu, sc);
       const double cs = clock();
-      strat::mcRun(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
+      std::vector<strat::McHeld> fresh(cand.size());
+      if (recoverQ > 0)  // each candidate's recovery point first: the simulation chooses with each share's own stop
+        for (std::size_t j = 0; j < cand.size(); ++j) {
+          const double r = strat::mcRecovery(d, t, cand[j], mc, strat::mcAdjust(d, t, cand[j], mc) * std::exp(mu[j]), sc[j], recoverQ, *backend);
+          recPick[cand[j]] = fresh[j].dist = std::clamp(std::isfinite(r) ? r : vDist(t, cand[j]), 0.02, stopMax);
+          recSum += recPick[cand[j]], ++recN;
+        }
+      strat::mcRun(d, t, cand, caps, fresh, k, mc, t, *backend, rr, mu, sc);
       prof.select += clock() - cs;
       std::vector<std::size_t> simBook;
       simReserve.clear();
@@ -1156,6 +1176,8 @@ int main(int argc, char** argv) {
       const auto b = book.find(i);
       if (b != book.end())
         h.held = true, h.mark = d.Cf[L * N + i], h.sar = b->second.sar, h.ep = b->second.ep, h.af = b->second.af, h.exitNext = b->second.exitNext;
+      else if (vstop)
+        h.dist = vDist(L, i);  // its own stop once bought (the recovery point)
       held.push_back(h);
     }
     strat::McReset rr;
@@ -1257,6 +1279,10 @@ int main(int argc, char** argv) {
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
     }
+    if (recoverQ > 0)
+      std::printf("strategy: each share's stop at its most probable recovery point: the depth %.0f%% of its simulated futures ending in profit stayed "
+                  "within before recovering, at most %.0f%% under the price; on average %.1f%% under it (%.0f shares' points at the resets)\n",
+                  100 * recoverQ, 100 * stopMax, recN ? 100 * recSum / recN : 0.0, recN);
     if (refill) std::printf("strategy: a slot freed by a stop goes to the next share the simulation chose (%zu reserves at the last reset)\n", reserve.size());
     if (sarAdapt) {
       std::string used;

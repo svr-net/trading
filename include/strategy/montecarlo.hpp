@@ -36,6 +36,7 @@ struct McSpec {
   // that distance under it sells at once (the catastrophic stop at the broker); bought back once a close is rebuy
   // over the level it left at. 0: none.
   double vstop = 0;
+  double stopMax = 0.5;  // vstop: the stop's largest distance under the price (a fraction)
   // psarVol: the volatility-adjusted SAR (with psar): it starts psarVol times the share's daily volatility under the
   // price paid, and rises as the SAR does but never closer than that under the close. 0: the plain SAR.
   double psarVol = 0;
@@ -66,6 +67,7 @@ struct McHeld {
   bool held = false;
   double mark = 0, sar = 0, ep = 0, af = 0;  // vstop: the catastrophic level, the close's level, the distance
   bool exitNext = false;                    // vstop: a close under its level: sold at the first open
+  double dist = 0;                          // vstop: a share's own stop distance (its recovery point; 0: vstop x volatility)
 };
 
 struct McTrade {
@@ -148,7 +150,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
                  c = r4 ? base * r4[3] : bar(C);
     if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
       if (!in && pending && o <= last * (1 + cap)) {
-        in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, 0.02, 0.5);
+        in = true, pending = false, mark = o, vd = h.dist > 0 ? h.dist : std::clamp(s.vstop * sig0, 0.02, s.stopMax);
         ep = o * (1 - vd), sar = o * (1 - 1.5 * vd), hic = o, exitNext = false;
       }
       if (in) {
@@ -235,6 +237,39 @@ inline void mcRatios(const Data& d, std::size_t i, const std::vector<std::size_t
     out[4 * k] = std::pow(d.O[q * N + i] / pc, scale), out[4 * k + 1] = std::pow(d.H[q * N + i] / pc, scale);
     out[4 * k + 2] = std::pow(d.L[q * N + i] / pc, scale), out[4 * k + 3] = std::pow(d.C[q * N + i] / pc, scale);
   }
+}
+
+// The share's most probable recovery point at reset t0 (a fraction under the price paid): over its simulated
+// futures (the network's shapes; no stop), bought at the first open, the depth the price fell to before the
+// futures that end above the price paid recovered, the q quantile of them (the maximum adverse excursion of the
+// winners). NaN with fewer than 20 such futures. Parallel over the paths on the back end.
+inline double mcRecovery(const Data& d, std::size_t t0, std::size_t i, const McSpec& s, double adj, double scale, double q, const Backend& b) {
+  const std::size_t N = d.N, P = s.paths;
+  std::vector<double> depth(P, -1.0);
+  b.parallelFor(P, [&](std::size_t a, std::size_t e) {
+    std::vector<std::size_t> days;
+    for (std::size_t p = a; p < e; ++p) {
+      mcDays(t0, d.T, s, mcMix(s.seed ^ mcMix(t0 * 1000003ULL + p)), false, days);
+      double last = d.Cf[t0 * N + i], entry = 0, low = 0;
+      if (!(last > 0)) continue;
+      for (std::size_t qd : days) {
+        const double pc = qd > 0 ? d.Cf[(qd - 1) * N + i] : 0.0, C = d.C[qd * N + i];
+        if (!(pc > 0 && C > 0 && d.O[qd * N + i] > 0 && d.L[qd * N + i] > 0)) continue;
+        const double base = last * adj;
+        const auto bar = [&](double x) { return scale == 1.0 ? base * x / pc : base * std::pow(x / pc, scale); };
+        const double o = bar(d.O[qd * N + i]), lo = bar(d.L[qd * N + i]), c = bar(C);
+        if (!(entry > 0)) entry = o, low = o;
+        low = std::min(low, lo), last = c;
+      }
+      if (entry > 0 && last >= entry) depth[p] = 1 - low / entry;  // a winner: how far it fell first
+    }
+  });
+  std::vector<double> w;
+  for (double x : depth)
+    if (x >= 0) w.push_back(x);
+  if (w.size() < 20) return kNaN;
+  std::sort(w.begin(), w.end());
+  return w[std::min(w.size() - 1, std::size_t(q * double(w.size())))];
 }
 
 // One reset's simulated book returns (a slot each for the listed shares, 1/k each; cash 0), path by path on the
