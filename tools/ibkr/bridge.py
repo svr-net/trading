@@ -1348,6 +1348,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
         except ValueError:
             return self.reply(400, {'error': 'bad JSON'})
+        if urlparse(self.path).path == '/restart':  # IB Gateway restarted on demand (the Bridge monitor's button)
+            note = restart_gateway()
+            LAST.insert(0, (datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M %Z'), '-', 'gateway restart', not note.startswith('no restarter'), note))
+            del LAST[10:]
+            return self.reply(200, {'ok': not note.startswith('no restarter'), 'log': note})
         m = self.market(body.get('market'))
         if not m:
             return
