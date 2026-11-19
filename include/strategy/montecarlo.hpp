@@ -39,6 +39,11 @@ struct McSpec {
   // psarVol: the volatility-adjusted SAR (with psar): it starts psarVol times the share's daily volatility under the
   // price paid, and rises as the SAR does but never closer than that under the close. 0: the plain SAR.
   double psarVol = 0;
+  // rebuyStop: the buy-back as an order at the broker, attached to the stop (with psar or a fixed stop): once the stop
+  // sells at L, a buy stop at L * (1 + rebuyStop) works; bought back the day the price comes back through it (the stop's
+  // own day only when the close is at or over it: the price crossed it after the stop), at that level or the open
+  // through a gap. It replaces the buy-back on the SAR's turn (rebuy). 0: none.
+  double rebuyStop = 0;
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
@@ -170,22 +175,33 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
       last = c;
       continue;
     }
-    if (!in && pending && o <= last * (1 + cap)) {  // bought at the open, under the cap
-      in = true, pending = false, mark = o;
+    const auto enter = [&](double px) {  // a position opened at px: its stop
+      in = true, pending = false, stopped = false, mark = px;
       if (s.psar && s.psarVol > 0) {
-        sar = o * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)), ep = o, af = s.afStep;
+        sar = px * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)), ep = px, af = s.afStep;
       } else if (s.psar) {
         const double l5 = lowOf(5);
-        sar = l5 > 0 && l5 < o ? l5 : 0.95 * o, ep = o, af = s.afStep;
+        sar = l5 > 0 && l5 < px ? l5 : 0.95 * px, ep = px, af = s.afStep;
       } else {
-        sar = s.stopLoss > 0 ? o * (1 - s.stopLoss) : 0.0;
+        sar = s.stopLoss > 0 ? px * (1 - s.stopLoss) : 0.0;
       }
+    };
+    if (!in && pending && o <= last * (1 + cap)) enter(o);  // bought at the open, under the cap
+    bool intraday = false;  // bought back during the day at the buy stop's level: a stop that day sells at its level
+    if (!in && stopped && s.rebuyStop > 0) {  // the buy-back order, working since the stop
+      const double trig = level * (1 + s.rebuyStop);
+      if (o >= trig) enter(o);
+      else if (hi >= trig) enter(trig), intraday = true;
     }
     if (in) {
       if (stops && sar > 0 && lo <= sar) {  // stopped: at the stop, or the open through a gap
-        const double px = std::min(o, sar);
+        const double px = intraday ? sar : std::min(o, sar);
         w *= px / mark, in = false, out.stopped = stopped = true, turned = false, level = px;
         if (s.psar) dsar = std::max(ep, px), dep = px, daf = s.afStep;
+        if (s.rebuyStop > 0 && !intraday && c >= px * (1 + s.rebuyStop)) {  // back through the buy stop after the stop
+          enter(px * (1 + s.rebuyStop));
+          w *= c / mark, mark = c;
+        }
       } else {
         w *= c / mark, mark = c;
         if (s.psar) {
@@ -199,7 +215,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
           continue;
         }
       }
-    } else if (stopped && s.rebuy >= 0) {  // the buy-back: its SAR turned up (a close above it), or recovered
+    } else if (stopped && s.rebuy >= 0 && s.rebuyStop <= 0) {  // the buy-back: its SAR turned up (a close above it), or recovered
       if (s.psar) {
         if (c > dsar) {
           turned = true;
