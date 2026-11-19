@@ -89,7 +89,9 @@ function render(r, source) {
   if (levels) head.push(['Stop', 'num']);
   if (levels && !stopOnly) head.push(['Target', 'num']);
   if (holds) head.push(['Sell at', 'num']);
-  const rebuys = r.orders.some((o) => o.rebuy > 0);  // a buy-back after a stop (learnt; none on most days)
+  // A buy-back after a stop: a fraction (the way from the stop back up to the price paid; the day books) or
+  // true (the multi-day books: bought again once its SAR turns up, while the strategy still wants it).
+  const rebuys = r.orders.some((o) => o.rebuy === true || o.rebuy > 0);
   if (rebuys) head.push(['Buy-back', 'num']);
   const chances = r.orders.some((o) => o.fill != null);  // each order's chance to buy (the share's own days so far)
   if (chances) head.push(['Chance to buy', 'num opt']);
@@ -107,7 +109,7 @@ function render(r, source) {
       if (levels && !stopOnly) row.push([o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
       if (holds) row.push(o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
-      if (rebuys) row.push(o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
+      if (rebuys) row.push(o.rebuy === true ? ['SAR turns up', 'num'] : o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
       if (costed) row.push(o.cost == null ? ['–', 'num opt'] : [pct(-o.cost, 2), 'num neg opt']);
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num opt'] : [signed(o.ifFilled, 2)[0], `${signed(o.ifFilled, 2)[1]} opt`]);
