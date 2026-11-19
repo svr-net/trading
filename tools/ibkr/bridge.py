@@ -1075,6 +1075,38 @@ def place_holds(market):
     return code == 0 and not refused(out), out.splitlines()[-1] if out else ''
 
 
+def protect_holds(market):
+    """The multi-day book's buy-back fills since the last run made positions with their own coupled stop and buy-back
+    at once (submit.py --holds protect), every 5 minutes through the session. Logged only when it did something."""
+    code, out = run_submit(['--market', market, '--holds', 'protect', '--hold-state', hold_state(market)], timeout=300)
+    acted = [x.strip() for x in out.splitlines() if 'bought back' in x or 'NO STOP' in x or 'partly filled' in x]
+    if code != 0 or acted:
+        LAST.insert(0, (datetime.now(ZoneInfo(ZONE[market])).strftime('%Y-%m-%d %H:%M %Z'), market, 'hold-protect', code == 0,
+                        '; '.join(acted) or (out.splitlines()[-1] if out else 'failed')))
+        del LAST[10:]
+    return code == 0, out.splitlines()[-1] if out else ''
+
+
+PROTECT_RUNNING = set()
+
+
+def protect_soon(market):
+    """protect_holds in the background, one at a time a market, never beside its book's own placing or close (one
+    client id)."""
+    if market in PROTECT_RUNNING:
+        return
+    PROTECT_RUNNING.add(market)
+
+    def run():
+        try:
+            protect_holds(market)
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f'bridge: hold-protect {market}: {e}\n')
+        finally:
+            PROTECT_RUNNING.discard(market)
+    threading.Thread(target=run, daemon=True).start()
+
+
 def close_holds(market):
     """The multi-day book's positions offered in the closing auction: submit.py --holds close."""
     code, out = run_submit(['--market', market, '--holds', 'close', '--hold-state', hold_state(market)], timeout=600)
@@ -1201,10 +1233,15 @@ def scheduler():
                 if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
                     job(m, 'close', close_market)
                 if hold_book(m) and up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'hold-place') \
-                        and (m, 'place') not in RUNNING and buys_on() and may_try(m, 'hold-place', 5, 3):
+                        and (m, 'place') not in RUNNING and m not in PROTECT_RUNNING and buys_on() and may_try(m, 'hold-place', 5, 3):
                     job(m, 'hold-place', place_holds)
-                if hold_book(m) and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and may_try(m, 'hold-close', 2, 3):
+                if hold_book(m) and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and m not in PROTECT_RUNNING and may_try(m, 'hold-close', 2, 3):
                     job(m, 'hold-close', close_holds)
+                # The buy-backs coupled to the stops: a fill made a position with its own stop at once (every 5 minutes).
+                if hold_book(m) and up and at(now, place) <= now < at(now, close) \
+                        and (m, 'hold-place') not in RUNNING and (m, 'hold-close') not in RUNNING and may_try(m, 'hold-protect', 5):
+                    ATTEMPTS[(m, 'hold-protect', now.date().isoformat())] = (0, time.monotonic())
+                    protect_soon(m)
                 if up and at(now, close, 30) <= now < at(now, close, 240) and not is_done(m, 'flat') and may_try(m, 'flat', 10):
                     job(m, 'flat', flat_check, done_on_ok=False)
                 if at(now, REPORT[m]) <= now < at(now, REPORT[m], 180) and not is_done(m, 'report') and may_try(m, 'report', 10):

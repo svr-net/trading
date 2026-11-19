@@ -226,7 +226,7 @@ class Broker:
         if t.orderStatus.filled >= t.order.totalQuantity:
             t.orderStatus.status = 'Filled'
         side = 'BOT' if t.order.action == 'BUY' else 'SLD'
-        self.fills.append(NS(execution=NS(orderRef=t.order.orderRef, side=side, shares=qty, price=price, permId=t.order.permId), contract=t.contract))
+        self.fills.append(NS(execution=NS(orderRef=t.order.orderRef, side=side, shares=qty, price=price, permId=t.order.permId, execId=f'e{len(self.fills)}'), contract=t.contract))
         if t.order.ocaGroup:  # one cancels the other (reduced with block: ocaType 2)
             for o in self.live():
                 if o is not t and o.order.ocaGroup == t.order.ocaGroup:
@@ -685,6 +685,64 @@ def strategy_stops():
     return placed + closed + moved + dropped
 
 
+def strategy_rebuy():
+    """The buy-back coupled to the stop (apps/ofm_strategy rebuystop) through submit.py --holds: once bought, the
+    stop and its buy-back are one pair at IBKR (a buy stop-limit at the stop's level times 1 + rebuyStop, attached to
+    the stop as its child, good till cancelled); the stop sells, the buy-back fills, and the next run (protect)
+    makes the share a position again with its own pair from the price paid (rebuyStopRel); a stop whose buy-back has
+    not filled leaves the share in the stopped book, never bought by the morning's list, and its buy-back is
+    cancelled once the strategy no longer wants it."""
+    SHARED.clear()
+    CLOCK[0] = _dt.datetime.combine(_dt.date.today(), _dt.time(7, 50), LONDON)
+    d = tempfile.mkdtemp()
+    book = {'model': 'strategy', 'book': 'hold', 'days': 260, 'slots': 5, 'asOf': _dt.date.today().isoformat(), 'orders': [
+        {'ticker': 'XXX', 'close': 100.0, 'entry': 'open', 'open': True, 'limit': 101.0, 'stop': None, 'take': None, 'exitAbove': None, 'days': 260,
+         'stopKind': 'psar-vol', 'stopPrice': 94.0, 'rebuyStop': 0.01, 'rebuyStopRel': -0.05, 'capital': 1000.0, 'maxCapital': 1000.0}], 'updates': []}
+    path, state = os.path.join(d, 'UK.json'), os.path.join(d, 'holds-UK.json')
+    json.dump(book, open(path, 'w'))
+    _broker(Broker).events = []
+    placed = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    b = SHARED[0]
+    live = lambda kind, side: [t for t in b._trades if t.contract.symbol == 'XXX' and t.order.orderType == kind and t.order.action == side  # noqa: E731
+                               and t.orderStatus.status not in ('Cancelled', 'ApiCancelled', 'Filled')]
+    b.fill(next(t for t in b._trades if t.contract.symbol == 'XXX' and t.order.action == 'BUY'), 990, 100.0)
+    CLOCK[0] = CLOCK[0].replace(hour=16, minute=30)
+    closed = run(['--market', 'UK', '--holds', 'close', '--hold-state', state])
+    stop, back = live('STP', 'SELL'), live('STP LMT', 'BUY')
+    assert len(stop) == 1 and stop[0].order.auxPrice == 94.0 and stop[0].order.tif == 'GTC' and not stop[0].order.transmit, ([vars(t.order) for t in stop], closed)
+    assert len(back) == 1 and back[0].order.parentId == stop[0].order.orderId and back[0].order.auxPrice == 95.0 and back[0].order.lmtPrice == 95.5 \
+        and back[0].order.totalQuantity == 990 and back[0].order.tif == 'GTC' and back[0].order.orderRef.startswith('ofm-UKSB'), ([vars(t.order) for t in back], closed)
+    # the next day: the stop sells at 94, the price comes back through 95, the buy-back fills; protect makes it a position
+    CLOCK[0] = CLOCK[0].replace(hour=11, minute=0)
+    b.fill(stop[0], 990, 94.0)
+    b.fill(back[0], 990, 95.0)
+    prot = run(['--market', 'UK', '--holds', 'protect', '--hold-state', state])
+    st = json.load(open(state))
+    assert 'XXX' in st['positions'] and st['positions']['XXX']['entry'] == 95.0 and not st['stopped'], (st, prot)
+    stop, back = live('STP', 'SELL'), live('STP LMT', 'BUY')
+    assert len(stop) == 1 and stop[0].order.auxPrice == 90.0 and len(back) == 1 and back[0].order.auxPrice == 91.0 and back[0].order.parentId == stop[0].order.orderId, \
+        ([vars(t.order) for t in stop + back], prot)
+    again = run(['--market', 'UK', '--holds', 'protect', '--hold-state', state])
+    assert 'bought back' not in again and len(live('STP', 'SELL')) == 1, again  # each fill taken once
+    # the stop sells again; its buy-back does not fill: the next morning the share is in the stopped book, its buy-back
+    # still working, and the list does not buy it at the open
+    b.fill(stop[0], 990, 90.0)
+    CLOCK[0] = CLOCK[0].replace(hour=7, minute=50)
+    book['updates'] = [{'ticker': 'XXX', 'keep': True, 'exitAbove': None, 'stopPrice': None, 'rebuyStop': 0.01, 'rebuyStopRel': -0.05}]
+    json.dump(book, open(path, 'w'))
+    morning = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    st = json.load(open(state))
+    assert 'XXX' in st['stopped'] and 'XXX' not in st['positions'] and len(live('STP LMT', 'BUY')) == 1 and not live('MKT', 'BUY') and not live('LMT', 'BUY') \
+        and 'its buy-back order works' in morning, (st, morning)
+    # the strategy drops it: its buy-back is cancelled
+    book['orders'], book['updates'] = [], [{'ticker': 'XXX', 'keep': False, 'exitAbove': None, 'stopPrice': None}]
+    json.dump(book, open(path, 'w'))
+    dropped = run(['--market', 'UK', '--holds', 'place', '--orders', path, '--hold-state', state])
+    st = json.load(open(state))
+    assert not st['stopped'] and not live('STP LMT', 'BUY') and 'buy-back order cancelled' in dropped, (st, dropped)
+    return placed + closed + prot + morning + dropped
+
+
 if __name__ == '__main__':
     placed, watched = day_on_one_broker()
     print(placed + watched)
@@ -697,6 +755,9 @@ if __name__ == '__main__':
     print('strategy book: held with no exit level (nothing offered at the close), sold at the open when the strategy drops it; OK')
     print(strategy_stops())
     print('strategy book: a GTC stop at the PSAR level once bought, moved up each morning, cancelled before the sale at the open; OK')
+    print(strategy_rebuy())
+    print('strategy book: the buy-back coupled to the stop at IBKR (a child buy stop-limit), a position again with its own pair once filled, '
+          'never bought by the list meanwhile, cancelled when the strategy drops it; OK')
     print(eu_book())
     print('Europe: an EXCHANGE:CODE order in euros, good only through Paris\'s opening auction; OK')
     print(us_book())
