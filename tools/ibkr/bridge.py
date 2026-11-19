@@ -818,6 +818,7 @@ def diag():
         if d.get('errors'):
             add('IBKR messages', None, ' | '.join(d['errors']))
     plan = '; '.join(f"{m}: place {TIMES[m][0]}" + (f", auction {AUCTION[m]}" if AUCTION.get(m) else '') + ', buy-back watch' + (', paths' if PATHS else '') + f", close {TIMES[m][1]}, report {REPORT[m]} ({ZONE[m]})" for m in AUTO)
+    add('Automatic buying', True if buys_on() else None, BUYS['note'])
     add('Schedule', True if AUTO else None, (plan or 'automatic trading off (AUTO_MARKETS)') + (f'; IBKR bars Saturdays {BARS_AT}' if BARS_AT else ''))
     for m in AUTO:
         add(f'{m} today', None, ', '.join(f"{a} {'done' if is_done(m, a) else '-'}" for a in ('leftovers', 'place', 'paths', 'auction', 'close', 'flat', 'report') + (('hold-place', 'hold-close') if hold_book(m) else ()))
@@ -1122,6 +1123,35 @@ def flat_check(market):
     return code == 0, last + (': sold at the next open' if code == 1 else '')
 
 
+BUYS_URL = os.environ.get('BUYS_URL', 'https://raw.githubusercontent.com/svr-net/trading/main/config/nas-buys.json')
+BUYS = {'on': None, 'checked': -1e9, 'note': 'not read yet'}
+
+
+def buys_on():
+    """The repository's switch for the automatic buying (config/nas-buys.json), read every 5 minutes. A
+    failed read keeps the last value read (kept in the history folder, so a restart keeps it too); never
+    read: on. Off, the scheduler places nothing new; the selling steps and the closes keep running."""
+    keep = os.path.join(HISTORY, 'buys-on')
+    if BUYS['on'] is None:
+        try:
+            BUYS['on'] = open(keep).read().strip() != '0'
+        except OSError:
+            BUYS['on'] = True
+    if time.monotonic() - BUYS['checked'] >= 300:
+        BUYS['checked'] = time.monotonic()
+        try:
+            req = urllib.request.Request(BUYS_URL, headers={'User-Agent': 'ofm-bridge', 'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                on = json.loads(r.read()).get('buys') is not False
+            BUYS.update(on=on, note=f"{'on' if on else 'off'} (config/nas-buys.json, read {datetime.now().astimezone():%H:%M %Z})")
+            os.makedirs(HISTORY, exist_ok=True)
+            with open(keep, 'w') as f:
+                f.write('1' if on else '0')
+        except Exception as e:  # noqa: BLE001
+            BUYS['note'] = f"{'on' if BUYS['on'] else 'off'} (the last read; config/nas-buys.json not read: {type(e).__name__})"
+    return BUYS['on']
+
+
 def scheduler():
     """Each automatic market's day as steps that should be done by now, checked every 30 seconds and
     done when missing, so a restart, a redeploy or a failed step is caught up rather than lost: the
@@ -1152,7 +1182,7 @@ def scheduler():
                     job(m, 'leftovers', sell_leftovers)
                 tried = ATTEMPTS.get((m, 'leftovers', now.date().isoformat()), (0, None))[0] > 0
                 settled = is_done(m, 'leftovers') or (tried and (m, 'leftovers') not in RUNNING)  # the placing waits for it to finish
-                if up and settled and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and may_try(m, 'place', 5, 4):
+                if up and settled and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'place') and buys_on() and may_try(m, 'place', 5, 4):
                     job(m, 'place', place_and_watch, done_on_ok=False)  # place_and_watch marks it and starts the watch
                 if up and is_done(m, 'place') and not live_is_hold(m) and now < at(now, close, -3) and m not in REBUY_RUNNING and (m, 'place') not in RUNNING \
                         and (m, 'replace') not in RUNNING and may_try(m, 'rebuy', 5):
@@ -1171,7 +1201,7 @@ def scheduler():
                 if at(now, close) <= now < at(now, close, 9) and not is_done(m, 'close') and may_try(m, 'close', 1):
                     job(m, 'close', close_market)
                 if hold_book(m) and up and is_done(m, 'place') and at(now, place) <= now < at(now, close, -15) and not is_done(m, 'hold-place') \
-                        and (m, 'place') not in RUNNING and may_try(m, 'hold-place', 5, 3):
+                        and (m, 'place') not in RUNNING and buys_on() and may_try(m, 'hold-place', 5, 3):
                     job(m, 'hold-place', place_holds)
                 if hold_book(m) and up and at(now, close) <= now < at(now, close, 9) and not is_done(m, 'hold-close') and may_try(m, 'hold-close', 2, 3):
                     job(m, 'hold-close', close_holds)
