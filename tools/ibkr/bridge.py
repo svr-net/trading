@@ -226,6 +226,31 @@ def bars_resume():
                     pass
 
 
+REFUSAL = ('2139:', 'paper-trading has not been acknowledged')
+RESTARTED_FOR_REFUSAL = [-1e9]  # monotonic time of the last IB Gateway restart asked for a refusal
+
+
+def refused(out):
+    """IBKR refusing the orders themselves (2139, "Real paper-trading has not been acknowledged yet":
+    16-19 Nov, every buy dead after IB Gateway restarted) in submit.py's output. submit.py still exits 0,
+    so the step was marked done and never tried again."""
+    return any(r in (out or '') for r in REFUSAL)
+
+
+def restart_for_refusal(market, action):
+    """IB Gateway restarted (at most once every 20 minutes) after IBKR refused a step's orders, so the
+    scheduler's next try logs in afresh; then 4 minutes for the login."""
+    if time.monotonic() - RESTARTED_FOR_REFUSAL[0] < 20 * 60:
+        return
+    RESTARTED_FOR_REFUSAL[0] = time.monotonic()
+    note = restart_gateway()
+    GATEWAY.update(restarts=GATEWAY['restarts'] + 1, restarted=datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z'),
+                   note=f'IBKR refused the {market} {action} orders (2139): {note}')
+    sys.stderr.write(f'bridge: IBKR refused the {market} {action} orders (2139): {note}\n')
+    if not note.startswith('no restarter'):
+        time.sleep(240)
+
+
 def run_submit(args, timeout=300):
     if not any(a in args for a in LONG_RUNS):  # a step: the bars fetch waits for it
         bars_quiet()
@@ -434,6 +459,8 @@ def place_and_watch(market):
     summary = f'{placed_n} sent; {verdict}' + (f'; rejected: ' + '; '.join(rejected) if rejected else '') + (f'; {len(skipped)} skipped: ' + '; '.join(skipped) if skipped else '')
     if code != 0:
         return False, summary or 'failed'
+    if refused(out):
+        return False, 'IBKR refused the orders (2139: paper trading not acknowledged); tried again after IB Gateway restarts: ' + summary
     placed(market, path, False)
     mark_done(market, 'place')
     with open(placed_digest_file(market), 'w') as f:  # the file placed today: a newer one is placed too (scheduler)
@@ -929,6 +956,8 @@ def job(market, action, fn, done_on_ok=True):
             ok, summary = fn(m)
             if ok and done_on_ok:
                 mark_done(m, action)
+            if not ok and refused(summary):
+                restart_for_refusal(m, action)
             return ok, summary
         finally:
             RUNNING.discard((m, action))
@@ -1042,7 +1071,7 @@ def place_holds(market):
         with open(path, 'wb') as f:
             f.write(body)
     code, out = run_submit(['--market', market, '--holds', 'place', '--orders', path, '--hold-state', hold_state(market)], timeout=900)
-    return code == 0, out.splitlines()[-1] if out else ''
+    return code == 0 and not refused(out), out.splitlines()[-1] if out else ''
 
 
 def close_holds(market):
