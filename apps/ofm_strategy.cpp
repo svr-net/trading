@@ -1328,6 +1328,17 @@ int main(int argc, char** argv) {
     openStop(q, L + 1, i, at);
     return q.sar / at - 1;
   };
+  // The orders by expected return per unit of stop (stops): the expected return after costs (times the chance to
+  // fill) over the stop's distance under the last close (at least 0.5%), highest first, so a far stop must earn its
+  // place; the bridge fills the free slots in this order. The order of equals (and without stops) kept.
+  if (stops)
+    std::stable_sort(final.begin(), final.end(), [&](const Order& a, const Order& b) {
+      const auto perStop = [&](const Order& x) {
+        const double dist = std::max(0.005, 1 - stopPrice(x.i) / x.close), fill = std::isfinite(x.fill) ? x.fill : 1.0;
+        return std::isfinite(dist) ? fill * x.net / dist : -1e300;
+      };
+      return perStop(a) > perStop(b);
+    });
   const std::string stopKind = psarVol ? "psar-vol" : psar ? "psar" : vstop ? "vol" : stopLoss > 0 ? "fixed" : "none";
 
   // ------------------------------------------------------------------ report
