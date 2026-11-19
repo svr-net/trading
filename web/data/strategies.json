@@ -71,9 +71,7 @@
      "psarvol": 3,
      "psarvoladapt": 1,
      "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopjoint": 1,
-     "mcprob": 1
+     "rebuystopadapt": 1
     }
    }
   ],
