@@ -1,0 +1,4 @@
+{
+  "buys": true,
+  "note": "The NAS bridge's automatic buying (the day's placing and the multi-day book's). false: it places no new buys; selling leftovers, the closes and the flat checks keep running. Read by the bridge every 5 minutes."
+}
