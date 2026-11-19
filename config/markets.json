@@ -19,7 +19,11 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "psarvoladapt": 1
+          "psarvoladapt": 1,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -48,7 +52,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 5
+          "psarvol": 5,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -78,7 +86,11 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "psarvoladapt": 1
+          "psarvoladapt": 1,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -107,7 +119,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -136,7 +152,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -169,7 +189,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": []
