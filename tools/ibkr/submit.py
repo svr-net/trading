@@ -796,7 +796,7 @@ def main():
                           f"{kind}stop {100 * o['stopRel']:+.2f}%{take} from the price bought at, one cancelling the other; the rest sold at the close")
                     continue
                 print(f"  {ib_symbol(o['ticker'], args.market):8s} buy {q:6d} limit {o['limit']:.4f}  stop {o['stop']}  take {o['take']}"
-                      + (f"  buy-back {100 * o['rebuy']:.0f}% back after a stop" if (o.get('rebuy') or 0) > 0 else ''))
+                      + (f"  buy-back {100 * rebuy_fraction(o):.0f}% back after a stop" if rebuy_fraction(o) > 0 else ''))
             return
 
     from ib_async import IB, Stock, LimitOrder, StopOrder, MarketOrder  # imported here so --dry-run needs no install
@@ -1202,6 +1202,13 @@ def paths(args):
     print(f'{args.market} paths: {len(tickers)} shares, {rows} prices')
 
 
+def rebuy_fraction(o):
+    """An order's buy-back as a fraction of the way from its stop back up to the price paid; 0 when none,
+    or when it is a flag (true: bought again once its SAR turns up, by the next day's orders)."""
+    x = o.get('rebuy')
+    return 0.0 if isinstance(x, bool) or not isinstance(x, (int, float)) else float(x)
+
+
 def rebuy(args, ref):
     """The buy-backs after the day's stops (places them; see the module's help). It runs as the
     orders' own client (--client-id, the one that placed them and closes them), so it sees their fills
@@ -1213,7 +1220,9 @@ def rebuy(args, ref):
     from ib_async import IB, LimitOrder, Order, StopLimitOrder, StopOrder
 
     book = json.load(open(args.orders))
-    plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if (o.get('rebuy') or 0) > 0}
+    # A fraction only: "rebuy": true (the multi-day books) is a buy-back once the SAR turns up, which the
+    # next day's orders make; read as 1 it would wait for the price paid.
+    plan = {ib_symbol(o['ticker'].split(':')[-1], args.market): o for o in book['orders'] if rebuy_fraction(o) > 0}
     slots = int(book.get('slots') or 0)
     capped = bool(slots) and len(book['orders']) > slots  # more orders than the money pays for: watch the fills
     # Orders for the open: their stop-loss and take-profit placed from the price each was bought at.
