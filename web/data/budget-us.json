@@ -5,7 +5,7 @@
  "share": 0.15,
  "allocation": {
   "APAC": 0.15,
-  "EU": 0.15,
+  "EU": 0.4,
   "INDEX": 0.15,
   "UK": 0.15,
   "US": 0.15
@@ -264,7 +264,7 @@
  },
  "forward": {
   "outlook": 0.0,
-  "expectedDaily": 0.0012893273689194905,
+  "expectedDaily": 0.0012893273689194903,
   "delivered": 0.0
  },
  "total": 6249.630024,
