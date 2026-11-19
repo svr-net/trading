@@ -1209,6 +1209,18 @@ int main(int argc, char** argv) {
     }
     return d.Cf[L * N + i] * (1 - stopLoss);
   };
+  // The close a stopped share must beat to be bought again, were it stopped at the next session (as stoppedFrom and
+  // canBuy): with psar its falling SAR's start (the highest price while held, at least the stop); with a fixed or a
+  // volatility stop rebuy above the level it left at. A share not held: as bought at the last close.
+  const auto rebuyPrice = [&](std::size_t i) {
+    if (!stops || rebuy < 0) return kNaN;
+    const auto b = book.find(i);
+    Pos p{};
+    if (b != book.end()) p = b->second;
+    else openStop(p, L + 1, i, d.Cf[L * N + i]);
+    if (psar) return std::max(p.ep, p.sar);
+    return (vstop ? p.ep : p.sar) * (1 + rebuy);
+  };
   const std::string stopKind = psarVol ? "psar-vol" : psar ? "psar" : vstop ? "vol" : stopLoss > 0 ? "fixed" : "none";
 
   // ------------------------------------------------------------------ report
@@ -1312,6 +1324,7 @@ int main(int argc, char** argv) {
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
         << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false")
+        << ",\"rebuyAt\":" << (stops && rebuy >= 0 ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i])
