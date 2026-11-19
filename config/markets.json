@@ -1,5 +1,5 @@
 {
-  "about": "Each market's strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy. 'live' makes the orders the bridge places. A strategy: name (lowercase, digits, -), strategy (one of the engine's injectable strategies, strategies/*.cpp: momentum, trend, lowvol, reversal; ofm_strategy --list), optional params ({name: number}, overriding the strategy's defaults), optional backend (the compute back end, backends/*.cpp: threads or serial), optional only (\"aim\": the UK's AIM shares only), optional args. Every market's params turn on the nested Monte Carlo with the differential neural overlay choosing the book (mc, mcselect, mcnn, mcobj, mccandk), every strategy injected into it (mcpool: each one's scores the network's inputs, each one's best among the candidates), the network learning every week from the bars realised since (mcnnstep; apps/ofm_strategy). Every position has a stop at IBKR: the volatility-adjusted Parabolic SAR (psar, psarvol: it starts that many times the share's daily volatility under the price paid and never comes closer than that under the close; slow steps, psarstep 0.01, psarmax 0.1), its multiple learnt for each share at every reset by the nested Monte Carlo where psarvoladapt is set; a share stopped out is bought back once its SAR turns up again while the strategy still wants it (rebuy), and the slot a stop frees goes to the simulation's next choice meanwhile (refill). The engine learns and backtests before any cost; the broker's costs come off the final order list only. Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions, T/k each, and keeps the k whose year before was best, chosen day by day. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets, each market's share following its record. \"paper\": true gives every market at least a small share whatever its record.",
+  "about": "Each market's strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy. 'live' makes the orders the bridge places. A strategy: name (lowercase, digits, -), strategy (one of the engine's injectable strategies, strategies/*.cpp: momentum, trend, lowvol, reversal; ofm_strategy --list), optional params ({name: number}, overriding the strategy's defaults), optional backend (the compute back end, backends/*.cpp: threads or serial), optional only (\"aim\": the UK's AIM shares only), optional args. Every market's params turn on the nested Monte Carlo with the differential neural overlay choosing the book (mc, mcselect, mcnn, mcobj, mccandk), every strategy injected into it (mcpool: each one's scores the network's inputs, each one's best among the candidates), the network learning every week from the bars realised since (mcnnstep; apps/ofm_strategy). Every position has a stop at IBKR: the volatility-adjusted Parabolic SAR (psar, psarvol: it starts that many times the share's daily volatility under the price paid and never comes closer than that under the close; slow steps, psarstep 0.01, psarmax 0.1), its multiple learnt for each share at every reset by the nested Monte Carlo where psarvoladapt is set; its buy-back coupled to the stop at IBKR (rebuystop: a buy stop over the level the stop sold at, attached to the stop as its child, so it works only once the stop has sold; bought back while the strategy still wants the share), the stop's band and the buy-back's distance learnt together for each share at every reset (stopjoint), the pair best on the most simulated futures (mcprob: the most probable best), and the slot a stop frees goes to the simulation's next choice meanwhile (refill). The engine learns and backtests before any cost; the broker's costs come off the final order list only. Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions, T/k each, and keeps the k whose year before was best, chosen day by day. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets, each market's share following its record. \"paper\": true gives every market at least a small share whatever its record.",
   "markets": {
     "UK": {
       "live": {
@@ -19,7 +19,11 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "psarvoladapt": 1
+          "psarvoladapt": 1,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -48,7 +52,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 5
+          "psarvol": 5,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -78,7 +86,11 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "psarvoladapt": 1
+          "psarvoladapt": 1,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -107,7 +119,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -136,7 +152,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": [],
@@ -169,7 +189,11 @@
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
-          "psarvol": 3
+          "psarvol": 3,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopjoint": 1,
+          "mcprob": 1
         }
       },
       "shadows": []

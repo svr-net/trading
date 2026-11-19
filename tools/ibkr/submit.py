@@ -507,9 +507,10 @@ def holds(args):
     sell at IBKR for each position (orderRef ofm-<MARKET>S-...), placed once its buy fills, moved each morning to
     the day's level from the update, and cancelled before the book sells the position any other way."""
     from datetime import datetime, timezone
-    from ib_async import IB, LimitOrder, MarketOrder, StopOrder
+    from ib_async import IB, LimitOrder, MarketOrder, StopLimitOrder, StopOrder
     path = args.hold_state
     st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
+    st.setdefault('stopped', {})  # shares sold by their stop whose buy-back order works: their plans
     stop_ref = f'ofm-{args.market}S'
     ref = f'ofm-{args.market}H-{date.today().isoformat()}'
     ib = IB()
@@ -526,24 +527,91 @@ def holds(args):
         for t in stops_of(sym):
             ib.cancelOrder(t.order)
 
-    def set_stop(sym, contract, qty, level):
-        """The position's stop at `level` (IBKR's price scale), on the price step under it: kept when it is
-        already there, else the old one cancelled and a good-till-cancelled stop placed."""
+    def rebuys_of(sym):  # the share's buy-back orders (attached to its stop, or working since it filled)
+        return [t for t in stops_of(sym) if t.order.action == 'BUY']
+
+    def set_stop(sym, contract, qty, level, rebuy=None):
+        """The position's stop at `level` (IBKR's price scale), on the price step under it, and (rebuy: apps/ofm_strategy's
+        rebuyStop) its buy-back coupled to it: a buy stop-limit at the stop's level times 1 + rebuy (at most 1% over its
+        trigger), attached to the stop as its child, so IBKR makes it work only once the stop has sold, good till
+        cancelled, as the backtest. Kept when both are already there; else the old ones cancelled and the pair placed."""
         c, ticks = exit_contract(ib, contract)
         if c is None:
             return f'{sym}: not found at IBKR, NO STOP'
         lim = round_to(level, tick_at(ticks[0], ticks[1], level), 'down')
+        back = round_to(lim * (1 + rebuy), tick_at(ticks[0], ticks[1], lim * (1 + rebuy)), 'up') if rebuy else None
         cur = stops_of(sym)
-        if len(cur) == 1 and abs(float(cur[0].order.auxPrice) - lim) < 1e-9 and float(cur[0].order.totalQuantity) == float(qty):
-            return f'{sym}: its stop kept at {lim:g}'
+        sells, buys = [t for t in cur if t.order.action == 'SELL'], [t for t in cur if t.order.action == 'BUY']
+        if len(sells) == 1 and abs(float(sells[0].order.auxPrice) - lim) < 1e-9 and float(sells[0].order.totalQuantity) == float(qty) \
+                and (back is None and not buys or back is not None and len(buys) == 1 and abs(float(buys[0].order.auxPrice) - back) < 1e-9):
+            return f'{sym}: its stop kept at {lim:g}' + (f', its buy-back at {back:g}' if back else '')
         cancel_stops(sym)
-        fate, msgs = order_fate(ib, ib.placeOrder(c, StopOrder('SELL', qty, lim, orderRef=f'{stop_ref}-{date.today().isoformat()}', tif='GTC')), errors)
-        return f"{sym}: stop at {lim:g} (good till cancelled): {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else '')
+        day = date.today().isoformat()
+        stop = StopOrder('SELL', qty, lim, orderRef=f'{stop_ref}-{day}', tif='GTC', transmit=back is None)
+        trade = ib.placeOrder(c, stop)
+        if back is None:
+            fate, msgs = order_fate(ib, trade, errors)
+            return f"{sym}: stop at {lim:g} (good till cancelled): {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else '')
+        cap = round_to(back * 1.01, tick_at(ticks[0], ticks[1], back * 1.01), 'down')
+        child = StopLimitOrder('BUY', qty, cap, back, orderRef=f'{stop_ref}B-{day}', tif='GTC', parentId=stop.orderId, transmit=True)
+        fate, msgs = order_fate(ib, ib.placeOrder(c, child), errors)
+        fate0, msgs0 = order_fate(ib, trade, errors)
+        msgs = msgs0 + msgs
+        return (f"{sym}: stop at {lim:g} with its buy-back at {back:g} (at most {cap:g}) coupled to it, good till cancelled: {fate0}/{fate}"
+                + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
+
+    def bought_back(sym, qty, entry, why):
+        """A share bought again by its buy-back order: a position again (its stopped plan), its stop from the price paid
+        (rebuyStopRel, as the backtest's openStop) with a new buy-back coupled to it, at once."""
+        plan = st['stopped'].pop(sym)
+        pos = {k: v for k, v in plan.items() if k not in ('stoppedOn',)}
+        pos.update(qty=qty, entry=entry, since=date.today().isoformat(), closes=0)
+        pos.pop('offered', None), pos.pop('exiting', None)
+        rel = plan.get('rebuyStopRel')
+        pos['stop'] = entry * (1 + float(rel)) if rel is not None else 0.95 * entry
+        st['positions'][sym] = pos
+        return f'{sym}: bought back {qty:g} at {entry:g} ({why}); ' + set_stop(sym, plan_contract(plan), qty, pos['stop'], plan.get('rebuyStop'))
+
+    def plan_contract(plan):
+        from ib_async import Contract
+        return Contract(conId=int(plan['conId']), exchange='SMART') if plan.get('conId') else None
+
+    def protect():
+        """The buy-back fills (ofm-<MARKET>SB orders) no run has taken yet: each share a position again, with its own
+        coupled stop and buy-back at once. A share stopped and bought back since the last run moves through the
+        stopped book first; a buy-back still partly filled waits for the rest. Each fill is taken once (its execId)."""
+        seen = set(st.setdefault('rebuyExecs', []))
+        got = {}
+        for f in ib.reqExecutions():
+            if (f.execution.orderRef or '').startswith(f'{stop_ref}B') and f.execution.side == 'BOT' and f.execution.execId not in seen:
+                g = got.setdefault(f.contract.symbol, [0.0, 0.0, []])
+                g[0] += f.execution.shares
+                g[1] += f.execution.shares * f.execution.price
+                g[2].append(f.execution.execId)
+        for sym, (q, v, ids) in got.items():
+            if any(float(t.orderStatus.filled or 0) > 0 and float(t.orderStatus.remaining or 0) > 0 for t in rebuys_of(sym)):
+                lines.append(f'{sym}: its buy-back partly filled ({q:g} so far): taken when complete')
+                continue
+            if sym in st['positions'] and sym not in st['stopped']:  # stopped and bought back since the last run
+                st['stopped'][sym] = dict(st['positions'].pop(sym), stoppedOn=date.today().isoformat())
+            if sym in st['stopped']:
+                lines.append(bought_back(sym, q, v / q, 'its buy-back order filled'))
+            st['rebuyExecs'] = (st['rebuyExecs'] + ids)[-500:]
+
+    if args.holds == 'protect':
+        protect()
 
     if args.holds == 'place':
+        protect()  # a buy-back filled since the last run
+        for sym in [s_ for s_ in st['stopped'] if s_ in held and s_ not in st['positions']]:  # filled while no run saw it
+            lines.append(bought_back(sym, float(held[sym].position), float(held[sym].avgCost or 0) or float(st['stopped'][sym].get('entry') or 0), 'held again'))
         for sym in [s_ for s_ in st['positions'] if s_ not in held]:
-            lines.append(f'{sym}: sold (no longer held)')
-            st['positions'].pop(sym)
+            pos = st['positions'].pop(sym)
+            if pos.get('rebuyStop') and any(t.orderStatus.status not in DEAD for t in rebuys_of(sym)):  # its stop sold: its buy-back works
+                st['stopped'][sym] = dict(pos, stoppedOn=date.today().isoformat())
+                lines.append(f'{sym}: sold by its stop; its buy-back order works')
+            else:
+                lines.append(f'{sym}: sold (no longer held)')
         before = st.get('pending', {})
         st['pending'] = {}
         # A second placing the same day (the page's "Place orders" after the morning's): the book's buys of
@@ -556,6 +624,15 @@ def holds(args):
         # their exit level set again from the day's. A share without an update keeps its plan.
         today = date.today().isoformat()
         upd = {ib_symbol(u['ticker'].split(':')[-1], args.market): u for u in book.get('updates', []) if u.get('ticker')}
+        for sym in list(st['stopped']):  # a stopped share's buy-back works while the strategy still wants it
+            u = upd.get(sym)
+            if u is None or not u.get('keep', True):
+                for t in rebuys_of(sym):
+                    ib.cancelOrder(t.order)
+                st['stopped'].pop(sym)
+                lines.append(f'{sym}: the strategy no longer wants it: its buy-back order cancelled')
+            elif u.get('rebuyStopRel') is not None:
+                st['stopped'][sym]['rebuyStopRel'] = float(u['rebuyStopRel'])
         for sym, pos in st['positions'].items():
             u = upd.get(sym)
             if not u or sym not in held:
@@ -570,9 +647,13 @@ def holds(args):
                 if ok:
                     pos['exiting'] = today
                 lines.append(f"{sym}: the model no longer holds it ({100 * float(u.get('expected') or 0):+.2f}% expected), sold at the open: {line}")
-            elif u.get('stopPrice') is not None and pos.get('scale'):  # kept: its stop moved to the day's level
+            elif u.get('stopPrice') is not None and pos.get('scale'):  # kept: its stop moved to the day's level (its buy-back with it)
                 pos['stop'] = float(u['stopPrice']) * float(pos['scale'])
-                lines.append(set_stop(sym, held[sym].contract, min(float(pos.get('qty', held[sym].position)), held[sym].position), pos['stop']))
+                if u.get('rebuyStop') is not None:
+                    pos['rebuyStop'] = float(u['rebuyStop'])
+                if u.get('rebuyStopRel') is not None:
+                    pos['rebuyStopRel'] = float(u['rebuyStopRel'])
+                lines.append(set_stop(sym, held[sym].contract, min(float(pos.get('qty', held[sym].position)), held[sym].position), pos['stop'], pos.get('rebuyStop')))
             elif u.get('exitAbove') is not None and abs(float(u['exitAbove']) - float(pos.get('exitAbove') or 0)) > 1e-9:
                 lines.append(f"{sym}: kept; its exit level {100 * float(pos.get('exitAbove') or 0):+.2f}% -> {100 * float(u['exitAbove']):+.2f}% above the price paid")
                 pos['exitAbove'] = float(u['exitAbove'])
@@ -598,6 +679,9 @@ def holds(args):
                 continue
             if sym in held or sym in st['positions'] or sym in daily:
                 lines.append(f'{sym}: held already or in the day\'s orders, not bought')
+                continue
+            if sym in st['stopped']:  # as the backtest: a stopped share is bought again by its buy-back order only
+                lines.append(f'{sym}: its buy-back order works since its stop, not bought at the open')
                 continue
             c = contract_of(o['ticker'], args.market)
             if not qualified(ib, c):
@@ -644,9 +728,12 @@ def holds(args):
             st['pending'][sym] = {'conId': c.conId, 'qty': qty, 'exit': o.get('exit', 'up'), 'exitAbove': None if o.get('exitAbove') is None else float(o['exitAbove']), 'days': int(o.get('days') or 5)}
             if o.get('stopPrice') is not None and o.get('entry') == 'open':  # its stop once it fills (IBKR's price scale)
                 st['pending'][sym].update(stopPrice=float(o['stopPrice']) * scale, scale=scale)
+            if o.get('rebuyStop') is not None:  # its buy-back order, coupled to the stop
+                st['pending'][sym].update(rebuyStop=float(o['rebuyStop']), rebuyStopRel=None if o.get('rebuyStopRel') is None else float(o['rebuyStopRel']))
             free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
-    else:
+    elif args.holds == 'close':
+        protect()  # the day's buy-backs: positions again before the close's offers
         today = date.today().isoformat()
         got = {}
         for f in ib.reqExecutions():
@@ -667,6 +754,8 @@ def holds(args):
             if plan.get('stopPrice') is not None:  # its stop: the strategy's level, under the price paid (else 5% under it)
                 lvl = float(plan['stopPrice'])
                 st['positions'][sym].update(stop=lvl if lvl < v / q else 0.95 * v / q, scale=float(plan.get('scale') or 1.0))
+            if plan.get('rebuyStop') is not None:
+                st['positions'][sym].update(rebuyStop=plan['rebuyStop'], rebuyStopRel=plan.get('rebuyStopRel'))
             lines.append(f'{sym}: bought {q:g} at {v / q:g}')
         st['pending'] = {}
         for sym, pos in st['positions'].items():
@@ -688,7 +777,7 @@ def holds(args):
                 continue
             last = int(pos.get('days') or 5)
             if pos.get('stop') and pos['closes'] < last:  # the position's stop working at IBKR (placed after its fill; moved each morning)
-                lines.append(set_stop(sym, p.contract, qty, float(pos['stop'])))
+                lines.append(set_stop(sym, p.contract, qty, float(pos['stop']), pos.get('rebuyStop')))
             if pos['closes'] >= last:  # its last day: sold at the close whatever the price (a limit at the 20-day low if the exchange refuses a MOC)
                 cancel_stops(sym)
                 ok, line = sell_out(ib, c, qty, ref + '-close', errors, at_close=True)
@@ -752,7 +841,8 @@ def main():
     a.add_argument('--state', action='store_true', help="the live state of today's trades and the model's holdings (--tickers), as JSON")
     a.add_argument('--check', action='store_true', help='with --leftovers: only list them; exit 1 when there are any')
     a.add_argument('--ping', action='store_true', help="exit 0 when IB Gateway's API answers within 15 seconds, else 1")
-    a.add_argument('--holds', choices=['place', 'close'], help="the multi-day book: place its orders (--orders), or offer its positions at the close")
+    a.add_argument('--holds', choices=['place', 'close', 'protect'], help="the multi-day book: place its orders (--orders), offer its positions at the close, "
+                   "or (protect) make the day's buy-back fills positions with their own stop at once")
     a.add_argument('--hold-state', help="with --holds: the book's positions (a JSON file the bridge keeps)")
     args = a.parse_args()
     # Each market its own API clients (IBKR allows one connection per client id): the orders' client

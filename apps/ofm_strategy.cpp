@@ -412,7 +412,7 @@ struct Row {  // an order of the backtest
 struct Pos { std::size_t row; double mark, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2, hic = 0, band = 0; bool exitNext = false; };
 // A share whose position was stopped: its SAR on the way down (with psar: the highest high since as the level,
 // the lowest low as ep), and whether it has turned up again (a close above it).
-struct Stopped { double level = 0, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2; bool turned = false; };
+struct Stopped { double level = 0, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2, trigger = 0; std::size_t at = 0; bool turned = false; };
 
 struct Learnt {  // the strategy's past trades by their place on the list, known on the day
   std::vector<double> sum, n;
@@ -501,6 +501,13 @@ int main(int argc, char** argv) {
   // 0.1 or 0.2) with the stop and its buy-back, and the pair with the most expected log growth is the share's until
   // the next reset (a position keeps the pair it was bought with).
   P.emplace("psaradapt", 0.0);
+  // rebuystop: the buy-back as an order at the broker attached to the stop (psar or a fixed stop): once the stop sells at
+  // L, a buy stop at L * (1 + rebuystop) works while the strategy still wants the share; bought back the day the price
+  // comes back through it (the stop's own day only when the close is at or over it), at that level or the open through
+  // a gap, its own stop at once. It replaces rebuy's buy-back on the SAR's turn. 0: none. rebuystopadapt: 1 learns each
+  // share's distance at every reset (0.5%, 1%, 2%, 3% or 5%), the one with the most expected log growth on its futures
+  // in the nested Monte Carlo (its stop's own setting included).
+  P.emplace("rebuystop", 0.0), P.emplace("rebuystopadapt", 0.0), P.emplace("stopjoint", 0.0), P.emplace("mcprob", 0.0);
   // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
@@ -612,6 +619,12 @@ int main(int argc, char** argv) {
     const auto it = sarPick.find(i);
     return it != sarPick.end() ? it->second : std::make_pair(afStep, afMax);
   };
+  const bool rbStop = stops && !vstop && P["rebuystop"] > 0;
+  std::map<std::size_t, double> rbPick;  // rebuystopadapt: each share's buy-back distance over its stop
+  const auto rbOf = [&](std::size_t i) {
+    const auto it = rbPick.find(i);
+    return it != rbPick.end() ? it->second : P["rebuystop"];
+  };
   std::map<std::size_t, Stopped> stoppedAt;  // share -> its stop (until bought back or dropped by the strategy)
   std::size_t nStops = 0, nRebuys = 0;
   const auto lowOf = [&](std::size_t a, std::size_t b, std::size_t i) {  // the lowest low of days a..b (real bars)
@@ -667,8 +680,9 @@ int main(int argc, char** argv) {
     return false;
   };
   // A stopped share's state: with psar, its SAR on the way down from the highest high it reached while held.
-  const auto stoppedFrom = [&](const Pos& p, double level) {
+  const auto stoppedFrom = [&](const Pos& p, double level, std::size_t i, std::size_t u) {
     Stopped x;
+    x.at = u, x.trigger = rbStop ? level * (1 + rbOf(i)) : 0.0;  // rebuystop: its buy-back order's level
     x.level = vstop ? p.ep : level;  // vstop: the buy-back measured from the close's level
     if (psar) x.sar = std::max(p.ep, level), x.ep = level, x.af = p.step, x.step = p.step, x.mx = p.mx;
     return x;
@@ -694,7 +708,7 @@ int main(int argc, char** argv) {
   const auto mayBuy = [&](std::size_t t, std::size_t i) {
     const auto s_ = stoppedAt.find(i);
     if (s_ == stoppedAt.end()) return true;
-    if (rebuy < 0) return false;
+    if (rebuy < 0 || rbStop) return false;  // rebuystop: bought back by its own order only
     return psar ? s_->second.turned : d.Cf[t * N + i] >= s_->second.level * (1 + rebuy);
   };
   const auto capOf = [&](std::size_t t, std::size_t i) {
@@ -708,8 +722,16 @@ int main(int argc, char** argv) {
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
   mc.vstop = vstop ? P["vstop"] : 0.0;
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
+  mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
+  // stopjoint: 1 learns each share's stop band (psarvol: 2, 3, 4 or 6) and its buy-back order's distance together, as one
+  // coupled setting (instead of psarvoladapt and rebuystopadapt each alone); mcprob: 1 picks the setting best on the
+  // most simulated paths (the most probable best) instead of the most expected log growth.
+  const bool joint = rbStop && psarVol && mcOn && P["stopjoint"] > 0, probable = P["mcprob"] > 0;
+  const bool rbAdapt = rbStop && mcOn && (P["rebuystopadapt"] > 0 || joint);
+  const std::vector<double> rbGrid{0.005, 0.01, 0.02, 0.03, 0.05};
+  std::map<double, std::size_t> rbChosen;
   const bool vAdapt = mcOn && ((vstop && P["vstopadapt"] > 0) || (psarVol && P["psarvoladapt"] > 0));
   const std::vector<double> vGrid{2, 3, 4, 6};
   std::map<double, std::size_t> vChosen;
@@ -920,7 +942,9 @@ int main(int argc, char** argv) {
     // A share's best stop setting of `specs`: every setting on the same futures in one pass a path (its days drawn and
     // its bars scaled once), in parallel over the paths; the setting with the most expected log growth (the first of
     // equals), from each setting's sum over the paths in their order.
-    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs) {
+    // probable: the setting that is best on the most paths instead (the most probable best; a path where several are best
+    // shares its vote among them, so a path no setting changes favours none), the most expected log growth among equals.
+    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs, bool byVotes = false) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
       backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
@@ -933,13 +957,21 @@ int main(int argc, char** argv) {
             g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, specs[s2], strat::McHeld{}, adj, scale, pre.data()).ret));
         }
       });
+      std::vector<double> votes(G, 0.0), mean(G, 0.0);
+      for (std::size_t s2 = 0; s2 < G; ++s2)
+        for (std::size_t q = 0; q < Pn; ++q) mean[s2] += g[s2 * Pn + q];
+      if (byVotes)
+        for (std::size_t q = 0; q < Pn; ++q) {
+          double hiQ = -1e300;
+          for (std::size_t s2 = 0; s2 < G; ++s2) hiQ = std::max(hiQ, g[s2 * Pn + q]);
+          std::size_t ties = 0;
+          for (std::size_t s2 = 0; s2 < G; ++s2) ties += g[s2 * Pn + q] >= hiQ - 1e-12;
+          for (std::size_t s2 = 0; s2 < G; ++s2)
+            if (g[s2 * Pn + q] >= hiQ - 1e-12) votes[s2] += 1.0 / double(ties);
+        }
       std::size_t pick = 0;
-      double best = -1e300;
-      for (std::size_t s2 = 0; s2 < G; ++s2) {
-        double m = 0;
-        for (std::size_t q = 0; q < Pn; ++q) m += g[s2 * Pn + q];
-        if (m > best + 1e-12) best = m, pick = s2;
-      }
+      for (std::size_t s2 = 1; s2 < G; ++s2)
+        if (votes[s2] > votes[pick] + 1e-9 || (std::fabs(votes[s2] - votes[pick]) <= 1e-9 && mean[s2] > mean[pick] + 1e-12)) pick = s2;
       return pick;
     };
     if (sarAdapt) {  // each target share's SAR from its simulated futures: the pair with the most expected log growth
@@ -957,7 +989,7 @@ int main(int argc, char** argv) {
         ++sarChosen[pick];
       }
     }
-    if (vAdapt) {  // each share's volatility stop from its simulated futures: the multiple with the most expected log growth
+    if (vAdapt && !joint) {  // each share's volatility stop from its simulated futures: the multiple with the most expected log growth
       std::vector<std::size_t> all(target);
       all.insert(all.end(), reserve.begin(), reserve.end());
       std::vector<double> mu2, sc2;
@@ -976,6 +1008,29 @@ int main(int argc, char** argv) {
         ++vChosen[pick];
       }
     }
+    if (rbAdapt) {  // each share's buy-back distance from its simulated futures (with its own stop): the most expected log growth
+      std::vector<std::size_t> all(target);
+      all.insert(all.end(), reserve.begin(), reserve.end());
+      std::vector<double> mu2, sc2;
+      shapesFor(t, all, mu2, sc2);
+      for (std::size_t j = 0; j < all.size(); ++j) {
+        const std::size_t i = all[j];
+        std::vector<strat::McSpec> specs;
+        std::vector<std::pair<double, double>> pairs;  // (the stop's band, the buy-back's distance)
+        for (double v : joint ? vGrid : std::vector<double>{psarVol ? vOf(i) : 0.0})
+          for (double m : rbGrid) {
+            strat::McSpec sv = mc;
+            sv.rebuyStop = m, sv.afStep = sarOf(i).first, sv.afMax = sarOf(i).second;
+            if (psarVol) sv.psarVol = v;
+            specs.push_back(sv), pairs.emplace_back(v, m);
+          }
+        const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
+        const auto pick = pairs[bestSetting(i, adj, cap, sc2[j], specs, probable)];
+        if (joint) vPick[i] = pick.first, ++vChosen[pick.first];
+        rbPick[i] = pick.second;
+        ++rbChosen[pick.second];
+      }
+    }
     prof.adapt += clock() - ca;
     resetMu.push_back(mu), resetSc.push_back(sc);
   };
@@ -988,7 +1043,34 @@ int main(int argc, char** argv) {
     decide(t);
     const std::size_t u = t + 1;
     double day = 0;
-    std::vector<std::size_t> done;
+    std::vector<std::size_t> done, sameDayBack;
+    // rebuystop: share i bought back at px on day u by its buy-back order, its stop placed at once. sameDay: the stop's own
+    // day (its close over the level): no second stop that day; intraday: bought at the level during the day (a stop
+    // the same day sells at its level, taken as after the buy).
+    const auto buyBack = [&](std::size_t i, double px, bool sameDay, bool intraday = false) {
+      const double C = d.Cf[u * N + i];
+      const auto at = std::find(target.begin(), target.end(), i);
+      Row r;
+      r.t = t, r.i = i, r.rank = at != target.end() ? std::size_t(at - target.begin()) : target.size();
+      r.expected = learnt.expected(r.rank), r.limit = px, r.filled = true, r.entry = px, r.since = u;
+      stoppedAt.erase(i), ++nRebuys;
+      Pos p{rows.size(), C > 0 ? C : px};
+      openStop(p, u, i, px);
+      const double level = p.sar;
+      double sp = 0;
+      if (!sameDay && stopDay(p, u, i, sp)) {
+        if (intraday) sp = level;
+        day += sp / px - 1;
+        r.exit = sp, r.ret = sp / px - 1, r.closed = true, r.stopped = true, r.days = 0;
+        stoppedAt[i] = stoppedFrom(p, sp, i, u), ++nStops;  // its next buy-back order (from the next day)
+        done.push_back(rows.size());
+      } else {
+        day += p.mark / px - 1;
+        book[i] = p;
+        lastHeld[i] = u;
+      }
+      rows.push_back(r);
+    };
     for (auto it = book.begin(); it != book.end();) {  // the book: sold at the open when no longer wanted, else marked to the close
       const std::size_t i = it->first;
       Row& r = rows[it->second.row];
@@ -996,7 +1078,7 @@ int main(int argc, char** argv) {
       if (it->second.exitNext && O > 0) {  // vstop: yesterday's close under its level: sold at this open
         day += O / it->second.mark - 1;
         r.exit = O, r.ret = O / r.entry - 1, r.closed = true, r.stopped = true, r.days = u - r.since;
-        stoppedAt[i] = stoppedFrom(it->second, O), ++nStops;
+        stoppedAt[i] = stoppedFrom(it->second, O, i, u), ++nStops;
         done.push_back(it->second.row);
         it = book.erase(it);
         continue;
@@ -1012,9 +1094,10 @@ int main(int argc, char** argv) {
       if (stopDay(it->second, u, i, px)) {  // the stop-loss: sold at its level (or the open, through a gap)
         day += px / it->second.mark - 1;
         r.exit = px, r.ret = px / r.entry - 1, r.closed = true, r.stopped = true, r.days = u - r.since;
-        stoppedAt[i] = stoppedFrom(it->second, px), ++nStops;
+        stoppedAt[i] = stoppedFrom(it->second, px, i, u), ++nStops;
         done.push_back(it->second.row);
         it = book.erase(it);
+        if (rbStop && C >= stoppedAt[i].trigger) buyBack(i, stoppedAt[i].trigger, true);  // back through its buy stop after the stop
         continue;
       }
       if (C > 0) day += C / it->second.mark - 1, it->second.mark = C;
@@ -1028,6 +1111,17 @@ int main(int argc, char** argv) {
       ++it;
     }
     for (auto it = stoppedAt.begin(); it != stoppedAt.end();) it = inTarget(it->first) ? std::next(it) : stoppedAt.erase(it);  // dropped: forgotten
+    if (rbStop) {  // the buy-back orders working since an earlier day's stop (a slot each)
+      std::vector<std::pair<std::size_t, double>> due;
+      for (const auto& [i, x] : stoppedAt)
+        if (x.at < u && x.trigger > 0) due.emplace_back(i, x.trigger);
+      for (const auto& [i, trig] : due) {
+        if (book.size() >= k) break;
+        const double O = d.O[u * N + i], H = d.H[u * N + i];
+        if (O > 0 && O >= trig) buyBack(i, O, false);
+        else if (H > 0 && H >= trig) buyBack(i, trig, false, true);
+      }
+    }
     std::size_t free = k > book.size() ? k - book.size() : 0;
     std::vector<std::size_t> wants(target);  // the book's shares in order, then (refill) the reserves for free slots
     if (refill) wants.insert(wants.end(), reserve.begin(), reserve.end());
@@ -1050,8 +1144,9 @@ int main(int argc, char** argv) {
         if (stopDay(p, u, i, px)) {  // stopped the day it was bought
           day += px / O - 1;
           r.exit = px, r.ret = px / O - 1, r.closed = true, r.stopped = true, r.days = 0;
-          stoppedAt[i] = stoppedFrom(p, px), ++nStops;
+          stoppedAt[i] = stoppedFrom(p, px, i, u), ++nStops;
           done.push_back(rows.size());
+          if (rbStop && C >= stoppedAt[i].trigger) sameDayBack.push_back(i);  // after this row is in
         } else {
           day += p.mark / O - 1;
           book[i] = p;
@@ -1060,6 +1155,8 @@ int main(int argc, char** argv) {
       }
       rows.push_back(r);
     }
+    for (std::size_t i : sameDayBack)
+      if (stoppedAt.count(i) && !book.count(i)) buyBack(i, stoppedAt[i].trigger, true);
     for (auto& [i, x] : stoppedAt) stoppedDay(x, u, i);  // the stopped shares through day u's close
     daily.push_back(day / double(k));
     dailyDays.push_back(d.days[u]);
@@ -1213,13 +1310,23 @@ int main(int argc, char** argv) {
   // canBuy): with psar its falling SAR's start (the highest price while held, at least the stop); with a fixed or a
   // volatility stop rebuy above the level it left at. A share not held: as bought at the last close.
   const auto rebuyPrice = [&](std::size_t i) {
-    if (!stops || rebuy < 0) return kNaN;
+    if (!stops || (rebuy < 0 && !rbStop)) return kNaN;
     const auto b = book.find(i);
     Pos p{};
     if (b != book.end()) p = b->second;
     else openStop(p, L + 1, i, d.Cf[L * N + i]);
+    if (rbStop) return p.sar * (1 + rbOf(i));  // the buy-back order's level, over the stop's
     if (psar) return std::max(p.ep, p.sar);
     return (vstop ? p.ep : p.sar) * (1 + rebuy);
+  };
+  // rebuystop: a bought-back position's stop from the price it is bought back at (the same as a new position's: openStop).
+  const auto rebuyStopRel = [&](std::size_t i) {
+    if (!rbStop) return kNaN;
+    const double at = rebuyPrice(i);
+    if (!(at > 0)) return kNaN;
+    Pos q{};
+    openStop(q, L + 1, i, at);
+    return q.sar / at - 1;
   };
   const std::string stopKind = psarVol ? "psar-vol" : psar ? "psar" : vstop ? "vol" : stopLoss > 0 ? "fixed" : "none";
 
@@ -1238,7 +1345,8 @@ int main(int argc, char** argv) {
                 : psar ? "a Parabolic SAR stop (trailing, from the lows before the buy)"
                 : vstop ? (std::string("a volatility stop (") + (vAdapt ? "a multiple learnt for each share of" : jnum(P["vstop"]) + " times") + " the daily volatility under the price paid, then under the highest close; a close under it sells at the next open)").c_str()
                         : ("a stop-loss " + std::to_string(int(std::lround(100 * stopLoss))) + "% under the price paid").c_str(), nStops,
-                rebuy < 0 ? "never bought back"
+                rbStop ? ("bought back by the buy stop over the level it sold at: " + std::to_string(nRebuys) + " times").c_str()
+                : rebuy < 0 ? "never bought back"
                           : (std::string(psar ? "bought back once its SAR turned up again: " : ("bought back once the close was " + std::to_string(int(std::lround(100 * rebuy))) + "% over the stop level: ").c_str()) +
                              std::to_string(nRebuys) + " times").c_str());
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
@@ -1268,6 +1376,12 @@ int main(int argc, char** argv) {
       std::printf(psarVol ? "strategy: the SAR's volatility band learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
+    }
+    if (rbStop) {
+      std::string used;
+      for (const auto& [m, n] : rbChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
+      std::printf("strategy: the buy-back an order attached to the stop (a buy stop over the level it sold at): %s; %zu buy-backs\n",
+                  rbAdapt ? ("its distance learnt for each share at each reset, chosen (distance, times): " + used).c_str() : ("at " + jnum(P["rebuystop"]) + " over it").c_str(), nRebuys);
     }
     if (refill) std::printf("strategy: a slot freed by a stop goes to the next share the simulation chose (%zu reserves at the last reset)\n", reserve.size());
     if (sarAdapt) {
@@ -1311,7 +1425,7 @@ int main(int argc, char** argv) {
       << ",\"annualReturn\":" << jnum(annual) << ",\"sharpe\":" << jnum(sharpe) << ",\"maxDrawdown\":" << jnum(dd) << ",\"orders\":" << rows.size()
       << ",\"trades\":" << nFilled << ",\"avgTrade\":" << jnum(nFilled ? sumTrade / nFilled : 0.0) << ",\"winRate\":" << jnum(nFilled ? nWin / nFilled : 0.0)
       << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
-      << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false") << ",\"rebuys\":" << nRebuys;
+      << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false") << ",\"rebuyStop\":" << (rbStop ? "true" : "false") << ",\"rebuys\":" << nRebuys;
     if (mcOn)
       f << ",\"mc\":{\"resets\":" << mcN << ",\"paths\":" << mc.paths << ",\"horizon\":" << mc.horizon << ",\"block\":" << mc.block << ",\"window\":" << mc.window
         << ",\"coverage\":" << jnum(mcN ? mcCover / mcN : kNaN) << ",\"pit\":" << jnum(mcN ? mcPit / mcN : kNaN) << ",\"simMean\":" << jnum(mcN ? mcSim / mcN : kNaN)
@@ -1323,8 +1437,9 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
-        << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && rebuy >= 0 ? "true" : "false")
-        << ",\"rebuyAt\":" << (stops && rebuy >= 0 ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
+        << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
+        << ",\"rebuyAt\":" << (stops && (rebuy >= 0 || rbStop) ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
+        << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null")
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i])
@@ -1364,7 +1479,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
+        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
@@ -1377,7 +1492,7 @@ int main(int argc, char** argv) {
     for (std::size_t i : targetAll) named.insert(i);
     for (const auto& [i, day] : lastHeld)
       if (L - std::min(L, day) <= 260) named.insert(i);
-    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) && !(book.count(i) && book.at(i).exitNext) ? "true" : "false") << ",\"exitAbove\":null,\"stopPrice\":" << (book.count(i) ? jnum(stopPrice(i)) : "null") << "}";
+    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) && !(book.count(i) && book.at(i).exitNext) ? "true" : "false") << ",\"exitAbove\":null,\"stopPrice\":" << (book.count(i) ? jnum(stopPrice(i)) : "null") << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(i)) : "null") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(i)) : "null") << "}";
     f << "]}\n";
   }
   return 0;
