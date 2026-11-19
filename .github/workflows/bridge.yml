@@ -7,14 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       bars: { description: "Also fetch this market's daily bars from IBKR into the store (UK, EU, US, APAC; about an hour, in the background)", default: '' }
+      restart: { description: "Restart IB Gateway first (then wait 4 minutes for it to log in)", type: boolean, default: false }
+      place: { description: "Then place these markets' orders again, e.g. UK,EU (already placed shares are skipped)", default: '' }
   schedule:
     - cron: '7,37 7-17 * * 1-5'   # UTC: the UK and EU sessions, their closes and reports
 permissions:
   contents: read
+  actions: read   # the previous run's result, so a failure is pushed once a day and on each new failure, not every half hour
 jobs:
   status:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,6 +37,28 @@ jobs:
           case "$MARKET" in UK|EU|US|APAC) ;; *) echo "unknown market $MARKET"; exit 1;; esac
           curl -sS --max-time 60 -X POST "$BRIDGE_URL/bars" -H 'Origin: https://svr-net.github.io' -H "X-Bridge-Key: $BRIDGE_KEY" \
             -H 'Content-Type: application/json' -d "{\"market\": \"$MARKET\"}" | tee -a "$GITHUB_STEP_SUMMARY"; echo
+      - name: Restart IB Gateway (on demand)
+        if: inputs.restart
+        env:
+          BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
+          BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+        run: |
+          curl -sS --fail-with-body --max-time 200 -X POST "$BRIDGE_URL/restart" -H 'Origin: https://svr-net.github.io' -H "X-Bridge-Key: $BRIDGE_KEY" \
+            -H 'Content-Type: application/json' -d '{}' | tee -a "$GITHUB_STEP_SUMMARY"; echo
+          echo "waiting 4 minutes for IB Gateway to log in"; sleep 240
+      - name: Place orders again (on demand)
+        if: inputs.place != ''
+        env:
+          BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
+          BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+          MARKETS: ${{ inputs.place }}
+        run: |
+          for m in $(echo "$MARKETS" | tr ',a-z' ' A-Z'); do
+            case "$m" in UK|EU|US|APAC|INDEX) ;; *) echo "unknown market $m"; exit 1;; esac
+            curl -sS --max-time 120 -X POST "$BRIDGE_URL/place" -H 'Origin: https://svr-net.github.io' -H "X-Bridge-Key: $BRIDGE_KEY" \
+              -H 'Content-Type: application/json' -d "{\"market\": \"$m\"}" | tee -a "$GITHUB_STEP_SUMMARY"; echo
+          done
+          echo "waiting 3 minutes for the placing to finish"; sleep 180
       - name: The bridge's state
         env:
           BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
@@ -41,4 +68,24 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr docker/ibkr/Dockerfile.bridge) node tools/ibkr/monitor.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+          LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr docker/ibkr/Dockerfile.bridge) node tools/ibkr/monitor.mjs | tee monitor.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      # A push to the phone (ntfy.sh: install the ntfy app and subscribe to the topic in the NTFY_TOPIC
+      # secret, a long random name). Sent on the first failing run of each day and whenever a passing run
+      # turns into a failing one, so a problem that lasts is repeated daily instead of every half hour.
+      - name: Push the failure to the phone
+        if: failure() && env.NTFY_TOPIC != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          prev=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/bridge.yml/runs?status=completed&per_page=1" \
+            | python3 -c 'import json,sys; r=(json.load(sys.stdin).get("workflow_runs") or [{}])[0]; print(r.get("conclusion",""), (r.get("created_at") or "")[:10])')
+          read -r was day <<< "$prev"
+          if [ "${{ github.event_name }}" = schedule ] && [ "$was" = failure ] && [ "$day" = "$(date -u +%F)" ]; then
+            echo "already pushed today for this failure"; exit 0
+          fi
+          msg=$(grep -h 'NEEDS ATTENTION' monitor.txt 2>/dev/null | sed 's/^NEEDS ATTENTION: //'); msg=${msg:-the monitor run failed}
+          curl -sS --max-time 30 -H 'Title: Trading bridge needs attention' -H 'Priority: high' -H 'Tags: warning' \
+            -H "Click: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --data-binary "$msg" "https://ntfy.sh/$NTFY_TOPIC"
