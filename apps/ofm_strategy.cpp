@@ -507,7 +507,7 @@ int main(int argc, char** argv) {
   // a gap, its own stop at once. It replaces rebuy's buy-back on the SAR's turn. 0: none. rebuystopadapt: 1 learns each
   // share's distance at every reset (0.5%, 1%, 2%, 3% or 5%), the one with the most expected log growth on its futures
   // in the nested Monte Carlo (its stop's own setting included).
-  P.emplace("rebuystop", 0.0), P.emplace("rebuystopadapt", 0.0);
+  P.emplace("rebuystop", 0.0), P.emplace("rebuystopadapt", 0.0), P.emplace("stopjoint", 0.0), P.emplace("mcprob", 0.0);
   // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
@@ -725,7 +725,11 @@ int main(int argc, char** argv) {
   mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
-  const bool rbAdapt = rbStop && mcOn && P["rebuystopadapt"] > 0;
+  // stopjoint: 1 learns each share's stop band (psarvol: 2, 3, 4 or 6) and its buy-back order's distance together, as one
+  // coupled setting (instead of psarvoladapt and rebuystopadapt each alone); mcprob: 1 picks the setting best on the
+  // most simulated paths (the most probable best) instead of the most expected log growth.
+  const bool joint = rbStop && psarVol && mcOn && P["stopjoint"] > 0, probable = P["mcprob"] > 0;
+  const bool rbAdapt = rbStop && mcOn && (P["rebuystopadapt"] > 0 || joint);
   const std::vector<double> rbGrid{0.005, 0.01, 0.02, 0.03, 0.05};
   std::map<double, std::size_t> rbChosen;
   const bool vAdapt = mcOn && ((vstop && P["vstopadapt"] > 0) || (psarVol && P["psarvoladapt"] > 0));
@@ -938,7 +942,9 @@ int main(int argc, char** argv) {
     // A share's best stop setting of `specs`: every setting on the same futures in one pass a path (its days drawn and
     // its bars scaled once), in parallel over the paths; the setting with the most expected log growth (the first of
     // equals), from each setting's sum over the paths in their order.
-    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs) {
+    // probable: the setting that is best on the most paths instead (the most probable best; a path where several are best
+    // shares its vote among them, so a path no setting changes favours none), the most expected log growth among equals.
+    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs, bool byVotes = false) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
       backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
@@ -951,13 +957,21 @@ int main(int argc, char** argv) {
             g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, specs[s2], strat::McHeld{}, adj, scale, pre.data()).ret));
         }
       });
+      std::vector<double> votes(G, 0.0), mean(G, 0.0);
+      for (std::size_t s2 = 0; s2 < G; ++s2)
+        for (std::size_t q = 0; q < Pn; ++q) mean[s2] += g[s2 * Pn + q];
+      if (byVotes)
+        for (std::size_t q = 0; q < Pn; ++q) {
+          double hiQ = -1e300;
+          for (std::size_t s2 = 0; s2 < G; ++s2) hiQ = std::max(hiQ, g[s2 * Pn + q]);
+          std::size_t ties = 0;
+          for (std::size_t s2 = 0; s2 < G; ++s2) ties += g[s2 * Pn + q] >= hiQ - 1e-12;
+          for (std::size_t s2 = 0; s2 < G; ++s2)
+            if (g[s2 * Pn + q] >= hiQ - 1e-12) votes[s2] += 1.0 / double(ties);
+        }
       std::size_t pick = 0;
-      double best = -1e300;
-      for (std::size_t s2 = 0; s2 < G; ++s2) {
-        double m = 0;
-        for (std::size_t q = 0; q < Pn; ++q) m += g[s2 * Pn + q];
-        if (m > best + 1e-12) best = m, pick = s2;
-      }
+      for (std::size_t s2 = 1; s2 < G; ++s2)
+        if (votes[s2] > votes[pick] + 1e-9 || (std::fabs(votes[s2] - votes[pick]) <= 1e-9 && mean[s2] > mean[pick] + 1e-12)) pick = s2;
       return pick;
     };
     if (sarAdapt) {  // each target share's SAR from its simulated futures: the pair with the most expected log growth
@@ -975,7 +989,7 @@ int main(int argc, char** argv) {
         ++sarChosen[pick];
       }
     }
-    if (vAdapt) {  // each share's volatility stop from its simulated futures: the multiple with the most expected log growth
+    if (vAdapt && !joint) {  // each share's volatility stop from its simulated futures: the multiple with the most expected log growth
       std::vector<std::size_t> all(target);
       all.insert(all.end(), reserve.begin(), reserve.end());
       std::vector<double> mu2, sc2;
@@ -1002,16 +1016,19 @@ int main(int argc, char** argv) {
       for (std::size_t j = 0; j < all.size(); ++j) {
         const std::size_t i = all[j];
         std::vector<strat::McSpec> specs;
-        for (double m : rbGrid) {
-          strat::McSpec sv = mc;
-          sv.rebuyStop = m, sv.afStep = sarOf(i).first, sv.afMax = sarOf(i).second;
-          if (psarVol) sv.psarVol = vOf(i);
-          specs.push_back(sv);
-        }
+        std::vector<std::pair<double, double>> pairs;  // (the stop's band, the buy-back's distance)
+        for (double v : joint ? vGrid : std::vector<double>{psarVol ? vOf(i) : 0.0})
+          for (double m : rbGrid) {
+            strat::McSpec sv = mc;
+            sv.rebuyStop = m, sv.afStep = sarOf(i).first, sv.afMax = sarOf(i).second;
+            if (psarVol) sv.psarVol = v;
+            specs.push_back(sv), pairs.emplace_back(v, m);
+          }
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
-        const double pick = rbGrid[bestSetting(i, adj, cap, sc2[j], specs)];
-        rbPick[i] = pick;
-        ++rbChosen[pick];
+        const auto pick = pairs[bestSetting(i, adj, cap, sc2[j], specs, probable)];
+        if (joint) vPick[i] = pick.first, ++vChosen[pick.first];
+        rbPick[i] = pick.second;
+        ++rbChosen[pick.second];
       }
     }
     prof.adapt += clock() - ca;
