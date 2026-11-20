@@ -22,7 +22,7 @@
           "psarvoladapt": 1,
           "rebuystop": 0.01,
           "rebuystopadapt": 1,
-          "stopmedian": 1
+          "stopmedian": 0
         }
       },
       "shadows": [],
