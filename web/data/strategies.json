@@ -41,6 +41,8 @@
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcregime": 2,
+     "mcregimestop": 0,
      "psar": 1,
      "rebuy": 0,
      "refill": 1,
