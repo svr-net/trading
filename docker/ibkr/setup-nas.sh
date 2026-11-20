@@ -306,6 +306,32 @@ volumes:
   caddy-config:
 EOF
 
+# --- Start again after the NAS restarts ----------------------------------------------------------
+# restart: always brings the containers back once Docker is up, but on a NAS Docker can start before
+# the volume or the network, and a container that failed then stays down. Synology runs every
+# executable /usr/local/etc/rc.d/*.sh with "start" at boot (as root): this one waits for Docker (up to
+# 15 minutes), then starts the services, retrying for 10 minutes; its log is boot.log next to .env.
+if [ -d /usr/local/etc/rc.d ] && [ -w /usr/local/etc/rc.d ]; then
+  BOOT=/usr/local/etc/rc.d/trading-bridge.sh
+  case "$COMPOSE" in docker\ compose) UP="docker compose" ;; *) UP=$(command -v docker-compose) ;; esac
+  cat > "$BOOT" <<EOF
+#!/bin/sh
+# Written by setup-nas.sh: starts IB Gateway, the bridge and Caddy after the NAS restarts.
+[ "\${1:-start}" = start ] || exit 0
+(
+  export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
+  cd "$DIR" || exit 1
+  i=0; until docker info >/dev/null 2>&1 || [ \$i -ge 180 ]; do i=\$((i + 1)); sleep 5; done
+  j=0; until $UP up -d || [ \$j -ge 20 ]; do j=\$((j + 1)); sleep 30; done
+  echo "\$(date -u '+%F %T') UTC: started after boot (waited \$((i * 5)) s for Docker, \$j retries)"
+) >> "$DIR/boot.log" 2>&1 &
+EOF
+  chmod 755 "$BOOT"
+  say "Boot: $BOOT starts the services after the NAS restarts (log: $DIR/boot.log)"
+else
+  say "Boot: no /usr/local/etc/rc.d to write (not a Synology, or not root): restart: always alone brings the services back."
+fi
+
 if [ "${SKIP_START:-}" = 1 ]; then say "Files written in $DIR (SKIP_START=1: nothing started)."; exit 0; fi
 say ""
 say "Starting (the first time downloads the images: a few minutes)..."
