@@ -507,6 +507,10 @@ int main(int argc, char** argv) {
   // a gap, its own stop at once. It replaces rebuy's buy-back on the SAR's turn. 0: none. rebuystopadapt: 1 learns each
   // share's distance at every reset (0.5%, 1%, 2%, 3% or 5%), the one with the most expected log growth on its futures
   // in the nested Monte Carlo (its stop's own setting included).
+  // stopmedian: 1 buys only shares whose stop would start no wider than the median of the day's candidates (the
+  // book's list and its reserves), in the backtest and in the orders alike: the threshold is the day's own, nothing
+  // fixed; a far stop is left out, not just ranked last.
+  P.emplace("stopmedian", 0.0);
   P.emplace("rebuystop", 0.0), P.emplace("rebuystopadapt", 0.0), P.emplace("stopjoint", 0.0), P.emplace("mcprob", 0.0);
   // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
@@ -1034,6 +1038,24 @@ int main(int argc, char** argv) {
     prof.adapt += clock() - ca;
     resetMu.push_back(mu), resetSc.push_back(sc);
   };
+  // stopmedian: the distance a new position's stop would start under the last close of t (as openStop), and the
+  // median of it over the day's candidates (the target and its reserves); without stopmedian no limit.
+  const auto startDist = [&](std::size_t t, std::size_t i) {
+    const double c = d.Cf[t * N + i];
+    if (!(c > 0) || !stops) return 0.0;
+    Pos q{};
+    openStop(q, t + 1, i, c);
+    return q.sar > 0 ? 1 - q.sar / c : 0.0;
+  };
+  const auto stopMedianOf = [&](std::size_t t) {
+    if (!(P["stopmedian"] > 0) || !stops) return 1e300;
+    std::vector<double> v;
+    for (std::size_t i : target) v.push_back(startDist(t, i));
+    for (std::size_t i : reserve) v.push_back(startDist(t, i));
+    if (v.empty()) return 1e300;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+  };
   const auto inTarget = [&](std::size_t i) {
     return std::find(target.begin(), target.end(), i) != target.end() || (refill && std::find(reserve.begin(), reserve.end(), i) != reserve.end());
   };
@@ -1124,10 +1146,12 @@ int main(int argc, char** argv) {
     }
     std::size_t free = k > book.size() ? k - book.size() : 0;
     std::vector<std::size_t> wants(target);  // the book's shares in order, then (refill) the reserves for free slots
+    const double stopCut = stopMedianOf(t);
     if (refill) wants.insert(wants.end(), reserve.begin(), reserve.end());
     for (std::size_t rank = 0; rank < wants.size() && free > 0; ++rank) {
       const std::size_t i = wants[rank];
       if (book.count(i) || !mayBuy(t, i)) continue;
+      if (startDist(t, i) > stopCut) continue;  // stopmedian: its stop wider than the day's median
       const bool again = stoppedAt.count(i) > 0;
       Row r;
       r.t = t, r.i = i, r.rank = rank, r.expected = learnt.expected(rank);
@@ -1328,6 +1352,11 @@ int main(int argc, char** argv) {
     openStop(q, L + 1, i, at);
     return q.sar / at - 1;
   };
+  // stopmedian: the orders to buy (not the shares held) whose stop would start wider than the day's median left out.
+  if (P["stopmedian"] > 0 && stops) {
+    const double cut = stopMedianOf(L);
+    final.erase(std::remove_if(final.begin(), final.end(), [&](const Order& x) { return !x.held && startDist(L, x.i) > cut; }), final.end());
+  }
   // The orders by expected return per unit of stop (stops): the expected return after costs (times the chance to
   // fill) over the stop's distance under the last close (at least 0.5%), highest first, so a far stop must earn its
   // place; the bridge fills the free slots in this order. The order of equals (and without stops) kept.
