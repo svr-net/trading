@@ -541,7 +541,10 @@ int main(int argc, char** argv) {
   // hidden Markov model of the market's daily move refitted to the window up to the reset (warm from the last), the
   // futures drawn in states (each block from the past days in its state, the states moving by the fitted chances),
   // and every volatility stop sized by the share's volatility in the states expected over the horizon. 0: none.
-  P.emplace("mcregime", 0.0);
+  // mcregime -1: the number of states learnt at every reset, 1 to 4, the fit with the lowest BIC (1: one state, the
+  // plain Monte Carlo's draws). mcregimestop: 1 sizes the volatility stops by the states expected; 0 leaves them on the
+  // last 60 sessions (the states shape the futures only).
+  P.emplace("mcregime", 0.0), P.emplace("mcregimestop", 1.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -619,11 +622,14 @@ int main(int argc, char** argv) {
     return it != vPick.end() ? it->second : psarVol ? P["psarvol"] : P["vstop"];
   };
   strat::RegimeFits fits;  // mcregime: the market's states fitted at each reset
-  std::size_t regK = 0;
+  std::size_t regK = 0;  // mcregime: the states (SIZE_MAX: learnt by BIC)
+  bool regStop = false;
+  std::map<std::size_t, std::size_t> regKChosen;  // mcregime -1: the states chosen, and how often
+  std::map<std::size_t, strat::RegimeFit> regLast;  // each number of states' last fit (the next cycle's warm start)
   // A share's volatility for its stop at day t: in the states expected (the last fit by t) with mcregime, else its
   // last 60 sessions'.
   const auto sigmaAt = [&](std::size_t t, std::size_t i) {
-    if (regK && !fits.empty()) {
+    if (regK && regStop && !fits.empty()) {
       auto it = fits.upper_bound(t);
       if (it != fits.begin() && std::isfinite((--it)->second.sigma[i])) return it->second.sigma[i];
     }
@@ -744,7 +750,8 @@ int main(int argc, char** argv) {
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
   mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
-  regK = mcOn ? std::size_t(std::max(0.0, P["mcregime"])) : 0;
+  regK = !mcOn || P["mcregime"] == 0 ? 0 : P["mcregime"] < 0 ? SIZE_MAX : std::size_t(P["mcregime"]);
+  regStop = regK && P["mcregimestop"] > 0;
   if (regK) mc.regime = &fits;
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
   // stopjoint: 1 learns each share's stop band (psarvol: 2, 3, 4 or 6) and its buy-back order's distance together, as one
@@ -900,8 +907,19 @@ int main(int argc, char** argv) {
     target.clear();
     if (regK) {  // this cycle's reverse engineering: the market's states refitted up to t (warm from the last cycle)
       const double cr = clock();
-      strat::RegimeFit f;
-      strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, regK, fits.empty() ? nullptr : &fits.rbegin()->second, *backend, f);
+      std::size_t best = 0;
+      const std::size_t k0 = regK == SIZE_MAX ? 1 : regK, k1 = regK == SIZE_MAX ? 4 : regK;
+      for (std::size_t kk = k0; kk <= k1; ++kk) {  // each number of states (one with mcregime K), warm from its own last fit
+        const auto w = regLast.find(kk);
+        strat::RegimeFit f;
+        strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, kk, w != regLast.end() ? &w->second : nullptr, f);
+        regLast[kk] = std::move(f);
+        if (!best || regLast[kk].bic < regLast[best].bic) best = kk;
+      }
+      ++regKChosen[best];
+      strat::RegimeFit f = regLast[best];
+      if (regStop) strat::regimeSigma(d, *backend, f);
+      f.gamma.clear();
       fits[t] = std::move(f);
       prof.regime += clock() - cr;
     }
@@ -1437,8 +1455,12 @@ int main(int argc, char** argv) {
               jnum(100 * 252 * f.mean[q], "%+.0f") + "% a year at " + jnum(100 * std::sqrt(252 * f.var[q]), "%.0f") + "% volatility, " +
               (f.A[q * f.K + q] < 0.9999 ? "staying " + jnum(1 / (1 - f.A[q * f.K + q]), "%.0f") + " sessions on average, " : std::string("never left, ")) + jnum(100 * f.now[q], "%.0f") + "% today, " +
               jnum(100 * f.ahead[q], "%.0f") + "% over the next " + std::to_string(mc.horizon) + " sessions";
-      std::printf("strategy: the market's %zu hidden states, refitted at each of %zu resets (walk-forward) and the futures drawn in them; the last fit (%s): %s\n", f.K,
-                  fits.size(), d.days[f.hi].c_str(), st.c_str());
+      std::string kLearnt;
+      if (regK == SIZE_MAX)
+        for (const auto& [kk, n] : regKChosen) kLearnt += (kLearnt.empty() ? "" : ", ") + std::to_string(kk) + " states " + std::to_string(n) + " times";
+      std::printf("strategy: the market's %zu hidden states, refitted at each of %zu resets (walk-forward) and the futures drawn in them%s%s; the last fit (%s): %s\n", f.K,
+                  fits.size(), kLearnt.empty() ? "" : (" (the number learnt at each reset by BIC: " + kLearnt + ")").c_str(),
+                  regStop ? ", the stops sized by the states expected" : ", the stops on the last 60 sessions", d.days[f.hi].c_str(), st.c_str());
     }
     if (gate) {
       std::string used;

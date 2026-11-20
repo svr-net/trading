@@ -153,7 +153,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   double w = 1, mark = h.held ? h.mark : 0, sar = h.sar, ep = h.ep, af = h.af;
   // the volatility stop's state: the distance (a fraction of the price), the highest close, a sale due at the open
   const RegimeFit* rf = mcFit(s, t0);
-  const double sig0 = rf && std::isfinite(rf->sigma[i]) ? rf->sigma[i] : std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
+  const double sig0 = rf && !rf->sigma.empty() && std::isfinite(rf->sigma[i]) ? rf->sigma[i] : std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
   double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
   bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
