@@ -34,8 +34,9 @@ struct RegimeFit {
   std::vector<double> now, ahead;                // the chances of each state at t0, and their mean over the horizon after
   std::vector<int> label;                        // each fitted day's most likely state (day q at q - lo)
   std::vector<std::vector<std::size_t>> starts;  // each state's days a block may start at (the drawable ones)
-  std::vector<double> sigma;                     // each share's daily volatility in the states expected (NaN: too few days)
-  double loglik = 0;
+  std::vector<double> gamma;                     // each fitted day's chances of each state (smoothed), [q * K + k]
+  std::vector<double> sigma;                     // each share's daily volatility in the states expected (NaN: too few days; regimeSigma)
+  double loglik = 0, bic = 0;                    // bic: -2 loglik + the parameters' count times log(days)
 };
 
 using RegimeFits = std::map<std::size_t, RegimeFit>;
@@ -44,7 +45,7 @@ using RegimeFits = std::map<std::size_t, RegimeFit>;
 // [t0 - skip - window, t0 - skip]); warm: the last cycle's fit (null: afresh only). horizon, block: the futures'
 // length and block (the chances over the horizon, the block starts).
 inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::size_t skip, std::size_t horizon, std::size_t block, std::size_t K,
-                      const RegimeFit* warm, const Backend& b, RegimeFit& f) {
+                      const RegimeFit* warm, RegimeFit& f) {
   const std::size_t hiD = t0 > skip + 1 ? t0 - skip : 1, loD = hiD > window ? hiD - window : 1;
   f = RegimeFit{};
   f.K = K, f.lo = loD, f.hi = t0;
@@ -148,7 +149,8 @@ inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::si
     A = A2, mu = mu2, v = v2, pi = pi2;
   }
   f.loglik = forwardBackward();
-  f.A = A, f.mean = mu, f.var = v;
+  f.bic = -2 * f.loglik + double(K * K + 2 * K - 1) * std::log(double(n));  // means, variances, the matrix's free entries, the start
+  f.A = A, f.mean = mu, f.var = v, f.gamma = ga;
   f.now.assign(al.end() - std::ptrdiff_t(K), al.end());  // filtered at t0: only what t0 knew
   f.ahead.assign(K, 0.0);
   {
@@ -171,8 +173,13 @@ inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::si
   const std::size_t B = std::max<std::size_t>(1, block);
   f.starts.assign(K, {});
   for (std::size_t q = loD; q + B <= hiD + 1; ++q) f.starts[std::size_t(f.label[q - loD])].push_back(q);
-  // each share's volatility in the states expected over the horizon
-  const std::size_t N = d.N;
+}
+
+// Each share's volatility in the states a fit expects over its horizon: its days in the fitted window weighted by their
+// chances of each state (a state with fewer than 20 days' weight: the share's own over the window).
+inline void regimeSigma(const Data& d, const Backend& b, RegimeFit& f) {
+  const std::size_t N = d.N, K = f.K, n = f.hi + 1 - f.lo, loD = f.lo;
+  const auto& ga = f.gamma;
   f.sigma.assign(N, kNaN);
   b.parallelFor(N, [&](std::size_t a0, std::size_t e0) {
     std::vector<double> w(K), s2(K);
