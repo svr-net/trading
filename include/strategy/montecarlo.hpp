@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "strategy/backend.hpp"
+#include "strategy/regime.hpp"
 #include "strategy/strategy.hpp"
 
 namespace strat {
@@ -50,7 +51,17 @@ struct McSpec {
   // skip: the window ends this many sessions before t0 (the days drawn from [t0 - window, t0 - skip]): a
   // momentum book skips the last month (its short-term reversal)
   std::size_t skip = 0;
+  // regime: the market's hidden states fitted at each reset (mcregime; regime.hpp): a reset with a fit draws its futures
+  // in states and sizes the volatility stops by each share's volatility in the states expected; null: none.
+  const RegimeFits* regime = nullptr;
 };
+
+// The fit of the market's states at reset t0 (null: none).
+inline const RegimeFit* mcFit(const McSpec& s, std::size_t t0) {
+  if (!s.regime) return nullptr;
+  const auto it = s.regime->find(t0);
+  return it != s.regime->end() ? &it->second : nullptr;
+}
 
 // A share's drift adjustment for a reset (a factor on each simulated day's bar): exp(market's mean daily log move
 // over the window - the share's own), both from the window before t0 only; 1 with drift 0.
@@ -95,8 +106,12 @@ inline void mcDays(std::size_t t0, std::size_t T, const McSpec& s, std::uint64_t
   }
   const std::size_t hi = t0 > s.skip + 1 ? t0 - s.skip : 1;  // the last day that may be drawn (never after t0)
   const std::size_t lo = hi > s.window ? hi - s.window : 1, B = std::max<std::size_t>(1, s.block);
-  const std::size_t span = hi + 1 > lo + B ? hi + 1 - lo - B + 1 : 1;
   std::uint64_t h = key;
+  if (const RegimeFit* f = mcFit(s, t0)) {
+    regimeDays(*f, hi, lo, B, s.horizon, [&] { h = mcMix(h); return double(h >> 11) / 9007199254740992.0; }, out);
+    return;
+  }
+  const std::size_t span = hi + 1 > lo + B ? hi + 1 - lo - B + 1 : 1;
   while (out.size() < s.horizon) {
     h = mcMix(h);
     const std::size_t b = lo + std::size_t(h % span);
@@ -137,7 +152,8 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   bool in = h.held, pending = !h.held, stopped = false, turned = false;
   double w = 1, mark = h.held ? h.mark : 0, sar = h.sar, ep = h.ep, af = h.af;
   // the volatility stop's state: the distance (a fraction of the price), the highest close, a sale due at the open
-  const double sig0 = std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
+  const RegimeFit* rf = mcFit(s, t0);
+  const double sig0 = rf && std::isfinite(rf->sigma[i]) ? rf->sigma[i] : std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
   double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
   bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at

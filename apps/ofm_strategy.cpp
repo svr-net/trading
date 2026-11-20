@@ -537,6 +537,11 @@ int main(int argc, char** argv) {
   // known after its close, and with 1 the network takes them in the same evening (new samples every session, a pass
   // over the newest), not up to a month later at the next reset.
   P.emplace("mcnnstep", 0.0), P.emplace("mcnnsample", 0.0);
+  // mcregime: K > 0 reverse-engineers the market's K hidden states at every reset (include/strategy/regime.hpp): a
+  // hidden Markov model of the market's daily move refitted to the window up to the reset (warm from the last), the
+  // futures drawn in states (each block from the past days in its state, the states moving by the fitted chances),
+  // and every volatility stop sized by the share's volatility in the states expected over the horizon. 0: none.
+  P.emplace("mcregime", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -613,8 +618,19 @@ int main(int argc, char** argv) {
     const auto it = vPick.find(i);
     return it != vPick.end() ? it->second : psarVol ? P["psarvol"] : P["vstop"];
   };
+  strat::RegimeFits fits;  // mcregime: the market's states fitted at each reset
+  std::size_t regK = 0;
+  // A share's volatility for its stop at day t: in the states expected (the last fit by t) with mcregime, else its
+  // last 60 sessions'.
+  const auto sigmaAt = [&](std::size_t t, std::size_t i) {
+    if (regK && !fits.empty()) {
+      auto it = fits.upper_bound(t);
+      if (it != fits.begin() && std::isfinite((--it)->second.sigma[i])) return it->second.sigma[i];
+    }
+    return d.sigma[t * N + i];
+  };
   const auto vDist = [&](std::size_t t, std::size_t i) {  // the stop's distance under the price (a fraction)
-    const double sg = d.sigma[t * N + i];
+    const double sg = sigmaAt(t, i);
     return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), 0.02, 0.5);
   };
   const double afStep = P["psarstep"], afMax = P["psarmax"];
@@ -728,6 +744,8 @@ int main(int argc, char** argv) {
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
   mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
+  regK = mcOn ? std::size_t(std::max(0.0, P["mcregime"])) : 0;
+  if (regK) mc.regime = &fits;
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
   // stopjoint: 1 learns each share's stop band (psarvol: 2, 3, 4 or 6) and its buy-back order's distance together, as one
   // coupled setting (instead of psarvoladapt and rebuystopadapt each alone); mcprob: 1 picks the setting best on the
@@ -798,7 +816,7 @@ int main(int argc, char** argv) {
   std::vector<std::vector<std::pair<double, std::size_t>>> poolRanked;
   // X_PROFILE: each stage's wall time, to stderr (the work's own clock; never in the results)
   struct Prof {
-    double feat = 0, rank = 0, train = 0, sample = 0, select = 0, adapt = 0, check = 0;
+    double feat = 0, rank = 0, train = 0, sample = 0, select = 0, adapt = 0, check = 0, regime = 0;
   } prof;
   const auto clock = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
   // The network's inputs at day t: the share's own and the market's, and with mcpool each strategy's rank of it.
@@ -880,6 +898,13 @@ int main(int argc, char** argv) {
     ranked(*strategy, P, t, c);
     of = c.size(), decided = t;
     target.clear();
+    if (regK) {  // this cycle's reverse engineering: the market's states refitted up to t (warm from the last cycle)
+      const double cr = clock();
+      strat::RegimeFit f;
+      strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, regK, fits.empty() ? nullptr : &fits.rbegin()->second, *backend, f);
+      fits[t] = std::move(f);
+      prof.regime += clock() - cr;
+    }
     learn(t, 2);
     if (pool) features(t);
     std::vector<double> mu, sc;
@@ -1316,8 +1341,8 @@ int main(int argc, char** argv) {
   // sessions; a fixed stop: from the price paid, so the bridge sets it from the fill: stopLoss).
   prof.check = clock() - cCheck;
   if (std::getenv("X_PROFILE"))
-    std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs\n",
-                 prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check);
+    std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs, the market's states %.2fs\n",
+                 prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check, prof.regime);
   const auto stopPrice = [&](std::size_t i) {
     if (!stops) return kNaN;
     const auto b = book.find(i);
@@ -1404,6 +1429,17 @@ int main(int argc, char** argv) {
                   net.trained, nnStep ? (" (every " + std::to_string(nnStep) + " session" + (nnStep > 1 ? "s" : "") + ", the day's bars taken in)").c_str() : " (the resets)",
                   nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
     }
+    if (regK && !fits.empty()) {
+      const auto& f = fits.rbegin()->second;
+      std::string st;
+      for (std::size_t q = 0; q < f.K; ++q)
+        st += (q ? "; " : "") + std::string("state ") + std::to_string(q + 1) + " (" + (q == 0 ? "calmest" : q + 1 == f.K ? "most turbulent" : "between") + "): the market " +
+              jnum(100 * 252 * f.mean[q], "%+.0f") + "% a year at " + jnum(100 * std::sqrt(252 * f.var[q]), "%.0f") + "% volatility, " +
+              (f.A[q * f.K + q] < 0.9999 ? "staying " + jnum(1 / (1 - f.A[q * f.K + q]), "%.0f") + " sessions on average, " : std::string("never left, ")) + jnum(100 * f.now[q], "%.0f") + "% today, " +
+              jnum(100 * f.ahead[q], "%.0f") + "% over the next " + std::to_string(mc.horizon) + " sessions";
+      std::printf("strategy: the market's %zu hidden states, refitted at each of %zu resets (walk-forward) and the futures drawn in them; the last fit (%s): %s\n", f.K,
+                  fits.size(), d.days[f.hi].c_str(), st.c_str());
+    }
     if (gate) {
       std::string used;
       for (std::size_t q = 0; q < arms.size(); ++q) used += (q ? ", " : "") + armNames[q] + " " + std::to_string(arms[q].used);
@@ -1470,7 +1506,20 @@ int main(int argc, char** argv) {
       f << ",\"mc\":{\"resets\":" << mcN << ",\"paths\":" << mc.paths << ",\"horizon\":" << mc.horizon << ",\"block\":" << mc.block << ",\"window\":" << mc.window
         << ",\"coverage\":" << jnum(mcN ? mcCover / mcN : kNaN) << ",\"pit\":" << jnum(mcN ? mcPit / mcN : kNaN) << ",\"simMean\":" << jnum(mcN ? mcSim / mcN : kNaN)
         << ",\"realMean\":" << jnum(mcN ? mcReal / mcN : kNaN) << ",\"corr\":" << jnum(mcCorr) << ",\"next\":{\"mean\":" << jnum(mcNext[0]) << ",\"p5\":" << jnum(mcNext[1])
-        << ",\"p50\":" << jnum(mcNext[2]) << ",\"p95\":" << jnum(mcNext[3]) << ",\"pLoss\":" << jnum(mcNext[4]) << "}}";
+        << ",\"p50\":" << jnum(mcNext[2]) << ",\"p95\":" << jnum(mcNext[3]) << ",\"pLoss\":" << jnum(mcNext[4]) << "}";
+    if (mcOn && regK && !fits.empty()) {  // the last fit of the market's states: each state's yearly move and volatility, its stay, its chances
+      const auto& rf = fits.rbegin()->second;
+      const auto arr = [&](auto g) {
+        std::string a = "[";
+        for (std::size_t q = 0; q < rf.K; ++q) a += (q ? "," : "") + jnum(g(q));
+        return a + "]";
+      };
+      f << ",\"regime\":{\"states\":" << rf.K << ",\"fits\":" << fits.size() << ",\"day\":" << jstr(d.days[rf.hi])
+        << ",\"annualMean\":" << arr([&](std::size_t q) { return 252 * rf.mean[q]; }) << ",\"annualVol\":" << arr([&](std::size_t q) { return std::sqrt(252 * rf.var[q]); })
+        << ",\"stay\":" << arr([&](std::size_t q) { return rf.A[q * rf.K + q]; }) << ",\"now\":" << arr([&](std::size_t q) { return rf.now[q]; })
+        << ",\"ahead\":" << arr([&](std::size_t q) { return rf.ahead[q]; }) << "}";
+    }
+    if (mcOn) f << "}";
     f << "}";  // the backtest
     f << ",\"orders\":[";
     for (std::size_t q = 0; q < final.size(); ++q) {
