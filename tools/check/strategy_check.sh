@@ -68,6 +68,18 @@ for s in $names; do
   np2=$(wc -l < "$W/$s-pv-cut.tr")
   head -n "$np2" "$W/$s-pv.tr" | cmp -s - "$W/$s-pv-cut.tr" || { echo "FAIL: $s with the volatility-adjusted SAR: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "volatility-adjusted Parabolic SAR" "$W/$s-pv.out" && grep -q "volatility band learnt" "$W/$s-pv.out" || { cat "$W/$s-pv.out"; echo "FAIL: $s: the volatility-adjusted SAR did not run"; exit 1; }
+  # the market's hidden states refitted at each reset, the futures drawn in them: no look-ahead, the same on every back end
+  RG="$PV --param mcregime=3"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $RG --json "$W/$s-rg-$b.json" --trace "$W/$s-rg-$b.tr" > "$W/$s-rg-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-rg-$b.json" > "$W/$s-rg-$b.cmp"
+    cmp -s "$W/$s-rg-$first.cmp" "$W/$s-rg-$b.cmp" || { echo "FAIL: $s: the market's states differ between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $RG --trace "$W/$s-rg-cut.tr" > /dev/null
+  nr=$(wc -l < "$W/$s-rg-cut.tr")
+  head -n "$nr" "$W/$s-rg-$first.tr" | cmp -s - "$W/$s-rg-cut.tr" || { echo "FAIL: $s with the market's states: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "hidden states, refitted" "$W/$s-rg-$first.out" && jq -e '.backtest.mc.regime.states == 3 and (.backtest.mc.regime.now | add | . > 0.999 and . < 1.001)' "$W/$s-rg-$first.json" > /dev/null \
+    || { cat "$W/$s-rg-$first.out"; echo "FAIL: $s: the market's states did not run"; exit 1; }
   jq -e '.costs.net == false and .costs.atEnd == true
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
