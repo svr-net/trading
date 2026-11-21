@@ -164,7 +164,7 @@
       }
     },
     "FOREX": {
-      "live": {"args": ["--resample-runs", "5"], 
+      "live": {
         "name": "trend",
         "strategy": "trend",
         "args": [
