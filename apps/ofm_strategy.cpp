@@ -1095,14 +1095,17 @@ int main(int argc, char** argv) {
                                  std::vector<double>* meansOut = nullptr) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
+      strat::McTable tab;  // the fused kernel: the share's scaled bars once for every path and setting
+      strat::mcTable(d, t, i, scale, mc, tab);
       backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
         std::vector<std::size_t> days;
         std::vector<double> pre;
+        strat::McPath path;
         for (std::size_t q = a; q < e; ++q) {
           strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
-          strat::mcRatios(d, i, days, scale, pre);
-          for (std::size_t s2 = 0; s2 < G; ++s2)
-            g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlot(d, t, i, days, cap, specs[s2], strat::McHeld{}, adj, scale, pre.data()).ret));
+          strat::mcRatios(d, i, days, scale, pre, &tab);
+          strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);  // the fused kernel: the path once, every setting on it
+          for (std::size_t s2 = 0; s2 < G; ++s2) g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlotPath(path, i, cap, specs[s2], strat::McHeld{}).ret));
         }
       });
       std::vector<double> votes(G, 0.0), mean(G, 0.0);

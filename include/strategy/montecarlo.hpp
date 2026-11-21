@@ -125,45 +125,44 @@ inline void mcDays(std::size_t t0, std::size_t T, const McSpec& s, std::uint64_t
   }
 }
 
-// One share's slot on a path: from the real close of t0 (and its real lows and highs before), the day bars of `days`
-// applied in turn; the book's rules for the buy (the cap), the stop and the buy-back. The fused trade kernel.
+// The fused trade kernel, in two parts. A share's simulated path (mcPath): from the real close of t0 (and its real lows
+// and highs before), the day bars of `days` on the path's price, with what the stops read of them (the price before the
+// day, the lowest low of the 5 days before it, the lowest low and highest high of the last 2 days with it): the same
+// for every stop setting, so computed once a path. Then the book's rules on it (mcSlotPath): the buy (the cap), the
+// stop and the buy-back, one setting at a time over the same bars, nothing read from the market again.
 // scale: the network's volatility scale (mcnn), each drawn day's relative bar raised to it (1: the real days as they were).
-// pre: the path's bars as ratios to their day's previous close raised to `scale` (mcRatios; 4 a day), computed once
-// and shared by every stop setting run on the same path; null: computed here. The same numbers either way.
-inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, double cap, const McSpec& s, const McHeld& h, double adj = 1.0,
-                      double scale = 1.0, const double* pre = nullptr) {
+// pre: the path's bars as ratios to their day's previous close raised to `scale` (mcRatios; 4 a day); null: computed here.
+struct McPath {
+  double last0 = 0, sig0 = 0.02;  // the real close of t0; the share's daily volatility (the volatility stops' unit)
+  std::vector<double> b;          // 8 a day with a bar: the price before it, open, high, low, close, low of 5 before, low and high of 2
+};
+inline void mcPath(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, const McSpec& s, double adj, double scale, const double* pre,
+                   McPath& p) {
   const std::size_t N = d.N;
-  McTrade out;
-  double last = d.Cf[t0 * N + i];
-  if (!(last > 0)) return out;
-  // the recent lows and highs (the SAR's start and its caps): the real ones before t0, then the path's
-  double lows[8], highs[8];
+  p.b.clear();
+  p.last0 = d.Cf[t0 * N + i];
+  if (!(p.last0 > 0)) return;
+  const RegimeFit* rf = mcFit(s, t0);
+  p.sig0 = rf && !rf->sigma.empty() && std::isfinite(rf->sigma[i]) ? rf->sigma[i] : std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
+  // the recent lows and highs in a row (the real ones of the 5 sessions to t0, then the path's): lowOf(n) the lowest of the
+  // last n, highOf(n) the highest (all positive)
+  double lows[5 + 512], highs[5 + 512];
   std::size_t nl = 0;
   for (std::size_t q = t0 >= 4 ? t0 - 4 : 0; q <= t0; ++q)
-    if (d.L[q * N + i] > 0) lows[nl % 8] = d.L[q * N + i], highs[nl % 8] = d.H[q * N + i], ++nl;
-  const auto lowOf = [&](std::size_t n) {  // the lowest of the last n lows
+    if (d.L[q * N + i] > 0) lows[nl] = d.L[q * N + i], highs[nl] = d.H[q * N + i], ++nl;
+  const auto lowOf = [&](std::size_t n) {
     double m = 0;
-    for (std::size_t j = 0; j < std::min(n, std::min<std::size_t>(nl, 8)); ++j) {
-      const double x = lows[(nl - 1 - j) % 8];
-      m = m > 0 ? std::min(m, x) : x;
-    }
+    for (std::size_t j = nl - std::min(n, nl); j < nl; ++j) m = m > 0 ? std::min(m, lows[j]) : lows[j];
     return m;
   };
   const auto highOf = [&](std::size_t n) {
     double m = 0;
-    for (std::size_t j = 0; j < std::min(n, std::min<std::size_t>(nl, 8)); ++j) m = std::max(m, highs[(nl - 1 - j) % 8]);
+    for (std::size_t j = nl - std::min(n, nl); j < nl; ++j) m = std::max(m, highs[j]);
     return m;
   };
-  const bool stops = s.psar || s.stopLoss > 0;
-  bool in = h.held, pending = !h.held, stopped = false, turned = false;
-  double w = 1, mark = h.held ? h.mark : 0, sar = h.sar, ep = h.ep, af = h.af;
-  // the volatility stop's state: the distance (a fraction of the price), the highest close, a sale due at the open
-  const RegimeFit* rf = mcFit(s, t0);
-  const double sig0 = rf && !rf->sigma.empty() && std::isfinite(rf->sigma[i]) ? rf->sigma[i] : std::isfinite(d.sigma[t0 * N + i]) ? d.sigma[t0 * N + i] : 0.02;
-  double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
-  bool exitNext = h.exitNext;
-  double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
-  double low = 0;  // rebuyTrail: the lowest low since the stop (the buy-back order trails it)
+  p.b.resize(8 * days.size());
+  std::size_t nb = 0;
+  double last = p.last0;
   std::size_t kq = 0;
   for (std::size_t q : days) {
     const double* r4 = pre && scale != 1.0 ? pre + 4 * kq : nullptr;
@@ -174,6 +173,34 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
     const auto bar = [&](double x) { return scale == 1.0 ? base * x / pc : base * std::pow(x / pc, scale); };
     const double o = r4 ? base * r4[0] : bar(d.O[q * N + i]), hi = r4 ? base * r4[1] : bar(d.H[q * N + i]), lo = r4 ? base * r4[2] : bar(d.L[q * N + i]),
                  c = r4 ? base * r4[3] : bar(C);
+    const double l5 = lowOf(5);
+    if (nl == 5 + 512) {  // a horizon past 512 days: the oldest dropped (only the last 5 are read)
+      std::copy(lows + nl - 5, lows + nl, lows), std::copy(highs + nl - 5, highs + nl, highs), nl = 5;
+    }
+    lows[nl] = lo, highs[nl] = hi, ++nl;
+    double* x = &p.b[nb];
+    x[0] = last, x[1] = o, x[2] = hi, x[3] = lo, x[4] = c, x[5] = l5, x[6] = lowOf(2), x[7] = highOf(2);
+    nb += 8, last = c;
+  }
+  p.b.resize(nb);
+}
+
+inline McTrade mcSlotPath(const McPath& p, std::size_t i, double cap, const McSpec& s, const McHeld& h) {
+  McTrade out;
+  if (!(p.last0 > 0)) return out;
+  const double sig0 = p.sig0;
+  const bool stops = s.psar || s.stopLoss > 0;
+  bool in = h.held, pending = !h.held, stopped = false, turned = false;
+  double w = 1, mark = h.held ? h.mark : 0, sar = h.sar, ep = h.ep, af = h.af;
+  // the volatility stop's state: the distance (a fraction of the price), the highest close, a sale due at the open
+  double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
+  bool exitNext = h.exitNext;
+  double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
+  double low = 0;  // rebuyTrail: the lowest low since the stop (the buy-back order trails it)
+  const double band = s.psarVol > 0 ? std::clamp(s.psarVol * sig0, 0.02, 0.5) : 0.0;
+  for (std::size_t k = 0; k < p.b.size(); k += 8) {
+    const double* x = &p.b[k];
+    const double last = x[0], o = x[1], hi = x[2], lo = x[3], c = x[4], l5 = x[5], l2 = x[6], h2 = x[7];
     if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
       if (!in && pending && o <= last * (1 + cap)) {
         if (out.stopped && s.trip) w *= 1 - s.trip[i];  // a buy-back: its round trip (mccost)
@@ -196,16 +223,14 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
       } else if (stopped && s.rebuy >= 0 && c >= level * (1 + s.rebuy)) {
         pending = true, stopped = false;
       }
-      last = c;
       continue;
     }
     const auto enter = [&](double px) {  // a position opened at px: its stop
       if (out.stopped && s.trip) w *= 1 - s.trip[i];  // a buy-back: its round trip (mccost)
       in = true, pending = false, stopped = false, mark = px;
       if (s.psar && s.psarVol > 0) {
-        sar = px * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)), ep = px, af = s.afStep;
+        sar = px * (1 - band), ep = px, af = s.afStep;
       } else if (s.psar) {
-        const double l5 = lowOf(5);
         sar = l5 > 0 && l5 < px ? l5 : 0.95 * px, ep = px, af = s.afStep;
       } else {
         sar = s.stopLoss > 0 ? px * (1 - s.stopLoss) : 0.0;
@@ -233,12 +258,9 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
         if (s.psar) {
           if (hi > ep) ep = hi, af = std::min(s.afMax, af + s.afStep);
           double next = sar + af * (ep - sar);
-          lows[nl % 8] = lo, highs[nl % 8] = hi, ++nl;
-          next = std::min(next, lowOf(2));
-          if (s.psarVol > 0) next = std::min(next, c * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)));  // the volatility band
+          next = std::min(next, l2);
+          if (s.psarVol > 0) next = std::min(next, c * (1 - band));  // the volatility band
           sar = std::max(sar, next);
-          last = c;
-          continue;
         }
       }
     } else if (stopped && s.rebuy >= 0 && s.rebuyStop <= 0) {  // the buy-back: its SAR turned up (a close above it), or recovered
@@ -247,9 +269,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
           turned = true;
         } else {
           if (lo < dep) dep = lo, daf = std::min(s.afMax, daf + s.afStep);
-          lows[nl % 8] = lo, highs[nl % 8] = hi, ++nl;
-          dsar = std::min(dsar, std::max(dsar + daf * (dep - dsar), highOf(2)));
-          last = c;
+          dsar = std::min(dsar, std::max(dsar + daf * (dep - dsar), h2));
           continue;
         }
       } else {
@@ -257,25 +277,57 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
       }
       if (turned) pending = true, stopped = false;
     }
-    lows[nl % 8] = lo, highs[nl % 8] = hi, ++nl;
-    last = c;
   }
   out.ret = w - 1;
   return out;
 }
 
-// A path's bars for share i as mcSlot's `pre`: each day's open, high, low and close over the previous close, raised
-// to scale (the network's); computed once a path, shared by every stop setting simulated on it.
-inline void mcRatios(const Data& d, std::size_t i, const std::vector<std::size_t>& days, double scale, std::vector<double>& out) {
+// One share's slot on a path (mcPath, then mcSlotPath): for a single setting; the settings of one path share mcPath.
+inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::vector<std::size_t>& days, double cap, const McSpec& s, const McHeld& h, double adj = 1.0,
+                      double scale = 1.0, const double* pre = nullptr) {
+  thread_local McPath p;
+  mcPath(d, t0, i, days, s, adj, scale, pre, p);
+  return mcSlotPath(p, i, cap, s, h);
+}
+
+// Real day q's bar of share i as ratios to its previous close raised to scale (4: open, high, low, close); zeros
+// without a previous close.
+inline void mcBar4(const Data& d, std::size_t i, std::size_t q, double scale, double* o4) {
   const std::size_t N = d.N;
+  const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0;
+  if (!(pc > 0)) {
+    o4[0] = o4[1] = o4[2] = o4[3] = 0.0;
+    return;
+  }
+  o4[0] = std::pow(d.O[q * N + i] / pc, scale), o4[1] = std::pow(d.H[q * N + i] / pc, scale);
+  o4[2] = std::pow(d.L[q * N + i] / pc, scale), o4[3] = std::pow(d.C[q * N + i] / pc, scale);
+}
+
+// The fused kernel's table: a share's bars (mcBar4) over every real day a reset's paths draw from, computed once a
+// reset and read by every path and every stop setting, instead of raising each drawn day's bar to the network's scale
+// again on each path (the days repeat: a few hundred real days serve thousands of path days). The same numbers.
+struct McTable {
+  std::size_t lo = 1, hi = 0;  // the days held (none: lo > hi)
+  std::vector<double> r;       // 4 a day, from lo
+};
+inline void mcTable(const Data& d, std::size_t t0, std::size_t i, double scale, const McSpec& s, McTable& out) {
+  out.lo = 1, out.hi = 0, out.r.clear();
+  if (scale == 1.0) return;  // mcSlot needs no ratios then
+  const std::size_t hi = t0 > s.skip + 1 ? t0 - s.skip : 1, lo = hi > s.window ? hi - s.window : 1;  // as mcDays
+  out.lo = lo, out.hi = hi, out.r.resize(4 * (hi - lo + 1));
+  for (std::size_t q = lo; q <= hi; ++q) mcBar4(d, i, q, scale, &out.r[4 * (q - lo)]);
+}
+
+// A path's bars for share i as mcSlot's `pre`: each day's open, high, low and close over the previous close, raised
+// to scale (the network's); computed once a path, shared by every stop setting simulated on it. tab: read from the
+// reset's table where it holds the day (any other day computed here).
+inline void mcRatios(const Data& d, std::size_t i, const std::vector<std::size_t>& days, double scale, std::vector<double>& out, const McTable* tab = nullptr) {
   out.assign(4 * days.size(), 0.0);
   if (scale == 1.0) return;  // mcSlot computes these itself then
   for (std::size_t k = 0; k < days.size(); ++k) {
     const std::size_t q = days[k];
-    const double pc = q > 0 ? d.Cf[(q - 1) * N + i] : 0.0;
-    if (!(pc > 0)) continue;
-    out[4 * k] = std::pow(d.O[q * N + i] / pc, scale), out[4 * k + 1] = std::pow(d.H[q * N + i] / pc, scale);
-    out[4 * k + 2] = std::pow(d.L[q * N + i] / pc, scale), out[4 * k + 3] = std::pow(d.C[q * N + i] / pc, scale);
+    if (tab && q >= tab->lo && q <= tab->hi) std::copy_n(&tab->r[4 * (q - tab->lo)], 4, &out[4 * k]);
+    else mcBar4(d, i, q, scale, &out[4 * k]);
   }
 }
 
@@ -295,13 +347,19 @@ inline void mcRun(const Data& d, std::size_t t0, const std::vector<std::size_t>&
   r.book.assign(P, 0.0), r.share.assign(S * P, 0.0), r.stop.assign(S * P, 0);
   std::vector<double> adj(S), sc(S, 1.0);
   for (std::size_t j = 0; j < S; ++j) adj[j] = mcAdjust(d, t0, list[j], s) * (j < mu.size() ? std::exp(mu[j]) : 1.0), sc[j] = j < scale.size() ? scale[j] : 1.0;
+  std::vector<McTable> tab(S);  // the fused kernel: each share's scaled bars once for the reset
+  b.parallelFor(S, [&](std::size_t a, std::size_t e) {
+    for (std::size_t j = a; j < e; ++j) mcTable(d, t0, list[j], sc[j], s, tab[j]);
+  });
   b.parallelFor(P, [&](std::size_t a, std::size_t e) {
     std::vector<std::size_t> days;
+    std::vector<double> pre;
     for (std::size_t p = a; p < e; ++p) {
       mcDays(t0, d.T, s, mcMix(s.seed ^ mcMix(resetKey * 1000003ULL + p)), false, days);
       double sum = 0;
       for (std::size_t j = 0; j < S; ++j) {
-        const McTrade x = mcSlot(d, t0, list[j], days, caps[j], s, held[j], adj[j], sc[j]);
+        mcRatios(d, list[j], days, sc[j], pre, &tab[j]);
+        const McTrade x = mcSlot(d, t0, list[j], days, caps[j], s, held[j], adj[j], sc[j], pre.data());
         r.share[j * P + p] = x.ret, r.stop[j * P + p] = x.stopped ? 1 : 0, sum += x.ret;
       }
       r.book[p] = sum / double(std::max<std::size_t>(1, k));
