@@ -44,10 +44,15 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef __EMSCRIPTEN__
+#include <unistd.h>
+#endif
+
 #include "strategy/backend.hpp"
 #include "strategy/kernels.hpp"
 #include "strategy/montecarlo.hpp"
 #include "strategy/neural.hpp"
+#include "strategy/resample.hpp"
 #include "strategy/strategy.hpp"
 
 using strat::kNaN;
@@ -62,6 +67,10 @@ struct Options {
   std::size_t slots = 5, roll = 5;
   bool tiered = false, list = false;
   unsigned seed = 7;
+  // --resample SEED: the run on a synthetic market drawn from the real one (strategy/resample.hpp) instead of it;
+  // --resample-runs N: also N such markets (seeds 1..N, each a run of its own), their results' spread in the report;
+  // --resample-block B: the drawn blocks' length in days (default 21).
+  unsigned resample = 0, resampleRuns = 0, resampleBlock = 21;
 };
 
 [[noreturn]] void usage(const char* why) {
@@ -102,6 +111,9 @@ Options parse(int argc, char** argv) {
     else if (a == "--trace") o.traceOut = next();
     else if (a == "--synthetic") o.synthetic = next();
     else if (a == "--seed") o.seed = unsigned(std::atoi(next().c_str()));
+    else if (a == "--resample") o.resample = unsigned(std::atoi(next().c_str()));
+    else if (a == "--resample-runs") o.resampleRuns = unsigned(std::atoi(next().c_str()));
+    else if (a == "--resample-block") o.resampleBlock = unsigned(std::max(1, std::atoi(next().c_str())));
     else if (a == "--list") o.list = true;
     // the scan's arguments for the earlier models, not used here
     else if (a == "--top") o.top = std::atol(next().c_str());
@@ -463,6 +475,48 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (o.csv.empty()) usage("no --csv");
+  // --resample-runs: the same run on N synthetic markets first (each its own process, its record from its JSON)
+  struct Resampled { double annual = kNaN, sharpe = kNaN, dd = kNaN, annualNet = kNaN, sharpeNet = kNaN; };
+  std::vector<Resampled> resampled;
+#ifndef __EMSCRIPTEN__
+  if (o.resampleRuns > 0 && o.resample == 0) {
+    const auto quote = [](const std::string& x) {
+      std::string q = "'";
+      for (char c : x) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+      return q + "'";
+    };
+    const auto number = [](const std::string& js, const std::string& key, std::size_t from = 0) {
+      const auto at = js.find("\"" + key + "\":", from);
+      return at == std::string::npos ? kNaN : std::atof(js.c_str() + at + key.size() + 3);
+    };
+    std::string self = argv[0];  // the engine's own path (resolved: /proc/self/exe would name the shell's child)
+    {
+      char buf[4096];
+      const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+      if (n > 0) self.assign(buf, std::size_t(n));
+    }
+    for (unsigned sd = 1; sd <= o.resampleRuns; ++sd) {
+      const std::string tmp = (std::getenv("TMPDIR") ? std::string(std::getenv("TMPDIR")) : std::string("/tmp")) + "/ofm-resample-" + std::to_string(getpid()) + "-" + std::to_string(sd) + ".json";
+      std::string cmd = "env -u X_TRADELOG -u X_PROFILE " + quote(self);
+      for (int a = 1; a < argc; ++a) {
+        const std::string arg = argv[a];
+        if (arg == "--json" || arg == "--orders" || arg == "--trace" || arg == "--resample-runs") { ++a; continue; }
+        cmd += " " + quote(arg);
+      }
+      cmd += " --resample " + std::to_string(sd) + " --json " + quote(tmp) + " > /dev/null 2>&1";
+      Resampled r;
+      if (std::system(cmd.c_str()) == 0) {
+        const std::string js = slurp(tmp);
+        const auto bt = js.find("\"backtest\":");
+        r.annual = number(js, "annualReturn", bt), r.sharpe = number(js, "sharpe", bt), r.dd = number(js, "maxDrawdown", bt);
+        const auto net = js.find("\"afterRebuyCosts\":", bt);
+        if (net != std::string::npos) r.annualNet = number(js, "annualReturn", net), r.sharpeNet = number(js, "sharpe", net);
+        std::remove(tmp.c_str());
+      }
+      resampled.push_back(r);
+    }
+  }
+#endif
   const auto sf = strat::registry().find(o.strategy);
   if (sf == strat::registry().end()) usage(("no strategy '" + o.strategy + "' (see --list)").c_str());
   const auto strategy = sf->second();
@@ -579,6 +633,8 @@ int main(int argc, char** argv) {
   if (!o.overrideCsv.empty()) note = overrideBars(d, o.overrideCsv);
   const std::size_t units = repairUnits(d);
   const std::size_t outliers = rollOutliers(d);
+  strat::ResampleInfo rsInfo;
+  if (o.resample > 0) rsInfo = strat::resampleMarket(d, o.resample, o.resampleBlock);
   if (std::getenv("X_PROFILE")) std::fprintf(stderr, "profile: reading %.2fs, the panel %.2fs, repairs %.2fs\n", ld1 - ld0, ld2 - ld1, now() - ld2);
   const std::size_t T = d.T, N = d.N, k = o.slots;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
@@ -1528,6 +1584,30 @@ int main(int argc, char** argv) {
   if (top) std::printf("strategy: each day the %zu most traded shares as of that day (of %zu in the data), not today's list applied backwards\n", top, N);
   std::printf("strategy: the account (%s .. %s, %zu slots of %s %.0f, rebalanced every %zu sessions): %+.1f%% a year, Sharpe %.2f, max drawdown %.1f%%, before costs\n",
               dailyDays.empty() ? "-" : dailyDays.front().c_str(), dailyDays.empty() ? "-" : dailyDays.back().c_str(), k, cur.c_str(), o.capital, reb, 100 * annual, sharpe, 100 * dd);
+  if (o.resample > 0)
+    std::printf("strategy: on a synthetic market (seed %u) drawn from the real one: blocks of %zu real days in the market's %zu states, each share on its real calendar and volume\n",
+                o.resample, rsInfo.block, rsInfo.states);
+  // --resample-runs: the same strategy on N synthetic markets drawn from the real one: the spread of its results
+  struct Spread { double mean = kNaN, lo = kNaN, mid = kNaN, hi = kNaN; std::size_t n = 0; };
+  const auto spreadOf = [&](double Resampled::*m) {
+    std::vector<double> v;
+    for (const auto& r : resampled)
+      if (std::isfinite(r.*m)) v.push_back(r.*m);
+    Spread sp;
+    if (v.empty()) return sp;
+    std::sort(v.begin(), v.end());
+    sp.n = v.size(), sp.mean = 0;
+    for (double x : v) sp.mean += x / double(v.size());
+    sp.lo = v.front(), sp.mid = v[v.size() / 2], sp.hi = v.back();
+    return sp;
+  };
+  const Spread rsA = spreadOf(&Resampled::annual), rsS = spreadOf(&Resampled::sharpe), rsD = spreadOf(&Resampled::dd), rsAN = spreadOf(&Resampled::annualNet),
+               rsSN = spreadOf(&Resampled::sharpeNet);
+  if (rsS.n)
+    std::printf("strategy: on %zu synthetic markets drawn from the real one (the nested Monte Carlo's draw, blocks of %u days in the market's states): "
+                "%+.1f%% a year on average (%+.1f%% .. %+.1f%%), Sharpe %.2f on average (%.2f .. %.2f, median %.2f), max drawdown %.1f%% on average%s\n",
+                rsS.n, o.resampleBlock, 100 * rsA.mean, 100 * rsA.lo, 100 * rsA.hi, rsS.mean, rsS.lo, rsS.hi, rsS.mid, 100 * rsD.mean,
+                rsSN.n ? (", after the buy-backs' round trips Sharpe " + jnum(rsSN.mean, "%.2f") + " on average (" + jnum(rsSN.lo, "%.2f") + " .. " + jnum(rsSN.hi, "%.2f") + ")").c_str() : "");
   if (stops)
     std::printf("strategy:   %s: %zu positions stopped; %s\n",
                 psarVol ? (std::string("a volatility-adjusted Parabolic SAR stop (") + (vAdapt ? "a multiple learnt for each share of" : jnum(P["psarvol"]) + " times") + " the daily volatility under the price paid, never closer than that under the close)").c_str()
@@ -1654,6 +1734,11 @@ int main(int argc, char** argv) {
       << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
       << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false") << ",\"rebuyStop\":" << (rbStop ? "true" : "false") << ",\"rebuys\":" << nRebuys
       << ",\"afterRebuyCosts\":{\"annualReturn\":" << jnum(annualNet) << ",\"sharpe\":" << jnum(sharpeNet) << "}";
+    if (o.resample > 0) f << ",\"resample\":{\"seed\":" << o.resample << ",\"block\":" << rsInfo.block << ",\"states\":" << rsInfo.states << "}";
+    if (rsS.n)
+      f << ",\"resampled\":{\"markets\":" << rsS.n << ",\"block\":" << o.resampleBlock << ",\"annualReturn\":" << jnum(rsA.mean) << ",\"sharpe\":" << jnum(rsS.mean)
+        << ",\"sharpeMin\":" << jnum(rsS.lo) << ",\"sharpeMax\":" << jnum(rsS.hi) << ",\"maxDrawdown\":" << jnum(rsD.mean) << ",\"afterRebuyCosts\":{\"annualReturn\":"
+        << jnum(rsAN.mean) << ",\"sharpe\":" << jnum(rsSN.mean) << "}}";
     if (mcOn)
       f << ",\"mc\":{\"resets\":" << mcN << ",\"paths\":" << mc.paths << ",\"horizon\":" << mc.horizon << ",\"block\":" << mc.block << ",\"window\":" << mc.window
         << ",\"coverage\":" << jnum(mcN ? mcCover / mcN : kNaN) << ",\"pit\":" << jnum(mcN ? mcPit / mcN : kNaN) << ",\"simMean\":" << jnum(mcN ? mcSim / mcN : kNaN)

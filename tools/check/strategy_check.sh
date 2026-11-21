@@ -80,6 +80,14 @@ for s in $names; do
   head -n "$nr" "$W/$s-rg-$first.tr" | cmp -s - "$W/$s-rg-cut.tr" || { echo "FAIL: $s with the market's states: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "hidden states, refitted" "$W/$s-rg-$first.out" && jq -e '.backtest.mc.regime.states == 3 and (.backtest.mc.regime.now | add | . > 0.999 and . < 1.001)' "$W/$s-rg-$first.json" > /dev/null \
     || { cat "$W/$s-rg-$first.out"; echo "FAIL: $s: the market's states did not run"; exit 1; }
+  # a synthetic market drawn from the real one (--resample): the same for a seed and on every back end, another for another seed
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --resample 3 --json "$W/$s-rs-$b.json" > /dev/null
+    sed 's/"backend":"[a-z]*"//' "$W/$s-rs-$b.json" > "$W/$s-rs-$b.cmp"
+    cmp -s "$W/$s-rs-$first.cmp" "$W/$s-rs-$b.cmp" || { echo "FAIL: $s: the resampled market differs between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --resample 4 --json "$W/$s-rs4.json" > /dev/null
+  [ "$(jq -c '.backtest | del(.resample)' "$W/$s-rs-$first.json")" != "$(jq -c '.backtest | del(.resample)' "$W/$s-rs4.json")" ] || { echo "FAIL: $s: two seeds drew the same market"; exit 1; }
   jq -e '.costs.net == false and .costs.atEnd == true
          and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
