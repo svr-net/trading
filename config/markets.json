@@ -12,7 +12,7 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5, "mcregime": 2, "mcregimestop": 0, "mccost": 1, "adaptfine": 1, "rebuytrail": 1,
+          "mcnnstep": 5, "mcregime": 2, "mcregimestop": 0, "mccost": 1, "adaptfine": 1,
           "psar": 1,
           "rebuy": 0,
           "refill": 1,
@@ -20,8 +20,8 @@
           "psarmax": 0.1,
           "psarvol": 3,
           "psarvoladapt": 1,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 0
         }
       },
@@ -52,8 +52,8 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 5,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 1
         }
       },
@@ -85,8 +85,8 @@
           "psarmax": 0.1,
           "psarvol": 3,
           "psarvoladapt": 1,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 1
         }
       },
@@ -117,8 +117,8 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 1
         }
       },
@@ -149,8 +149,8 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 1
         }
       },
@@ -185,8 +185,8 @@
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "rebuystop": 0.01,
-          "rebuystopadapt": 1,
+          "rebuystop": 0,
+          "rebuystopadapt": 0,
           "stopmedian": 1
         }
       },
