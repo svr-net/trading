@@ -54,6 +54,10 @@ struct McSpec {
   // regime: the market's hidden states fitted at each reset (mcregime; regime.hpp): a reset with a fit draws its futures
   // in states and sizes the volatility stops by each share's volatility in the states expected; null: none.
   const RegimeFits* regime = nullptr;
+  // trip: each share's round trip at the broker as a fraction of its order (mccost; null: no costs). A buy-back after a
+  // stop is one more round trip than holding (the stop's sale and the buy again), so each costs it: a buy-back a hair
+  // over its stop pays it on every whipsaw, and the settings learnt on these futures see that.
+  const double* trip = nullptr;
 };
 
 // The fit of the market's states at reset t0 (null: none).
@@ -169,6 +173,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
                  c = r4 ? base * r4[3] : bar(C);
     if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
       if (!in && pending && o <= last * (1 + cap)) {
+        if (out.stopped && s.trip) w *= 1 - s.trip[i];  // a buy-back: its round trip (mccost)
         in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, 0.02, 0.5);
         ep = o * (1 - vd), sar = o * (1 - 1.5 * vd), hic = o, exitNext = false;
       }
@@ -192,6 +197,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
       continue;
     }
     const auto enter = [&](double px) {  // a position opened at px: its stop
+      if (out.stopped && s.trip) w *= 1 - s.trip[i];  // a buy-back: its round trip (mccost)
       in = true, pending = false, stopped = false, mark = px;
       if (s.psar && s.psarVol > 0) {
         sar = px * (1 - std::clamp(s.psarVol * sig0, 0.02, 0.5)), ep = px, af = s.afStep;

@@ -546,6 +546,10 @@ int main(int argc, char** argv) {
   // plain Monte Carlo's draws). mcregimestop: 1 sizes the volatility stops by the states expected; 0 leaves them on the
   // last 60 sessions (the states shape the futures only).
   P.emplace("mcregime", 0.0), P.emplace("mcregimestop", 1.0);
+  // mccost: 1 charges every buy-back after a stop its round trip at the broker (the share's own costs at the reset:
+  // commissions, taxes, fees for the order's amount) in the nested Monte Carlo, so the stop's band and the buy-back's
+  // distance are learnt net of the whipsaws they cause. 0: the futures without costs.
+  P.emplace("mccost", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -764,6 +768,14 @@ int main(int argc, char** argv) {
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
   mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
+  // A share's round trip at the broker for its order at day t, as a fraction of the order (the final orders' costs).
+  const auto tripOf = [&](std::size_t t, std::size_t i) {
+    const double v = d.value[t * N + i], c = d.Cf[t * N + i];
+    const double amount = noVolume || !(std::isfinite(v) && v > 0) ? o.capital : std::min(o.capital, o.advShare * v);
+    return c > 0 ? costs.roundTrip(amount, d.tickers[i], c / unit) : 0.0;
+  };
+  std::vector<double> tripV;  // mccost: each share's round trip at the last reset (the Monte Carlo's)
+  if (mcOn && P["mccost"] > 0) tripV.assign(N, 0.0), mc.trip = tripV.data();
   regK = !mcOn || P["mcregime"] == 0 ? 0 : P["mcregime"] < 0 ? SIZE_MAX : std::size_t(P["mcregime"]);
   regStop = regK && P["mcregimestop"] > 0;
   stateHorizon = mc.horizon;
@@ -815,7 +827,7 @@ int main(int argc, char** argv) {
   std::map<std::size_t, Pos> book;
   std::vector<std::size_t> target, reserve;  // reserve (refill): the next shares for the slots stops free
   std::vector<std::size_t> simReserve;
-  std::vector<double> score, daily;
+  std::vector<double> score, daily, dailyNet;  // dailyNet: after the buy-backs' round trips
   std::vector<std::string> dailyDays;
   std::map<std::size_t, std::size_t> lastHeld;  // share -> the last day it was in the book
   Learnt learnt(k);
@@ -920,6 +932,8 @@ int main(int argc, char** argv) {
     ranked(*strategy, P, t, c);
     of = c.size(), decided = t;
     target.clear();
+    if (!tripV.empty())
+      for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(t, i);
     if (regK) {  // this cycle's reverse engineering: the market's states refitted up to t (warm from the last cycle)
       const double cr = clock();
       std::size_t best = 0;
@@ -1122,7 +1136,7 @@ int main(int argc, char** argv) {
     if (nnStep && (t - start) % nnStep == 0 && (t - start) % reb != 0) learn(t, 1);  // between the resets: the day's bars
     decide(t);
     const std::size_t u = t + 1;
-    double day = 0;
+    double day = 0, dayCost = 0;  // dayCost: the day's buy-backs' round trips (the record after them)
     std::vector<std::size_t> done, sameDayBack;
     // rebuystop: share i bought back at px on day u by its buy-back order, its stop placed at once. sameDay: the stop's own
     // day (its close over the level): no second stop that day; intraday: bought at the level during the day (a stop
@@ -1134,6 +1148,7 @@ int main(int argc, char** argv) {
       r.t = t, r.i = i, r.rank = at != target.end() ? std::size_t(at - target.begin()) : target.size();
       r.expected = learnt.expected(r.rank), r.limit = px, r.filled = true, r.entry = px, r.since = u;
       stoppedAt.erase(i), ++nRebuys;
+      dayCost += tripOf(t, i);
       stamp(r);
       Pos p{rows.size(), C > 0 ? C : px};
       openStop(p, u, i, px);
@@ -1220,7 +1235,7 @@ int main(int argc, char** argv) {
       const double O = d.O[u * N + i], C = d.Cf[u * N + i];
       if (O > 0 && O <= r.limit) {
         r.filled = true, r.entry = O, r.since = u;
-        if (again) stoppedAt.erase(i), ++nRebuys;
+        if (again) stoppedAt.erase(i), ++nRebuys, dayCost += tripOf(t, i);
         --free;
         double px = 0;
         Pos p{rows.size(), C > 0 ? C : O};
@@ -1243,6 +1258,7 @@ int main(int argc, char** argv) {
       if (stoppedAt.count(i) && !book.count(i)) buyBack(i, stoppedAt[i].trigger, true);
     for (auto& [i, x] : stoppedAt) stoppedDay(x, u, i);  // the stopped shares through day u's close
     daily.push_back(day / double(k));
+    dailyNet.push_back((day - dayCost) / double(k));
     dailyDays.push_back(d.days[u]);
     for (std::size_t x : done) learnt.add(rows[x]);
   }
@@ -1261,6 +1277,14 @@ int main(int argc, char** argv) {
   }
   const double nD = double(daily.size()), mean = nD ? s1 / nD : 0, sd = nD ? std::sqrt(std::max(0.0, s2 / nD - mean * mean)) : 0;
   const double annual = nD ? std::expm1(w * 252.0 / nD) : 0, sharpe = sd > 0 ? mean / sd * std::sqrt(252.0) : 0;
+  // The same record after the buy-backs' own round trips (each buy-back after a stop is one more round trip than holding).
+  double annualNet = 0, sharpeNet = 0;
+  {
+    double wn = 0, a1 = 0, a2 = 0;
+    for (double x : dailyNet) wn += std::log1p(x), a1 += x, a2 += x * x;
+    const double m = nD ? a1 / nD : 0, sdn = nD ? std::sqrt(std::max(0.0, a2 / nD - m * m)) : 0;
+    annualNet = nD ? std::expm1(wn * 252.0 / nD) : 0, sharpeNet = sdn > 0 ? m / sdn * std::sqrt(252.0) : 0;
+  }
   double nFilled = 0, sumTrade = 0, nWin = 0;
   for (const auto& r : rows)
     if (r.filled) nFilled += 1, sumTrade += r.ret, nWin += r.ret > 0;
@@ -1472,6 +1496,9 @@ int main(int argc, char** argv) {
                 : rebuy < 0 ? "never bought back"
                           : (std::string(psar ? "bought back once its SAR turned up again: " : ("bought back once the close was " + std::to_string(int(std::lround(100 * rebuy))) + "% over the stop level: ").c_str()) +
                              std::to_string(nRebuys) + " times").c_str());
+  if (stops && nRebuys)
+    std::printf("strategy:   after the buy-backs' own round trips at the broker (%zu buy-backs, each one more round trip than holding): %+.1f%% a year, Sharpe %.2f%s\n",
+                nRebuys, 100 * annualNet, sharpeNet, P["mccost"] > 0 ? " (the stops and buy-backs learnt net of them: mccost)" : "");
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
               rows.empty() ? 0.0 : 100 * nFilled / double(rows.size()), nFilled ? 100 * sumTrade / nFilled : 0.0, nFilled ? 100 * nWin / nFilled : 0.0, learnt.holdDays(double(reb)));
   if (mcOn) {
@@ -1571,7 +1598,8 @@ int main(int argc, char** argv) {
       << ",\"annualReturn\":" << jnum(annual) << ",\"sharpe\":" << jnum(sharpe) << ",\"maxDrawdown\":" << jnum(dd) << ",\"orders\":" << rows.size()
       << ",\"trades\":" << nFilled << ",\"avgTrade\":" << jnum(nFilled ? sumTrade / nFilled : 0.0) << ",\"winRate\":" << jnum(nFilled ? nWin / nFilled : 0.0)
       << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
-      << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false") << ",\"rebuyStop\":" << (rbStop ? "true" : "false") << ",\"rebuys\":" << nRebuys;
+      << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false") << ",\"rebuyStop\":" << (rbStop ? "true" : "false") << ",\"rebuys\":" << nRebuys
+      << ",\"afterRebuyCosts\":{\"annualReturn\":" << jnum(annualNet) << ",\"sharpe\":" << jnum(sharpeNet) << "}";
     if (mcOn)
       f << ",\"mc\":{\"resets\":" << mcN << ",\"paths\":" << mc.paths << ",\"horizon\":" << mc.horizon << ",\"block\":" << mc.block << ",\"window\":" << mc.window
         << ",\"coverage\":" << jnum(mcN ? mcCover / mcN : kNaN) << ",\"pit\":" << jnum(mcN ? mcPit / mcN : kNaN) << ",\"simMean\":" << jnum(mcN ? mcSim / mcN : kNaN)
