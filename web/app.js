@@ -112,7 +112,7 @@ function render(r, source) {
       if (levels && !stopOnly) row.push([o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
       if (holds) row.push(o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
-      if (rebuys) row.push(o.rebuy === true ? (o.rebuyAt != null ? [`${o.rebuyStop != null ? '≥' : '>'} ${pct(o.rebuyAt, 1)}`, 'num'] : ['SAR turns up', 'num']) : o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
+      if (rebuys) row.push(o.rebuy === true ? (o.rebuyTrail && o.rebuyStop != null ? [`${pct(o.rebuyStop, 1).slice(1)} off the low`, 'num'] : o.rebuyAt != null ? [`${o.rebuyStop != null ? '≥' : '>'} ${pct(o.rebuyAt, 1)}`, 'num'] : ['SAR turns up', 'num']) : o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
       if (costed) row.push(o.cost == null ? ['–', 'num opt'] : [pct(-o.cost, 2), 'num neg opt']);
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num opt'] : [signed(o.ifFilled, 2)[0], `${signed(o.ifFilled, 2)[1]} opt`]);
@@ -142,6 +142,9 @@ function render(r, source) {
         + '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is tried again the next morning. '
         + '<b>Sell at</b>: <i>when dropped</i>, at the open of the morning after the strategy leaves it out of its list. '
         + (r.orders.some((o) => o.stopKind === 'psar') ? '<b>Stop</b>: a Parabolic SAR stop at IBKR (good till cancelled), from the lows before the buy and rising each day with the price; after a stop the share is bought back once its SAR turns up again, while the strategy still wants it. ' : '')
+        + (r.orders.some((o) => o.stopKind === 'psar-vol') ? '<b>Stop</b>: a Parabolic SAR stop at IBKR (good till cancelled), starting this far under the price paid (a multiple of the share\'s daily volatility) and rising with the price. ' : '')
+        + (r.orders.some((o) => o.rebuyTrail) ? '<b>Buy-back</b>: attached to the stop at IBKR, working only once the stop has sold: a trailing buy order that follows the price down and buys this far off the lowest price after the stop, so it buys at the turn, under the price the stop sold at once the share fell further, while the strategy still wants it. '
+          : r.orders.some((o) => o.rebuyStop != null) ? '<b>Buy-back</b>: attached to the stop at IBKR, working only once the stop has sold: a buy stop this far over the price the stop sold at. ' : '')
         + `<b>Costs</b>: the order's own commission and ${taxes}, applied only at the end, to this list: they choose nothing and change no order's place. `
         + '<b>If it buys</b>: what the strategy\'s past trades at the same rank made before costs, less these costs. <b>Expected</b>: that times the chance to buy. <span id="odds"></span>'
       : r.model === 'uk' && r.book === 'hold'
@@ -179,7 +182,7 @@ function render(r, source) {
     <div class="tile"><span class="k">After the buy-backs' own costs</span><span class="v">${pct(net.annualReturn)}</span><span class="s">a year · Sharpe ${net.sharpe.toFixed(2)} · ${B.rebuys} buy-backs, ${B.stops} stops in the backtest</span></div>` : '';
   // What the stops learnt: each share's volatility band and buy-back distance at each reset (10%, median, 90%).
   const LN = B.learnt, x = (v) => `${v.toFixed(v < 10 ? 1 : 0)}×`, learntTile = LN && (LN.band || LN.rebuy) ? `
-    <div class="tile"><span class="k">Stops learnt</span><span class="v">${LN.band ? x(LN.band[2]) : '–'}</span><span class="s">the median stop band, in daily volatilities (10–90%: ${LN.band ? `${x(LN.band[0])}–${x(LN.band[4])}` : '–'})${LN.rebuy ? ` · buy-back ${pct(LN.rebuy[2], 2).slice(1)} over the stop (10–90%: ${pct(LN.rebuy[0], 2).slice(1)}–${pct(LN.rebuy[4], 2).slice(1)})` : ''} · ${LN.fine ? 'any value' : 'from a few values'}${LN.tripCosts ? ', each buy-back paying its round trip' : ''}</span></div>` : '';
+    <div class="tile"><span class="k">Stops learnt</span><span class="v">${LN.band ? x(LN.band[2]) : '–'}</span><span class="s">the median stop band, in daily volatilities (10–90%: ${LN.band ? `${x(LN.band[0])}–${x(LN.band[4])}` : '–'})${LN.rebuy ? ` · buy-back ${pct(LN.rebuy[2], 2).slice(1)} over the stop (10–90%: ${pct(LN.rebuy[0], 2).slice(1)}–${pct(LN.rebuy[4], 2).slice(1)})` : ''} · ${LN.fine ? 'any value' : 'from a few values'}${LN.tripCosts ? ', each buy-back paying its round trip' : ''}${LN.rebuyTrail ? ', the buy-back trailing the lowest price after the stop' : ''}</span></div>` : '';
   // The market's state now (regime.hpp): how turbulent it is, and the trades' record by turbulence.
   const RG = B.mc?.regime, rgTile = RG?.today ? `
     <div class="tile"><span class="k">The market now (${RG.states} states)</span><span class="v">${Math.round(100 * RG.today.ahead)}% turbulent</span><span class="s">ahead · now ${Math.round(100 * RG.today.turbulence)}% · its volatility ${pct(RG.today.marketVol, 0).slice(1)} a year${(RG.byTurbulence || []).length ? ' · past trades by turbulence: ' + RG.byTurbulence.map((b) => `${pct(b.avgTrade, 2)}`).join(', ') + ' (calm to turbulent)' : ''}</span></div>` : '';

@@ -45,6 +45,8 @@ struct McSpec {
   // own day only when the close is at or over it: the price crossed it after the stop), at that level or the open
   // through a gap. It replaces the buy-back on the SAR's turn (rebuy). 0: none.
   double rebuyStop = 0;
+  // rebuyTrail: the buy-back order trails the lowest low since the stop at rebuyStop over it (instead of the level sold at).
+  bool rebuyTrail = false;
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
@@ -161,6 +163,7 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
   double vd = h.held ? h.af : 0, hic = h.held && h.af < 1 ? h.ep / (1 - h.af) : 0;
   bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
+  double low = 0;  // rebuyTrail: the lowest low since the stop (the buy-back order trails it)
   std::size_t kq = 0;
   for (std::size_t q : days) {
     const double* r4 = pre && scale != 1.0 ? pre + 4 * kq : nullptr;
@@ -211,14 +214,15 @@ inline McTrade mcSlot(const Data& d, std::size_t t0, std::size_t i, const std::v
     if (!in && pending && o <= last * (1 + cap)) enter(o);  // bought at the open, under the cap
     bool intraday = false;  // bought back during the day at the buy stop's level: a stop that day sells at its level
     if (!in && stopped && s.rebuyStop > 0) {  // the buy-back order, working since the stop
-      const double trig = level * (1 + s.rebuyStop);
+      const double trig = (s.rebuyTrail ? low : level) * (1 + s.rebuyStop);
       if (o >= trig) enter(o);
       else if (hi >= trig) enter(trig), intraday = true;
+      else if (lo < low) low = lo;  // still out: the trailing order follows the day's low
     }
     if (in) {
       if (stops && sar > 0 && lo <= sar) {  // stopped: at the stop, or the open through a gap
         const double px = intraday ? sar : std::min(o, sar);
-        w *= px / mark, in = false, out.stopped = stopped = true, turned = false, level = px;
+        w *= px / mark, in = false, out.stopped = stopped = true, turned = false, level = px, low = std::min(px, lo);
         if (s.psar) dsar = std::max(ep, px), dep = px, daf = s.afStep;
         if (s.rebuyStop > 0 && !intraday && c >= px * (1 + s.rebuyStop)) {  // back through the buy stop after the stop
           enter(px * (1 + s.rebuyStop));

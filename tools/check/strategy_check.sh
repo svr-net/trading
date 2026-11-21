@@ -28,9 +28,9 @@ for s in $names; do
   n=$(wc -l < "$W/$s-cut.tr")
   [ "$n" -gt 10 ] || { echo "FAIL: $s: only $n orders on the shorter market"; exit 1; }
   head -n "$n" "$W/$s-$first.tr" | cmp -s - "$W/$s-cut.tr" || { echo "FAIL: $s: an order changed with later data (look-ahead)"; exit 1; }
-  # the nested Monte Carlo: the same on every back end (counter-based draws)
+  # the nested Monte Carlo: the same on every back end (counter-based draws), with the trailing buy-back learnt for each share
   for b in $backs; do
-    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --param mc=1 --param mcpaths=200 --json "$W/$s-mc-$b.json" > "$W/$s-mc-$b.out"
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --param psarvol=3 --param rebuystop=0.01 --param rebuystopadapt=1 --param rebuytrail=1 --param mc=1 --param mcpaths=200 --json "$W/$s-mc-$b.json" > "$W/$s-mc-$b.out"
     sed 's/"backend":"[a-z]*"//' "$W/$s-mc-$b.json" > "$W/$s-mc-$b.cmp"
     cmp -s "$W/$s-mc-$first.cmp" "$W/$s-mc-$b.cmp" || { echo "FAIL: $s: the Monte Carlo differs between the back ends $first and $b"; exit 1; }
   done

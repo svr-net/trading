@@ -425,7 +425,7 @@ struct Row {  // an order of the backtest
 struct Pos { std::size_t row; double mark, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2, hic = 0, band = 0; bool exitNext = false; };
 // A share whose position was stopped: its SAR on the way down (with psar: the highest high since as the level,
 // the lowest low as ep), and whether it has turned up again (a close above it).
-struct Stopped { double level = 0, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2, trigger = 0; std::size_t at = 0; bool turned = false; };
+struct Stopped { double level = 0, sar = 0, ep = 0, af = 0, step = 0.02, mx = 0.2, trigger = 0, low = 0, dist = 0; std::size_t at = 0; bool turned = false; };
 
 struct Learnt {  // the strategy's past trades by their place on the list, known on the day
   std::vector<double> sum, n;
@@ -562,11 +562,14 @@ int main(int argc, char** argv) {
   // a gap, its own stop at once. It replaces rebuy's buy-back on the SAR's turn. 0: none. rebuystopadapt: 1 learns each
   // share's distance at every reset (0.5%, 1%, 2%, 3% or 5%), the one with the most expected log growth on its futures
   // in the nested Monte Carlo (its stop's own setting included).
+  // rebuytrail: 1 makes the buy-back trail the price down from the stop: a buy stop that follows the lowest low since the
+  // stop at rebuystop over it (IBKR's trailing buy order), so it buys at the turn, under the level sold at once the share
+  // has fallen further, recovering the stop's loss when the share comes back; 0 the buy stop stays over the level sold at.
   // stopmedian: 1 buys only shares whose stop would start no wider than the median of the day's candidates (the
   // book's list and its reserves), in the backtest and in the orders alike: the threshold is the day's own, nothing
   // fixed; a far stop is left out, not just ranked last.
   P.emplace("stopmedian", 0.0);
-  P.emplace("rebuystop", 0.0), P.emplace("rebuystopadapt", 0.0), P.emplace("stopjoint", 0.0), P.emplace("mcprob", 0.0);
+  P.emplace("rebuystop", 0.0), P.emplace("rebuytrail", 0.0), P.emplace("rebuystopadapt", 0.0), P.emplace("stopjoint", 0.0), P.emplace("mcprob", 0.0);
   // mc: 1 models with the nested Monte Carlo (include/strategy/montecarlo.hpp): resets on the real market at each
   // rebalance, mcpaths futures of mchorizon sessions (0: the rebalance's) from blocks of mcblock real days of the
   // mcwindow sessions before; each order's expected return, chance of a loss and of a stop from those futures.
@@ -719,7 +722,7 @@ int main(int argc, char** argv) {
     const auto it = sarPick.find(i);
     return it != sarPick.end() ? it->second : std::make_pair(afStep, afMax);
   };
-  const bool rbStop = stops && !vstop && P["rebuystop"] > 0;
+  const bool rbStop = stops && !vstop && P["rebuystop"] > 0, rbTrail = rbStop && P["rebuytrail"] > 0;
   std::map<std::size_t, double> rbPick;  // rebuystopadapt: each share's buy-back distance over its stop
   const auto rbOf = [&](std::size_t i) {
     const auto it = rbPick.find(i);
@@ -783,6 +786,7 @@ int main(int argc, char** argv) {
   const auto stoppedFrom = [&](const Pos& p, double level, std::size_t i, std::size_t u) {
     Stopped x;
     x.at = u, x.trigger = rbStop ? level * (1 + rbOf(i)) : 0.0;  // rebuystop: its buy-back order's level
+    x.low = level, x.dist = rbOf(i);  // rebuytrail: the lowest price since the stop, and the distance the order trails it
     x.level = vstop ? p.ep : level;  // vstop: the buy-back measured from the close's level
     if (psar) x.sar = std::max(p.ep, level), x.ep = level, x.af = p.step, x.step = p.step, x.mx = p.mx;
     return x;
@@ -822,7 +826,7 @@ int main(int argc, char** argv) {
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
   mc.vstop = vstop ? P["vstop"] : 0.0;
   mc.psarVol = psarVol ? P["psarvol"] : 0.0;
-  mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0;
+  mc.rebuyStop = rbStop ? P["rebuystop"] : 0.0, mc.rebuyTrail = rbTrail;
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
   // A share's round trip at the broker for its order at day t, as a fraction of the order (the final orders' costs).
   const auto tripOf = [&](std::size_t t, std::size_t i) {
@@ -1316,6 +1320,11 @@ int main(int argc, char** argv) {
         else if (H > 0 && H >= trig) buyBack(i, trig, false, true);
       }
     }
+    if (rbTrail)  // the trailing buy-backs still working follow the day's low down (the stop's own day included: its low came after the stop)
+      for (auto& [i, x] : stoppedAt) {
+        const double lo = d.L[u * N + i];
+        if (x.trigger > 0 && lo > 0 && lo < x.low) x.low = lo, x.trigger = std::min(x.trigger, x.low * (1 + x.dist));
+      }
     std::size_t free = k > book.size() ? k - book.size() : 0;
     std::vector<std::size_t> wants(target);  // the book's shares in order, then (refill) the reserves for free slots
     const double stopCut = stopMedianOf(t);
@@ -1614,7 +1623,7 @@ int main(int argc, char** argv) {
                 : psar ? "a Parabolic SAR stop (trailing, from the lows before the buy)"
                 : vstop ? (std::string("a volatility stop (") + (vAdapt ? "a multiple learnt for each share of" : jnum(P["vstop"]) + " times") + " the daily volatility under the price paid, then under the highest close; a close under it sells at the next open)").c_str()
                         : ("a stop-loss " + std::to_string(int(std::lround(100 * stopLoss))) + "% under the price paid").c_str(), nStops,
-                rbStop ? ("bought back by the buy stop over the level it sold at: " + std::to_string(nRebuys) + " times").c_str()
+                rbStop ? (std::string(rbTrail ? "bought back by the buy stop trailing the lowest price since the stop: " : "bought back by the buy stop over the level it sold at: ") + std::to_string(nRebuys) + " times").c_str()
                 : rebuy < 0 ? "never bought back"
                           : (std::string(psar ? "bought back once its SAR turned up again: " : ("bought back once the close was " + std::to_string(int(std::lround(100 * rebuy))) + "% over the stop level: ").c_str()) +
                              std::to_string(nRebuys) + " times").c_str());
@@ -1743,7 +1752,7 @@ int main(int argc, char** argv) {
         for (double q : {0.1, 0.25, 0.5, 0.75, 0.9}) a += (a.size() > 1 ? "," : "") + jnum(v[std::size_t(q * double(v.size() - 1))]);
         return a + "]";
       };
-      f << ",\"learnt\":{\"fine\":" << (fine ? "true" : "false") << ",\"tripCosts\":" << (P["mccost"] > 0 ? "true" : "false")
+      f << ",\"learnt\":{\"fine\":" << (fine ? "true" : "false") << ",\"tripCosts\":" << (P["mccost"] > 0 ? "true" : "false") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false")
         << ",\"band\":" << (vAdapt ? quant(vPicks, vChosen) : "null") << ",\"rebuy\":" << (rbAdapt ? quant(rbPicks, rbChosen) : "null") << "}";
     }
     if (o.resample > 0) f << ",\"resample\":{\"seed\":" << o.resample << ",\"block\":" << rsInfo.block << ",\"states\":" << rsInfo.states << "}";
@@ -1784,7 +1793,7 @@ int main(int argc, char** argv) {
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
         << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
         << ",\"rebuyAt\":" << (stops && (rebuy >= 0 || rbStop) ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
-        << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null")
+        << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false")
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i]);
@@ -1830,7 +1839,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
+        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
@@ -1843,7 +1852,7 @@ int main(int argc, char** argv) {
     for (std::size_t i : targetAll) named.insert(i);
     for (const auto& [i, day] : lastHeld)
       if (L - std::min(L, day) <= 260) named.insert(i);
-    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) && !(book.count(i) && book.at(i).exitNext) ? "true" : "false") << ",\"exitAbove\":null,\"stopPrice\":" << (book.count(i) ? jnum(stopPrice(i)) : "null") << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(i)) : "null") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(i)) : "null") << "}";
+    for (std::size_t i : named) f << (q++ ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"keep\":" << (inTarget(i) && !(book.count(i) && book.at(i).exitNext) ? "true" : "false") << ",\"exitAbove\":null,\"stopPrice\":" << (book.count(i) ? jnum(stopPrice(i)) : "null") << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(i)) : "null") << "}";
     f << "]}\n";
   }
   return 0;
