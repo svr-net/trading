@@ -99,6 +99,9 @@ function render(r, source) {
   const costed = r.orders.some((o) => o.cost != null);  // the UK model: each order's own costs, already off its expected return
   if (costed) head.push(['Costs', 'num opt']);
   if (ifs) head.push(['If it buys', 'num opt']);
+  // The market's state (mcregime): its turbulence expected over the holding period, 0% calm .. 100% turbulent.
+  const states = r.orders.some((o) => o.state?.ahead != null);
+  if (states) head.push(['Market', 'num opt']);
   head.push(['Expected', 'num']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
@@ -113,6 +116,7 @@ function render(r, source) {
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
       if (costed) row.push(o.cost == null ? ['–', 'num opt'] : [pct(-o.cost, 2), 'num neg opt']);
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num opt'] : [signed(o.ifFilled, 2)[0], `${signed(o.ifFilled, 2)[1]} opt`]);
+      if (states) row.push(o.state?.ahead == null ? ['–', 'num opt'] : [`${Math.round(100 * o.state.ahead)}% turbulent`, 'num opt']);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
     }) : [{ gap: `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
@@ -258,6 +262,11 @@ function chartWhy(o) {
   ];
   if (o.stop != null) facts.splice(4, 0, ['Stop', `${pct(o.stop, 1)}${o.stopKind === 'psar' ? ' (PSAR)' : ''}`]);
   if (o.mc) facts.push(['Chance of a loss', `${Math.round(100 * o.mc.pLoss)}%`], ['Chance of a stop', `${Math.round(100 * o.mc.pStop)}%`]);
+  // The market's state (continuous, 0% calm .. 100% turbulent): today's, and expected over the holding period; the
+  // market's and the share's yearly volatility expected in it.
+  if (o.state?.turbulence != null) facts.push(['Market turbulence', `${Math.round(100 * o.state.turbulence)}% now, ${Math.round(100 * o.state.ahead)}% ahead`]);
+  if (o.state?.marketVol != null) facts.push(['Market volatility', `${pct(o.state.marketVol, 0).replace('+', '')} a year`]);
+  if (o.state?.shareVol != null) facts.push(['Its volatility', `${pct(o.state.shareVol, 0).replace('+', '')} a year`]);
   const money = o.gross == null ? ''
     : `<p class="split">Expected before costs <b>${pct(o.gross, 2)}</b>: ${o.mc ? `the mean over the simulated futures of the next ${o.mc.horizon} sessions (90% of them between ${pct(o.mc.p5, 1)} and ${pct(o.mc.p95, 1)}), its stop and buy-back included` : `what the strategy's past trades at rank ${o.rank} made, held about ${Math.round(o.holdDays || 0)} sessions`}. `
       + `Its costs, <b>${pct(o.cost, 2)}</b>, come off at the end: <b>${pct(o.ifFilled, 2)}</b> if it buys${o.fill != null ? `, ${signed(o.expected, 2)[0]} with its ${Math.round(100 * o.fill)}% chance to buy` : ''}.`

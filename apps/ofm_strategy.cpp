@@ -399,6 +399,7 @@ struct Costs {
 struct Row {  // an order of the backtest
   std::size_t t = 0, i = 0, rank = 0;  // decided after the close of t; its place on the list
   double limit = 0, expected = 0, entry = kNaN, exit = kNaN, ret = 0;
+  double turbulence = kNaN, ahead = kNaN, marketVol = kNaN, shareVol = kNaN;  // mcregime: the market's state when it was decided (regimeState)
   bool filled = false, closed = false, stopped = false;
   std::size_t since = 0, days = 0;
 };
@@ -635,6 +636,19 @@ int main(int argc, char** argv) {
     }
     return d.sigma[t * N + i];
   };
+  // mcregime: the market's state at day t (and share i's volatility in it) from the last fit by t; none without.
+  std::size_t stateHorizon = 0;
+  const auto stateAt = [&](std::size_t t, std::size_t i) {
+    if (!regK || fits.empty()) return strat::RegimeState{};
+    auto it = fits.upper_bound(t);
+    if (it == fits.begin()) return strat::RegimeState{};
+    return strat::regimeState(d, (--it)->second, t, i, stateHorizon);
+  };
+  const auto stamp = [&](Row& r) {
+    if (!regK) return;
+    const auto st = stateAt(r.t, r.i);
+    r.turbulence = st.turbulence, r.ahead = st.ahead, r.marketVol = st.marketVol, r.shareVol = st.shareVol;
+  };
   const auto vDist = [&](std::size_t t, std::size_t i) {  // the stop's distance under the price (a fraction)
     const double sg = sigmaAt(t, i);
     return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), 0.02, 0.5);
@@ -752,6 +766,7 @@ int main(int argc, char** argv) {
   mc.skip = std::size_t(std::max(0.0, P["mcskip"]));
   regK = !mcOn || P["mcregime"] == 0 ? 0 : P["mcregime"] < 0 ? SIZE_MAX : std::size_t(P["mcregime"]);
   regStop = regK && P["mcregimestop"] > 0;
+  stateHorizon = mc.horizon;
   if (regK) mc.regime = &fits;
   const bool sarAdapt = psar && mcOn && P["psaradapt"] > 0;
   // stopjoint: 1 learns each share's stop band (psarvol: 2, 3, 4 or 6) and its buy-back order's distance together, as one
@@ -918,7 +933,7 @@ int main(int argc, char** argv) {
       }
       ++regKChosen[best];
       strat::RegimeFit f = regLast[best];
-      if (regStop) strat::regimeSigma(d, *backend, f);
+      strat::regimeSigma(d, *backend, f, regStop);  // the stops' volatility with mcregimestop; each share's variance in each state always
       f.gamma.clear();
       fits[t] = std::move(f);
       prof.regime += clock() - cr;
@@ -1119,6 +1134,7 @@ int main(int argc, char** argv) {
       r.t = t, r.i = i, r.rank = at != target.end() ? std::size_t(at - target.begin()) : target.size();
       r.expected = learnt.expected(r.rank), r.limit = px, r.filled = true, r.entry = px, r.since = u;
       stoppedAt.erase(i), ++nRebuys;
+      stamp(r);
       Pos p{rows.size(), C > 0 ? C : px};
       openStop(p, u, i, px);
       const double level = p.sar;
@@ -1199,6 +1215,7 @@ int main(int argc, char** argv) {
       Row r;
       r.t = t, r.i = i, r.rank = rank, r.expected = learnt.expected(rank);
       r.limit = d.Cf[t * N + i] * (1 + capOf(t, i));
+      stamp(r);
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i];
       if (O > 0 && O <= r.limit) {
@@ -1250,15 +1267,38 @@ int main(int argc, char** argv) {
 
   if (const char* tl = std::getenv("X_TRADELOG")) {
     std::ofstream f(tl);
-    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret\n";
-    for (const auto& r : rows)
+    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
+    for (const auto& r : rows) {
       f << d.days[r.t + 1] << ',' << d.tickers[r.i] << ',' << r.rank << ',' << jnum(r.limit) << ',' << jnum(r.expected) << ',' << (r.filled ? 1 : 0) << ','
-        << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0) << '\n';
+        << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0);
+      if (regK) f << ',' << jnum(r.turbulence) << ',' << jnum(r.ahead) << ',' << jnum(r.marketVol) << ',' << jnum(r.shareVol);
+      f << '\n';
+    }
     std::ofstream g(std::string(tl) + ".days");
     g << "date,ret\n";
     for (std::size_t x = 0; x < daily.size(); ++x) g << dailyDays[x] << ',' << jnum(daily[x], "%.8g") << '\n';
   }
 
+  // mcregime: the bought trades split into thirds by the market's turbulence expected over the horizon when decided
+  // (continuous: today's chances carried through the matrix; today's alone are mostly 0 or 1) (the thirds' bounds from
+  // the trades' own turbulence, nothing fixed): each third's count, mean trade and share gained.
+  struct Third { double lo = 0, hi = 0, mean = 0, win = 0; std::size_t n = 0; };
+  std::vector<Third> turbThird;
+  if (regK) {
+    std::vector<std::pair<double, double>> tr;  // (turbulence, the trade's return)
+    for (const auto& r : rows)
+      if (r.filled && r.closed && std::isfinite(r.ahead)) tr.emplace_back(r.ahead, r.ret);
+    std::sort(tr.begin(), tr.end());
+    if (tr.size() >= 30)
+      for (std::size_t q = 0; q < 3; ++q) {
+        const std::size_t a = tr.size() * q / 3, e = tr.size() * (q + 1) / 3;
+        Third th;
+        th.lo = tr[a].first, th.hi = tr[e - 1].first, th.n = e - a;
+        for (std::size_t j = a; j < e; ++j) th.mean += tr[j].second, th.win += tr[j].second > 0;
+        th.mean /= double(th.n), th.win /= double(th.n);
+        turbThird.push_back(th);
+      }
+  }
   const double cCheck = clock();
   // ------------------------------------------------------------------ the nested Monte Carlo
   // The resets on the real market: at each rebalance with a full horizon after it, the simulated futures of the book
@@ -1447,6 +1487,14 @@ int main(int argc, char** argv) {
                   net.trained, nnStep ? (" (every " + std::to_string(nnStep) + " session" + (nnStep > 1 ? "s" : "") + ", the day's bars taken in)").c_str() : " (the resets)",
                   nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
     }
+    if (regK && !turbThird.empty()) {
+      std::string by;
+      const char* names[3] = {"the calmest third", "the middle third", "the most turbulent third"};
+      for (std::size_t q = 0; q < turbThird.size(); ++q)
+        by += (q ? "; " : "") + std::string(names[q]) + " (turbulence " + jnum(turbThird[q].lo, "%.2f") + "-" + jnum(turbThird[q].hi, "%.2f") + "): " +
+              std::to_string(turbThird[q].n) + " trades, " + jnum(100 * turbThird[q].mean, "%+.2f") + "% on average, " + jnum(100 * turbThird[q].win, "%.0f") + "% gained";
+      std::printf("strategy: the trades by the market's turbulence expected over the horizon when decided (0 calm .. 1 turbulent, from the states' chances that day): %s\n", by.c_str());
+    }
     if (regK && !fits.empty()) {
       const auto& f = fits.rbegin()->second;
       std::string st;
@@ -1539,7 +1587,14 @@ int main(int argc, char** argv) {
       f << ",\"regime\":{\"states\":" << rf.K << ",\"fits\":" << fits.size() << ",\"day\":" << jstr(d.days[rf.hi])
         << ",\"annualMean\":" << arr([&](std::size_t q) { return 252 * rf.mean[q]; }) << ",\"annualVol\":" << arr([&](std::size_t q) { return std::sqrt(252 * rf.var[q]); })
         << ",\"stay\":" << arr([&](std::size_t q) { return rf.A[q * rf.K + q]; }) << ",\"now\":" << arr([&](std::size_t q) { return rf.now[q]; })
-        << ",\"ahead\":" << arr([&](std::size_t q) { return rf.ahead[q]; }) << "}";
+        << ",\"ahead\":" << arr([&](std::size_t q) { return rf.ahead[q]; });
+      const auto st = stateAt(L, 0);
+      f << ",\"today\":{\"turbulence\":" << jnum(st.turbulence) << ",\"ahead\":" << jnum(st.ahead) << ",\"marketVol\":" << jnum(st.marketVol)
+        << ",\"marketDrift\":" << jnum(st.marketDrift) << "},\"byTurbulence\":[";
+      for (std::size_t q = 0; q < turbThird.size(); ++q)
+        f << (q ? "," : "") << "{\"lo\":" << jnum(turbThird[q].lo) << ",\"hi\":" << jnum(turbThird[q].hi) << ",\"trades\":" << turbThird[q].n
+          << ",\"avgTrade\":" << jnum(turbThird[q].mean) << ",\"winRate\":" << jnum(turbThird[q].win) << "}";
+      f << "]}";
     }
     if (mcOn) f << "}";
     f << "}";  // the backtest
@@ -1553,7 +1608,13 @@ int main(int argc, char** argv) {
         << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null")
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
-        << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i])
+        << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i]);
+      if (regK) {  // the market's state now (continuous): its turbulence 0..1 now and over the horizon, the market's and the share's volatility in it
+        const auto st = stateAt(L, x.i);
+        f << ",\"state\":{\"turbulence\":" << jnum(st.turbulence) << ",\"ahead\":" << jnum(st.ahead) << ",\"marketVol\":" << jnum(st.marketVol)
+          << ",\"marketDrift\":" << jnum(st.marketDrift) << ",\"shareVol\":" << jnum(st.shareVol) << "}";
+      }
+      f
         << ",\"score\":" << jnum(score[x.i]) << ",\"reason\":" << jstr(strategy->reason(last, P, x.i));
       if (mcOn) f << ",\"mc\":{\"p5\":" << jnum(x.p5) << ",\"p95\":" << jnum(x.p95) << ",\"pLoss\":" << jnum(x.pLoss) << ",\"pStop\":" << jnum(x.pStop) << ",\"horizon\":" << mc.horizon << "}";
       f << "}";
