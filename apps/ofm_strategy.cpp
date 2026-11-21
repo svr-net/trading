@@ -1734,6 +1734,18 @@ int main(int argc, char** argv) {
       << ",\"holdDays\":" << jnum(holdDays) << ",\"stopKind\":" << jstr(stopKind) << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"stops\":" << nStops
       << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false") << ",\"rebuyStop\":" << (rbStop ? "true" : "false") << ",\"rebuys\":" << nRebuys
       << ",\"afterRebuyCosts\":{\"annualReturn\":" << jnum(annualNet) << ",\"sharpe\":" << jnum(sharpeNet) << "}";
+    {  // what the stops learnt over the backtest: the volatility band's and the buy-back's spread (10%, 25%, median, 75%, 90%)
+      const auto quant = [](std::vector<double> v, const std::map<double, std::size_t>& chosen) {
+        for (const auto& [m, n] : chosen) v.insert(v.end(), n, m);
+        if (v.empty()) return std::string("null");
+        std::sort(v.begin(), v.end());
+        std::string a = "[";
+        for (double q : {0.1, 0.25, 0.5, 0.75, 0.9}) a += (a.size() > 1 ? "," : "") + jnum(v[std::size_t(q * double(v.size() - 1))]);
+        return a + "]";
+      };
+      f << ",\"learnt\":{\"fine\":" << (fine ? "true" : "false") << ",\"tripCosts\":" << (P["mccost"] > 0 ? "true" : "false")
+        << ",\"band\":" << (vAdapt ? quant(vPicks, vChosen) : "null") << ",\"rebuy\":" << (rbAdapt ? quant(rbPicks, rbChosen) : "null") << "}";
+    }
     if (o.resample > 0) f << ",\"resample\":{\"seed\":" << o.resample << ",\"block\":" << rsInfo.block << ",\"states\":" << rsInfo.states << "}";
     if (rsS.n)
       f << ",\"resampled\":{\"markets\":" << rsS.n << ",\"block\":" << o.resampleBlock << ",\"annualReturn\":" << jnum(rsA.mean) << ",\"sharpe\":" << jnum(rsS.mean)

@@ -171,8 +171,20 @@ function render(r, source) {
   // shares are today's, so those that collapsed or were delisted are missing).
   const opp = B.opposite, edgeTile = opp ? `
     <div class="tile"><span class="k">The strategy's own edge</span><span class="v">${pct(B.annualReturn - opp.annualReturn)}</span><span class="s">a year: the backtest less what the opposite picks made on the same shares (${pct(opp.annualReturn)} a year). That part is the share list's hindsight: today's shares, without those that failed. Expect nearer the edge than the backtest.</span></div>` : '';
+  // The same strategy on synthetic markets (apps/ofm_strategy --resample-runs): alternative histories drawn from the real
+  // one's days in its hidden states, so the backtest is not one lucky path; and both records after the buy-backs' own round trips.
+  const RS = B.resampled, net = B.afterRebuyCosts, rsTile = RS?.markets ? `
+    <div class="tile"><span class="k">On ${RS.markets} synthetic markets</span><span class="v">${pct(RS.annualReturn)}</span><span class="s">a year on average · Sharpe ${RS.sharpe.toFixed(2)} (from ${RS.sharpeMin.toFixed(2)} to ${RS.sharpeMax.toFixed(2)}) · worst fall ${pct(RS.maxDrawdown, 0).slice(1)}${RS.afterRebuyCosts ? ` · after the buy-backs' costs Sharpe ${RS.afterRebuyCosts.sharpe.toFixed(2)}` : ''}. Each is the real history redrawn in ${RS.block}-day blocks of real days, calm and turbulent spells as they came</span></div>` : '';
+  const netTile = net && B.rebuys ? `
+    <div class="tile"><span class="k">After the buy-backs' own costs</span><span class="v">${pct(net.annualReturn)}</span><span class="s">a year · Sharpe ${net.sharpe.toFixed(2)} · ${B.rebuys} buy-backs, ${B.stops} stops in the backtest</span></div>` : '';
+  // What the stops learnt: each share's volatility band and buy-back distance at each reset (10%, median, 90%).
+  const LN = B.learnt, x = (v) => `${v.toFixed(v < 10 ? 1 : 0)}×`, learntTile = LN && (LN.band || LN.rebuy) ? `
+    <div class="tile"><span class="k">Stops learnt</span><span class="v">${LN.band ? x(LN.band[2]) : '–'}</span><span class="s">the median stop band, in daily volatilities (10–90%: ${LN.band ? `${x(LN.band[0])}–${x(LN.band[4])}` : '–'})${LN.rebuy ? ` · buy-back ${pct(LN.rebuy[2], 2).slice(1)} over the stop (10–90%: ${pct(LN.rebuy[0], 2).slice(1)}–${pct(LN.rebuy[4], 2).slice(1)})` : ''} · ${LN.fine ? 'any value' : 'from a few values'}${LN.tripCosts ? ', each buy-back paying its round trip' : ''}</span></div>` : '';
+  // The market's state now (regime.hpp): how turbulent it is, and the trades' record by turbulence.
+  const RG = B.mc?.regime, rgTile = RG?.today ? `
+    <div class="tile"><span class="k">The market now (${RG.states} states)</span><span class="v">${Math.round(100 * RG.today.ahead)}% turbulent</span><span class="s">ahead · now ${Math.round(100 * RG.today.turbulence)}% · its volatility ${pct(RG.today.marketVol, 0).slice(1)} a year${(RG.byTurbulence || []).length ? ' · past trades by turbulence: ' + RG.byTurbulence.map((b) => `${pct(b.avgTrade, 2)}`).join(', ') + ' (calm to turbulent)' : ''}</span></div>` : '';
   $('verdict').innerHTML = `
-    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)} · before costs, on today's shares (see the edge)</span></div>${edgeTile}${perTrade}${mcTile}`;
+    <div class="tile"><span class="k">Simulated, ${B.from} – ${B.to}</span><span class="v">${pct(B.annualReturn)}</span><span class="s">a year · Sharpe ${B.sharpe.toFixed(2)} · worst fall ${pct(B.maxDrawdown, 0).slice(1)} · before costs, on today's shares (see the edge)</span></div>${rsTile}${netTile}${edgeTile}${perTrade}${learntTile}${rgTile}${mcTile}`;
   $('odds').textContent = B.trades
     ? `In the backtest ${Math.round(100 * B.trades / B.orders)}% of orders bought (the rest stayed in cash), their average was ${pct(B.avgTrade, 2)} and ${Math.round(100 * B.winRate)}% of them gained.`
     : '';
