@@ -549,7 +549,7 @@ int main(int argc, char** argv) {
   // mccost: 1 charges every buy-back after a stop its round trip at the broker (the share's own costs at the reset:
   // commissions, taxes, fees for the order's amount) in the nested Monte Carlo, so the stop's band and the buy-back's
   // distance are learnt net of the whipsaws they cause. 0: the futures without costs.
-  P.emplace("mccost", 0.0);
+  P.emplace("mccost", 0.0), P.emplace("adaptfine", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -791,6 +791,17 @@ int main(int argc, char** argv) {
   const bool vAdapt = mcOn && ((vstop && P["vstopadapt"] > 0) || (psarVol && P["psarvoladapt"] > 0));
   const std::vector<double> vGrid{2, 3, 4, 6};
   std::map<double, std::size_t> vChosen;
+  // adaptfine: 1 learns the stop's multiple and the buy-back's distance as any value (fractional), not from the short
+  // lists: each share's futures on a fine grid evenly spaced in log (the multiple 1 to 10 times the daily volatility,
+  // the distance 0.25% to 10%), and the peak between the best point and its neighbours (fineArgmax).
+  const bool fine = P["adaptfine"] > 0;
+  const auto logGrid = [](double lo, double hi, std::size_t n) {
+    std::vector<double> g(n);
+    for (std::size_t q = 0; q < n; ++q) g[q] = lo * std::pow(hi / lo, double(q) / double(n - 1));
+    return g;
+  };
+  const std::vector<double> vFine = logGrid(1.0, 10.0, 13), rbFine = logGrid(0.0025, 0.10, 13);
+  std::vector<double> vPicks, rbPicks;  // adaptfine: every value learnt (the report's spread)
   const std::vector<std::pair<double, double>> sarGrid{{0.005, 0.1}, {0.01, 0.1}, {0.02, 0.1}, {0.03, 0.1}, {0.005, 0.2}, {0.01, 0.2}, {0.02, 0.2}, {0.03, 0.2}};
   std::map<std::pair<double, double>, std::size_t> sarChosen;
   const std::size_t nCand = P["mccand"] > 0 ? std::size_t(P["mccand"]) : std::max<std::size_t>(k + 1, std::size_t(std::max(1.0, P["mccandk"]) * double(k)));
@@ -1020,7 +1031,8 @@ int main(int argc, char** argv) {
     // equals), from each setting's sum over the paths in their order.
     // probable: the setting that is best on the most paths instead (the most probable best; a path where several are best
     // shares its vote among them, so a path no setting changes favours none), the most expected log growth among equals.
-    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs, bool byVotes = false) {
+    const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs, bool byVotes = false,
+                                 std::vector<double>* meansOut = nullptr) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
       backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
@@ -1048,7 +1060,26 @@ int main(int argc, char** argv) {
       std::size_t pick = 0;
       for (std::size_t s2 = 1; s2 < G; ++s2)
         if (votes[s2] > votes[pick] + 1e-9 || (std::fabs(votes[s2] - votes[pick]) <= 1e-9 && mean[s2] > mean[pick] + 1e-12)) pick = s2;
+      if (meansOut) *meansOut = mean;
       return pick;
+    };
+    // adaptfine: the value with the most expected log growth between the fine grid's points: a parabola through the best
+    // point and its two neighbours (in log of the value), its peak (inside them); the best point itself at an end.
+    // The curve is smoothed first (each point with its neighbours, 1-2-1), so a single noisy setting is not taken for a peak.
+    const auto fineArgmax = [](const std::vector<double>& grid, const std::vector<double>& curve) {
+      std::vector<double> mean(curve.size());
+      for (std::size_t q = 0; q < curve.size(); ++q) {
+        const double l = curve[q > 0 ? q - 1 : q], r = curve[q + 1 < curve.size() ? q + 1 : q];
+        mean[q] = (l + 2 * curve[q] + r) / 4;
+      }
+      const std::size_t b = std::size_t(std::max_element(mean.begin(), mean.end()) - mean.begin());
+      if (b == 0 || b + 1 >= grid.size()) return grid[b];
+      const double x0 = std::log(grid[b - 1]), x1 = std::log(grid[b]), x2 = std::log(grid[b + 1]);
+      const double y0 = mean[b - 1], y1 = mean[b], y2 = mean[b + 1];
+      const double den = (x0 - x1) * (x0 - x2) * (x1 - x2);
+      const double A = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / den, B = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / den;
+      if (!(A < 0)) return grid[b];
+      return std::exp(std::clamp(-B / (2 * A), x0, x2));
     };
     if (sarAdapt) {  // each target share's SAR from its simulated futures: the pair with the most expected log growth
       std::vector<strat::McSpec> specs;
@@ -1071,7 +1102,8 @@ int main(int argc, char** argv) {
       std::vector<double> mu2, sc2;
       shapesFor(t, all, mu2, sc2);
       std::vector<strat::McSpec> specs;
-      for (double m : vGrid) {
+      const auto& vg = fine ? vFine : vGrid;
+      for (double m : vg) {
         strat::McSpec sv = mc;
         (psarVol ? sv.psarVol : sv.vstop) = m;
         specs.push_back(sv);
@@ -1079,9 +1111,12 @@ int main(int argc, char** argv) {
       for (std::size_t j = 0; j < all.size(); ++j) {
         const std::size_t i = all[j];
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
-        const double pick = vGrid[bestSetting(i, adj, cap, sc2[j], specs)];
+        std::vector<double> means;
+        const std::size_t b = bestSetting(i, adj, cap, sc2[j], specs, false, &means);
+        const double pick = fine ? fineArgmax(vg, means) : vg[b];
         vPick[i] = pick;
-        ++vChosen[pick];
+        if (fine) vPicks.push_back(pick);
+        else ++vChosen[pick];
       }
     }
     if (rbAdapt) {  // each share's buy-back distance from its simulated futures (with its own stop): the most expected log growth
@@ -1093,18 +1128,25 @@ int main(int argc, char** argv) {
         const std::size_t i = all[j];
         std::vector<strat::McSpec> specs;
         std::vector<std::pair<double, double>> pairs;  // (the stop's band, the buy-back's distance)
+        const auto& rg = fine && !joint ? rbFine : rbGrid;
         for (double v : joint ? vGrid : std::vector<double>{psarVol ? vOf(i) : 0.0})
-          for (double m : rbGrid) {
+          for (double m : rg) {
             strat::McSpec sv = mc;
             sv.rebuyStop = m, sv.afStep = sarOf(i).first, sv.afMax = sarOf(i).second;
             if (psarVol) sv.psarVol = v;
             specs.push_back(sv), pairs.emplace_back(v, m);
           }
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
-        const auto pick = pairs[bestSetting(i, adj, cap, sc2[j], specs, probable)];
+        std::vector<double> means;
+        const auto pick = pairs[bestSetting(i, adj, cap, sc2[j], specs, probable, &means)];
         if (joint) vPick[i] = pick.first, ++vChosen[pick.first];
-        rbPick[i] = pick.second;
-        ++rbChosen[pick.second];
+        if (fine && !joint && !probable) {
+          rbPick[i] = fineArgmax(rg, means);
+          rbPicks.push_back(rbPick[i]);
+        } else {
+          rbPick[i] = pick.second;
+          ++rbChosen[pick.second];
+        }
       }
     }
     prof.adapt += clock() - ca;
@@ -1543,9 +1585,20 @@ int main(int argc, char** argv) {
       std::printf("strategy: autonomous: at each reset the book held is the one (the simulation's or a strategy's own top %zu) with the best real record over "
                   "the last %zu resets known by then; held: %s (of %zu resets)\n", k, gateN, used.c_str(), resets.size());
     }
+    // adaptfine: the learnt values' spread (10%, 25%, median, 75%, 90%)
+    const auto spread = [](std::vector<double> v, double scale, const char* fmt) {
+      if (v.empty()) return std::string("none");
+      std::sort(v.begin(), v.end());
+      std::string out;
+      const double qs[5] = {0.1, 0.25, 0.5, 0.75, 0.9};
+      const char* names[5] = {"10%", "25%", "median", "75%", "90%"};
+      for (int q = 0; q < 5; ++q) out += (q ? ", " : "") + std::string(names[q]) + " " + jnum(scale * v[std::size_t(qs[q] * double(v.size() - 1))], fmt);
+      return out + " (of " + std::to_string(v.size()) + ")";
+    };
     if (vAdapt) {
       std::string used;
       for (const auto& [m, n] : vChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
+      if (fine) used = "learnt as any value from 1 to 10: " + spread(vPicks, 1.0, "%.2f");
       std::printf(psarVol ? "strategy: the SAR's volatility band learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
@@ -1553,6 +1606,7 @@ int main(int argc, char** argv) {
     if (rbStop) {
       std::string used;
       for (const auto& [m, n] : rbChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
+      if (fine && !rbPicks.empty()) used = "learnt as any value from 0.25% to 10% (in %): " + spread(rbPicks, 100.0, "%.2f");
       std::printf("strategy: the buy-back an order attached to the stop (a buy stop over the level it sold at): %s; %zu buy-backs\n",
                   rbAdapt ? ("its distance learnt for each share at each reset, chosen (distance, times): " + used).c_str() : ("at " + jnum(P["rebuystop"]) + " over it").c_str(), nRebuys);
     }
