@@ -183,6 +183,38 @@ inline void cholSolve(const std::vector<double>& l, std::size_t p, double* b) {
   }
 }
 
+inline std::size_t threadCount(int threads, std::size_t n) {
+  const std::size_t t = threads > 0 ? static_cast<std::size_t>(threads) : std::max(1u, std::thread::hardware_concurrency());
+  return std::max<std::size_t>(1, std::min(t, n));
+}
+
+// Runs body(begin, end) over [0, n) in contiguous chunks, one per thread: each index on exactly one thread. A body
+// that writes only its own indices gives the same result on any number of threads.
+template <class Body>
+void parallelChunks(std::size_t n, int threads, Body&& body) {
+  const std::size_t t = threadCount(threads, n);
+  if (t <= 1 || n < 2048) {
+    body(std::size_t{0}, n);
+    return;
+  }
+  std::vector<std::thread> pool;
+  std::vector<std::exception_ptr> errors(t);
+  const std::size_t step = (n + t - 1) / t;
+  for (std::size_t w = 0; w < t; ++w) {
+    const std::size_t b = w * step, e = std::min(n, b + step);
+    if (b >= e) break;
+    pool.emplace_back([&, w, b, e] {
+      try {
+        body(b, e);
+      } catch (...) {
+        errors[w] = std::current_exception();
+      }
+    });
+  }
+  for (auto& th : pool) th.join();
+  for (auto& e : errors) if (e) std::rethrow_exception(e);
+}
+
 // Runs job(i) for i in [0, n) on up to `threads` threads; each i on exactly one thread.
 inline void parallelFor(std::size_t n, int threads, const std::function<void(std::size_t)>& job) {
   std::size_t t = threads > 0 ? static_cast<std::size_t>(threads) : std::max(1u, std::thread::hardware_concurrency());
@@ -210,15 +242,19 @@ inline void parallelFor(std::size_t n, int threads, const std::function<void(std
 // A fitted proxy: mu(x) and its estimation variance v(x) (finite training data, not misspecification). Immutable.
 class FittedProxy {
  public:
-  FittedProxy(std::size_t d, int degree) : basis_(d, degree), d_(d) {}
+  FittedProxy(std::size_t d, int degree, int threads = -1) : basis_(d, degree), d_(d), threads_(threads) {}
   const std::vector<double>& coefficients() const { return beta_; }
   std::size_t d() const { return d_; }
 
   void predict(const double* x, double& mu, double& v) const {
+    std::vector<double> z(d_), phi(basis_.size());
+    predict(x, mu, v, z.data(), phi.data());
+  }
+  // The same with the caller's buffers (z: d numbers, phi: the basis' size): the batch kernel's form.
+  void predict(const double* x, double& mu, double& v, double* z, double* phi) const {
     const std::size_t p = basis_.size();
-    std::vector<double> z(d_), phi(p);
     for (std::size_t j = 0; j < d_; ++j) z[j] = (x[j] - mean_[j]) / scale_[j];
-    basis_.eval(z.data(), phi.data());
+    basis_.eval(z, phi);
     mu = 0;
     for (std::size_t a = 0; a < p; ++a) mu += phi[a] * beta_[a];
     v = 0;
@@ -253,15 +289,35 @@ class FittedProxy {
         scale_[j] = s > 0 ? s : 1;
       }
     }
-    // Both passes in fixed chunks added in a fixed order: the same sums on any number of threads.
-    std::vector<double> g(p * p, 0), rhs(p, 0), z(d_), phi(p);
-    for (std::size_t r : rows) {
-      for (std::size_t j = 0; j < d_; ++j) z[j] = (o.at(r)[j] - mean_[j]) / scale_[j];
-      basis_.eval(z.data(), phi.data());
-      for (std::size_t a = 0; a < p; ++a) {
-        rhs[a] += phi[a] * o.payoff[r];
-        for (std::size_t b = 0; b <= a; ++b) g[a * p + b] += phi[a] * phi[b];
+    // Both passes in fixed chunks of 4,096 rows (fewer if they would exceed 256 MB), summed in chunk order: the layout
+    // depends only on (n, p), so the sums are the same on any number of threads.
+    std::size_t chunk = 4096, chunks = (n + chunk - 1) / chunk;
+    const std::size_t perChunk = (p * p + p) * sizeof(double);
+    if (chunks * perChunk > (std::size_t{256} << 20)) {
+      chunks = std::max<std::size_t>(1, (std::size_t{256} << 20) / perChunk);
+      chunk = (n + chunks - 1) / chunks;
+      chunks = (n + chunk - 1) / chunk;
+    }
+    std::vector<double> part(chunks * (p * p + p), 0);
+    detail::parallelFor(chunks, threads_, [&](std::size_t c) {
+      double* gg = part.data() + c * (p * p + p);
+      double* rr = gg + p * p;
+      std::vector<double> zc(d_), ph(p);
+      for (std::size_t t = c * chunk; t < std::min(n, (c + 1) * chunk); ++t) {
+        const std::size_t r = rows[t];
+        for (std::size_t j = 0; j < d_; ++j) zc[j] = (o.at(r)[j] - mean_[j]) / scale_[j];
+        basis_.eval(zc.data(), ph.data());
+        for (std::size_t a = 0; a < p; ++a) {
+          rr[a] += ph[a] * o.payoff[r];
+          for (std::size_t b = 0; b <= a; ++b) gg[a * p + b] += ph[a] * ph[b];
+        }
       }
+    });
+    std::vector<double> g(p * p, 0), rhs(p, 0);
+    for (std::size_t c = 0; c < chunks; ++c) {
+      const double* gg = part.data() + c * (p * p + p);
+      for (std::size_t a = 0; a < p * p; ++a) g[a] += gg[a];
+      for (std::size_t a = 0; a < p; ++a) rhs[a] += gg[p * p + a];
     }
     double tr = 0;
     for (std::size_t a = 0; a < p; ++a) tr += g[a * p + a];
@@ -275,16 +331,24 @@ class FittedProxy {
     beta_ = rhs;
     detail::cholSolve(l, p, beta_.data());
     // HC0: Cov = G^-1 (sum e_i^2 phi_i phi_i^T) G^-1
+    std::fill(part.begin(), part.end(), 0.0);
+    detail::parallelFor(chunks, threads_, [&](std::size_t c) {
+      double* mm = part.data() + c * (p * p + p);
+      std::vector<double> zc(d_), ph(p);
+      for (std::size_t t = c * chunk; t < std::min(n, (c + 1) * chunk); ++t) {
+        const std::size_t r = rows[t];
+        for (std::size_t j = 0; j < d_; ++j) zc[j] = (o.at(r)[j] - mean_[j]) / scale_[j];
+        basis_.eval(zc.data(), ph.data());
+        double f = 0;
+        for (std::size_t a = 0; a < p; ++a) f += ph[a] * beta_[a];
+        const double e2 = (o.payoff[r] - f) * (o.payoff[r] - f);
+        for (std::size_t a = 0; a < p; ++a)
+          for (std::size_t b = 0; b <= a; ++b) mm[a * p + b] += e2 * ph[a] * ph[b];
+      }
+    });
     std::vector<double> meat(p * p, 0);
-    for (std::size_t r : rows) {
-      for (std::size_t j = 0; j < d_; ++j) z[j] = (o.at(r)[j] - mean_[j]) / scale_[j];
-      basis_.eval(z.data(), phi.data());
-      double f = 0;
-      for (std::size_t a = 0; a < p; ++a) f += phi[a] * beta_[a];
-      const double e2 = (o.payoff[r] - f) * (o.payoff[r] - f);
-      for (std::size_t a = 0; a < p; ++a)
-        for (std::size_t b = 0; b <= a; ++b) meat[a * p + b] += e2 * phi[a] * phi[b];
-    }
+    for (std::size_t c = 0; c < chunks; ++c)
+      for (std::size_t a = 0; a < p * p; ++a) meat[a] += part[c * (p * p + p) + a];
     for (std::size_t a = 0; a < p; ++a)
       for (std::size_t b = 0; b < a; ++b) meat[b * p + a] = meat[a * p + b];
     // G^-1 M: solve column by column, then (G^-1 M) G^-1 = (G^-1 (G^-1 M)^T)^T
@@ -304,6 +368,8 @@ class FittedProxy {
       for (std::size_t b = 0; b < a; ++b) cov_[a * p + b] = cov_[b * p + a] = 0.5 * (cov_[a * p + b] + cov_[b * p + a]);
   }
 
+  std::size_t basisSize() const { return basis_.size(); }
+
   bool outsideTraining(const double* x) const {
     for (std::size_t j = 0; j < d_; ++j)
       if (x[j] < lo_[j] || x[j] > hi_[j]) return true;
@@ -313,6 +379,7 @@ class FittedProxy {
  private:
   HermiteBasis basis_;
   std::size_t d_;
+  int threads_;
   std::vector<double> mean_, scale_, lo_, hi_, beta_, cov_;
 };
 
@@ -338,9 +405,88 @@ class ScenarioSet {
   std::vector<std::size_t> batches, inner;
   std::vector<bool> audited;
   std::vector<double> r2, tau2;       // per bin: payoff noise, squared proxy bias
-  std::size_t minInnerForVariance = 32, maxInnerPerScenario = 4096;
+  std::size_t minInnerForVariance = 32, maxInnerPerScenario = 4096, minScenariosPerBinForMisspecification = 8;
+  int threads = -1;
 
   std::size_t size() const { return mu.size(); }
+
+  // The fused kernel: one pass over the scenarios computes each one's pooled sample, payoff noise and bias term, the
+  // squared proxy bias per bin is reduced from them (in index order), and a second pass the blend, its variance, the
+  // refinement gain, the selection and the value. Every accessor below reads these arrays. Called after any change
+  // to the folds (the estimator does). Incremental: a scenario is recomputed only when a batch reached it or its
+  // bin's tau^2 changed; the others keep their numbers, which are the same.
+  void refresh() {
+    const std::size_t n = size(), nb = r2.size();
+    const bool all = pn_.size() != n;
+    if (all) dirty_.assign(n, 1);
+    pn_.resize(n);
+    pm_.resize(n);
+    s2_.resize(n);
+    bx_.resize(n);
+    est_.resize(n);
+    var_.resize(n);
+    gain_.resize(n);
+    sel_.resize(n);
+    selVar_.resize(n);
+    val_.resize(n);
+    vvar_.resize(n);
+    const double enough = 1.0 + static_cast<double>(minInnerForVariance);
+    detail::parallelChunks(n, threads, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        if (!dirty_[i]) continue;
+        Fold f = fold0[i];
+        f.merge(fold1[i].n, fold1[i].mean, fold1[i].m2);
+        pn_[i] = f.n;
+        pm_[i] = f.mean;
+        const bool own = f.n >= enough;
+        const double s2 = own ? f.m2 / (f.n - 1) : r2[static_cast<std::size_t>(bin[i])];
+        s2_[i] = s2;
+        bx_[i] = own ? (f.mean - mu[i]) * (f.mean - mu[i]) - s2 / f.n - v[i] : kNaN;
+      }
+    });
+    // 5 · tau_b^2 = max(0, mean of the bias terms in the bin); too few: the global mean
+    std::vector<double> sum(nb, 0);
+    std::vector<std::size_t> cnt(nb, 0);
+    double gsum = 0;
+    std::size_t gcnt = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (std::isnan(bx_[i])) continue;
+      const auto b = static_cast<std::size_t>(bin[i]);
+      sum[b] += bx_[i];
+      ++cnt[b];
+      gsum += bx_[i];
+      ++gcnt;
+    }
+    const double global = gcnt ? std::max(0.0, gsum / static_cast<double>(gcnt)) : 0.0;
+    std::vector<char> binChanged(nb, all ? 1 : 0);
+    tau2.resize(nb, 0);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const double t = cnt[b] >= minScenariosPerBinForMisspecification ? std::max(0.0, sum[b] / static_cast<double>(cnt[b])) : global;
+      if (!(t == tau2[b])) binChanged[b] = 1;
+      tau2[b] = t;
+    }
+    detail::parallelChunks(n, threads, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        if (!dirty_[i] && !binChanged[static_cast<std::size_t>(bin[i])]) continue;
+        dirty_[i] = 0;
+        const double sp = v[i] + tau2[static_cast<std::size_t>(bin[i])], s2 = s2_[i], nn = pn_[i];
+        est_[i] = blend(mu[i], sp, pm_[i], nn, s2);
+        const double now = blendVariance(sp, nn, s2);
+        var_[i] = now;
+        if (!(now > 0)) {
+          gain_[i] = 0;
+        } else {
+          const double left = static_cast<double>(maxInnerPerScenario > inner[i] ? maxInnerPerScenario - inner[i] : 0);
+          gain_[i] = std::clamp(1 - blendVariance(sp, nn + left, s2) / now, 0.0, 1.0);
+        }
+        sel_[i] = fold1[i].n > 0 ? blend(mu[i], sp, fold0[i].mean, fold0[i].n, s2) : mu[i];
+        selVar_[i] = fold1[i].n > 0 ? blendVariance(sp, fold0[i].n, s2) : sp;
+        val_[i] = fold1[i].n > 0 ? fold1[i].mean : fold0[i].mean;
+        const double vn = fold1[i].n > 0 ? fold1[i].n : fold0[i].n;
+        vvar_[i] = vn > 0 ? s2 / vn : kInf;
+      }
+    });
+  }
 
   Fold pooled(std::size_t i) const {
     Fold f = fold0[i];
@@ -348,45 +494,20 @@ class ScenarioSet {
     return f;
   }
   // The noise of one payoff in the scenario: its own sample variance once it has 1 + MinInnerForVariance samples.
-  double s2(std::size_t i) const {
-    const Fold f = pooled(i);
-    if (f.n >= 1.0 + static_cast<double>(minInnerForVariance)) return f.m2 / (f.n - 1);
-    return r2[static_cast<std::size_t>(bin[i])];
-  }
+  double s2(std::size_t i) const { return s2_[i]; }
   double proxyVariance(std::size_t i) const { return v[i] + tau2[static_cast<std::size_t>(bin[i])]; }
-
   // The blend of the proxy and the pooled mean by their precision.
-  double estimate(std::size_t i) const {
-    const Fold f = pooled(i);
-    return blend(mu[i], proxyVariance(i), f.mean, f.n, s2(i));
-  }
-  double estimateVariance(std::size_t i) const {
-    const Fold f = pooled(i);
-    return blendVariance(proxyVariance(i), f.n, s2(i));
-  }
-  double stdError(std::size_t i) const { return std::sqrt(estimateVariance(i)); }
-
+  double estimate(std::size_t i) const { return est_[i]; }
+  double estimateVariance(std::size_t i) const { return var_[i]; }
+  double stdError(std::size_t i) const { return std::sqrt(var_[i]); }
   // How much of the remaining error more inner paths could remove (0: none, 1: all).
-  double refinementGain(std::size_t i) const {
-    const Fold f = pooled(i);
-    const double s = s2(i), sp = proxyVariance(i);
-    const double now = blendVariance(sp, f.n, s);
-    if (!(now > 0)) return 0;
-    const double left = static_cast<double>(maxInnerPerScenario > inner[i] ? maxInnerPerScenario - inner[i] : 0);
-    const double later = blendVariance(sp, f.n + left, s);
-    return std::clamp(1 - later / now, 0.0, 1.0);
-  }
-
+  double refinementGain(std::size_t i) const { return gain_[i]; }
   // Selection (which side of a cutoff) and value come from independent samples.
-  double selectionEstimate(std::size_t i) const {
-    if (fold1[i].n > 0) return blend(mu[i], proxyVariance(i), fold0[i].mean, fold0[i].n, s2(i));
-    return mu[i];
-  }
-  double valueEstimate(std::size_t i) const { return fold1[i].n > 0 ? fold1[i].mean : fold0[i].mean; }
-  double valueVariance(std::size_t i) const {
-    const double n = fold1[i].n > 0 ? fold1[i].n : fold0[i].n;
-    return n > 0 ? s2(i) / n : kInf;
-  }
+  double selectionEstimate(std::size_t i) const { return sel_[i]; }
+  // The selection's standard error: the proxy's alone until fold 1 has samples, then the blend's with fold 0.
+  double selectionStdError(std::size_t i) const { return std::sqrt(selVar_[i]); }
+  double valueEstimate(std::size_t i) const { return val_[i]; }
+  double valueVariance(std::size_t i) const { return vvar_[i]; }
 
   void addBatch(std::size_t i, const double* y, std::size_t count) {
     double m = 0;
@@ -397,6 +518,7 @@ class ScenarioSet {
     (batches[i] % 2 == 0 ? fold1[i] : fold0[i]).merge(static_cast<double>(count), m, ss);
     ++batches[i];
     inner[i] += count;
+    if (i < dirty_.size()) dirty_[i] = 1;
   }
 
   static double blend(double mu0, double sp, double mean, double n, double s) {
@@ -412,12 +534,17 @@ class ScenarioSet {
     if (!(sp > 0) || !(u > 0)) return 0;
     return sp * u / (sp + u);
   }
+
+ private:
+  std::vector<double> pn_, pm_, s2_, bx_, est_, var_, gain_, sel_, selVar_, val_, vvar_;
+  std::vector<char> dirty_;
 };
 
 // ------------------------------------------------------------------------------------------------ 6 · statistics
 // e(g, se) = g Phi(-g / se): the expected error of a scenario at distance g from a cutoff.
 inline double misclassification(double g, double se) {
   if (!(se > 0)) return 0;
+  if (g > 40 * se) return 0;  // Phi(-40) underflows to 0: the same number without the erfc
   return g * normCdf(-g / se);
 }
 
@@ -431,10 +558,14 @@ inline void markLargestContributors(const ScenarioSet& s, const std::vector<doub
     red[i] = e[i] * g;
     if (g >= 0.05 && red[i] > 0) idx.push_back(i);
   }
-  std::stable_sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) { return red[a] > red[b] || (red[a] == red[b] && a < b); });
+  // Largest first, ties by index (a total order): a heap pops them in exactly that order, and only as many as the
+  // excess needs are taken (a full sort of every candidate cost a tenth of the run).
+  auto later = [&](std::size_t a, std::size_t b) { return red[a] < red[b] || (red[a] == red[b] && a > b); };
+  std::make_heap(idx.begin(), idx.end(), later);
   double acc = 0;
-  for (std::size_t i : idx) {
-    if (acc >= excess) break;
+  for (auto end = idx.end(); end != idx.begin() && acc < excess; --end) {
+    std::pop_heap(idx.begin(), end, later);
+    const std::size_t i = *(end - 1);
     urgency[i] = std::max(urgency[i], 2.0);
     acc += red[i];
   }
@@ -464,13 +595,16 @@ struct ValueAtRisk : RiskStatistic {
   }
   double standardError(const ScenarioSet&) const override { return kNaN; }
   void urgency(const ScenarioSet& s, std::vector<double>& u) const override {
-    const double var = evaluate(s), denom = normCdf(-z);
-    for (std::size_t i = 0; i < s.size(); ++i) {
-      const double se = s.stdError(i);
-      if (!(se > 0)) continue;
-      const double li = base - s.estimate(i);
-      u[i] = std::max(u[i], s.refinementGain(i) * normCdf(-std::fabs(li - var) / se) / denom);
-    }
+    const double var = evaluate(s), denom = normCdf(-z), cut = z * (1 + 1e-9);
+    detail::parallelChunks(s.size(), s.threads, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        const double se = s.stdError(i);
+        if (!(se > 0)) continue;
+        const double d = std::fabs(base - s.estimate(i) - var);
+        if (d > cut * se) continue;  // Phi(-d/se) < Phi(-z): its urgency is below G <= 1, never asks
+        u[i] = std::max(u[i], s.refinementGain(i) * normCdf(-d / se) / denom);
+      }
+    });
   }
 };
 
@@ -481,23 +615,28 @@ struct ExpectedShortfall : RiskStatistic {
   ExpectedShortfall(double confidence, double baseValue, double relativeTolerance = 0.01, double absoluteTolerance = 0)
       : alpha(confidence), base(baseValue), rel(relativeTolerance), abs(absoluteTolerance) {}
   std::string name() const override { return "ES " + std::to_string(alpha); }
+  std::size_t tailSize(const ScenarioSet& s) const {
+    return std::clamp<std::size_t>(ceilCount(static_cast<double>(s.size()) * (1 - alpha)), 1, s.size());
+  }
   std::vector<std::size_t> tail(const ScenarioSet& s) const {
     std::vector<std::size_t> idx(s.size());
     std::iota(idx.begin(), idx.end(), 0);
-    std::vector<double> loss(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) loss[i] = base - s.selectionEstimate(i);
-    const std::size_t k = std::clamp<std::size_t>(ceilCount(static_cast<double>(s.size()) * (1 - alpha)), 1, s.size());
-    std::partial_sort(idx.begin(), idx.begin() + static_cast<long>(k), idx.end(),
-                      [&](std::size_t a, std::size_t b) { return loss[a] > loss[b] || (loss[a] == loss[b] && a < b); });
+    const std::size_t k = tailSize(s);
+    auto worse = [&](std::size_t a, std::size_t b) {
+      const double la = base - s.selectionEstimate(a), lb = base - s.selectionEstimate(b);
+      return la > lb || (la == lb && a < b);
+    };
+    std::nth_element(idx.begin(), idx.begin() + static_cast<long>(k - 1), idx.end(), worse);  // the k worst, then in order
+    std::sort(idx.begin(), idx.begin() + static_cast<long>(k), worse);
     idx.resize(k);
     return idx;
   }
-  double evaluate(const ScenarioSet& s) const override {
-    const auto t = tail(s);
+  double evaluateTail(const ScenarioSet& s, const std::vector<std::size_t>& t) const {
     double sum = 0;
     for (std::size_t i : t) sum += base - s.valueEstimate(i);
     return sum / static_cast<double>(t.size());
   }
+  double evaluate(const ScenarioSet& s) const override { return evaluateTail(s, tail(s)); }
   double standardError(const ScenarioSet& s) const override {
     const auto t = tail(s);
     const double k = static_cast<double>(t.size());
@@ -511,24 +650,26 @@ struct ExpectedShortfall : RiskStatistic {
   void urgency(const ScenarioSet& s, std::vector<double>& u) const override {
     const auto t = tail(s);
     const double k = static_cast<double>(t.size());
-    const double es = evaluate(s), tol = std::max(abs, rel * std::fabs(es)), h = tol / 2;
+    const double es = evaluateTail(s, t), tol = std::max(abs, rel * std::fabs(es)), h = tol / 2;
     if (!(h > 0)) return;
     double vv = 0;
     for (std::size_t i : t) vv += s.valueVariance(i);
     if (std::sqrt(vv) / k > h)  // tail noise: each tail value against an equal share of the budget
       for (std::size_t i : t) u[i] = std::max(u[i], s.valueVariance(i) / (h * h * k));
-    // cutoff misclassification: the k-th largest base - V~_i
-    std::vector<double> loss(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) loss[i] = base - s.estimate(i);
-    std::vector<double> sorted = loss;
+    // cutoff misclassification: the k-th largest base - V~_i. On the pooled blend (the document's rule), not the
+    // selection: a low-degree proxy ranks a two-sided tail wrongly, and only the outer payoffs in the blend find the
+    // true tail scenarios it ranked low (degree 1: 2.0% with the blend, 8.5% on the selection alone).
+    const std::size_t n = s.size();
+    std::vector<double> sorted(n);
+    for (std::size_t i = 0; i < n; ++i) sorted[i] = base - s.estimate(i);
     std::nth_element(sorted.begin(), sorted.begin() + static_cast<long>(t.size() - 1), sorted.end(), std::greater<double>());
     const double c = sorted[t.size() - 1];
-    std::vector<double> e(s.size());
+    std::vector<double> e(n);
+    detail::parallelChunks(n, s.threads, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) e[i] = misclassification(std::fabs(base - s.estimate(i) - c), s.stdError(i)) / k;
+    });
     double sum = 0;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-      e[i] = misclassification(std::fabs(loss[i] - c), s.stdError(i)) / k;
-      sum += e[i];
-    }
+    for (std::size_t i = 0; i < n; ++i) sum += e[i];
     if (sum > h) markLargestContributors(s, e, sum - h, u);
   }
 };
@@ -557,14 +698,17 @@ struct PositiveExposure : RiskStatistic {
     return std::sqrt(ss / (n - 1)) / std::sqrt(n);
   }
   void urgency(const ScenarioSet& s, std::vector<double>& u) const override {
-    const double n = static_cast<double>(s.size());
+    const std::size_t n = s.size();
     const double tol = std::max(abs, rel * std::fabs(evaluate(s)));
-    std::vector<double> e(s.size());
+    std::vector<double> e(n);
+    detail::parallelChunks(n, s.threads, [&](std::size_t lo, std::size_t hi) {
+      // On the selection that decides the sign, with its standard error, never the pooled blend: for a scenario without
+      // inner paths the blend holds its own outer payoff, so the choice to refine would depend on the values the
+      // unrefined scenarios keep and bias them (validation: up to 3 points from one round of 2,000 scenarios).
+      for (std::size_t i = lo; i < hi; ++i) e[i] = misclassification(std::fabs(s.selectionEstimate(i)), s.selectionStdError(i)) / static_cast<double>(n);
+    });
     double sum = 0;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-      e[i] = misclassification(std::fabs(s.estimate(i)), s.stdError(i)) / n;
-      sum += e[i];
-    }
+    for (std::size_t i = 0; i < n; ++i) sum += e[i];
     if (sum > tol) markLargestContributors(s, e, sum - tol, u);
   }
 };
@@ -629,7 +773,7 @@ class AdaptiveNestedEstimator {
     std::sort(eval.begin(), eval.end());  // evaluation index order: by original index (stable, reproducible)
 
     // 2 · proxy
-    auto proxy = std::make_shared<FittedProxy>(outer.d, opt_.hermiteDegree);
+    auto proxy = std::make_shared<FittedProxy>(outer.d, opt_.hermiteDegree, opt_.maxDegreeOfParallelism);
     proxy->fit(outer, train, opt_.relativeRidge);
     res.proxy = proxy;
 
@@ -638,10 +782,15 @@ class AdaptiveNestedEstimator {
     const std::size_t n = eval.size(), nb = opt_.binProbabilities.size() + 1;
     s.minInnerForVariance = opt_.minInnerForVariance;
     s.maxInnerPerScenario = opt_.maxInnerPerScenario;
+    s.minScenariosPerBinForMisspecification = opt_.minScenariosPerBinForMisspecification;
+    s.threads = opt_.maxDegreeOfParallelism;
     s.mu.resize(n);
     s.v.resize(n);
     s.original = eval;
-    detail::parallelFor(n, opt_.maxDegreeOfParallelism, [&](std::size_t i) { proxy->predict(outer.at(eval[i]), s.mu[i], s.v[i]); });
+    detail::parallelChunks(n, opt_.maxDegreeOfParallelism, [&](std::size_t lo, std::size_t hi) {
+      std::vector<double> z(outer.d), phi(proxy->basisSize());
+      for (std::size_t i = lo; i < hi; ++i) proxy->predict(outer.at(eval[i]), s.mu[i], s.v[i], z.data(), phi.data());
+    });
     std::vector<double> sortedMu = s.mu;
     std::sort(sortedMu.begin(), sortedMu.end());
     std::vector<double> cuts;
@@ -649,12 +798,17 @@ class AdaptiveNestedEstimator {
     auto binOf = [&](double m) { return static_cast<int>(std::count_if(cuts.begin(), cuts.end(), [&](double c) { return c < m; })); };
     s.bin.resize(n);
     for (std::size_t i = 0; i < n; ++i) s.bin[i] = binOf(s.mu[i]);
-    std::vector<double> rsum(nb, 0);
+    std::vector<double> rsum(nb, 0), fitted(train.size());
     std::vector<std::size_t> rcount(nb, 0);
+    detail::parallelChunks(train.size(), opt_.maxDegreeOfParallelism, [&](std::size_t lo, std::size_t hi) {
+      std::vector<double> z(outer.d), phi(proxy->basisSize());
+      double vv;
+      for (std::size_t t = lo; t < hi; ++t) proxy->predict(outer.at(train[t]), fitted[t], vv, z.data(), phi.data());
+    });
     double gsum = 0;
-    for (std::size_t r : train) {
-      double m, vv;
-      proxy->predict(outer.at(r), m, vv);
+    for (std::size_t t = 0; t < train.size(); ++t) {
+      const std::size_t r = train[t];
+      const double m = fitted[t];
       const double e2 = (outer.payoff[r] - m) * (outer.payoff[r] - m);
       const auto b = static_cast<std::size_t>(binOf(m));
       rsum[b] += e2;
@@ -673,6 +827,7 @@ class AdaptiveNestedEstimator {
     s.inner.assign(n, 0);
     s.audited.assign(n, false);
     for (std::size_t i = 0; i < n; ++i) s.fold0[i].merge(1, outer.payoff[eval[i]], 0);
+    s.refresh();
     res.baselineEstimate = stat.evaluate(s);
 
     std::size_t budget = opt_.totalInnerBudget;
@@ -695,9 +850,12 @@ class AdaptiveNestedEstimator {
       res.auditedScenarios = jobs.size();
       res.innerPathsUsed += jobs.size() * paths;
     }
-    measureBias(s, nb);
+    s.refresh();
 
     // 7 · the adaptive loop
+    std::vector<char> outside(n, 0);
+    if (opt_.refineOutsideTrainingRange)
+      for (std::size_t i = 0; i < n; ++i) outside[i] = proxy->outsideTraining(outer.at(eval[i])) ? 1 : 0;
     std::vector<double> u(n);
     res.stopReason = StopReason::MaxRoundsReached;
     std::size_t lastUrgent = 0;
@@ -706,7 +864,7 @@ class AdaptiveNestedEstimator {
       stat.urgency(s, u);
       if (opt_.refineOutsideTrainingRange)
         for (std::size_t i = 0; i < n; ++i)
-          if (s.inner[i] < opt_.minInnerForVariance && proxy->outsideTraining(outer.at(eval[i]))) u[i] = kInf;
+          if (outside[i] && s.inner[i] < opt_.minInnerForVariance) u[i] = kInf;
       std::vector<std::size_t> urgent;
       std::size_t capped = 0;
       for (std::size_t i = 0; i < n; ++i) {
@@ -742,7 +900,7 @@ class AdaptiveNestedEstimator {
       run(outer, sim, s, jobs);
       for (auto& j : jobs) res.innerPathsUsed += j.second;
       res.rounds = round + 1;
-      measureBias(s, nb);
+      s.refresh();
       if (out) {
         res.stopReason = StopReason::BudgetExhausted;
         // what still asks after this round
@@ -801,27 +959,6 @@ class AdaptiveNestedEstimator {
         if (!std::isfinite(y)) throw std::runtime_error("inner payoff not finite for scenario " + std::to_string(s.original[i]));
     });
     for (std::size_t j = 0; j < jobs.size(); ++j) s.addBatch(jobs[j].first, pay[j].data(), jobs[j].second);
-  }
-
-  // 5 · the proxy's squared bias per bin from every scenario with enough samples
-  void measureBias(ScenarioSet& s, std::size_t nb) const {
-    std::vector<double> sum(nb, 0);
-    std::vector<std::size_t> cnt(nb, 0);
-    double gsum = 0;
-    std::size_t gcnt = 0;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-      const Fold f = s.pooled(i);
-      if (f.n < 1.0 + static_cast<double>(opt_.minInnerForVariance)) continue;
-      const double x = (f.mean - s.mu[i]) * (f.mean - s.mu[i]) - s.s2(i) / f.n - s.v[i];
-      const auto b = static_cast<std::size_t>(s.bin[i]);
-      sum[b] += x;
-      ++cnt[b];
-      gsum += x;
-      ++gcnt;
-    }
-    const double global = gcnt ? std::max(0.0, gsum / static_cast<double>(gcnt)) : 0.0;
-    for (std::size_t b = 0; b < nb; ++b)
-      s.tau2[b] = cnt[b] >= opt_.minScenariosPerBinForMisspecification ? std::max(0.0, sum[b] / static_cast<double>(cnt[b])) : global;
   }
 
   Options opt_;

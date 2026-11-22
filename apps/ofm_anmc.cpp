@@ -4,7 +4,7 @@
 // 100 for 99% VaR and ES, a risk reversal (long 105 call, short 95 put) for EPE. Exact conditional values are
 // Black-Scholes prices; each estimate is compared with the exact statistic on the same evaluation scenarios.
 //
-//   ofm_anmc [--outer 100000] [--reps 1] [--degrees 1,2,4] [--budget 2000000] [--check]
+//   ofm_anmc [--outer 100000] [--reps 1] [--degrees 1,2,4] [--budget 2000000] [--threads -1] [--check]
 //
 // --check fails (exit 1) unless refinement keeps every adaptive error within its bound and cuts the degree-1 VaR and
 // the ES errors from regression-only: the CI's check that the library still does what the document says.
@@ -61,13 +61,21 @@ anmc::OuterScenarios outer(const Book& b, std::size_t n, std::uint64_t seed) {
   return o;
 }
 
-// The same engine restarted at a horizon state.
+// The same engine restarted at a horizon state, as one fused path kernel: the constants once a batch, both normals of
+// each Box-Muller draw used (one log and one square root per two paths), the terminal price and the discounted payoff
+// in the same pass.
 anmc::InnerSimulator inner(const Book& b) {
   return [b](const double* state, std::size_t, double* pay, std::size_t count, std::uint64_t seed) {
     anmc::SplitMix64 g(seed);
-    const double tau = T - TH;
-    for (std::size_t k = 0; k < count; ++k)
-      pay[k] = std::exp(-R * tau) * b.payoff(std::exp(state[0] + (R - 0.5 * SIGMA * SIGMA) * tau + SIGMA * std::sqrt(tau) * gauss(g)));
+    const double tau = T - TH, disc = std::exp(-R * tau), vol = SIGMA * std::sqrt(tau);
+    const double s0 = std::exp(state[0] + (R - 0.5 * SIGMA * SIGMA) * tau);
+    for (std::size_t k = 0; k < count; k += 2) {
+      double u1 = g.uniform();
+      if (u1 < 1e-300) u1 = 1e-300;
+      const double rad = std::sqrt(-2 * std::log(u1)), ang = 6.283185307179586 * g.uniform();
+      pay[k] = disc * b.payoff(s0 * std::exp(vol * rad * std::cos(ang)));
+      if (k + 1 < count) pay[k + 1] = disc * b.payoff(s0 * std::exp(vol * rad * std::sin(ang)));
+    }
   };
 }
 
@@ -95,6 +103,7 @@ double exactStat(const char* stat, const Book& b, const anmc::OuterScenarios& o,
 
 int main(int argc, char** argv) {
   std::size_t nOuter = 100000, reps = 1, budget = 2000000;
+  int threads = -1;
   std::vector<int> degrees = {1, 2, 4};
   bool check = false;
   for (int a = 1; a < argc; ++a) {
@@ -107,6 +116,7 @@ int main(int argc, char** argv) {
     else if (k == "--reps") reps = std::strtoul(next(), nullptr, 10);
     else if (k == "--budget") budget = std::strtoul(next(), nullptr, 10);
     else if (k == "--check") check = true;
+    else if (k == "--threads") threads = std::atoi(next());
     else if (k == "--degrees") {
       degrees.clear();
       for (const char* p = next(); *p;) {
@@ -115,7 +125,7 @@ int main(int argc, char** argv) {
         if (*p) ++p;
       }
     } else {
-      std::fprintf(stderr, "usage: ofm_anmc [--outer N] [--reps N] [--degrees 1,2,4] [--budget N] [--check]\n");
+      std::fprintf(stderr, "usage: ofm_anmc [--outer N] [--reps N] [--degrees 1,2,4] [--budget N] [--threads N] [--check]\n");
       return 2;
     }
   }
@@ -132,6 +142,7 @@ int main(int argc, char** argv) {
         anmc::Options opt;
         opt.hermiteDegree = deg;
         opt.totalInnerBudget = budget;
+        opt.maxDegreeOfParallelism = threads;
         opt.seed = 20261122 + r;
         const auto o = outer(*c.book, nOuter, 1000 + r);
         const double base = c.book->value(S0, T);  // today's value

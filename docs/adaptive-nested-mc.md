@@ -52,18 +52,39 @@ evaluation scenarios. `ofm_anmc --reps 6`, the library's defaults (RMSE as % of 
 
 | Statistic, degree | Regression only | Adaptive | Cut | Inner paths | Document |
 |---|---|---|---|---|---|
-| VaR 99%, 1 | 58.5% | 1.4% | 42× | 1.68M | 40×, 1.66M |
-| VaR 99%, 2 | 4.6% | 2.1% | 2.2× | 0.96M | 2.4×, 1.10M |
-| VaR 99%, 4 | 2.4% | 1.3% | 1.9× | 1.14M | 3.2×, 1.17M |
-| ES 99%, 1 | 17.3% | 2.0% | 8.6× | 2.00M (budget) | 6.3×, 2.00M |
-| ES 99%, 2 | 17.0% | 0.9% | 19× | 0.82M | 27×, 0.96M |
-| ES 99%, 4 | 17.5% | 0.9% | 19× | 1.08M | 21×, 1.26M |
-| EPE, 1 / 2 / 4 | 2.2% | 2.1–2.2% | 1.0× | 36k | 0.9×, 14k |
+| VaR 99%, 1 | 58.5% | 1.9% | 31× | 1.67M | 40×, 1.66M |
+| VaR 99%, 2 | 4.6% | 2.2% | 2.1× | 1.09M | 2.4×, 1.10M |
+| VaR 99%, 4 | 2.4% | 1.2% | 1.9× | 1.13M | 3.2×, 1.17M |
+| ES 99%, 1 | 17.3% | 2.0% | 8.6× | 1.99M (budget) | 6.3×, 2.00M |
+| ES 99%, 2 | 17.0% | 0.5% | 32× | 0.87M | 27×, 0.96M |
+| ES 99%, 4 | 17.5% | 0.6% | 28× | 0.92M | 21×, 1.26M |
+| EPE, 1 / 2 / 4 | 2.2% | 2.1–2.3% | 1.0× | 0.10M | 0.9×, 14k |
 
-VaR and ES reproduce the document. EPE behaves as described (the method spends little beyond the audit, since the
-proxy's signs are right), but its error here sits at 2.1%, not 0.6–0.7%: that is the noise floor of one outer payoff
-per evaluation scenario for this risk reversal (2.0%, measured separately), which inner paths for sign decisions cannot
-remove. The document's lower figure points to a different EPE setup or error definition.
+VaR and ES reproduce the document (ES at degrees 2 and 4 within its 0.4–0.6%). EPE stays at the noise floor of one
+outer payoff per evaluation scenario for this risk reversal (2.0%, measured separately), which inner paths for sign
+decisions cannot remove; the document's lower figure points to a different EPE setup or error definition.
+
+**One change from the document.** EPE's refinement criterion uses the selection estimate (the proxy alone until fold 1
+has samples) and its standard error, not the pooled blend Ṽ. For a scenario without inner paths Ṽ holds its own outer
+payoff Y, so choosing which scenarios to refine from Ṽ makes the choice depend on the Y values the unrefined scenarios
+keep as their values, and biases them: in validation one round of 2,000 refined scenarios moved EPE by up to 3 points
+(12 repetitions: 3.1% against 2.6% now). It is the document's own rule (selection independent of value) applied to the
+refinement choice. ES keeps the document's cutoff rule on Ṽ: a degree-1 proxy ranks a two-sided tail wrongly and only
+the outer payoffs in Ṽ find the tail scenarios it ranked low (8.5% at degree 1 on the selection alone, 2.0% on Ṽ).
+
+## Performance
+
+The hot path is the per-round bookkeeping over every evaluation scenario, so it is one fused kernel
+(`ScenarioSet::refresh`): a parallel pass computes each scenario's pooled sample, payoff noise and bias term, τ²_b is
+reduced from them in index order, and a second pass computes the blend, its variance, the gain, the selection with its
+standard error and the value into flat arrays that every statistic reads. It is incremental: only scenarios a batch
+reached, or whose bin's τ² changed, are recomputed. Further: VaR's urgency skips the normal CDF where the result cannot
+exceed 1 (d > z·se), the misclassification error skips it where it underflows to exactly 0 (g > 40·se), the error-budget
+rule pops a heap only as far as the excess needs instead of sorting every candidate, proxy predictions reuse their
+buffers, and the proxy fit accumulates its normal equations and HC0 meat in fixed chunks of 4,096 rows in parallel,
+added in chunk order. Each step was checked to give the same output as before it, and the output is identical on any
+number of threads. The validation's engine is a fused path kernel too (both normals of each Box-Muller draw, the
+constants once a batch). `ofm_anmc --reps 3`: 6.2 s before, 3.0 s now (4 cores).
 
 CI runs `ofm_anmc --check` (one repetition, deterministic): the adaptive error must stay within 6% (VaR), 3% (ES) and
 3% (EPE), and refinement must cut the regression-only error for VaR at degree 1 and for ES at every degree.
