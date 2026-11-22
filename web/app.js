@@ -177,8 +177,8 @@ function render(r, source) {
   // The same strategy on synthetic markets (apps/ofm_strategy --resample-runs): alternative histories drawn from the real
   // one's days in its hidden states, so the backtest is not one lucky path; and both records after the buy-backs' own round trips.
   const RS = B.resampled, net = B.afterRebuyCosts, rsTile = RS?.markets ? `
-    <div class="tile"><span class="k">On ${RS.markets} synthetic markets</span><span class="v">${pct(RS.annualReturn)}</span><span class="s">a year on average · Sharpe ${RS.sharpe.toFixed(2)} (from ${RS.sharpeMin.toFixed(2)} to ${RS.sharpeMax.toFixed(2)}) · worst fall ${pct(RS.maxDrawdown, 0).slice(1)}${RS.afterRebuyCosts ? ` · after the buy-backs' costs Sharpe ${RS.afterRebuyCosts.sharpe.toFixed(2)}` : ''}. Each is the real history redrawn in ${RS.block}-day blocks of real days, calm and turbulent spells as they came</span></div>` : '';
-  const netTile = net && B.rebuys ? `
+    <div class="tile"><span class="k">On ${RS.markets} synthetic markets</span><span class="v">${pct(RS.annualReturn)}</span><span class="s">a year on average · Sharpe ${RS.sharpe != null ? RS.sharpe.toFixed(2) : '–'}${RS.sharpeMin != null && RS.sharpeMax != null ? ` (from ${RS.sharpeMin.toFixed(2)} to ${RS.sharpeMax.toFixed(2)})` : ''} · worst fall ${pct(RS.maxDrawdown, 0).slice(1)}${RS.afterRebuyCosts?.sharpe != null ? ` · after the buy-backs' costs Sharpe ${RS.afterRebuyCosts.sharpe.toFixed(2)}` : ''}. Each is the real history redrawn in ${RS.block}-day blocks of real days, calm and turbulent spells as they came</span></div>` : '';
+  const netTile = net?.sharpe != null && B.rebuys ? `
     <div class="tile"><span class="k">After the buy-backs' own costs</span><span class="v">${pct(net.annualReturn)}</span><span class="s">a year · Sharpe ${net.sharpe.toFixed(2)} · ${B.rebuys} buy-backs, ${B.stops} stops in the backtest</span></div>` : '';
   // What the stops learnt: each share's volatility band and buy-back distance at each reset (10%, median, 90%).
   const LN = B.learnt, x = (v) => `${v.toFixed(v < 10 ? 1 : 0)}×`, learntTile = LN && (LN.band || LN.rebuy) ? `

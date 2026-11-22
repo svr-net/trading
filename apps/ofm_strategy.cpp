@@ -637,7 +637,10 @@ int main(int argc, char** argv) {
   const std::size_t units = repairUnits(d);
   const std::size_t outliers = rollOutliers(d);
   strat::ResampleInfo rsInfo;
-  if (o.resample > 0) rsInfo = strat::resampleMarket(d, o.resample, o.resampleBlock);
+  if (o.resample > 0) {
+    rsInfo = strat::resampleMarket(d, o.resample, o.resampleBlock);
+    if (rsInfo.states == 0) usage("--resample: too few days for the blocks (need at least 3 blocks and 2 days), no synthetic market drawn");
+  }
   if (std::getenv("X_PROFILE")) std::fprintf(stderr, "profile: reading %.2fs, the panel %.2fs, repairs %.2fs\n", ld1 - ld0, ld2 - ld1, now() - ld2);
   const std::size_t T = d.T, N = d.N, k = o.slots;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
@@ -1326,6 +1329,7 @@ int main(int argc, char** argv) {
     if (rbTrail)  // the trailing buy-backs still working follow the day's low down (the stop's own day included: its low came after the stop)
       for (auto& [i, x] : stoppedAt) {
         const double lo = d.L[u * N + i];
+        x.dist = rbOf(i);  // the distance learnt at the latest reset, as the bridge re-places the order each morning
         if (x.trigger > 0 && lo > 0 && lo < x.low) x.low = lo, x.trigger = std::min(x.trigger, x.low * (1 + x.dist));
       }
     std::size_t free = k > book.size() ? k - book.size() : 0;
@@ -1446,6 +1450,8 @@ int main(int argc, char** argv) {
       if (t0 + mc.horizon >= T || list.empty()) continue;
       std::vector<double> caps;
       for (std::size_t i : list) caps.push_back(capOf(t0, i));
+      if (!tripV.empty())  // mccost: the round trips as they were at this reset
+        for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(t0, i);
       strat::mcRun(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr, resetMu[x], resetSc[x]);
       const double real = strat::mcReal(d, t0, list, caps, k, mc);
       double below = 0, m = 0;
@@ -1499,6 +1505,8 @@ int main(int argc, char** argv) {
     strat::McReset rr;
     std::vector<double> mu, sc;
     shapesFor(L, targetAll, mu, sc);
+    if (!tripV.empty())  // mccost: the round trips at L
+      for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(L, i);
     strat::mcRun(d, L, targetAll, caps, held, k, mc, L, *backend, rr, mu, sc);
     for (auto& x : orders) {
       const std::size_t j = std::size_t(std::find(targetAll.begin(), targetAll.end(), x.i) - targetAll.begin());
@@ -1699,7 +1707,8 @@ int main(int argc, char** argv) {
       std::string used;
       for (const auto& [m, n] : rbChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
       if (fine && !rbPicks.empty()) used = "learnt as any value from 0.25% to 10% (in %): " + spread(rbPicks, 100.0, "%.2f");
-      std::printf("strategy: the buy-back an order attached to the stop (a buy stop over the level it sold at): %s; %zu buy-backs\n",
+      std::printf("strategy: the buy-back an order attached to the stop (%s): %s; %zu buy-backs\n",
+                  rbTrail ? "a buy stop trailing the lowest price since the stop" : "a buy stop over the level it sold at",
                   rbAdapt ? ("its distance learnt for each share at each reset, chosen (distance, times): " + used).c_str() : ("at " + jnum(P["rebuystop"]) + " over it").c_str(), nRebuys);
     }
     if (refill) std::printf("strategy: a slot freed by a stop goes to the next share the simulation chose (%zu reserves at the last reset)\n", reserve.size());

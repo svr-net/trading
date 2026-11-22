@@ -7,7 +7,9 @@
 // runs as they did. Each share keeps its real calendar (it trades on the days it really traded: listings, delistings
 // and gaps as they were) and its real volume (its liquidity, so the day's universe is the real one's); its prices
 // start from its real first bar and then move by the drawn days' moves (open, high, low and close over the day's
-// previous close). A drawn day on which the share had no bar leaves it without one that day.
+// previous close). A drawn day on which the share had no bar (before it listed, after it delisted, a gap) is replaced
+// for that share by another of its own real days, in the drawn day's state where one can be found, so a late listing
+// keeps all its bars.
 // Deterministic for a seed: the draws come from the counter-based hash.
 #pragma once
 
@@ -59,6 +61,14 @@ inline ResampleInfo resampleMarket(Data& d, std::uint64_t seed, std::size_t bloc
     if (best.K == 0 || f.bic < best.bic) best = std::move(f);
   }
   info.states = best.K;
+  // each share's own days with a bar (its first and last), for the drawn days on which it had none
+  std::vector<std::size_t> fi(N, T), li(N, 0);
+  for (std::size_t q = 1; q < T; ++q)
+    for (std::size_t i = 0; i < N; ++i)
+      if (r4[4 * (q * N + i) + 3] > 0) fi[i] = std::min(fi[i], q), li[i] = q;
+  const auto stateOf = [&](std::size_t q) {
+    return q >= best.lo && q - best.lo < best.label.size() ? best.label[q - best.lo] : -1;
+  };
   // the synthetic calendar: day 0 as it was, then T - 1 days drawn in states from the real days 1 .. T-1
   std::uint64_t h = mcMix(seed * 0x9E3779B97F4A7C15ULL + 12345);
   std::vector<std::size_t> drawn;
@@ -77,8 +87,31 @@ inline ResampleInfo resampleMarket(Data& d, std::uint64_t seed, std::size_t bloc
         O[k] = d.O[k], H[k] = d.H[k], L[k] = d.L[k], C[k] = d.C[k], last[i] = d.C[k];
         continue;
       }
-      const std::size_t q = t == 0 ? 0 : drawn[t - 1], kq = q * N + i;
-      if (!(r4[4 * kq + 3] > 0)) continue;  // the drawn day had no bar of it
+      std::size_t q = t == 0 ? 0 : drawn[t - 1];
+      if (!(r4[4 * (q * N + i) + 3] > 0)) {  // the drawn day had no bar of it: another of its own days
+        if (fi[i] > li[i]) continue;  // it never had a move to draw
+        const int z = stateOf(q);
+        const std::size_t span = li[i] - fi[i] + 1;
+        std::size_t any = T;
+        bool found = false;
+        for (int tries = 0; tries < 32 && !found; ++tries) {
+          h = mcMix(h);
+          const std::size_t c = fi[i] + std::size_t(double(h >> 11) / 9007199254740992.0 * double(span)) % span;
+          if (!(r4[4 * (c * N + i) + 3] > 0)) continue;
+          if (any == T) any = c;
+          if (z < 0 || stateOf(c) == z) q = c, found = true;
+        }
+        if (!found) {
+          if (any == T)  // the nearest of its days to the drawn one
+            for (std::size_t dq = 0; dq < span && any == T; ++dq) {
+              const std::size_t c0 = std::clamp(q, fi[i], li[i]);
+              if (c0 >= fi[i] + dq && r4[4 * ((c0 - dq) * N + i) + 3] > 0) any = c0 - dq;
+              else if (c0 + dq <= li[i] && r4[4 * ((c0 + dq) * N + i) + 3] > 0) any = c0 + dq;
+            }
+          q = any;
+        }
+      }
+      const std::size_t kq = q * N + i;
       const double p = last[i];
       O[k] = p * r4[4 * kq], H[k] = p * r4[4 * kq + 1], L[k] = p * r4[4 * kq + 2], C[k] = p * r4[4 * kq + 3];
       last[i] = C[k];
