@@ -39,6 +39,9 @@ interface Broker {
         }
     }
 
+    /** A holding in the account's portfolio: its share, shares, IBKR's price, unrealised profit and average cost. */
+    record Holding(Share share, double qty, double marketPrice, double unrealizedPnl, double avgCost) { }
+
     /** A new order to place (the fields an order step sets; zero or null: not set). */
     record NewOrder(String action, String type, double qty, double limit, double aux, String ref, String tif, String goodTill,
                     int parentId, boolean transmit, double trailPercent, double trailStop, double limitOffset) {
@@ -77,6 +80,9 @@ interface Broker {
     double floorPrice(Share s);
 
     List<Position> positions();
+
+    /** The account's portfolio (IBKR's prices and unrealised profit). */
+    List<Holding> portfolio();
 
     /** The open orders of every client of the account. */
     List<Ord> openOrders();

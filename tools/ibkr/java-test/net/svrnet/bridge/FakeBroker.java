@@ -87,6 +87,13 @@ final class FakeBroker implements Broker {
         return r;
     }
 
+    @Override
+    public List<Holding> portfolio() {
+        List<Holding> r = new ArrayList<>();
+        for (Position p : positions()) r.add(new Holding(p.share(), p.qty(), CLOSES.get(p.share().symbol()), 0, p.avgCost()));
+        return r;
+    }
+
     private Ord ord(T t) {
         NewOrder o = t.order;
         return new Ord(t.id, t.id, o.parentId(), t.share, o.action(), o.type(), o.qty(), o.limit(), o.aux(), o.trailPercent(), o.trailStop(),
