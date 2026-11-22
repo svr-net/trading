@@ -19,8 +19,9 @@ RUN set -e; mkdir -p /build/classes; \
     d=$(find /opt/twsapi -type d -path '*/com/ib/client' 2>/dev/null | head -1); \
     jar=$(find /opt/twsapi -iname 'TwsApi*.jar' 2>/dev/null | head -1); \
     if [ -n "$d" ] && ls "$d"/*.java >/dev/null 2>&1; then \
-      echo "IBKR Java client sources: $d"; find "$d" -name '*.java' > /tmp/api.txt; \
-      libs=$(find /opt/twsapi -name '*.jar' ! -path '*/jre/*' ! -iname 'TwsApi*' 2>/dev/null | tr '\n' ':'); echo "with: $libs"; \
+      root=${d%/com/ib/client}; echo "IBKR Java client sources: $root (com.ib.client and com.ib.controller)"; \
+      find "$root/com/ib" -name '*.java' > /tmp/api.txt; \
+      libs=$(find "$root" -name '*.jar' 2>/dev/null | tr '\n' ':'); echo "with: $libs"; \
       for l in $(echo "$libs" | tr ':' ' '); do (cd /build/classes && jar xf "$l"); done; \
       javac --release 21 -nowarn -encoding UTF-8 -cp "/build/classes:$libs" -d /build/classes @/tmp/api.txt; \
     elif [ -n "$jar" ]; then \
