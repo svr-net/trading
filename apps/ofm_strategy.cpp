@@ -1752,7 +1752,7 @@ int main(int argc, char** argv) {
     std::size_t stocks = 0;
     for (std::size_t i = 0; i < N; ++i) stocks += in[L * N + i] != 0;
     f << "{\"model\":\"strategy\",\"strategy\":" << jstr(o.strategy) << ",\"about\":" << jstr(strategy->about()) << ",\"backend\":" << jstr(backendName)
-      << ",\"asOf\":" << jstr(d.days[L]) << ",\"decided\":" << jstr(d.days[decided]) << ",\"stocks\":" << stocks << ",\"book\":\"hold\",\"slots\":" << k << ",\"rebalance\":" << reb << ",\"days\":" << maxDays
+      << ",\"asOf\":" << jstr(d.days[L]) << ",\"decided\":" << jstr(d.days[decided]) << ",\"stocks\":" << stocks << ",\"book\":\"hold\",\"slots\":" << k << ",\"held\":" << book.size() << ",\"rebalance\":" << reb << ",\"days\":" << maxDays
       << ",\"costs\":{\"broker\":\"IBKR\",\"market\":" << jstr(M) << ",\"net\":false,\"atEnd\":true,\"capital\":" << jnum(o.capital) << ",\"stamp\":" << (uk ? "0.005" : "0")
       << ",\"stampFree\":" << costs.stampFree.size() << ",\"venues\":" << (costs.venue.empty() ? "false" : "true") << "}";
     f << ",\"backtest\":{\"from\":" << jstr(dailyDays.empty() ? "" : dailyDays.front()) << ",\"to\":" << jstr(dailyDays.empty() ? "" : dailyDays.back())
