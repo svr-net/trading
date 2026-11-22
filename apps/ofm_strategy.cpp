@@ -639,6 +639,15 @@ int main(int argc, char** argv) {
   // commissions, taxes, fees for the order's amount) in the nested Monte Carlo, so the stop's band and the buy-back's
   // distance are learnt net of the whipsaws they cause. 0: the futures without costs.
   P.emplace("mccost", 0.0), P.emplace("adaptfine", 0.0);
+  // mcrace: z > 0 learns each share's stop and buy-back adaptively (the adaptive nested Monte Carlo's rule, include/
+  // strategy/adaptive_nested.hpp, applied to the choice of a setting): after the first `paths` futures, a setting is
+  // dropped once the leader beats it by more than z standard errors of their paired difference (the same futures for
+  // both), and the futures saved go to the settings still in the race, in rounds of half `paths`, until one is left or
+  // each has had (1 + mcraceextra) x `paths`. A dropped setting's mean is moved by the leader's own change since (its
+  // futures' luck, paired), so a fine grid's curve stays on one footing. The choice is then as if the close contenders
+  // had had several times the futures, at a fraction of the cost. 0: every setting on the same `paths` futures.
+  // With mcprob (the most probable best, by votes) the race is off: votes need every setting on every future.
+  P.emplace("mcrace", 0.0), P.emplace("mcraceextra", 3.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -890,6 +899,10 @@ int main(int argc, char** argv) {
   // lists: each share's futures on a fine grid evenly spaced in log (the multiple 1 to 10 times the daily volatility,
   // the distance 0.25% to 10%), and the peak between the best point and its neighbours (fineArgmax).
   const bool fine = P["adaptfine"] > 0;
+  const double raceZ = P["mcrace"], raceExtra = P["mcraceextra"];
+  const std::size_t raceRef = std::getenv("X_MCRACE_REF") ? std::size_t(std::atol(std::getenv("X_MCRACE_REF"))) : 0;
+  std::size_t raceFutures = 0, raceRuns = 0, raceSettingsTotal = 0, raceChoices = 0, raceLeft = 0, refChoices = 0, refAgree = 0;
+  double refRegret = 0;
   const auto logGrid = [](double lo, double hi, std::size_t n) {
     std::vector<double> g(n);
     for (std::size_t q = 0; q < n; ++q) g[q] = lo * std::pow(hi / lo, double(q) / double(n - 1));
@@ -1131,6 +1144,79 @@ int main(int argc, char** argv) {
     resets.emplace_back(t, target);
     shapesFor(t, target, mu, sc);
     const double ca = clock();
+    // mcrace: the race between the settings (see the parameter). Every setting on futures [0, paths), then rounds of
+    // half `paths` new futures for those still in it; each future's path built once and every setting still racing
+    // run on it (the fused kernel, as below). On the CPU: the rounds depend on the results so far.
+    // z < 0 with maxP = Pn: no race, every setting on futures [base, base + Pn) (X_MCRACE_REF's reference).
+    const auto raceSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs,
+                                 std::vector<double>* meansOut, double z, std::size_t Pn, std::size_t maxP, std::uint64_t base) {
+      const std::size_t G = specs.size(), step = std::max<std::size_t>(1, Pn / 2);
+      std::vector<std::vector<double>> g(G);  // each setting's log growth on futures 0, 1, ...
+      std::vector<std::size_t> dropAt(G, 0);  // futures a dropped setting had (0: still racing)
+      std::vector<char> alive(G, 1);
+      strat::McTable tab;
+      strat::mcTable(d, t, i, scale, mc, tab);
+      const auto run = [&](std::size_t q0, std::size_t q1) {
+        std::vector<std::size_t> live;
+        for (std::size_t s2 = 0; s2 < G; ++s2)
+          if (alive[s2]) live.push_back(s2), g[s2].resize(q1);
+        backend->parallelFor(q1 - q0, [&](std::size_t a, std::size_t e) {
+          std::vector<std::size_t> days;
+          std::vector<double> pre;
+          strat::McPath path;
+          for (std::size_t q = q0 + a; q < q0 + e; ++q) {
+            strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + base + q)), false, days);
+            strat::mcRatios(d, i, days, scale, pre, &tab);
+            strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);
+            for (std::size_t s2 : live) g[s2][q] = std::log(std::max(1e-6, 1 + strat::mcSlotPath(path, i, cap, specs[s2], strat::McHeld{}).ret));
+          }
+        });
+        if (z >= 0) raceFutures += (q1 - q0), raceRuns += (q1 - q0) * live.size();
+      };
+      const auto meanOf = [&](std::size_t s2, std::size_t n) {
+        double m = 0;
+        for (std::size_t q = 0; q < n; ++q) m += g[s2][q];
+        return m / double(n);
+      };
+      std::size_t used = Pn;
+      run(0, Pn);
+      for (;;) {
+        std::size_t lead = G, left = 0;
+        double best = -1e300;
+        for (std::size_t s2 = 0; s2 < G; ++s2)
+          if (alive[s2]) {
+            const double m = meanOf(s2, used);
+            if (m > best + 1e-12) best = m, lead = s2;  // the first of equals
+          }
+        for (std::size_t s2 = 0; s2 < G && z >= 0; ++s2) {
+          if (!alive[s2] || s2 == lead) continue;
+          double m = 0, m2 = 0;
+          for (std::size_t q = 0; q < used; ++q) {
+            const double x = g[lead][q] - g[s2][q];
+            m += x, m2 += x * x;
+          }
+          m /= double(used);
+          const double var = std::max(0.0, m2 / double(used) - m * m) / double(used > 1 ? used - 1 : 1);
+          // beaten beyond z standard errors, or the same on every future (an equal later in the list never wins)
+          if (m > z * std::sqrt(var) + 1e-12 || (var <= 0 && std::fabs(m) <= 1e-12 && s2 > lead)) alive[s2] = 0, dropAt[s2] = used;
+        }
+        for (std::size_t s2 = 0; s2 < G; ++s2) left += alive[s2];
+        if (left <= 1 || used >= maxP) {
+          std::vector<double> mean(G);
+          for (std::size_t s2 = 0; s2 < G; ++s2)
+            mean[s2] = alive[s2] ? meanOf(s2, used) : meanOf(s2, dropAt[s2]) + (meanOf(lead, used) - meanOf(lead, dropAt[s2]));
+          std::size_t pick = 0;
+          for (std::size_t s2 = 1; s2 < G; ++s2)
+            if (mean[s2] > mean[pick] + 1e-12) pick = s2;
+          if (z >= 0) ++raceChoices, raceLeft += left;
+          if (meansOut) *meansOut = std::move(mean);
+          return pick;
+        }
+        const std::size_t next = std::min(maxP, used + step);
+        run(used, next);
+        used = next;
+      }
+    };
     // A share's best stop setting of `specs`: every setting on the same futures in one pass a path (its days drawn and
     // its bars scaled once), in parallel over the paths; the setting with the most expected log growth (the first of
     // equals), from each setting's sum over the paths in their order.
@@ -1142,6 +1228,24 @@ int main(int argc, char** argv) {
       std::vector<double> g(G * Pn, 0.0);
       std::vector<double> gpu;
       const bool check = strat::mcGpuCheck().on;
+      const bool race = raceZ > 0 && !byVotes && G > 1;
+      if (race) raceSettingsTotal += G * Pn;
+      std::size_t chosen = G;
+      std::vector<double> chosenMeans;
+      if (race) chosen = raceSetting(i, adj, cap, scale, specs, &chosenMeans, raceZ, Pn, Pn + std::size_t(std::max(0.0, raceExtra) * double(Pn)), 0);
+      // X_MCRACE_REF=N: the choice also scored against N independent futures (none of the run's): how often it is the
+      // setting those make best, and the log growth it loses there (the regret); a measurement, not used.
+      const auto scoreRef = [&](std::size_t pick) {
+        if (!raceRef) return;
+        std::vector<double> ref;
+        const std::size_t b = raceSetting(i, adj, cap, scale, specs, &ref, -1, raceRef, raceRef, 1ULL << 40);
+        ++refChoices, refAgree += b == pick, refRegret += ref[b] - ref[pick];
+      };
+      if (race) {
+        scoreRef(chosen);
+        if (meansOut) *meansOut = chosenMeans;
+        return chosen;
+      }
       if (!check && strat::mcSettingsAny(d, t, i, adj, cap, scale, mc, specs, gpu)) {  // a GPU back end: the whole search as one batch
         for (std::size_t x = 0; x < G * Pn; ++x) g[x] = std::log(std::max(1e-6, 1 + gpu[x]));
       } else {
@@ -1182,6 +1286,7 @@ int main(int argc, char** argv) {
       for (std::size_t s2 = 1; s2 < G; ++s2)
         if (votes[s2] > votes[pick] + 1e-9 || (std::fabs(votes[s2] - votes[pick]) <= 1e-9 && mean[s2] > mean[pick] + 1e-12)) pick = s2;
       if (meansOut) *meansOut = mean;
+      if (!byVotes) scoreRef(pick);
       return pick;
     };
     // adaptfine: the value with the most expected log growth between the fine grid's points: a parabola through the best
@@ -1761,6 +1866,14 @@ int main(int argc, char** argv) {
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
     }
+    if (raceChoices)
+      std::printf("strategy: the settings learnt by a race (mcrace %g, at most %g x the futures more): %zu choices, %.1f settings left at the end on "
+                  "average, %.2f futures and %.2f setting runs per choice in units of `paths` x settings (1.00: the plain choice's)\n",
+                  raceZ, raceExtra, raceChoices, double(raceLeft) / double(raceChoices), double(raceFutures) / double(raceChoices * mc.paths),
+                  double(raceRuns) / double(std::max<std::size_t>(1, raceSettingsTotal)));
+    if (refChoices)
+      std::printf("strategy: X_MCRACE_REF %zu: the settings learnt are the best on %zu independent futures in %.1f%% of %zu choices; log growth lost "
+                  "there %.3g per choice\n", raceRef, raceRef, 100.0 * double(refAgree) / double(refChoices), refChoices, refRegret / double(refChoices));
     if (rbStop) {
       std::string used;
       for (const auto& [m, n] : rbChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
