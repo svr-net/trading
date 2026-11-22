@@ -81,9 +81,6 @@ function brokerNote(r, source, isLive) {
         + `${f.since ? ` since ${when(f.since)}` : ''}: nothing here is being placed.${holds} To fix it: ${f.fix || 'log in to the paper account and accept the paper-trading notice, then restart IB Gateway'}.`
         + ` <span class="muted">Checked ${when(b.checked)}${f.last ? `; last refused: ${f.last}` : ''}.</span>`;
       el.hidden = false;
-    } else if (held != null && model != null && held < model) {
-      el.innerHTML = `<strong>The account does not hold the model's book.</strong>${holds} <span class="muted">Checked ${when(b.checked)}.</span>`;
-      el.hidden = false;
     }
   });
 }
