@@ -1779,10 +1779,11 @@ int main(int argc, char** argv) {
   if (std::getenv("X_PROFILE"))
     std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs, the market's states %.2fs\n",
                  prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check, prof.regime);
-  const auto stopPrice = [&](std::size_t i) {
+  // fresh: a new buy's stop (the account does not hold the share), never the backtest position's trailed one.
+  const auto stopPrice = [&](std::size_t i, bool fresh = false) {
     if (!stops) return kNaN;
     const auto b = book.find(i);
-    if (b != book.end()) return b->second.sar;
+    if (b != book.end() && !fresh) return b->second.sar;
     if (vstop) return d.Cf[L * N + i] * (1 - 1.5 * vDist(L, i));
     if (psarVol) return d.Cf[L * N + i] * (1 - vDist(L, i));  // the volatility-adjusted SAR's start (the bridge: under the fill)  // the catastrophic stop, from the last close (the bridge: under the fill)
     if (psar) {
@@ -1827,7 +1828,7 @@ int main(int argc, char** argv) {
   if (stops)
     std::stable_sort(final.begin(), final.end(), [&](const Order& a, const Order& b) {
       const auto perStop = [&](const Order& x) {
-        const double dist = std::max(0.005, 1 - stopPrice(x.i) / x.close), fill = std::isfinite(x.fill) ? x.fill : 1.0;
+        const double dist = std::max(0.005, 1 - stopPrice(x.i, !x.held) / x.close), fill = std::isfinite(x.fill) ? x.fill : 1.0;
         return std::isfinite(dist) ? fill * x.net / dist : -1e300;
       };
       return perStop(a) > perStop(b);
@@ -2056,7 +2057,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
-        << ",\"stop\":" << (stops ? jnum(stopPrice(x.i) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
+        << ",\"stop\":" << (stops ? jnum(stopPrice(x.i, !x.held) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
         << ",\"rebuyAt\":" << (stops && (rebuy >= 0 || rbStop) ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
         << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false")
         << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"gross\":" << jnum(x.gross)
@@ -2104,7 +2105,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
+        << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i, !x.held)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
