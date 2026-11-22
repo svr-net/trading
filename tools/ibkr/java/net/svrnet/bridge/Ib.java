@@ -66,13 +66,18 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     private final Map<Integer, Req> reqs = new ConcurrentHashMap<>();
     private final Map<Integer, Live> orders = new ConcurrentHashMap<>();
     private final Map<String, double[]> commissions = new ConcurrentHashMap<>();  // execId: commission, realised profit
-    private final Map<Integer, Map<Integer, Double>> quotes = new ConcurrentHashMap<>();
+    private final Map<Integer, Map<Integer, Double>> quotes = new ConcurrentHashMap<>();  // a stream's fields by IBKR's tick type
+    private final Map<Integer, Integer> dataTypes = new ConcurrentHashMap<>();  // a stream's market data type (1 real time, 3 delayed, ...)
+    private volatile CountDownLatch timeReq;
+    private volatile long serverTime;
+    private volatile List<String> accounts = List.of();
     private final CountDownLatch ready = new CountDownLatch(1);
     private final List<String> notes = new ArrayList<>();
     private volatile Req openReq, positionsReq, completedReq, portfolioReq;
     private volatile Req ruleReq;
     private volatile int ruleId = -1;
     private volatile int nextId = -1;
+    volatile String barsError = "";  // the last bars request's IBKR error (code: message), for the bars fetch's summary
     private volatile String account = "";
 
     /** Connects, retrying: a client id still held (a process ending, a gateway restarting) is often free again within a minute. */
@@ -129,6 +134,7 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     @Override
     public void close() {
         if (client.isConnected()) client.eDisconnect();
+        signal.issueSignal();  // the reader's thread wakes, sees the connection closed and ends
     }
 
     // --- requests
@@ -163,6 +169,7 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         c.secType("STK");
         if (s.exchange() != null && !s.exchange().isEmpty()) c.exchange(s.exchange());
         if (s.currency() != null && !s.currency().isEmpty() && s.conId() == 0) c.currency(s.currency());
+        if (s.primaryExchange() != null && !s.primaryExchange().isEmpty() && s.conId() == 0) c.primaryExch(s.primaryExchange());
         return c;
     }
 
@@ -171,11 +178,15 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     }
 
     List<ContractDetails> details(Share s) {
+        return details(s, REQUEST_TIMEOUT);
+    }
+
+    List<ContractDetails> details(Share s, int seconds) {
         int id = reqIds.incrementAndGet();
         Req r = req(id);
         client.reqContractDetails(id, contract(s));
         List<ContractDetails> out = new ArrayList<>();
-        for (Object o : answer(id, r, REQUEST_TIMEOUT, "contract details")) out.add((ContractDetails) o);
+        for (Object o : answer(id, r, seconds, "contract details")) out.add((ContractDetails) o);
         return out;
     }
 
@@ -254,53 +265,95 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         try {
             List<Bar> out = new ArrayList<>();
             for (Object o : answer(id, r, seconds, "daily bars")) out.add((Bar) o);
+            synchronized (r) {
+                barsError = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+            }
             return out;
         } catch (RuntimeException e) {
             client.cancelHistoricalData(id);
+            barsError = "exception: " + e.getMessage();
             return List.of();
         }
     }
 
     /** The free delayed quote (frozen when the market is shut): its fields by name, after up to `seconds`, once any of `want` has come. */
     Map<String, Double> quote(Share s, double seconds, String... want) {
-        int id = reqIds.incrementAndGet();
-        Map<Integer, Double> q = new ConcurrentHashMap<>();
-        quotes.put(id, q);
-        client.reqMarketDataType(4);
-        client.reqMktData(id, contract(s), "", false, false, null);
+        int id = stream(s, "", 4);
         try {
             for (int i = 0; i < seconds * 2; i++) {
                 sleep(0.5);
-                Map<String, Double> named = named(q);
+                Map<String, Double> named = fields(id);
                 boolean any = false;
                 for (String w : want) any |= named.containsKey(w);
                 if (any) {
                     sleep(1.0);  // the rest of the quote's fields
-                    return named(q);
+                    return fields(id);
                 }
             }
-            return named(q);
+            return fields(id);
         } finally {
-            client.cancelMktData(id);
-            quotes.remove(id);
+            unstream(id);
         }
     }
 
-    private static Map<String, Double> named(Map<Integer, Double> q) {
+    /** Streams the share's market data (`generic`: IBKR's generic ticks, 225 the auction's; `type`: 1 real time, 3 delayed where not subscribed, 4 delayed frozen). */
+    int stream(Share s, String generic, int type) {
+        int id = reqIds.incrementAndGet();
+        quotes.put(id, new ConcurrentHashMap<>());
+        client.reqMarketDataType(type);
+        client.reqMktData(id, contract(s), generic, false, false, null);
+        return id;
+    }
+
+    void unstream(int id) {
+        client.cancelMktData(id);
+        quotes.remove(id);
+        dataTypes.remove(id);
+    }
+
+    /** A stream's latest fields by name (bid, ask, last, high, low, close, open, volume, bidSize, askSize, auctionPrice, auctionVolume, auctionImbalance). */
+    Map<String, Double> fields(int id) {
+        Map<Integer, Double> q = quotes.getOrDefault(id, Map.of());
         Map<String, Double> m = new LinkedHashMap<>();
         for (Map.Entry<Integer, Double> e : q.entrySet()) {
             String n = switch (e.getKey()) {
+                case 0, 69 -> "bidSize";
                 case 1, 66 -> "bid";
                 case 2, 67 -> "ask";
+                case 3, 70 -> "askSize";
                 case 4, 68 -> "last";
                 case 6, 72 -> "high";
                 case 7, 73 -> "low";
+                case 8, 74 -> "volume";
                 case 9, 75 -> "close";
+                case 14, 76 -> "open";
+                case 34 -> "auctionVolume";
+                case 35 -> "auctionPrice";
+                case 36 -> "auctionImbalance";
                 default -> null;
             };
-            if (n != null && Double.isFinite(e.getValue()) && e.getValue() > 0) m.put(n, e.getValue());
+            double v = e.getValue();
+            boolean price = n != null && !n.endsWith("Size") && !n.equals("volume") && !n.startsWith("auctionV") && !n.equals("auctionImbalance");
+            if (n != null && Double.isFinite(v) && Math.abs(v) < 1e300 && (price ? v > 0 : v > -1e300)) m.put(n, v);
         }
         return m;
+    }
+
+    /** A stream's market data type as IBKR said it (1 real time, 2 frozen, 3 delayed, 4 delayed frozen; 0 not said yet). */
+    int dataType(int id) {
+        return dataTypes.getOrDefault(id, 0);
+    }
+
+    /** IBKR's clock (its servers' time, seconds since 1970), or 0 when it does not answer within `seconds`. */
+    long serverTime(int seconds) {
+        CountDownLatch l = new CountDownLatch(1);
+        timeReq = l;
+        client.reqCurrentTime();
+        return await(l, seconds) ? serverTime : 0;
+    }
+
+    List<String> accounts() {
+        return accounts;
     }
 
     @Override
@@ -576,7 +629,29 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
 
     @Override
     public void managedAccounts(String list) {
-        if (list != null && !list.isBlank()) account = list.split(",")[0].trim();
+        if (list == null || list.isBlank()) return;
+        List<String> a = new ArrayList<>();
+        for (String x : list.split(",")) if (!x.isBlank()) a.add(x.trim());
+        accounts = a;
+        if (!a.isEmpty()) account = a.get(0);
+    }
+
+    @Override
+    public void currentTime(long time) {
+        serverTime = time;
+        CountDownLatch l = timeReq;
+        if (l != null) l.countDown();
+    }
+
+    @Override
+    public void tickSize(int tickerId, int field, Decimal size) {
+        Map<Integer, Double> q = quotes.get(tickerId);
+        if (q != null && size != null && size.isValid()) q.put(field, num(size));
+    }
+
+    @Override
+    public void marketDataType(int reqId, int type) {
+        if (quotes.containsKey(reqId)) dataTypes.put(reqId, type);
     }
 
     @Override
@@ -621,7 +696,7 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attrib) {
         Map<Integer, Double> q = quotes.get(tickerId);
-        if (q != null && price > 0) q.put(field, price);
+        if (q != null && (price > 0 || field == 36)) q.put(field, price);
     }
 
     @Override
@@ -753,8 +828,7 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
             r.done.countDown();
             return;
         }
-        if (quotes.containsKey(id)) return;
-        note(code + ": " + msg);
+        note(code + ": " + msg);  // the data's messages too (354 not subscribed, 10089, 10168, 101 too many lines): diag reports them
     }
 
     @Override

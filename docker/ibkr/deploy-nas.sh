@@ -1,7 +1,8 @@
 #!/bin/sh
 # Deploys the broker bridge on a NAS (e.g. Synology): clones svr-net/trading into a folder (default
 # /volume1/DEV/trading), or updates the clone, then gets the images GitHub built (nothing is built on
-# the NAS) and starts IB Gateway, the bridge and Caddy (docker/ibkr/setup-nas.sh), so the page
+# the NAS) and starts the one container (IB Gateway and the Java bridge: docker/ibkr/setup-nas.sh asks
+# the questions, docker/ibkr/ibkr-nas.sh starts it), so the page
 # (https://svr-net.github.io/trading/) can use it. Run again to update.
 #
 #   curl -fsSL https://raw.githubusercontent.com/svr-net/trading/main/docker/ibkr/deploy-nas.sh -o deploy-nas.sh

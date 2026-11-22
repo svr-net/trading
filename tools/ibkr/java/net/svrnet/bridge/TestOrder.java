@@ -174,6 +174,7 @@ final class TestOrder extends DefaultEWrapper {
             return out;
         } finally {
             client.eDisconnect();
+            signal.issueSignal();  // the reader's thread wakes, sees the connection closed and ends
         }
     }
 

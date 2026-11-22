@@ -1,7 +1,6 @@
 # One container for the NAS: IB Gateway logged in by IBC (the community image ghcr.io/gnzsnz/ib-gateway) and the
-# broker bridge beside it. The Java bridge (tools/ibkr/java: IBKR's official Java API, IBC's command server)
-# answers HTTPS and passes what it does not do yet to the Python bridge (tools/ibkr/bridge.py) inside the
-# container. It replaces the four containers of docker-compose.yml (ib-gateway, bridge, restarter, caddy).
+# broker bridge beside it, in Java (tools/ibkr/java: IBKR's official Java API, IBC's command server, HTTPS, the
+# automatic day). No Python. It replaced the four containers the setup had before (ib-gateway, bridge, restarter, caddy).
 # Built by GitHub (bridge-image.yml), never on the NAS; started by docker/ibkr/ibkr-nas.sh. No keys or
 # settings in the image: they come from the NAS's .env at run time.
 
@@ -14,6 +13,7 @@ RUN curl -fsSL -o /tmp/twsapi.sh "$TWSAPI_URL" \
  && sh /tmp/twsapi.sh -q -dir /opt/twsapi \
  && rm /tmp/twsapi.sh
 COPY tools/ibkr/java /src/bridge
+COPY tools/ibkr/java-test /src/check
 # IBKR's Java client: its sources (compiled here) or its jar, wherever the installer put them.
 RUN set -e; mkdir -p /build/classes; \
     d=$(find /opt/twsapi -type d -path '*/com/ib/client' 2>/dev/null | head -1); \
@@ -32,6 +32,11 @@ RUN set -e; mkdir -p /build/classes; \
     find /opt/twsapi -maxdepth 4 -iname 'license*' -type f | head -1 | xargs -r -I{} cp {} /build/classes/TWSAPI-LICENSE.txt; \
     javac --release 21 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java'); \
     jar --create --file /build/bridge.jar --main-class net.svrnet.bridge.Bridge -C /build/classes .
+# The bridge's checks on a stand-in IBKR (the hold book, the leftovers, the close, the report, the charts): the image is made only when they pass.
+RUN set -e; mkdir -p /build/check; \
+    javac --release 21 -encoding UTF-8 -cp /build/classes -d /build/check $(find /src/check -name '*.java'); \
+    java -cp /build/classes:/build/check net.svrnet.bridge.HoldsCheck; \
+    java -cp /build/classes:/build/check net.svrnet.bridge.StepsCheck
 
 # IBKR's Java client sources alone (GPL-3), exported by bridge-image.yml for developing the bridge against them.
 FROM scratch AS javaclient-src
@@ -42,9 +47,7 @@ FROM ghcr.io/gnzsnz/ib-gateway:stable
 
 USER root
 RUN apt-get update \
- && apt-get install --no-install-recommends --yes python3 python3-venv procps util-linux openssl \
- && python3 -m venv /opt/bridge \
- && /opt/bridge/bin/pip install --no-cache-dir ib_async tzdata \
+ && apt-get install --no-install-recommends --yes procps util-linux openssl \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data/history && chown -R 1000:1000 /data
 # IBC's command server on, inside the container only: the bridge restarts and reconnects IB Gateway through it.
@@ -58,7 +61,6 @@ RUN set -e; j=$(find / -xdev -path '*/jre/bin/java' -type f 2>/dev/null | head -
 
 WORKDIR /app
 COPY --from=java /build/bridge.jar /app/bridge.jar
-COPY tools/ibkr/ tools/ibkr/
 COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
 RUN chmod 755 /app/ibkr-start.sh
 

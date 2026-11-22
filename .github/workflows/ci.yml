@@ -26,20 +26,6 @@ jobs:
         run: |
           ofm ofm_scan test
           ofm ofm_strategy --list
-      - name: The orders through submit.py on a stand-in IBKR (tools/ibkr/test/levels.py)
-        run: python3 tools/ibkr/test/levels.py
-      - name: The daily-bars fetch gives way to the bridge's other steps (tools/ibkr/test/pause.py)
-        run: python3 tools/ibkr/test/pause.py
-      - name: The bridge's chart bars for the page (tools/ibkr/test/chart.py)
-        run: python3 tools/ibkr/test/chart.py
-
-  bridge-update:
-    # The restarter replacing the bridge with GitHub's newest image, on a stand-in NAS.
-    if: ${{ !inputs.site-only }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: sh tools/ibkr/test/update.sh
 
   site:
     runs-on: ubuntu-24.04

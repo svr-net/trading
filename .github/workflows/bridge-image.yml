@@ -1,21 +1,19 @@
-# The NAS's images, built here and never on the NAS: the broker bridge (tools/ibkr, stamped with its
-# commit) and Caddy with openssl (the Synology setup). Each is published twice: in GitHub's registry
-# (ghcr.io/svr-net/trading-bridge and trading-caddy, latest and the commit), and as one file per
-# processor in the repository's "nas-images" release (<name>-amd64.tar.gz, -arm64), which a NAS whose
-# Docker cannot reach the registry downloads over IPv4 and loads (docker/ibkr/setup-nas.sh). The
-# images hold only the code and Python's packages: no keys or settings (they stay in the NAS's .env).
+# The NAS's image, built here and never on the NAS: one container with IB Gateway, IBC and the Java bridge
+# (docker/ibkr/Dockerfile.ibkr, stamped with its commit; made only when the bridge's checks pass). Published
+# twice: in GitHub's registry (ghcr.io/svr-net/trading-ibkr, latest and the commit), and as one file per
+# processor in the repository's "nas-images" release (trading-ibkr-amd64.tar.gz, -arm64), which a NAS whose
+# Docker cannot reach the registry downloads over IPv4 and loads (docker/ibkr/ibkr-nas.sh). No keys or
+# settings in the image (they stay in the NAS's .env).
 name: Bridge image
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'tools/ibkr/**'
-      - 'docker/ibkr/Dockerfile.bridge'
-      - 'docker/ibkr/Dockerfile.caddy'
+      - 'tools/ibkr/java/**'
+      - 'tools/ibkr/java-test/**'
       - 'docker/ibkr/Dockerfile.ibkr'
       - 'docker/ibkr/ibkr-start.sh'
-      - 'tools/ibkr/java/**'
       - '.github/workflows/bridge-image.yml'
 permissions:
   contents: write   # the nas-images release
@@ -42,27 +40,6 @@ jobs:
           echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
           # Only main's images are "latest" (the NAS takes latest): a branch's build is tagged with its commit only.
           [ "$GITHUB_REF" = refs/heads/main ] && echo "main=1" >> "$GITHUB_OUTPUT" || echo "main=" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/ibkr/Dockerfile.bridge
-          platforms: linux/amd64,linux/arm64
-          build-args: VERSION=${{ steps.v.outputs.sha }}
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          push: true
-          tags: |
-            ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-bridge:latest' || '' }}
-            ghcr.io/svr-net/trading-bridge:${{ steps.v.outputs.sha }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: docker/ibkr
-          file: docker/ibkr/Dockerfile.caddy
-          platforms: linux/amd64,linux/arm64
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          push: true
-          tags: |
-            ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-caddy:latest' || '' }}
-            ghcr.io/svr-net/trading-caddy:${{ steps.v.outputs.sha }}
       # One container for the NAS (docker/ibkr/ibkr-nas.sh): IB Gateway, IBC and the bridge together.
       - uses: docker/build-push-action@v6
         with:
@@ -87,15 +64,16 @@ jobs:
           o='Origin: https://svr-net.github.io'
           for i in $(seq 1 45); do curl -skf -H "$o" https://127.0.0.1:18765/status -o status.json && break; sleep 2; done
           curl -skf -H "$o" -H 'X-Bridge-Key: k' https://127.0.0.1:18765/java -o java.json || true
+          curl -skf -H "$o" -H 'X-Bridge-Key: k' https://127.0.0.1:18765/diag -o diag.json || true
           docker logs ibkr-test 2>&1 | tail -30
-          echo "status (through the Java bridge): $(head -c 200 status.json)"; echo "java: $(cat java.json)"
-          jq -e '.bridge == true and .version == "${{ steps.v.outputs.sha }}"' status.json
+          echo "status: $(head -c 200 status.json)"; echo "java: $(cat java.json)"; echo "diag: $(jq -c '[.checks[] | {check, ok}]' diag.json)"
+          jq -e '.bridge == true and .java == true and .version == "${{ steps.v.outputs.sha }}"' status.json
+          jq -e '[.checks[].check] | index("IB Gateway port") != null' diag.json
           jq -e '.java == true and .version == "${{ steps.v.outputs.sha }}" and (.api | startswith("server version"))' java.json
           [ "$(curl -sk -o /dev/null -w '%{http_code}' -H "$o" https://127.0.0.1:18765/java)" = 401 ] || { echo "/java answered without the key"; exit 1; }
           docker exec ibkr-test pgrep -f ibcstart.sh >/dev/null || docker exec ibkr-test pgrep -f ibcalpha >/dev/null || { echo "IBC not running"; exit 1; }
-          for p in bridge.py bridge.jar; do
-            [ "$(docker exec ibkr-test sh -c "ps -o user= -p \$(pgrep -f $p | head -1)")" != root ] || { echo "$p runs as root"; exit 1; }
-          done
+          [ "$(docker exec ibkr-test sh -c 'ps -o user= -p $(pgrep -f bridge.jar | head -1)')" != root ] || { echo "the bridge runs as root"; exit 1; }
+          ! docker exec ibkr-test sh -c 'test -e /opt/bridge || test -e /app/tools' || { echo "the Python bridge is still in the image"; exit 1; }
           docker rm -f ibkr-test >/dev/null
       - name: IBKR's Java client sources (GPL-3), for developing the bridge against them
         run: |
@@ -111,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          for name in trading-bridge trading-caddy trading-ibkr; do
+          for name in trading-ibkr; do
             # Each processor's image by its own digest (pulling the tag a second time for another platform fails on
             # the newer runners: "unable to create manifests file: content digest not found", 17 Nov).
             ref="ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}"
@@ -131,7 +109,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          note="The NAS's images, built from ${{ steps.v.outputs.sha }} (docker/ibkr/setup-nas.sh downloads them when the registry does not answer)."
+          note="The NAS's images, built from ${{ steps.v.outputs.sha }} (docker/ibkr/ibkr-nas.sh downloads them when the registry does not answer)."
           gh release view nas-images >/dev/null 2>&1 || gh release create nas-images --title "NAS images" --notes "$note" --latest=false
           gh release edit nas-images --notes "$note"
           gh release upload nas-images out/*.tar.gz --clobber

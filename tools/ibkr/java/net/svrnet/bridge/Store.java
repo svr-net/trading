@@ -1,0 +1,107 @@
+package net.svrnet.bridge;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/** The private store (svr-net/eod) through GitHub's contents API with EOD_TOKEN, as bridge.py's store_get and store_put. */
+final class Store {
+    static final String TOKEN = Bridge.env("EOD_TOKEN", Bridge.env("EOD_READ_TOKEN", ""));
+    static final String BASE = "https://api.github.com/repos/svr-net/eod/contents/";
+
+    static HttpURLConnection open(String url, String accept, int seconds) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(20_000);
+        c.setReadTimeout(seconds * 1000);
+        c.setRequestProperty("Authorization", "Bearer " + TOKEN);
+        c.setRequestProperty("Accept", accept);
+        c.setRequestProperty("User-Agent", "ofm-bridge");
+        return c;
+    }
+
+    /** One file of the store, or null when it is not there. */
+    static byte[] get(String path) throws IOException {
+        HttpURLConnection c = open(BASE + path, "application/vnd.github.raw", 60);
+        int code = c.getResponseCode();
+        if (code == 404) return null;
+        if (code != 200) throw new IOException("GitHub answered " + code + " for " + path);
+        try (InputStream in = c.getInputStream()) {
+            return in.readAllBytes();
+        }
+    }
+
+    /**
+     * Writes one file to the store. A large file (IBKR's daily bars: 6-12 MB) takes minutes to upload from the NAS: up to 10 minutes, and a
+     * timeout or a conflict (the file changed meanwhile) is tried again with the file's newest sha (18 Nov).
+     */
+    static void put(String path, byte[] data, String message) throws IOException {
+        String content = Base64.getEncoder().encodeToString(data);
+        IOException last = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                String sha = null;
+                HttpURLConnection g = open(BASE + path, "application/vnd.github+json", 60);
+                int gc = g.getResponseCode();
+                if (gc == 200) {
+                    try (InputStream in = g.getInputStream()) {
+                        Object s = JsonParse.object(new String(in.readAllBytes(), StandardCharsets.UTF_8)).get("sha");
+                        sha = s == null ? null : s.toString();
+                    }
+                } else if (gc != 404) {
+                    throw new Http(gc);
+                }
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("message", message);
+                body.put("content", content);
+                if (sha != null) body.put("sha", sha);
+                HttpURLConnection p = open(BASE + path, "application/vnd.github+json", Math.max(60, 60 + content.length() / 25000));
+                p.setRequestMethod("PUT");
+                p.setDoOutput(true);
+                p.setRequestProperty("Content-Type", "application/json");
+                try (OutputStream o = p.getOutputStream()) {
+                    o.write(Json.write(body).getBytes(StandardCharsets.UTF_8));
+                }
+                int pc = p.getResponseCode();
+                if (pc == 200 || pc == 201) return;
+                throw new Http(pc);
+            } catch (Http e) {
+                if (!(e.code == 409 || e.code == 422 || e.code >= 500) || attempt == 2) throw e;
+                last = e;
+            } catch (IOException e) {
+                if (attempt == 2) throw e;
+                last = e;
+            }
+            Recordings.sleep(10 * (attempt + 1));
+        }
+        throw last;
+    }
+
+    /** Whether the token reads svr-net/eod and may write it: true, false (no push), or an error's note. */
+    static Object canPush() throws IOException {
+        HttpURLConnection c = open("https://api.github.com/repos/svr-net/eod", "application/vnd.github+json", 15);
+        int code = c.getResponseCode();
+        if (code != 200) throw new Http(code);
+        try (InputStream in = c.getInputStream()) {
+            Object perms = JsonParse.object(new String(in.readAllBytes(), StandardCharsets.UTF_8)).get("permissions");
+            return perms instanceof Map && Boolean.TRUE.equals(((Map<?, ?>) perms).get("push"));
+        }
+    }
+
+    static final class Http extends IOException {
+        final int code;
+
+        Http(int code) {
+            super("HTTP Error " + code);
+            this.code = code;
+        }
+    }
+
+    private Store() {
+    }
+}

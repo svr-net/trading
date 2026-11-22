@@ -1,16 +1,15 @@
 // The broker bridge in Java, beside IB Gateway in one container (docker/ibkr/Dockerfile.ibkr). It serves the
 // page and the Bridge monitor over HTTPS (the JDK's own server; the certificate reloaded when renewed), talks to
-// IB Gateway through IBKR's official Java API (com.ib.client, GPL-3) and to IBC through IBC's command server.
-// Being moved from Python endpoint by endpoint: the endpoints here are answered here, every other request is
-// passed unchanged to the Python bridge (tools/ibkr/bridge.py) on 127.0.0.1, so nothing stops working meanwhile.
+// IB Gateway through IBKR's official Java API (com.ib.client, GPL-3) and to IBC through IBC's command server, and
+// runs each automatic market's day (Auto: the multi-day book, the close, the report, the recordings, the watchdog).
 //
-// Here: GET /java (this bridge's version and the API's), GET /orders and GET /history (as bridge.py), POST /ibc {"command": RESTART | RECONNECTACCOUNT |
-// RECONNECTDATA} (IBC's own commands for IB Gateway), POST /test-order {"market": UK | EU | US | APAC | INDEX}
-// (does IBKR accept an order now? a 1-share limit buy at half the probe share's close, cancelled at once).
+// GET /status (no key), /diag, /history, /trades?market=, /orders?market=, /chart?market=&ticker=&days=, /bars.csv?market=, /java;
+// POST /place, /report, /close, /bars, /paths, /test-order {"market": UK | EU | US | APAC | INDEX}, /restart, /ibc {"command": RESTART |
+// RECONNECTACCOUNT | RECONNECTDATA}.
 //
-// Environment: BRIDGE_KEY, ALLOWED_ORIGIN, PORT (8765), TLS_P12 (the certificate as PKCS#12, password
-// TLS_P12_PASSWORD; without it plain HTTP on 127.0.0.1 only), PYTHON_BRIDGE (http://127.0.0.1:8766), IB_HOST,
-// IB_PORT (4002 paper), IBC_COMMAND_PORT (7462), BRIDGE_VERSION.
+// Environment: BRIDGE_KEY, ALLOWED_ORIGIN, PORT (8765), BIND, TLS_P12 (the certificate as PKCS#12, password TLS_P12_PASSWORD; without it
+// plain HTTP on 127.0.0.1 only), IB_HOST, IB_PORT (4002 paper), IBC_COMMAND_PORT (7462), EOD_TOKEN, CAPITAL, AUTO_MARKETS, HISTORY_DIR,
+// ORDERS_DIR, BRIDGE_VERSION, and the schedule's (Auto).
 package net.svrnet.bridge;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -37,7 +36,6 @@ import java.util.concurrent.Executors;
 public final class Bridge {
     static final String KEY = env("BRIDGE_KEY", "");
     static final String ORIGIN = env("ALLOWED_ORIGIN", "https://svr-net.github.io");
-    static final String PYTHON = env("PYTHON_BRIDGE", "http://127.0.0.1:8766");
     static final String VERSION = env("BRIDGE_VERSION", "unknown");
 
     static String env(String name, String fallback) {
@@ -46,8 +44,6 @@ public final class Bridge {
     }
 
     public static void main(String[] args) throws Exception {
-        // The page's Origin is passed on to the Python bridge (its CORS answer): Java drops it unless allowed.
-        System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
         if (KEY.isEmpty()) {
             System.err.println("Set BRIDGE_KEY.");
             System.exit(2);
@@ -66,26 +62,28 @@ public final class Bridge {
         server.createContext("/", Bridge::handle);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.println("java bridge " + VERSION + " on " + (p12.isEmpty() ? "http://127.0.0.1" : "https://*") + ":" + port
-                + "; Python bridge at " + PYTHON + "; IBKR API " + Api.version());
+        Auto.start();
+        System.out.println("bridge " + VERSION + " on " + (p12.isEmpty() ? "http://127.0.0.1" : "https://*") + ":" + port + " for " + ORIGIN
+                + "; IB Gateway at " + Auto.IB_HOST + ":" + Auto.IB_PORT + "; automatic: " + (Auto.AUTO.isEmpty() ? "off" : String.join(",", Auto.AUTO))
+                + "; IBKR API " + Api.version());
     }
 
     static void handle(HttpExchange x) throws IOException {
         try {
             String path = x.getRequestURI().getPath();
             String method = x.getRequestMethod();
-            if (method.equals("GET") && path.equals("/java")) {
-                if (allowed(x)) reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
-            } else if (method.equals("GET") && path.equals("/history")) {
-                if (allowed(x)) reply(x, 200, Json.obj("days", Book.history()));
-            } else if (method.equals("GET") && path.equals("/orders")) {
-                if (allowed(x)) orders(x);
-            } else if (method.equals("POST") && path.equals("/ibc")) {
-                if (allowed(x)) ibc(x);
-            } else if (method.equals("POST") && path.equals("/test-order")) {
-                if (allowed(x)) testOrder(x);
+            if (method.equals("OPTIONS")) {
+                preflight(x);
+            } else if (method.equals("GET") && path.equals("/status")) {
+                reply(x, 200, Json.write(Auto.status()));
+            } else if (!allowed(x)) {
+                return;
+            } else if (method.equals("GET")) {
+                get(x, path);
+            } else if (method.equals("POST")) {
+                post(x, path);
             } else {
-                proxy(x);
+                reply(x, 404, Json.obj("error", "not found"));
             }
         } catch (Exception e) {
             try {
@@ -131,6 +129,187 @@ public final class Bridge {
         }
     }
 
+    static void preflight(HttpExchange x) throws IOException {  // the browser's preflight (with Chrome's private-network permission)
+        if (ORIGIN.equals(x.getRequestHeaders().getFirst("Origin"))) {
+            x.getResponseHeaders().set("Access-Control-Allow-Origin", ORIGIN);
+            x.getResponseHeaders().set("Vary", "Origin");
+        }
+        x.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST");
+        x.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Key");
+        x.getResponseHeaders().set("Access-Control-Allow-Private-Network", "true");
+        x.sendResponseHeaders(204, -1);
+    }
+
+    static void replyBytes(HttpExchange x, int code, byte[] body, String type) throws IOException {
+        if (ORIGIN.equals(x.getRequestHeaders().getFirst("Origin"))) {
+            x.getResponseHeaders().set("Access-Control-Allow-Origin", ORIGIN);
+            x.getResponseHeaders().set("Vary", "Origin");
+        }
+        x.getResponseHeaders().set("Content-Type", type);
+        x.sendResponseHeaders(code, body.length);
+        try (OutputStream o = x.getResponseBody()) {
+            o.write(body);
+        }
+    }
+
+    static Map<String, String> query(HttpExchange x) {
+        Map<String, String> q = new java.util.LinkedHashMap<>();
+        String raw = x.getRequestURI().getRawQuery();
+        for (String part : raw == null ? new String[0] : raw.split("&")) {
+            int i = part.indexOf('=');
+            if (i <= 0) continue;
+            q.putIfAbsent(java.net.URLDecoder.decode(part.substring(0, i), StandardCharsets.UTF_8), java.net.URLDecoder.decode(part.substring(i + 1), StandardCharsets.UTF_8));
+        }
+        return q;
+    }
+
+    /** The request's market, or null after answering 400. */
+    static String market(HttpExchange x, Object value) throws IOException {
+        String m = value == null ? "" : value.toString().toUpperCase(Locale.ROOT);
+        if (!Book.MARKETS.contains(m)) {
+            reply(x, 400, Json.obj("error", "market must be UK, EU, US or APAC"));
+            return null;
+        }
+        return m;
+    }
+
+    static void get(HttpExchange x, String path) throws IOException {
+        Map<String, String> q = query(x);
+        switch (path) {
+            case "/java" -> reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
+            case "/diag" -> reply(x, 200, Json.obj("checks", Auto.diag()));
+            case "/history" -> reply(x, 200, Json.obj("days", Book.history()));
+            case "/orders" -> orders(x);
+            case "/trades" -> {  // the live state of today's trades and the model's holdings, from the background's latest read
+                String m = market(x, q.get("market"));
+                if (m == null) return;
+                Object[] hit = Auto.TRADES.get(m);
+                if (hit == null || Auto.ago((long) hit[0]) >= 55) Auto.readOnce("trades-" + m, () -> Auto.readTrades(m));
+                if (hit == null) {
+                    reply(x, 202, Json.obj("error", Auto.TRADES_NOTE.getOrDefault(m, "being read from IBKR: ask again in a minute"), "shares", List.of()));
+                    return;
+                }
+                @SuppressWarnings("unchecked") Map<String, Object> out = new java.util.LinkedHashMap<>((Map<String, Object>) hit[1]);
+                out.put("age", Auto.ago((long) hit[0]));
+                out.put("note", Auto.TRADES_NOTE.getOrDefault(m, ""));
+                reply(x, 200, Json.write(out));
+            }
+            case "/bars.csv" -> {  // the market's daily bars from IBKR (the kept file), for the page's Lab (keyed: prices)
+                String m = market(x, q.get("market"));
+                if (m == null) return;
+                if (!Charts.ensureKept(m)) {
+                    reply(x, 404, Json.obj("error", "no IBKR bars kept for " + m + " yet: they come with the next bars fetch"));
+                    return;
+                }
+                replyBytes(x, 200, Files.readAllBytes(Charts.kept(m)), "text/csv");
+            }
+            case "/chart" -> {  // a share's daily bars, for the page's chart of an order (keyed: prices)
+                String m = market(x, q.get("market"));
+                if (m == null) return;
+                String t = q.getOrDefault("ticker", "").strip();
+                int days;
+                try {
+                    days = q.getOrDefault("days", "").isEmpty() ? 120 : Integer.parseInt(q.get("days"));
+                } catch (NumberFormatException e) {
+                    days = 120;
+                }
+                List<Map<String, Object>> bars = t.isEmpty() ? List.of() : Charts.bars(m, t, days);
+                if (bars.isEmpty()) {
+                    reply(x, 404, Json.obj("error", "no daily bars for " + (t.isEmpty() ? "?" : t) + " (" + m + ") from IBKR or the store"));
+                    return;
+                }
+                reply(x, 200, Json.obj("market", m, "ticker", t, "bars", bars, "profile", Charts.profile(m, t)));
+            }
+            default -> reply(x, 404, Json.obj("error", "not found"));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static void post(HttpExchange x, String path) throws IOException {
+        String raw = body(x);
+        Map<String, Object> body;
+        try {
+            body = raw.isBlank() ? Map.of() : JsonParse.object(raw);
+        } catch (RuntimeException e) {
+            reply(x, 400, Json.obj("error", "bad JSON"));
+            return;
+        }
+        if (path.equals("/ibc")) {
+            ibc(x, String.valueOf(body.getOrDefault("command", "")));
+            return;
+        }
+        if (path.equals("/restart")) {  // IB Gateway restarted on demand (the Bridge monitor's button)
+            String note = Auto.restartGateway();
+            boolean ok = !note.startsWith("no IB Gateway");
+            Auto.log("-", "gateway restart", ok, note);
+            reply(x, 200, Json.obj("ok", ok, "log", note));
+            return;
+        }
+        String m = market(x, body.get("market"));
+        if (m == null) return;
+        boolean dry = Boolean.TRUE.equals(body.get("dryRun"));
+        switch (path) {
+            case "/place" -> {
+                if (dry) {  // what the book would place: nothing is sent to IBKR
+                    Map<String, Object> book;
+                    try {
+                        book = Book.orders(m);
+                    } catch (IOException e) {
+                        reply(x, 502, Json.obj("error", "orders not available: " + e.getMessage()));
+                        return;
+                    }
+                    StringBuilder log = new StringBuilder();
+                    int n = 0;
+                    for (Object o0 : (List<Object>) book.getOrDefault("orders", List.of())) {
+                        if (!(o0 instanceof Map)) continue;
+                        Map<String, Object> o = (Map<String, Object>) o0;
+                        n++;
+                        log.append("  ").append(o.get("ticker")).append(": buy ").append(o.get("quantity")).append(" at ")
+                                .append(o.get("limit") instanceof Number ? Holds.g(((Number) o.get("limit")).doubleValue()) : "?")
+                                .append("open".equals(o.get("entry")) ? " (the opening auction only)" : "").append('\n');
+                    }
+                    log.append(m).append(" dry run: ").append(n).append(" orders of the ").append("hold".equals(book.get("book")) ? "multi-day book" : "book")
+                            .append(" from ").append(book.get("asOf")).append("; nothing sent to IBKR");
+                    reply(x, 200, Json.obj("ok", true, "log", log.toString()));
+                } else if (!Auto.liveIsHold(m)) {
+                    reply(x, 409, Json.obj("ok", false, "log", m + ": the orders are not a multi-day book: the bridge places only multi-day books"));
+                } else if (Auto.running(m, "hold-place")) {
+                    reply(x, 409, Json.obj("ok", false, "log", m + ": the book is being placed already"));
+                } else {
+                    Auto.markDone(m, "place");
+                    Auto.job(m, "hold-place", Auto::placeHolds, true);
+                    reply(x, 202, Json.obj("ok", true, "log", m + ": placing the multi-day book again (a minute or two; buys already working are kept). Diagnostics shows the result."));
+                }
+            }
+            case "/bars" -> {  // in the background: it takes over an hour
+                if (Auto.BARS_RUNNING.contains(m)) {
+                    reply(x, 409, Json.obj("ok", false, "log", m + " bars: already running"));
+                    return;
+                }
+                Auto.inBackground(m, "bars", mk -> Auto.fetchBars(mk, false));
+                reply(x, 202, Json.obj("ok", true, "log", m + ": fetching the pool's daily bars from IBKR (about an hour); the status shows when done"));
+            }
+            case "/paths" -> {
+                if (Auto.PATHS_RUNNING.contains(m)) {
+                    reply(x, 409, Json.obj("ok", false, "log", m + " paths: already recording"));
+                    return;
+                }
+                Auto.inBackground(m, "paths", Auto::recordPaths);
+                reply(x, 202, Json.obj("ok", true, "log", m + ": recording the candidates' prices until 20 minutes after the close"));
+            }
+            case "/test-order" -> testOrder(x, m);
+            case "/report" -> {
+                Auto.Done d = Auto.report(m);
+                reply(x, d.ok() ? 200 : 500, Json.obj("ok", d.ok(), "log", d.summary()));
+            }
+            case "/close" -> {
+                Auto.Done d = Auto.closeMarket(m);
+                reply(x, d.ok() ? 200 : 500, Json.obj("ok", d.ok(), "log", d.summary()));
+            }
+            default -> reply(x, 404, Json.obj("error", "not found"));
+        }
+    }
+
     static String body(HttpExchange x) throws IOException {
         try (InputStream in = x.getRequestBody()) {
             return new String(in.readNBytes(1 << 16), StandardCharsets.UTF_8);
@@ -150,6 +329,7 @@ public final class Bridge {
         }
         Map<String, Object> book;
         try {
+            Auto.fetchOrders(market);  // the model's own result for its latest day kept (record_check)
             book = Book.orders(market);
         } catch (Exception e) {
             reply(x, 502, Json.obj("error", "orders not available: " + e.getMessage()));
@@ -161,100 +341,28 @@ public final class Bridge {
     // --- IBC's command server: IB Gateway restarted or reconnected by IBC itself
     static final List<String> IBC_COMMANDS = List.of("RESTART", "RECONNECTACCOUNT", "RECONNECTDATA");
 
-    static void ibc(HttpExchange x) throws IOException {
-        String command = Json.field(body(x), "command").toUpperCase(Locale.ROOT);
+    static void ibc(HttpExchange x, String cmd) throws IOException {
+        String command = cmd.toUpperCase(Locale.ROOT);
         if (!IBC_COMMANDS.contains(command)) {
             reply(x, 400, Json.obj("error", "command must be one of " + IBC_COMMANDS));
             return;
         }
         String answer = Ibc.send(command);
         boolean ok = answer.startsWith("OK");
-        Python.action("-", "ibc " + command.toLowerCase(Locale.ROOT), ok, "IBC: " + answer);
+        Auto.log("-", "ibc " + command.toLowerCase(Locale.ROOT), ok, "IBC: " + answer);
         reply(x, ok ? 200 : 502, Json.obj("ok", ok, "log", "IBC: " + answer));
     }
 
     // --- The test order (IBKR's official Java API)
-    static void testOrder(HttpExchange x) throws IOException {
-        String market = Json.field(body(x), "market").toUpperCase(Locale.ROOT);
-        if (!TestOrder.PROBE.containsKey(market)) {
-            reply(x, 400, Json.obj("error", "market must be one of " + TestOrder.PROBE.keySet()));
-            return;
-        }
+    @SuppressWarnings("unchecked")
+    static void testOrder(HttpExchange x, String market) throws IOException {
         Map<String, Object> r = new TestOrder(market).run();
         boolean ok = Boolean.TRUE.equals(r.get("accepted"));
         String msgs = String.join(" | ", (List<String>) r.getOrDefault("messages", List.of()));
-        String summary = ok ? "test order accepted by IBKR (" + r.get("probe") + ", cancelled: " + r.get("cancelled") + "; Java)"
+        String summary = ok ? "test order accepted by IBKR (" + r.get("probe") + ", cancelled: " + r.get("cancelled") + ")"
                 : "test order refused: " + r.getOrDefault("fate", "") + " [IBKR: " + (msgs.isEmpty() ? r.getOrDefault("error", "") : msgs) + "]";
-        Python.action(market, "test-order", ok, summary);
+        Auto.log(market, "test-order", ok, summary);
         reply(x, 200, Json.obj("ok", ok, "result", r, "log", summary));
-    }
-
-    // --- Everything else: passed unchanged to the Python bridge (until it is moved here)
-    static void proxy(HttpExchange x) throws IOException {
-        URL url = new URL(PYTHON + x.getRequestURI().toString());
-        HttpURLConnection c = (HttpURLConnection) url.openConnection();
-        c.setRequestMethod(x.getRequestMethod());
-        c.setConnectTimeout(5000);
-        c.setReadTimeout(900_000);  // a placing can take minutes
-        c.setInstanceFollowRedirects(false);
-        for (String h : List.of("Origin", "X-Bridge-Key", "Content-Type", "Access-Control-Request-Method",
-                "Access-Control-Request-Headers", "Access-Control-Request-Private-Network")) {
-            String v = x.getRequestHeaders().getFirst(h);
-            if (v != null) c.setRequestProperty(h, v);
-        }
-        byte[] in;
-        try (InputStream s = x.getRequestBody()) {
-            in = s.readAllBytes();
-        }
-        if (in.length > 0 || x.getRequestMethod().equals("POST")) {
-            c.setDoOutput(true);
-            try (OutputStream o = c.getOutputStream()) {
-                o.write(in);
-            }
-        }
-        int code;
-        try {
-            code = c.getResponseCode();
-        } catch (IOException e) {
-            reply(x, 502, Json.obj("error", "the Python bridge does not answer: " + e.getMessage()));
-            return;
-        }
-        for (Map.Entry<String, List<String>> h : c.getHeaderFields().entrySet()) {
-            String k = h.getKey();
-            if (k == null) continue;
-            String lk = k.toLowerCase(Locale.ROOT);
-            if (lk.equals("content-length") || lk.equals("transfer-encoding") || lk.equals("connection") || lk.equals("server") || lk.equals("date")) continue;
-            x.getResponseHeaders().put(k, h.getValue());
-        }
-        InputStream s = code >= 400 ? c.getErrorStream() : c.getInputStream();
-        byte[] out = s == null ? new byte[0] : s.readAllBytes();
-        x.sendResponseHeaders(code, out.length == 0 ? -1 : out.length);
-        if (out.length > 0) {
-            try (OutputStream o = x.getResponseBody()) {
-                o.write(out);
-            }
-        }
-    }
-
-    /** The Python bridge's record of the latest automatic actions (/diag, the monitor), kept until it moves here. */
-    static final class Python {
-        static void action(String market, String action, boolean ok, String summary) {
-            try {
-                HttpURLConnection c = (HttpURLConnection) new URL(PYTHON + "/internal/action").openConnection();
-                c.setRequestMethod("POST");
-                c.setConnectTimeout(3000);
-                c.setReadTimeout(5000);
-                c.setDoOutput(true);
-                c.setRequestProperty("X-Bridge-Key", KEY);
-                c.setRequestProperty("Content-Type", "application/json");
-                try (OutputStream o = c.getOutputStream()) {
-                    o.write(Json.obj("market", market, "action", action, "ok", ok, "summary", summary).getBytes(StandardCharsets.UTF_8));
-                }
-                c.getResponseCode();
-            } catch (IOException e) {
-                System.err.println("java bridge: the action not recorded in the Python bridge: " + e.getMessage());
-            }
-        }
     }
 
     static byte[] readAll(InputStream in) throws IOException {

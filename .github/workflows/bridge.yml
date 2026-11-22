@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr docker/ibkr/Dockerfile.bridge docker/ibkr/Dockerfile.ibkr docker/ibkr/ibkr-start.sh) node tools/ibkr/monitor.mjs | tee monitor.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr/java tools/ibkr/java-test docker/ibkr/Dockerfile.ibkr docker/ibkr/ibkr-start.sh .github/workflows/bridge-image.yml) node tools/ibkr/monitor.mjs | tee monitor.txt | tee -a "$GITHUB_STEP_SUMMARY"
       # The broker's state on the page (web/data/broker.json: whether IBKR refuses the orders, since when, and
       # how many shares each market's account holds; no prices, amounts or account numbers). Committed only
       # when it changed (its check time aside), so the half-hourly runs do not fill main's history.

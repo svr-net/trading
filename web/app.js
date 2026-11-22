@@ -587,7 +587,7 @@ function sideBySide(m) {
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => showMarket(b.dataset.market));
 showMarket(market);
 
-// Your broker: a bridge on this computer (tools/ibkr/bridge.py, docker/ibkr) next to IB Gateway. The
+// Your broker: a bridge on this computer (tools/ibkr/java, docker/ibkr) next to IB Gateway. The
 // panel appears only when it answers; the orders and their prices come from it, never from the page.
 // The bridge's address: on this computer by default, or a server's HTTPS address (set in the panel, or
 // once with ?bridge=https://...), kept in this browser with the key.

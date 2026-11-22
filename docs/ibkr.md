@@ -24,149 +24,78 @@ which the UK backtest depends on).
 7. **Costs to expect** (the backtest assumes none): IBKR's commission on each order, and UK
    stamp duty of 0.5% on buying UK shares (not on AIM shares).
 
-## 2. Connect the script
+## 2. The bridge: one container on a NAS
 
-The orders are placed through **IB Gateway**, a small program that stays logged in (IBKR requires
-an interactive login with two-factor approval, so it runs on your own computer or a small server,
-not on GitHub).
-
-1. Install IB Gateway (stable) from IBKR's website and log in with the **paper** username.
-2. Configure, API, Settings: tick *Enable ActiveX and Socket Clients*, untick *Read-Only API*,
-   socket port **4002** (paper; 4001 is live), and allow connections from 127.0.0.1 only.
-3. On the same machine: Python 3.10+ and `pip install ib_async`.
-4. The orders file: the daily job writes `orders/UK.json` and `orders/US.json` into the private
-   repository svr-net/eod after each close (prices stay private under EODData's licence). Create a
-   the same GitHub token as the daily job's `EOD_TOKEN` secret (repository svr-net/eod, Contents read
-   and write) and fetch it with
-   ```
-   curl -fsS -H "Authorization: Bearer $EOD_TOKEN" \
-     https://raw.githubusercontent.com/svr-net/eod/main/orders/UK.json -o UK.json
-   ```
-
-## 2b. Or: IB Gateway in Docker, with buttons on the page
-
-`docker/ibkr` runs IB Gateway (paper, logged in automatically by the community image
-`ghcr.io/gnzsnz/ib-gateway`) and a small bridge (`tools/ibkr/bridge.py`) on your own computer. The
-page then shows a **Your broker** panel (only on that computer): the day's orders with their prices
-and quantities, and buttons to check (dry run), place them and close at the close.
-
-1. Install Docker Desktop (Windows, Mac) or Docker Engine (Linux).
-2. In the repository: `cd docker/ibkr && cp .env.example .env`, then fill in `.env`: the paper
-   account's username and password, a long random `BRIDGE_KEY`, and the GitHub token `EOD_TOKEN`
-   `EOD_TOKEN` (step 2.4).
-3. `docker compose up -d --build`. The gateway takes a minute or two to log in; `docker compose logs
-   -f ib-gateway` shows it (with `VNC_SERVER_PASSWORD` set, a VNC viewer at 127.0.0.1:5900 shows its
-   screen).
-4. Open https://svr-net.github.io/trading/ on the same computer: the **Your broker** panel appears
-   under the backtest. Enter the `BRIDGE_KEY` once (kept in this browser), switch to UK or US, check
-   with **Check (dry run)**, then **Place orders** before the open and **Close at the close** before
-   the close.
-
-Both containers listen on 127.0.0.1 only; the bridge answers only the page's address and only with the
-key. A paper account normally logs in without two-factor approval; a live account needs the approval
-on your phone at each login (the image waits for it and restarts if it times out).
-
-## 2c. Or: on a server (VPS), always on, with HTTPS
-
-The same containers on a small Linux server, with **Caddy** in front of the bridge for HTTPS (a free
-Let's Encrypt certificate, obtained and renewed automatically). Only Caddy is public; IB Gateway and
-the bridge stay private on the server.
-
-1. **A server**: any small Linux VPS (1 vCPU, 2 GB memory is enough; about GBP 4-6 a month at
-   Hetzner, DigitalOcean, Vultr or AWS Lightsail), Ubuntu 24.04. A location in London or Western
-   Europe keeps it near both IBKR and the LSE.
-2. **A name for it**: an `A` record of a domain you own (e.g. `bridge.example.com`) pointing to the
-   server's IP address, or a free subdomain from DuckDNS (`yourname.duckdns.org`).
-3. **On the server** (as root or with sudo):
-   ```
-   apt update && apt install -y docker.io docker-compose-v2 git ufw
-   ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
-   git clone https://github.com/svr-net/trading.git && cd trading/docker/ibkr
-   cp .env.example .env && nano .env      # paper login, BRIDGE_KEY, EOD_TOKEN, BRIDGE_DOMAIN
-   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
-   ```
-   `docker compose logs -f caddy` shows the certificate being obtained (a minute after the DNS
-   record is live); `docker compose logs -f ib-gateway` shows the login.
-4. **The page**: open `https://svr-net.github.io/trading/?bridge=https://bridge.example.com` once
-   (or *Broker bridge…* at the bottom of the page, then the address), enter the `BRIDGE_KEY`, Save.
-   The browser keeps both; the panel then appears whenever the page is opened there.
-
-Security: the bridge answers only the page's address and only with the key (a wrong key costs a
-second, so a long random key cannot be guessed); use a key of 32 or more random characters
-(`openssl rand -hex 24`). Keep the server updated (`apt upgrade`), and log in with an SSH key rather
-than a password. With a **live** account IB Gateway needs the approval on your phone at each login
-(at least weekly); start with the paper account.
-
-## 2d. Or: on a NAS (setup script)
+The orders are placed through **IB Gateway**, which stays logged in (IBKR requires an interactive
+login, so it runs on your own NAS or Linux box, not on GitHub). One container holds it all
+(`ghcr.io/svr-net/trading-ibkr`, `docker/ibkr/Dockerfile.ibkr`): IB Gateway logged in by IBC (the
+community image `ghcr.io/gnzsnz/ib-gateway`) and the broker bridge beside it, in Java
+(`tools/ibkr/java`): IBKR's official Java API, IBC's command server, HTTPS for the page, and the
+automatic day. There is no Python in it.
 
 On a NAS with Docker (Synology Container Manager, QNAP Container Station, Unraid, TrueNAS, or any
 Linux with Docker; x86-64 or 64-bit ARM), over SSH:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/svr-net/trading/main/docker/ibkr/setup-nas.sh -o setup-nas.sh
-sh setup-nas.sh            # sudo sh setup-nas.sh if this user may not use Docker
+curl -fsSL https://raw.githubusercontent.com/svr-net/trading/main/docker/ibkr/deploy-nas.sh -o deploy-nas.sh
+sudo sh deploy-nas.sh
 ```
 
-It asks for the paper login, the GitHub token `EOD_TOKEN`, the amount a trade and how to reach the
-bridge over HTTPS, makes a key, writes `ibkr-bridge/` (docker-compose.yml, Caddyfile, .env readable
-only by you) and starts IB Gateway, the bridge and Caddy. The page cannot call a plain http address on
-your network, so the bridge is always behind HTTPS:
+It clones the repository (default `/volume1/DEV/trading`), asks for the paper login, the GitHub token
+`EOD_TOKEN` (the daily job's: repository svr-net/eod, Contents read and write), the amount a trade,
+the automatic markets and how to reach the bridge over HTTPS, makes a key, keeps the answers in
+`docker/ibkr/nas/.env` (readable only by you; delete it to answer again) and starts the container
+(`docker/ibkr/ibkr-nas.sh`). The page cannot call a plain http address on your network, so the
+bridge always answers HTTPS:
 
-- **lan** (default): private to your network. Caddy's own certificate authority signs a certificate
-  for the NAS's address; install `ibkr-bridge/caddy-root.crt` once as a trusted root on each device
-  you open the page on (the script prints how for Windows, macOS, iPhone/iPad and Android).
-- **public**: a domain or DuckDNS name with a Let's Encrypt certificate; the router forwards outside
-  ports 80 and 443 to the NAS (by default to 8080 and 8443, as NAS often use 80 and 443 themselves).
+- **lan** (default): private to your network, with a certificate made for the NAS's address
+  (`docker/ibkr/nas/tls/cert.pem`); trust it once on each device you open the page on.
 - **synology**: the certificate DSM already holds for your name (e.g. `name.synology.me`, Control
   Panel, Security, Certificate); the router forwards one port (default 8765) to the NAS. Works from
   anywhere with no certificate to install, if the home connection takes incoming connections (not
-  behind the provider's CGNAT). When the certificate in use expires, Caddy loads DSM's renewed one
-  (DSM renews a month ahead; no periodic checks).
+  behind the provider's CGNAT). DSM renews it in place; the bridge loads the renewed one by itself.
 
 It ends with the page's address for your bridge (`https://svr-net.github.io/trading/?bridge=...`) and
-the key to enter in *Your broker*. Run it again to change anything (delete `ibkr-bridge/.env` to answer
-the questions again).
+the key to enter in *Your broker*. The bridge answers only the page's address and only with the key (a
+wrong key costs a second, so a long random key cannot be guessed). A paper account normally logs in
+without two-factor approval; a live account needs the approval on your phone at each login.
 
-## 2e. Automatic placing and closing
+Nothing is ever built on the NAS. GitHub builds the image on every change (stamped with its commit,
+made only when the bridge's checks on a stand-in IBKR pass) and publishes it in its registry and as
+one file per processor in the repository's `nas-images` release. The NAS takes the registry's (at most
+3 minutes), else downloads the file over IPv4 and loads it. Updating the NAS is one command:
+`sudo sh /volume1/DEV/trading/docker/ibkr/ibkr-nas.sh`. The monitor shows the version the NAS runs and
+fails when it is not the latest.
 
-The bridge can place and close the orders by itself on weekdays (`AUTO_MARKETS` in `.env`, asked by
-the setup script: `UK`, `US`, `UK,US` or `none`): at 07:45 and 16:20 London time for the UK, 09:20 and
-15:40 New York time for the US (`AUTO_UK_PLACE`, `AUTO_UK_CLOSE`, `AUTO_US_PLACE`, `AUTO_US_CLOSE`
-change them), each once a day; an orders file more than 4 days old is not placed. The page's *Your
-broker* line shows the schedule and the last automatic action; `docker compose logs bridge` shows
-every one. IB Gateway must stay logged in (the container restarts it daily).
+## 2e. Automatic trading
 
-The times are when each step becomes due, not the only moment it can run. Every 30 seconds the
-bridge does whichever of the day's steps is due and not yet done: the orders placed (retried every 5
-minutes, at most 4 times, until 15 minutes before the close; shares already placed are skipped), the
-buy-back watch kept running until the close, the day's prices recorded, the close (retried every
-minute) and the report (retried every 10 minutes). Done steps are marked in `history/state`, so a
-restart or a redeploy in the middle of the day catches up rather than losing or repeating a step.
-A watchdog asks IB Gateway's API for its clock every minute; when the gateway's port is open but its
-API has been silent for 3 minutes, the `restarter` container restarts IB Gateway. The restarter is
-the only container given Docker's socket: it publishes no port, holds no secrets and can do nothing
-but restart IB Gateway. `/status` and the diagnostics show today's steps and the watchdog.
+The bridge trades by itself on weekdays (`AUTO_MARKETS` in `.env`: `UK`, `EU`, `US`, `APAC`, `INDEX`,
+comma separated, or none). Every market's orders are a **multi-day book** (`"book": "hold"`, the
+strategy engine `apps/ofm_strategy`): positions held over the days with a stop at IBKR. Every 30
+seconds the bridge does whichever of the day's steps is due and not yet done:
 
-Nothing is held overnight, and that is checked rather than assumed:
-- **The close confirms every sale.** It cancels the day's stops and take-profits first; a share whose
-  orders could not be cancelled is not sold (its stop could sell it twice) and is reported. A sale at
-  the close that IBKR refuses (a share too thin for a market order, 202, or an order type the
-  exchange does not take) is replaced by a limit sale at the share's lowest price of the last 20 days,
-  on IBKR's own price steps. A rerun of the close never sells a share twice. Before the close the
-  bridge ends any of its own processes still holding the market's IBKR connection.
-- **30 minutes after the close** the bridge checks that none of the model's shares is still held;
-  if one is, the step fails (the monitor turns red and GitHub emails you).
-- **Before each day's placing** the model's shares still held from an earlier day are sold at the
-  open, unless a sale is already waiting. Only shares the model's own orders placed in the last 10
-  days count: anything else in the account is never touched.
+- **leftovers** (from 30 minutes before the placing): the model's shares still held from an earlier
+  day, outside the book, sold at the open unless a sale is already waiting; only shares the model's
+  own orders placed in the last 10 days count, nothing else in the account is touched;
+- **hold-place** (UK 07:45 London, `AUTO_<MARKET>_PLACE`; retried every 5 minutes, at most 3 times):
+  the book's updates (each position kept with its new stop, or sold at the open) and its buys for the
+  shares not held, good only through the opening auction; an orders file more than 4 days old is not
+  placed; `config/nas-buys.json` turns the buying off;
+- **hold-protect** (every 5 minutes through the session): a buy-back filled after a stop becomes a
+  position with its own stop and buy-back at once;
+- **close** and **hold-close** (UK 16:20, `AUTO_<MARKET>_CLOSE`; retried): the day's own orders
+  closed, and the book's positions offered in the closing auction (sold at any price on their last
+  day; where the exchange takes no LOC or MOC, a day limit instead);
+- **flat** (30 minutes after the close): none of the model's shares held outside the book, or the
+  step fails (the monitor turns red);
+- **report** (UK 16:45, `AUTO_<MARKET>_REPORT`): the day's fills into the history.
 
-Nothing is ever built on the NAS. GitHub builds its images on every change (the bridge, stamped
-with its commit, and Caddy with openssl) and publishes them in its registry
-(`ghcr.io/svr-net/trading-bridge`, `trading-caddy`) and as one file each in the repository's
-`nas-images` release. The NAS takes the registry's (at most 3 minutes), else downloads the file over
-IPv4 and loads it; if neither works, the setup stops and says so. Updating the NAS is one command:
-`sudo sh /volume1/DEV/trading/docker/ibkr/deploy-nas.sh`. The monitor shows the version the NAS
-runs and fails when it is not the latest.
+Done steps are marked in `history/state`, so a restart or an update in the middle of the day catches
+up rather than losing or repeating a step. A watchdog asks IB Gateway every minute for its clock and
+one contract; when the port is open but the API has been silent for 3 minutes, the bridge restarts IB
+Gateway through IBC's command server. A refusal by IBKR of the orders themselves (2139: paper trading
+not acknowledged) restarts it too, at most every 20 minutes. `/status` and the diagnostics show
+today's steps, the watchdog and the last actions; `docker logs trading-ibkr` shows every one.
 
 ## 2f. History of orders and fills
 
@@ -201,12 +130,11 @@ auction samples stay empty and the bars are refused.
   order up to GBP 6,000, 0.05% above, the exchange's and clearing fees included; US: USD 0.005 a
   share, at least USD 1). At GBP 5,000 a UK trade that is 0.06% each way. An account on tiered
   pricing runs the model with `--pricing tiered`.
-- **The orders as the backtest trades them:** each a day limit buy, its stop-loss (and take-profit, if any) set
-  before the open from the limit (or the last close when the limit is above it), one cancelling the
-  other; unfilled orders cancelled and what is held sold in the closing auction. One known
-  difference: the bridge closes at 16:20 London, so a limit that would fill in the last ten minutes
-  of trading does not (the backtest, on daily bars, cannot tell the time of a fill).
-- **Price units:** before placing, each order's prices are checked against IBKR's close (its daily
+- **The orders as the backtest trades them:** each buy good only through the opening auction, its stop
+  a good-till-cancelled stop sell at the Parabolic SAR level, moved each morning; its buy-back coupled
+  to the stop (a buy stop over the level the stop sold at); sold in the closing auction on its last day
+  or when the strategy drops it.
+- **Price units:** before placing, each order's price is checked against IBKR's close (its daily
   bars with the exchange's data, else its free delayed quote); an order whose units cannot be
   confirmed is skipped, never sent.
 
@@ -218,45 +146,17 @@ auction samples stay empty and the bars are refused.
 
 ## 3. Each trading day
 
-| | UK (London time) | US (New York time) |
-|---|---|---|
-| Orders written by the daily job | about 19:15, the evening before | about 18:45, the evening before |
-| Place them (before the opening auction) | by 07:50 | by 09:25 |
-| Exit what is left at the close | 16:20 to 16:25 | 15:40 to 15:45 |
-
-```
-python tools/ibkr/submit.py --market UK --orders UK.json --capital 1000 --dry-run   # look first
-python tools/ibkr/submit.py --market UK --orders UK.json --capital 1000             # place
-python tools/ibkr/submit.py --market UK --close                                     # before the close
-```
-
-What it places for each trade, as in the backtest:
-
-- a **limit buy at the model's buy limit**, valid for the day: it takes part in the opening auction
-  (filled at the open when the share opens at or below the limit) and then rests (filled during the
-  day if the price comes down to it);
-- attached to it, the **stop-loss** (a stop sell; in every market a safety stop, at a fall the
-  share makes only on a rare day) and, when the model sets one, the **take-profit** (a limit sell),
-  one cancelling the other, active only once the buy has filled;
-- when the model sets one (a learnt choice, shown on the page as Buy-back), the **buy-back**: the
-  bridge watches the day's fills, and when a stop has sold it places a buy-stop for the same shares
-  part of the way back up to the price paid, with a limit sale at the price paid and a round trip's
-  costs attached (`submit.py --rebuy`). The buy is a stop-limit: triggered at its level, it pays
-  at most one estimated spread above it (unfilled: no buy-back). The watcher runs as the orders' own
-  API client (the one that placed them and closes them), stops two minutes before the close's time
-  and cancels its buy-backs still open; while it runs, the page's Place and Close buttons for that
-  market wait for it (IBKR allows one connection per client);
-- with `--close`, the day's unfilled orders are cancelled and whatever is still held is **sold at
-  the close** (market-on-close).
-
-`--capital` is the amount per trade in the account's currency (one unit each, as in the backtest).
-Before each order the script compares IBKR's last close with the model's: an order whose prices do
-not match (a different share, a split IBKR has and EODData not) is skipped and reported. Every order
-carries the reference `ofm-<market>-<date>`, so `--close` touches only the model's own orders.
+The daily job writes each market's orders into the private store after its close; the bridge places
+them before the next open. On the page, *Your broker* shows them with their quantities, **Check (dry
+run)** lists what the book would place (nothing is sent), **Place orders** places the book again
+(buys already working are kept), **Close at the close** and **Record results** run those steps now,
+and *Today at IBKR* shows every order and holding. Every order carries the reference
+`ofm-<market>H-<date>` (its stop `ofm-<market>S-...`), so the bridge never touches anything else in
+the account.
 
 ## 4. Before going live
 
 - Run the paper account for at least a few weeks and keep the fills: compare each day's entries,
   exits and results with the page's backtest assumptions (fills at the open price, at the limit,
   the stop, the take-profit and the close).
-- Then start live with a small `--capital`, and raise it only if the live fills still match.
+- Then start live with a small `CAPITAL`, and raise it only if the live fills still match.
