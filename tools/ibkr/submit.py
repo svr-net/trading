@@ -852,6 +852,8 @@ def main():
     a.add_argument('--years', type=int, default=2, help='years of daily bars for --bars')
     a.add_argument('--duration', default='', help="IBKR's duration for --bars in place of --years (e.g. '1 M': the latest month, merged into the full file by the bridge)")
     a.add_argument('--diag', action='store_true', help="check the API, the account and the market's data; one JSON line")
+    a.add_argument('--test-order', action='store_true', help="place and cancel at once a 1-share limit buy at half the probe share's close: "
+                   "does IBKR accept orders now (2139)? One JSON line")
     a.add_argument('--leftovers', action='store_true', help="sell the model's shares still held from earlier days (--tickers)")
     a.add_argument('--tickers', help='with --leftovers: the shares the model placed lately, comma separated')
     a.add_argument('--state', action='store_true', help="the live state of today's trades and the model's holdings (--tickers), as JSON")
@@ -878,6 +880,8 @@ def main():
         return state(args)
     if args.diag:
         return diag(args)
+    if args.test_order:
+        return test_order(args)
     if args.auction:
         return auction(args)
     if args.bars:
@@ -1534,6 +1538,53 @@ def rebuy(args, ref):
     ib.sleep(2)
     ib.disconnect()
     print(f'{args.market} buy-back: {placed} placed, {len(handled)} stops seen')
+
+
+def test_order(args):
+    """Whether IBKR accepts an order from this gateway, now (the bridge's POST /test-order, the Bridge monitor's
+    test_order): a limit buy of 1 share of the market's probe share at half its last close, a day order that
+    cannot fill, placed and cancelled at once (orderRef ofm-TEST, which no other step touches). One JSON line:
+    fate (live: accepted; dead: refused, with IBKR's messages; filled never at that price), refused (2139:
+    paper trading not acknowledged) and whether the cancel went through. Numbers in the messages masked."""
+    from ib_async import IB, LimitOrder, Stock
+
+    from datetime import datetime
+    out = {'market': args.market, 'at': datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')}
+    errors = {}
+    ib = IB()
+    ib.errorEvent += lambda req, code, msg, contract: errors.setdefault(req, []).append(f'{code}: {msg}') if code not in (2104, 2106, 2107, 2108, 2158) else None
+    try:
+        connect(ib, args, args.client_id + 5, tries=2)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({**out, 'api': False, 'error': str(e) or type(e).__name__}))
+        return 1
+    try:
+        contract = Stock({'UK': 'VOD', 'US': 'AAPL', 'APAC': 'BHP', 'EU': 'AIR', 'INDEX': 'EXS1'}[args.market], *VENUE[args.market])
+        if not qualified(ib, contract):
+            print(json.dumps({**out, 'api': True, 'error': f'{contract.symbol}: not found at IBKR'}))
+            return 1
+        close = reference_close(ib, contract)
+        c2, ticks = exit_contract(ib, contract)
+        if not close or c2 is None:
+            print(json.dumps({**out, 'api': True, 'probe': contract.symbol, 'error': 'no IBKR price for the probe share'}))
+            return 1
+        lim = round_to(0.5 * close, tick_at(ticks[0], ticks[1], 0.5 * close), 'down')
+        trade = ib.placeOrder(c2, LimitOrder('BUY', 1, lim, orderRef='ofm-TEST', tif='DAY'))
+        fate, msgs = order_fate(ib, trade, errors, wait=15)
+        cancelled = None
+        if fate == 'live':
+            ib.cancelOrder(trade.order)
+            for _ in range(20):
+                ib.sleep(0.5)
+                if trade.orderStatus.status in DEAD:
+                    break
+            cancelled = trade.orderStatus.status in DEAD
+        refused = any('2139' in m or 'paper-trading has not been acknowledged' in m.lower() or 'paper trading has not been acknowledged' in m.lower() for m in msgs)
+        print(json.dumps({**out, 'api': True, 'probe': contract.symbol, 'fate': fate, 'accepted': fate in ('live', 'filled'), 'refused2139': refused,
+                          'cancelled': cancelled, 'messages': msgs}))
+        return 0 if fate in ('live', 'filled') else 2
+    finally:
+        ib.disconnect()
 
 
 def diag(args):

@@ -828,7 +828,11 @@ def diag():
         + f" (checked {g['checked']}); restarts {g['restarts']}" + (f", last {g['restarted']}: {g['note']}" if g['restarted'] else ''))
     # IBKR refusing the orders themselves (16 Nov: after IB Gateway restarted, every buy "dead" with 2139, "Real
     # paper-trading has not been acknowledged yet"): an error, the trading has stopped until it is acknowledged.
-    refused = [x for x in LAST if 'Real paper-trading has not been acknowledged' in x[4] or '2139:' in x[4]]
+    # The newest answer decides: a refusal, or an order IBKR accepted since (the test order, POST /test-order).
+    answers = [x for x in LAST if 'Real paper-trading has not been acknowledged' in x[4] or '2139:' in x[4] or (x[2] == 'test-order' and x[3])]
+    refused = answers if answers and not (answers[0][2] == 'test-order' and answers[0][3]) else []
+    if answers and not refused:
+        add('IBKR accepts orders', True, f'{answers[0][0]} {answers[0][1]}: {answers[0][4]}')
     if refused:
         w, mk, a, ok, sm = refused[0]
         add('IBKR accepts orders', False, f'{w} {mk} {a}: IBKR refused the orders (2139: real paper-trading has not been acknowledged): log in to the '
@@ -1485,6 +1489,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(409, {'ok': False, 'log': f'{m} paths: already recording'})
             in_background(m, 'paths', record_paths)
             return self.reply(202, {'ok': True, 'log': f'{m}: recording the candidates\' prices until 20 minutes after the close'})
+        if path == '/test-order':  # does IBKR accept an order now (2139)? 1 share far from the market, cancelled at once
+            try:
+                code, out = run_submit(['--market', m, '--test-order'], timeout=180)
+            except Exception as e:  # noqa: BLE001
+                return self.reply(502, {'error': str(e)})
+            line = (out.strip().splitlines() or [''])[-1]
+            try:
+                result = json.loads(line)
+            except ValueError:
+                result = {'error': line[-300:]}
+            ok = bool(result.get('accepted'))
+            summary = (f"test order accepted by IBKR ({result.get('probe')}, cancelled: {result.get('cancelled')})" if ok
+                       else f"test order refused: {result.get('fate', '')} [IBKR: {' | '.join(result.get('messages') or []) or result.get('error', '')}]")
+            LAST.insert(0, (datetime.now(ZoneInfo(ZONE[m])).strftime('%Y-%m-%d %H:%M %Z'), m, 'test-order', ok, summary))
+            del LAST[10:]
+            return self.reply(200, {'ok': ok, 'result': result, 'log': summary})
         if path == '/report':
             ok, summary = report(m)
             return self.reply(200 if ok else 500, {'ok': ok, 'log': summary})
