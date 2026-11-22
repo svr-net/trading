@@ -1,7 +1,7 @@
 #!/bin/sh
 # One container on the NAS: IB Gateway (logged in by IBC) and the broker bridge together
-# (ghcr.io/svr-net/trading-ibkr, docker/ibkr/Dockerfile.ibkr), in place of the four containers of
-# setup-nas.sh (ib-gateway, bridge, restarter, caddy). Run it again to update to the newest image.
+# (ghcr.io/svr-net/trading-ibkr, docker/ibkr/Dockerfile.ibkr), in place of the four containers the
+# setup had before (ib-gateway, bridge, restarter, caddy). Run it again to update to the newest image.
 #
 #   sudo sh /volume1/DEV/trading/docker/ibkr/ibkr-nas.sh
 #

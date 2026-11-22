@@ -30,7 +30,7 @@ final class Book {
         String local = System.getenv("ORDERS_FILE_" + market);
         if (local != null && !local.isEmpty()) return Path.of(local);
         String token = Bridge.env("EOD_TOKEN", Bridge.env("EOD_READ_TOKEN", ""));
-        if (token.isEmpty()) throw new IOException("no EOD_TOKEN in the bridge (.env next to docker-compose.yml)");
+        if (token.isEmpty()) throw new IOException("no EOD_TOKEN in the bridge (docker/ibkr/nas/.env)");
         HttpURLConnection c = (HttpURLConnection) new URL("https://api.github.com/repos/svr-net/eod/contents/orders/" + market + ".json").openConnection();
         c.setConnectTimeout(20_000);
         c.setReadTimeout(20_000);

@@ -1,8 +1,8 @@
 #!/bin/bash
-# One container (docker/ibkr/Dockerfile.ibkr): IB Gateway, logged in by IBC (the image's own run.sh), the Java
-# bridge (HTTPS for the page; IBKR's Java API; IBC's command server) and the Python bridge behind it (only on
-# 127.0.0.1, for what the Java one does not do yet). Each is started again when it stops: IB Gateway when IBC
-# exits (its nightly restart, a failed login, or a restart IBC did not do itself), each bridge when it exits.
+# One container (docker/ibkr/Dockerfile.ibkr): IB Gateway, logged in by IBC (the image's own run.sh), and the Java
+# bridge (HTTPS for the page; IBKR's Java API; IBC's command server; the automatic day). Each is started again when
+# it stops: IB Gateway when IBC exits (its nightly restart, a failed login, or a restart IBC did not do itself), the
+# bridge when it exits.
 # docker stop ends them all.
 set -u
 
@@ -32,9 +32,8 @@ fi
 
 stop_all() {
   echo "ibkr-start: stopping"
-  kill "$GATEWAY_LOOP" "$PYTHON_LOOP" "$JAVA_LOOP" 2>/dev/null
+  kill "$GATEWAY_LOOP" "$JAVA_LOOP" "$LIVE_LOOP" 2>/dev/null
   pkill -TERM -f ibcalpha.ibc 2>/dev/null
-  pkill -TERM -f bridge.py 2>/dev/null
   pkill -TERM -f bridge.jar 2>/dev/null
   wait
   exit 0
@@ -52,32 +51,41 @@ trap stop_all TERM INT
 ) &
 GATEWAY_LOOP=$!
 
-# Both bridges reach IB Gateway inside the container: its own API port (paper 4002, live 4001).
+# The bridge reaches IB Gateway inside the container: its own API port (paper 4002, live 4001).
 if [ -z "${IB_PORT:-}" ]; then
   if [ "${TRADING_MODE:-paper}" = live ]; then IB_PORT=4001; else IB_PORT=4002; fi
 fi
 export IB_PORT
 
-# The Python bridge: only on 127.0.0.1:8766, plain HTTP (the Java bridge in front of it does the HTTPS).
+# The bridge: the page's HTTPS on 8765 (without a certificate: plain HTTP on 127.0.0.1 only).
 (
   cd /app || exit 1
   while true; do
-    env -u TLS_CERT -u TLS_KEY PORT=8766 BIND=127.0.0.1 /opt/bridge/bin/python tools/ibkr/bridge.py
-    echo "ibkr-start: the Python bridge stopped (exit $?); starting it again in 5 seconds"
-    sleep 5
-  done
-) &
-PYTHON_LOOP=$!
-
-# The Java bridge: the page's HTTPS on 8765 (without a certificate: plain HTTP on 127.0.0.1 only).
-(
-  cd /app || exit 1
-  while true; do
-    PORT=8765 BIND=0.0.0.0 PYTHON_BRIDGE=http://127.0.0.1:8766 /app/java -Xmx128m -jar /app/bridge.jar
-    echo "ibkr-start: the Java bridge stopped (exit $?); starting it again in 5 seconds"
+    PORT=8765 BIND=0.0.0.0 /app/java -Xmx384m -XX:+ExitOnOutOfMemoryError -XX:+UseSerialGC -jar /app/bridge.jar
+    echo "ibkr-start: the bridge stopped (exit $?); starting it again in 5 seconds"
     sleep 5
   done
 ) &
 JAVA_LOOP=$!
+
+# Liveness: a bridge whose process runs but no longer answers, or whose scheduler, watchdog or background reads
+# stopped turning (GET /live answers 503), is ended after 3 failed checks a minute apart; the loop above starts it
+# again. Its steps are marked done in the history, so the new one catches up and never repeats a step.
+(
+  if [ -n "${TLS_P12:-}" ]; then url=https://127.0.0.1:8765/live; else url=http://127.0.0.1:8765/live; fi
+  sleep 180
+  fails=0
+  while true; do
+    if curl -skf --max-time 20 "$url" >/dev/null 2>&1; then fails=0; else fails=$((fails + 1)); fi
+    if [ "$fails" -ge 3 ]; then
+      echo "ibkr-start: the bridge failed 3 liveness checks ($(curl -sk --max-time 10 "$url" 2>&1 | head -c 200)); restarting it"
+      pkill -TERM -f bridge.jar 2>/dev/null; sleep 20; pkill -KILL -f bridge.jar 2>/dev/null
+      fails=0
+      sleep 120
+    fi
+    sleep 60
+  done
+) &
+LIVE_LOOP=$!
 
 wait
