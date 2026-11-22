@@ -1,0 +1,78 @@
+# One container for the NAS: IB Gateway logged in by IBC (the community image ghcr.io/gnzsnz/ib-gateway) and the
+# broker bridge beside it. The Java bridge (tools/ibkr/java: IBKR's official Java API, IBC's command server)
+# answers HTTPS and passes what it does not do yet to the Python bridge (tools/ibkr/bridge.py) inside the
+# container. It replaces the four containers of docker-compose.yml (ib-gateway, bridge, restarter, caddy).
+# Built by GitHub (bridge-image.yml), never on the NAS; started by docker/ibkr/ibkr-nas.sh. No keys or
+# settings in the image: they come from the NAS's .env at run time.
+
+# --- IBKR's Java API (GPL-3, from IBKR's own installer) and the Java bridge, built on the build machine --------
+FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk AS java
+# Compiled for Java 21: IBKR's current client needs it; IB Gateway's own Java (25 now) runs it.
+ARG TWSAPI_URL=https://download2.interactivebrokers.com/installers/tws-api/stable/tws-api-stable-linux-x64.sh
+RUN apt-get update && apt-get install --no-install-recommends --yes curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/twsapi.sh "$TWSAPI_URL" \
+ && sh /tmp/twsapi.sh -q -dir /opt/twsapi \
+ && rm /tmp/twsapi.sh
+COPY tools/ibkr/java /src/bridge
+# IBKR's Java client: its sources (compiled here) or its jar, wherever the installer put them.
+RUN set -e; mkdir -p /build/classes; \
+    d=$(find /opt/twsapi -type d -path '*/com/ib/client' 2>/dev/null | head -1); \
+    jar=$(find /opt/twsapi -iname 'TwsApi*.jar' 2>/dev/null | head -1); \
+    if [ -n "$d" ] && ls "$d"/*.java >/dev/null 2>&1; then \
+      root=${d%/com/ib/client}; echo "IBKR Java client sources: $root (com.ib.client and com.ib.controller)"; \
+      find "$root/com/ib" -name '*.java' > /tmp/api.txt; \
+      libs=$(find "$root" -name '*.jar' 2>/dev/null | tr '\n' ':'); echo "with: $libs"; \
+      for l in $(echo "$libs" | tr ':' ' '); do (cd /build/classes && jar xf "$l"); done; \
+      javac --release 21 -nowarn -encoding UTF-8 -cp "/build/classes:$libs" -d /build/classes @/tmp/api.txt; \
+    elif [ -n "$jar" ]; then \
+      echo "IBKR Java client jar: $jar"; (cd /build/classes && jar xf "$jar"); \
+    else \
+      echo "IBKR's Java client not found; the installed folders:"; find /opt/twsapi -maxdepth 5 | head -80; exit 1; \
+    fi; \
+    find /opt/twsapi -maxdepth 4 -iname 'license*' -type f | head -1 | xargs -r -I{} cp {} /build/classes/TWSAPI-LICENSE.txt; \
+    javac --release 21 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java'); \
+    jar --create --file /build/bridge.jar --main-class net.svrnet.bridge.Bridge -C /build/classes .
+
+# --- The container --------------------------------------------------------------------------------------------
+FROM ghcr.io/gnzsnz/ib-gateway:stable
+
+USER root
+RUN apt-get update \
+ && apt-get install --no-install-recommends --yes python3 python3-venv procps util-linux openssl \
+ && python3 -m venv /opt/bridge \
+ && /opt/bridge/bin/pip install --no-cache-dir ib_async tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /data/history && chown -R 1000:1000 /data
+# IBC's command server on, inside the container only: the bridge restarts and reconnects IB Gateway through it.
+RUN set -e; t=$(find / -xdev -name 'config.ini.tmpl' -path '*ibc*' 2>/dev/null | head -1); test -n "$t"; \
+    sed -i -e 's/^CommandServerPort=.*/CommandServerPort=7462/' -e 's/^BindAddress=.*/BindAddress=127.0.0.1/' \
+           -e 's/^ControlFrom=.*/ControlFrom=127.0.0.1/' "$t"; grep -q '^CommandServerPort=7462' "$t"
+# The Java bridge runs on IB Gateway's own Java (found once here: /app/java).
+RUN set -e; j=$(find / -xdev -path '*/jre/bin/java' -type f 2>/dev/null | head -1); \
+    if [ -z "$j" ]; then j=$(find / -xdev -path '*/bin/java' -type f 2>/dev/null | grep -v '^/proc' | head -1); fi; \
+    test -n "$j"; mkdir -p /app; ln -s "$j" /app/java; /app/java -version
+
+WORKDIR /app
+COPY --from=java /build/bridge.jar /app/bridge.jar
+COPY tools/ibkr/ tools/ibkr/
+COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
+RUN chmod 755 /app/ibkr-start.sh
+
+# The commit it was built from: the Bridge monitor checks the NAS runs the latest.
+ARG VERSION=unknown
+ENV BRIDGE_VERSION=$VERSION \
+    GATEWAY_RESTART=local \
+    IBC_COMMAND_PORT=7462 \
+    IB_HOST=127.0.0.1 \
+    HISTORY_DIR=/data/history \
+    ALLOWED_ORIGIN=https://svr-net.github.io \
+    READ_ONLY_API=no \
+    BYPASS_WARNING=yes \
+    TWOFA_TIMEOUT_ACTION=restart \
+    AUTO_RESTART_TIME="11:59 PM"
+
+# Starts as root only to copy the certificate (ibkr-start.sh), then runs everything as the image's user (1000).
+USER root
+WORKDIR /home/ibgateway
+EXPOSE 8765
+CMD ["/app/ibkr-start.sh"]

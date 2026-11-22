@@ -60,6 +60,10 @@ fills from IBKR (submit.py --report); GET /history returns them by day for the p
 Environment: BRIDGE_KEY, EOD_TOKEN (the daily job's token, svr-net/eod contents; EOD_READ_TOKEN also read), IB_HOST, IB_PORT
 (4002 paper), CAPITAL (a trade's amount, default 5000), ALLOWED_ORIGIN, BIND (127.0.0.1; 0.0.0.0
 inside Docker, published on 127.0.0.1 only), PORT (8765).
+One container (docker/ibkr/Dockerfile.ibkr: IB Gateway, IBC and this bridge together): TLS_CERT and TLS_KEY
+(certificate files: the bridge serves HTTPS itself, loading renewed files when they change), and
+GATEWAY_RESTART=local (IB Gateway restarted inside the container: IBC stopped, the start script starts it
+again) in place of the restarter container.
 """
 import base64
 import hmac
@@ -1282,6 +1286,8 @@ def quiet():
 def ask_restarter(path, timeout):
     """POSTs to the restarter (tools/ibkr/restarter.py, the only container with Docker's socket);
     returns its note."""
+    if os.environ.get('GATEWAY_RESTART') == 'local' and path == '/update':  # one container: updated by docker/ibkr/ibkr-nas.sh
+        return 'one container: update it with docker/ibkr/ibkr-nas.sh'
     url = os.environ.get('GATEWAY_RESTARTER', 'http://restarter:8766') + path
     try:
         with urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST'), timeout=timeout) as r:
@@ -1292,9 +1298,46 @@ def ask_restarter(path, timeout):
         return f'no restarter ({type(e).__name__})'
 
 
+def restart_local():
+    """One container (GATEWAY_RESTART=local): IB Gateway stopped in place (IBC's Java and its start script);
+    the container's start script (docker/ibkr/ibkr-start.sh) starts it again. At most once in 5 minutes."""
+    if time.monotonic() - RESTARTED_LOCAL[0] < 300:
+        return 'restarted less than 5 minutes ago: not again yet'
+    RESTARTED_LOCAL[0] = time.monotonic()
+    answer = ibc_command('RESTART')  # IBC restarts IB Gateway itself and logs in again
+    if answer.startswith('OK'):
+        return f'IB Gateway restarted by IBC ({answer}); logged in again within about 2 minutes'
+    killed = 0
+    for pattern in ('ibcalpha.ibc', 'ibcstart.sh'):
+        killed += subprocess.run(['pkill', '-TERM', '-f', pattern], capture_output=True).returncode == 0
+    return 'IB Gateway stopped; the container starts it again (logged in within about 2 minutes)' if killed else 'no IB Gateway process found to restart'
+
+
+RESTARTED_LOCAL = [-1e9]
+
+
+def ibc_command(command):
+    """IBC's command server in the one container (127.0.0.1, IBC_COMMAND_PORT 7462): its answer, or an ERROR line."""
+    try:
+        with socket.create_connection(('127.0.0.1', int(os.environ.get('IBC_COMMAND_PORT', '7462'))), timeout=5) as s:
+            s.settimeout(30)
+            s.sendall((command + '\n').encode())
+            data = b''
+            while b'\n' not in data:
+                chunk = s.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            return data.decode(errors='replace').strip() or 'ERROR no answer'
+    except OSError as e:
+        return f'ERROR IBC command server: {e}'
+
+
 def restart_gateway():
     """Asks the restarter (tools/ibkr/restarter.py, the only container with Docker's socket) to restart
-    IB Gateway; returns a note."""
+    IB Gateway, or (one container, GATEWAY_RESTART=local) restarts it in place; returns a note."""
+    if os.environ.get('GATEWAY_RESTART') == 'local':
+        return restart_local()
     note = ask_restarter('/restart', 150)
     return note + ': restart IB Gateway by hand' if note.startswith('no restarter') else note
 
@@ -1448,6 +1491,13 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
         except ValueError:
             return self.reply(400, {'error': 'bad JSON'})
+        if urlparse(self.path).path == '/internal/action':  # the Java bridge's results (one container), from this machine only
+            if self.client_address[0] not in ('127.0.0.1', '::1'):
+                return self.reply(403, {'error': 'local only'})
+            LAST.insert(0, (datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M %Z'), str(body.get('market') or '-')[:8],
+                            str(body.get('action') or '-')[:40], bool(body.get('ok')), str(body.get('summary') or '')[:600]))
+            del LAST[10:]
+            return self.reply(200, {'ok': True})
         if urlparse(self.path).path == '/restart':  # IB Gateway restarted on demand (the Bridge monitor's button)
             note = restart_gateway()
             LAST.insert(0, (datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M %Z'), '-', 'gateway restart', not note.startswith('no restarter'), note))
@@ -1521,10 +1571,43 @@ if __name__ == '__main__':
     if not KEY:
         sys.exit('Set BRIDGE_KEY (a long random string; you enter it once on the page).')
     bind, port = os.environ.get('BIND', '127.0.0.1'), int(os.environ.get('PORT', '8765'))
-    print(f'bridge on http://{bind}:{port} for {ORIGIN}; IB Gateway at {IB_HOST}:{IB_PORT}; automatic: {",".join(AUTO) or "off"}')
+    print(f'bridge on {"https" if os.environ.get("TLS_CERT") else "http"}://{bind}:{port} for {ORIGIN}; IB Gateway at {IB_HOST}:{IB_PORT}; automatic: {",".join(AUTO) or "off"}')
     if AUTO:
         seed_done()
         threading.Thread(target=scheduler, daemon=True).start()
         threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=refresher, daemon=True).start()
-    ThreadingHTTPServer((bind, port), Handler).serve_forever()
+    class Server(ThreadingHTTPServer):
+        def finish_request(self, request, client_address):  # TLS: the handshake in the request's own thread
+            if hasattr(request, 'do_handshake'):
+                request.settimeout(30)
+                try:
+                    request.do_handshake()
+                except Exception:  # noqa: BLE001  (a client that never finishes it, or plain HTTP)
+                    return
+            super().finish_request(request, client_address)
+
+    server = Server((bind, port), Handler)
+    cert, key = os.environ.get('TLS_CERT', ''), os.environ.get('TLS_KEY', '')
+    if cert and key:  # one container: HTTPS here, no Caddy
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(cert, key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
+
+        def reload_cert():  # DSM (or anyone) renews the files in place: the new ones serve the next handshakes
+            seen = (os.path.getmtime(cert), os.path.getmtime(key))
+            while True:
+                time.sleep(600)
+                try:
+                    now = (os.path.getmtime(cert), os.path.getmtime(key))
+                    if now != seen:
+                        ctx.load_cert_chain(cert, key)
+                        seen = now
+                        sys.stderr.write('bridge: certificate files changed: reloaded\n')
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f'bridge: certificate not reloaded: {e}\n')
+        threading.Thread(target=reload_cert, daemon=True).start()
+        print(f'HTTPS with {cert}')
+    server.serve_forever()
