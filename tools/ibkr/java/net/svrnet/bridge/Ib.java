@@ -573,12 +573,18 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         }
     }
 
-    synchronized List<String> notes() {
-        return new ArrayList<>(notes);
+    // The notes have their own lock: the reader's thread records IBKR's messages here while a request method holds this
+    // object's lock waiting for that thread's answer (taking the same lock froze the reader: open orders never ended, 22 Nov).
+    List<String> notes() {
+        synchronized (notes) {
+            return new ArrayList<>(notes);
+        }
     }
 
-    private synchronized void note(String m) {
-        if (!notes.contains(m)) notes.add(m);
+    private void note(String m) {
+        synchronized (notes) {
+            if (!notes.contains(m)) notes.add(m);
+        }
     }
 
     static double num(Decimal d) {

@@ -111,7 +111,27 @@ final class StepsCheck {
         return "";
     }
 
+    /** IBKR's messages reach Ib on the reader's thread while a request waits holding Ib's lock: recording them must never wait for it. */
+    static String readerNeverBlocks() throws Exception {
+        Ib ib = new Ib();
+        Thread reader = new Thread(() -> {
+            ib.error(-1, 0L, 2174, "a notice while a request waits", "");
+            ib.error("a message");
+            ib.openOrderEnd();
+            ib.positionEnd();
+        });
+        synchronized (ib) {  // as positions(), openOrders(), ... while they wait
+            reader.start();
+            reader.join(3000);
+            check(!reader.isAlive(), "the reader's thread waited for the request's lock (a deadlock: the list never ends)");
+        }
+        check(ib.notes().contains("2174: a notice while a request waits"), ib.notes());
+        return "";
+    }
+
     public static void main(String[] args) throws Exception {
+        System.out.print(readerNeverBlocks());
+        System.out.println("IBKR's messages recorded while a request waits, the reader never blocked; OK");
         System.out.print(leftovers());
         System.out.println("leftovers: the model's shares from earlier days sold at the next price, the hold book's never, a waiting sale not doubled; OK");
         System.out.print(close());
