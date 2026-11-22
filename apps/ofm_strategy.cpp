@@ -410,7 +410,16 @@ struct Costs {
     }
     if (market == "UK") return tiered ? std::max(1.0, 0.0005 * value) + std::max(0.10, 0.000045 * value) + 0.06 : std::max(3.0, 0.0005 * value);
     const auto* v = venueOf(t);
-    return v ? std::max((*v)[2], (*v)[1] * value) + ((*v)[3] + (*v)[5]) * value : std::max(3.0, 0.0005 * value);
+    if (!v) return std::max(3.0, 0.0005 * value);
+    // tiered pricing in the euro area's exchanges (IBKR: 0.05% of the value at the lowest monthly tier, at least EUR 1.25
+    // an order, instead of fixed pricing's EUR 3), plus about 0.01% for the exchange's and clearing fees fixed pricing
+    // includes; elsewhere (Oslo, ASX, SGX) the table's fixed rates are kept
+    if (tiered && euro(t)) return std::max(1.25, (*v)[1] * value) + ((*v)[3] + (*v)[5] + 0.0001) * value;
+    return std::max((*v)[2], (*v)[1] * value) + ((*v)[3] + (*v)[5]) * value;
+  }
+  static bool euro(const std::string& t) {
+    const std::string ex = t.substr(0, t.find(':'));
+    return ex == "PAR" || ex == "AMS" || ex == "BRU" || ex == "LIS" || ex == "MSE" || ex == "FRA";
   }
   double buyTax(const std::string& t) const {
     if (market == "UK") return stampFree.count(t) ? 0.0 : 0.005;
