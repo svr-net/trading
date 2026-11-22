@@ -5,11 +5,19 @@
 // uploaded, dispatched, read back. WebGPU answers through callbacks; the engine waits for them (emscripten_sleep under
 // Asyncify) and goes on. No GPU, or a batch the GPU cannot run (a buffer over its limits, a validation error, the
 // device lost): that batch runs on the CPU, so a run always ends. The page's JavaScript only starts the engine.
-// Compiled only into that build: the native engine and the plain WebAssembly build have no such back end.
+//
+// The same device trains the adaptive nested Monte Carlo's differential network (include/strategy/diffnet_gpu.hpp):
+// diffnetOffload() runs a fit's fused kernel (diffnetFused, include/strategy/diffnet_wgsl.hpp) in one command buffer per
+// 64 steps, each one dispatch of one workgroup, then reads the weights back once. Set when the build loads, so the
+// adaptive nested Monte Carlo's WebAssembly build (ofm_anmc_gpu.js, which links this file) trains on the GPU; a fit the
+// GPU cannot run returns to the kernel's f32 reference on the CPU.
+// Compiled only into those builds: the native engine and the plain WebAssembly builds have no such back end.
 #if defined(__EMSCRIPTEN__) && defined(OFM_WEBGPU)
 #include <emscripten.h>
 #include <webgpu/webgpu.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -17,6 +25,8 @@
 #include <vector>
 
 #include "strategy/backend.hpp"
+#include "strategy/diffnet_gpu.hpp"
+#include "strategy/diffnet_wgsl.hpp"
 #include "strategy/mc_gpu.hpp"
 #include "strategy/mc_wgsl.hpp"
 
@@ -33,10 +43,21 @@ struct Gpu {
   std::string name, why;
   std::uint64_t maxBinding = 128ull << 20;
   std::size_t batches = 0, fallbacks = 0;
+  // the differential network's fused kernel: compiled on its first fit
+  bool deviceTried = false, diffTried = false;
+  WGPUComputePipeline diffPipeline = nullptr;
+  WGPUBindGroupLayout diffLayout = nullptr;
+  std::string diffWhy;
+  std::size_t fits = 0, fitFallbacks = 0;
   ~Gpu() {
-    if (batches || fallbacks || !why.empty())
+    if (batches || fallbacks || (!why.empty() && !fits && !fitFallbacks))
       std::printf("strategy: webgpu: %zu Monte Carlo batches on %s%s%s\n", batches, name.empty() ? "no GPU" : name.c_str(),
                   fallbacks ? (", " + std::to_string(fallbacks) + " on the CPU").c_str() : "", why.empty() ? "" : (" (" + why + ")").c_str());
+    if (fits || fitFallbacks) {
+      const std::string w = !diffWhy.empty() ? diffWhy : why;
+      std::printf("anmc: webgpu: %zu network fits on %s%s%s\n", fits, name.empty() ? "no GPU" : name.c_str(),
+                  fitFallbacks ? (", " + std::to_string(fitFallbacks) + " on the CPU").c_str() : "", w.empty() ? "" : (" (" + w + ")").c_str());
+    }
   }
 };
 Gpu& gpu() {
@@ -50,10 +71,11 @@ bool waitFor(const volatile bool& done, int ms = 60000) {
   return done;
 }
 
-bool open() {
+// The adapter and the device, once (both kernels share them).
+bool openDevice() {
   Gpu& g = gpu();
-  if (g.tried) return g.pipeline && !g.lost;
-  g.tried = true;
+  if (g.deviceTried) return g.device && !g.lost;
+  g.deviceTried = true;
   g.instance = wgpuCreateInstance(nullptr);
   if (!g.instance) return g.why = "no WebGPU", false;
   struct { volatile bool done = false; WGPUAdapter a = nullptr; } ra;
@@ -87,17 +109,23 @@ bool open() {
   if (!waitFor(rd.done) || !rd.d) return g.why = "the GPU device could not be opened: " + rd.message.substr(0, 200), false;
   g.device = rd.d;
   g.queue = wgpuDeviceGetQueue(g.device);
+  return true;
+}
+
+// A kernel's pipeline (WGSL `code`, entry point `entry`) and its bind group layout; false, with `why`: it did not compile.
+bool compile(const char* code, const char* entry, WGPUComputePipeline& pipeline, WGPUBindGroupLayout& layout, std::string& why) {
+  Gpu& g = gpu();
   WGPUShaderModuleWGSLDescriptor wgsl = {};
   wgsl.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-  wgsl.code = strat::kMcWgsl;
+  wgsl.code = code;
   WGPUShaderModuleDescriptor sd = {};
   sd.nextInChain = &wgsl.chain;
   wgpuDevicePushErrorScope(g.device, WGPUErrorFilter_Validation);
   WGPUShaderModule module = wgpuDeviceCreateShaderModule(g.device, &sd);
   WGPUComputePipelineDescriptor pd = {};
   pd.compute.module = module;
-  pd.compute.entryPoint = "main";
-  g.pipeline = wgpuDeviceCreateComputePipeline(g.device, &pd);
+  pd.compute.entryPoint = entry;
+  pipeline = wgpuDeviceCreateComputePipeline(g.device, &pd);
   struct { volatile bool done = false; bool error = false; std::string message; } es;
   wgpuDevicePopErrorScope(g.device, [](WGPUErrorType t, const char* m, void* u) {
     auto* r = static_cast<decltype(es)*>(u);
@@ -105,9 +133,27 @@ bool open() {
   }, &es);
   waitFor(es.done);
   wgpuShaderModuleRelease(module);
-  if (es.error || !g.pipeline) return g.why = "the kernel did not compile: " + es.message.substr(0, 200), g.pipeline = nullptr, false;
-  g.layout = wgpuComputePipelineGetBindGroupLayout(g.pipeline, 0);
+  if (es.error || !pipeline) return why = "the kernel did not compile: " + es.message.substr(0, 200), pipeline = nullptr, false;
+  layout = wgpuComputePipelineGetBindGroupLayout(pipeline, 0);
   return true;
+}
+
+// The Monte Carlo's trade kernel, once.
+bool open() {
+  Gpu& g = gpu();
+  if (g.tried) return g.pipeline && !g.lost;
+  g.tried = true;
+  if (!openDevice()) return false;
+  return compile(strat::kMcWgsl, "main", g.pipeline, g.layout, g.why);
+}
+
+// The differential network's fused kernel, once.
+bool openDiffnet() {
+  Gpu& g = gpu();
+  if (g.diffTried) return g.diffPipeline && !g.lost;
+  g.diffTried = true;
+  if (!openDevice()) return false;
+  return compile(anmc::kDiffnetFusedWgsl, "diffnetFused", g.diffPipeline, g.diffLayout, g.diffWhy);
 }
 
 WGPUBuffer upload(const void* data, std::size_t bytes, WGPUBufferUsageFlags usage) {
@@ -196,6 +242,110 @@ bool runBatch(const strat::McBatch& b, std::vector<float>& ret, std::vector<std:
   else ++g.fallbacks;
   return ok;
 }
+
+// One differential network fit (and its predictions) on the GPU: diffnetFused over the plan's steps, 64 steps a command
+// buffer (each a dispatch of one workgroup, its step range at its own 256-byte offset of one uniform buffer), so no one
+// submission runs long enough for the browser's GPU watchdog; the weights, predictions and step losses read back once.
+// False: not run (the kernel's f32 reference runs the fit).
+bool runDiffnet(const anmc::DiffnetFusedPlan& p, anmc::DiffnetFusedResult& r) {
+  Gpu& g = gpu();
+  if (!openDiffnet()) return ++g.fitFallbacks, false;
+  const std::size_t P = p.parameters, outF = p.outFloats();
+  for (std::size_t bytes : {p.xg.size() * 4, p.datau.size() * 4, p.rowData.size() * 4, p.workFloats() * 4, outF * 4})
+    if (bytes > g.maxBinding) return ++g.fitFallbacks, false;
+  constexpr std::size_t kStepsPerSubmit = 64;
+  const std::size_t chunks = std::max<std::size_t>(1, (p.steps + kStepsPerSubmit - 1) / kStepsPerSubmit);
+  std::vector<std::uint32_t> ranges(chunks * 64, 0u);  // (first, last, predict) at every 256 bytes
+  for (std::size_t c = 0; c < chunks; ++c) {
+    ranges[c * 64] = std::uint32_t(c * kStepsPerSubmit);
+    ranges[c * 64 + 1] = std::uint32_t(std::min(p.steps, (c + 1) * kStepsPerSubmit));
+    ranges[c * 64 + 2] = c + 1 == chunks ? 1u : 0u;
+  }
+  wgpuDevicePushErrorScope(g.device, WGPUErrorFilter_OutOfMemory);
+  wgpuDevicePushErrorScope(g.device, WGPUErrorFilter_Validation);
+  WGPUBuffer header = upload(p.header.data(), p.header.size() * 4, WGPUBufferUsage_Uniform);
+  WGPUBuffer range = upload(ranges.data(), ranges.size() * 4, WGPUBufferUsage_Uniform);
+  WGPUBuffer theta = upload(p.theta.data(), P * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc);
+  WGPUBuffer xg = upload(p.xg.data(), p.xg.size() * 4, WGPUBufferUsage_Storage);
+  WGPUBuffer rows = upload(p.rowData.data(), p.rowData.size() * 4, WGPUBufferUsage_Storage);
+  WGPUBuffer datau = upload(p.datau.data(), p.datau.size() * 4, WGPUBufferUsage_Storage);
+  WGPUBufferDescriptor wd = {};
+  wd.size = std::max<std::size_t>(16, p.workFloats() * 4);
+  wd.usage = WGPUBufferUsage_Storage;
+  WGPUBuffer work = wgpuDeviceCreateBuffer(g.device, &wd);  // zeroed by WebGPU: Adam's moments start at 0
+  WGPUBufferDescriptor od = {};
+  od.size = std::max<std::size_t>(16, outF * 4);
+  od.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc;
+  WGPUBuffer out = wgpuDeviceCreateBuffer(g.device, &od);
+  const std::size_t readBytes = (P + outF) * 4;
+  WGPUBufferDescriptor rdd = {};
+  rdd.size = std::max<std::size_t>(16, readBytes);
+  rdd.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+  WGPUBuffer read = wgpuDeviceCreateBuffer(g.device, &rdd);
+  std::vector<WGPUBindGroup> binds(chunks);
+  for (std::size_t c = 0; c < chunks; ++c) {
+    WGPUBindGroupEntry e[8] = {};
+    WGPUBuffer all[8] = {header, range, theta, xg, rows, datau, work, out};
+    for (std::uint32_t k = 0; k < 8; ++k) e[k].binding = k, e[k].buffer = all[k], e[k].size = WGPU_WHOLE_SIZE;
+    e[1].offset = c * 256, e[1].size = 16;
+    WGPUBindGroupDescriptor bgd = {};
+    bgd.layout = g.diffLayout, bgd.entryCount = 8, bgd.entries = e;
+    binds[c] = wgpuDeviceCreateBindGroup(g.device, &bgd);
+  }
+  for (std::size_t c = 0; c < chunks; ++c) {
+    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(g.device, nullptr);
+    WGPUComputePassEncoder pass = wgpuCommandEncoderBeginComputePass(enc, nullptr);
+    wgpuComputePassEncoderSetPipeline(pass, g.diffPipeline);
+    wgpuComputePassEncoderSetBindGroup(pass, 0, binds[c], 0, nullptr);
+    wgpuComputePassEncoderDispatchWorkgroups(pass, 1, 1, 1);
+    wgpuComputePassEncoderEnd(pass);
+    if (c + 1 == chunks) {
+      wgpuCommandEncoderCopyBufferToBuffer(enc, theta, 0, read, 0, P * 4);
+      if (outF) wgpuCommandEncoderCopyBufferToBuffer(enc, out, 0, read, P * 4, outF * 4);
+    }
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+    wgpuQueueSubmit(g.queue, 1, &cmd);
+    wgpuCommandBufferRelease(cmd);
+    wgpuComputePassEncoderRelease(pass);
+    wgpuCommandEncoderRelease(enc);
+  }
+  struct Scope { volatile bool done = false; bool error = false; } s1, s2;
+  const auto pop = [](WGPUErrorType t, const char*, void* u) {
+    auto* q = static_cast<Scope*>(u);
+    q->error = t != WGPUErrorType_NoError, q->done = true;
+  };
+  wgpuDevicePopErrorScope(g.device, pop, &s1);
+  wgpuDevicePopErrorScope(g.device, pop, &s2);
+  struct { volatile bool done = false; bool good = false; } mp;
+  wgpuBufferMapAsync(read, WGPUMapMode_Read, 0, readBytes, [](WGPUBufferMapAsyncStatus st, void* u) {
+    auto* q = static_cast<decltype(mp)*>(u);
+    q->good = st == WGPUBufferMapAsyncStatus_Success, q->done = true;
+  }, &mp);
+  // a fit can take minutes on a software GPU: up to ten of them (each turn at least a millisecond)
+  for (int t = 0; !(s1.done && s2.done && mp.done) && t < 600000; ++t) emscripten_sleep(1);
+  bool ok = s1.done && s2.done && mp.done && !s1.error && !s2.error && mp.good && !g.lost;
+  if (ok) {
+    const auto* f = static_cast<const float*>(wgpuBufferGetConstMappedRange(read, 0, readBytes));
+    ok = f != nullptr;
+    if (ok) {
+      const std::size_t split = p.predictRows * (p.inputs + 1);
+      r.theta.assign(f, f + P);
+      r.predictions.assign(f + P, f + P + split);
+      r.stepLoss.assign(f + P + split, f + P + split + p.steps);
+      for (float x : r.theta)
+        if (!std::isfinite(x)) ok = false;
+    }
+  }
+  if (mp.done && mp.good) wgpuBufferUnmap(read);
+  for (WGPUBindGroup b : binds) wgpuBindGroupRelease(b);
+  for (WGPUBuffer x : {header, range, theta, xg, rows, datau, work, out, read}) wgpuBufferDestroy(x), wgpuBufferRelease(x);
+  if (ok) ++g.fits;
+  else ++g.fitFallbacks;
+  return ok;
+}
+
+// Set when the build loads: any differential network fit in this build is offered to the GPU first.
+[[maybe_unused]] const bool kDiffnetOffload = (anmc::diffnetOffload() = runDiffnet, true);
 
 class WebGpu : public strat::Backend {
  public:

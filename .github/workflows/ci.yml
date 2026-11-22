@@ -28,16 +28,33 @@ jobs:
           ofm ofm_strategy --list
 
   anmc:
-    # The adaptive nested Monte Carlo against exact Black-Scholes answers (apps/ofm_anmc.cpp, docs/adaptive-nested-mc.md).
+    # The adaptive nested Monte Carlo against exact Black-Scholes answers (apps/ofm_anmc.cpp, docs/adaptive-nested-mc.md),
+    # its differential network proxy on a book of 10 assets, and the network's fused kernels against double precision.
+    # shell: bash runs with pipefail, so a failed check fails the step through the tee.
     if: ${{ !inputs.site-only }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Build and check (VaR, ES, EPE; Hermite degrees 1, 2, 4)
+        shell: bash
         run: |
           cmake -S . -B build-anmc -DCMAKE_BUILD_TYPE=Release
           cmake --build build-anmc --target ofm_anmc -j
           build-anmc/ofm_anmc --check | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The differential network's fused kernels, their f32 reference against double precision
+        shell: bash
+        run: build-anmc/ofm_anmc --kernels --check --dump anmc-gpu.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The differential network proxy on 10 assets (against Hermite and a values-only network, exact values)
+        shell: bash
+        run: build-anmc/ofm_anmc --basket 10 --check | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The fused kernels' plan and the native build, for the browser tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: anmc
+          path: |
+            anmc-gpu.json
+            build-anmc/ofm_anmc
+          retention-days: 3
 
   site:
     runs-on: ubuntu-24.04
@@ -81,7 +98,7 @@ jobs:
 
   e2e:
     if: ${{ !inputs.site-only }}
-    needs: site
+    needs: [site, anmc]
     runs-on: ubuntu-24.04
     container: mcr.microsoft.com/playwright:v1.56.1-noble
     steps:
@@ -107,3 +124,19 @@ jobs:
         run: |
           chmod +x engine/ofm_strategy
           node web/tests/labgpu.mjs site/lab engine/ofm_strategy | grep -v '^  \[page\]' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v4
+        with:
+          name: anmc
+          path: anmc
+      - name: The differential network's fused kernels on WebGPU (Chromium's software GPU, against the C++ reference)
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
+        shell: bash
+        run: node web/tests/anmcgpu.mjs anmc/anmc-gpu.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The adaptive nested Monte Carlo in the browser (its WebAssembly builds, the network trained on WebGPU)
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
+        shell: bash
+        run: |
+          chmod +x anmc/build-anmc/ofm_anmc
+          node web/tests/anmclab.mjs site/lab anmc/build-anmc/ofm_anmc | tee -a "$GITHUB_STEP_SUMMARY"
