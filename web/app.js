@@ -72,8 +72,9 @@ function brokerNote(r, source, isLive) {
   brokerLoad().then((b) => {
     if (!b || shown !== r) return;
     const m = b.markets?.[source] || {};
-    const held = m.held, model = r.model === 'strategy' ? r.held : null;
-    const holds = held != null && model != null ? ` The account holds ${held} of the model's ${model} position${model === 1 ? '' : 's'}${held < model ? ': the book shown below is the model\'s, not what is held' : ''}.` : '';
+    const held = m.held, model = r.model === 'strategy' ? (r.modelHeld ?? r.held) : null;  // the model's own book (held: what the account is taken to hold)
+    const reset = r.modelHeld != null && r.held != null && r.held < r.modelHeld;  // the orders already treat the missing ones as new buys (config/account.json)
+    const holds = held != null && model != null ? ` The account holds ${held} of the model's ${model} position${model === 1 ? '' : 's'}${held < model ? (reset ? ': the orders treat the others as not held, each bought once it beats its costs' : ': the book shown below is the model\'s, not what is held') : ''}.` : '';
     if (b.accepts === false) {
       const f = b.refusal || {};
       el.innerHTML = `<strong>IBKR is refusing the bridge's orders</strong> (error ${f.code || 2139}: ${f.reason || 'paper trading not acknowledged'})`
@@ -95,8 +96,8 @@ function render(r, source) {
   const isLive = live.has(source);
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   const unfunded = isLive && r.budget && !(r.budget.total > 0);  // the account gives this market no money today: nothing is placed
-  // The model's own book (apps/ofm_strategy "held": its positions after the last close, of "slots"): the model's,
-  // not the account's (the broker's state, data/broker.json, says what the account holds).
+  // The book the orders build on (apps/ofm_strategy "held": the model's positions the account holds, all of them
+  // without --account; "modelHeld": the model's own), of "slots".
   const full = r.model === 'strategy' && r.held != null && r.slots > 0 && r.held >= r.slots;
   brokerNote(r, source, isLive);
   $('summary').className = `summary ${isLive && !unfunded ? 'live' : 'research'}`;
@@ -157,7 +158,7 @@ function render(r, source) {
       return row;
     }) : [{ gap: full ? `No new orders: every one of the model's ${r.slots} slots is held, and no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}.`
       : r.model === 'strategy' && r.held > 0 ? `No new orders: the model holds ${r.held} of its ${r.slots} slots; no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}, so the rest stays in cash.`
-      : `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
+      : `No orders: none is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}, so the money stays in cash.` }]);
   // Each share opens its chart (daily bars from IBKR through the bridge: never published).
   if (n) [...$('plan').tBodies[0].rows].forEach((tr, k) => {
     const o = r.orders[k], td = tr.cells[0];
@@ -579,7 +580,7 @@ function sideBySide(m) {
         return [[`${s.strategy || s.name}${s.role === 'live' ? ' (live)' : ''}`], r ? signed(B.annualReturn, 1) : ['–', 'num'], [B.sharpe != null ? B.sharpe.toFixed(2) : '–', 'num'],
           [B.maxDrawdown != null ? pct(B.maxDrawdown, 0).slice(1) : '–', 'num'], B.avgTrade != null ? [signed(B.avgTrade, 2)[0], `${signed(B.avgTrade, 2)[1]} opt`] : ['–', 'num opt'],
           [B.holdDays ? `${Math.round(B.holdDays)} d` : '–', 'num opt'], [bu?.trades ? `${bu.trades} × ${Math.round(bu.amount).toLocaleString('en-GB')}` : r?.slots ? `${r.slots}` : '–', 'num'],
-          n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the next scan', 'num']];
+          n ? [`${pct(rec, 2)} over ${n} day${n === 1 ? '' : 's'}`, `num ${rec >= 0 ? 'pos' : 'neg'}`] : ['from the first day with orders', 'num']];
       }));
   });
 }

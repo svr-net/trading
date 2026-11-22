@@ -1,0 +1,8 @@
+{
+  "about": "The shares the IBKR account really holds, by market (ticker as in the orders, e.g. WPP or PAR:SOI). The strategy engine (--account) orders a share its model book holds but the account does not as a new buy, so the account catches up with the model. Reset 22 Nov 2026: IBKR refused every order since about 16 Nov (2139), so the account holds none of the model's positions. List the shares again once the account holds some; a market left out takes the model's book as held.",
+  "UK": [],
+  "EU": [],
+  "US": [],
+  "APAC": [],
+  "INDEX": []
+}

@@ -1,35 +1,4 @@
 {
- "about": "Live record, one entry per day: ret the model portfolio, day the daily trades (results only).",
- "days": [
-  {
-   "date": "2026-11-11",
-   "ret": 0.0311572,
-   "day": 0.0311572
-  },
-  {
-   "date": "2026-11-13",
-   "ret": -0.00477638,
-   "day": -0.00477638
-  },
-  {
-   "date": "2026-11-16",
-   "ret": -0.0169817,
-   "day": -0.0169817
-  },
-  {
-   "date": "2026-11-17",
-   "ret": -0.0153246,
-   "day": -0.0153246
-  },
-  {
-   "date": "2026-11-18",
-   "ret": 0.00739301,
-   "day": 0.00739301
-  },
-  {
-   "date": "2026-11-19",
-   "ret": -0.0128128,
-   "day": -0.0128128
-  }
- ]
+ "about": "Live record, only the days orders were made for: ret the model portfolio, day the daily trades (results only). Reset 22 Nov 2026: none of the earlier days was traded at IBKR.",
+ "days": []
 }
