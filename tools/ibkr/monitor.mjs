@@ -22,7 +22,8 @@ import fs from 'node:fs';
 const out = process.env.BROKER_OUT || '';
 let prev = {};
 try { prev = JSON.parse(fs.readFileSync(process.env.BROKER_PREV || out, 'utf8')); } catch { /* none yet */ }
-// accepts: false while the bridge's latest actions include IBKR's refusal; null otherwise (no refusal seen).
+// accepts: false after IBKR's refusal (2139), true after an order it accepted since (a placing or POST /test-order);
+// null before either was ever seen. Silence keeps the last answer (writeBroker).
 const broker = { checked: new Date().toISOString().slice(0, 16) + 'Z', reachable: false, accepts: null, refusal: null, markets: {} };
 // A failed action counts as new for 35 minutes (a little more than the runs' spacing), so one failure
 // turns one run red (one email from GitHub), not every run for the rest of the day.
@@ -76,6 +77,7 @@ if (key) {
       if (!c || !c.check) continue;
       const detail = String(c.detail || '').replace(/\d+\.\d{2,}/g, '#').replace(/\b[DU]\d{5,}\b/g, 'ACCOUNT');
       console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : 'warn'} ${c.check}: ${detail}`);
+      if (c.check === 'IBKR accepts orders' && c.ok === true) broker.accepts = true, broker.refusal = null, broker.accepted = String(c.detail || '').slice(0, 120);
       if (c.check === 'IBKR accepts orders' && c.ok === false) {
         problems.push('IBKR refuses the orders (paper trading not acknowledged)');
         const w = /^(\d{4}-\d\d-\d\d \d\d:\d\d \w+) (\w+) ([\w-]+):/.exec(String(c.detail || ''));
@@ -119,8 +121,13 @@ if (key) {
 }
 function writeBroker() {
   if (!out) return;
+  // Neither a refusal nor an accepted order since the bridge started (a restart forgets its latest actions, and
+  // weekends place nothing): the last published answer stands, so a refusal is never cleared by silence.
+  if (broker.accepts === null && prev.accepts != null) broker.accepts = prev.accepts, broker.refusal = prev.refusal ?? null, broker.accepted = prev.accepted;
+  for (const [m, v] of Object.entries(prev.markets || {}))  // holdings not read this time (IBKR still being read): the last ones
+    if (v?.held != null && broker.markets[m]?.held == null) (broker.markets[m] ||= {}).held = v.held, broker.markets[m].at = v.at ?? null;
   fs.writeFileSync(out, JSON.stringify(broker, null, 1) + '\n');
-  console.log(`broker state written to ${out}: IBKR ${broker.accepts === false ? 'REFUSES the orders' : 'no refusal seen'}`);
+  console.log(`broker state written to ${out}: IBKR ${broker.accepts === false ? 'REFUSES the orders' : broker.accepts ? 'accepts the orders' : 'not known yet'}`);
 }
 writeBroker();
 if (problems.length) console.log(`\nNEEDS ATTENTION: ${problems.join('; ')}`);
