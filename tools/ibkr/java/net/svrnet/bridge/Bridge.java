@@ -4,7 +4,7 @@
 // Being moved from Python endpoint by endpoint: the endpoints here are answered here, every other request is
 // passed unchanged to the Python bridge (tools/ibkr/bridge.py) on 127.0.0.1, so nothing stops working meanwhile.
 //
-// Here: GET /java (this bridge's version and the API's), POST /ibc {"command": RESTART | RECONNECTACCOUNT |
+// Here: GET /java (this bridge's version and the API's), GET /orders and GET /history (as bridge.py), POST /ibc {"command": RESTART | RECONNECTACCOUNT |
 // RECONNECTDATA} (IBC's own commands for IB Gateway), POST /test-order {"market": UK | EU | US | APAC | INDEX}
 // (does IBKR accept an order now? a 1-share limit buy at half the probe share's close, cancelled at once).
 //
@@ -76,6 +76,10 @@ public final class Bridge {
             String method = x.getRequestMethod();
             if (method.equals("GET") && path.equals("/java")) {
                 if (allowed(x)) reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
+            } else if (method.equals("GET") && path.equals("/history")) {
+                if (allowed(x)) reply(x, 200, Json.obj("days", Book.history()));
+            } else if (method.equals("GET") && path.equals("/orders")) {
+                if (allowed(x)) orders(x);
             } else if (method.equals("POST") && path.equals("/ibc")) {
                 if (allowed(x)) ibc(x);
             } else if (method.equals("POST") && path.equals("/test-order")) {
@@ -131,6 +135,27 @@ public final class Bridge {
         try (InputStream in = x.getRequestBody()) {
             return new String(in.readNBytes(1 << 16), StandardCharsets.UTF_8);
         }
+    }
+
+    // --- The day's orders (GET /orders?market=), as bridge.py
+    static void orders(HttpExchange x) throws IOException {
+        String q = x.getRequestURI().getRawQuery();
+        String market = "";
+        for (String part : q == null ? new String[0] : q.split("&")) {
+            if (part.startsWith("market=")) market = java.net.URLDecoder.decode(part.substring(7), StandardCharsets.UTF_8).toUpperCase(Locale.ROOT);
+        }
+        if (!Book.MARKETS.contains(market)) {
+            reply(x, 400, Json.obj("error", "market must be UK, EU, US or APAC"));
+            return;
+        }
+        Map<String, Object> book;
+        try {
+            book = Book.orders(market);
+        } catch (Exception e) {
+            reply(x, 502, Json.obj("error", "orders not available: " + e.getMessage()));
+            return;
+        }
+        reply(x, 200, Json.write(book));
     }
 
     // --- IBC's command server: IB Gateway restarted or reconnected by IBC itself
