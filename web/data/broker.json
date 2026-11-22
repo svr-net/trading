@@ -1,14 +1,8 @@
 {
- "checked": "2026-11-22T10:41Z",
+ "checked": "2026-11-22T12:20Z",
  "reachable": true,
- "accepts": false,
- "refusal": {
-  "code": 2139,
-  "reason": "paper trading not acknowledged",
-  "last": "2026-11-22 10:41 GMT UK test-order",
-  "since": "2026-11-16",
-  "fix": "log in to the paper account once (Client Portal or TWS, paper mode), accept the paper-trading notice, then restart IB Gateway"
- },
+ "accepts": true,
+ "refusal": null,
  "markets": {
   "UK": {
    "auto": true,
@@ -30,5 +24,6 @@
    "auto": true
   }
  },
- "gateway": true
+ "gateway": true,
+ "accepted": "2026-11-22 12:20 UTC UK: test order accepted by IBKR (VOD, cancelled: true; Java)"
 }
