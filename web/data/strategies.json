@@ -124,6 +124,8 @@
      "mcnnstep": 5,
      "mcregime": 0,
      "mcregimestop": 0,
+     "mccost": 0,
+     "adaptfine": 0,
      "psar": 1,
      "rebuy": 0,
      "refill": 1,
