@@ -69,6 +69,7 @@ jobs:
           echo "status: $(head -c 200 status.json)"; echo "java: $(cat java.json)"; echo "diag: $(jq -c '[.checks[] | {check, ok}]' diag.json)"
           jq -e '.bridge == true and .java == true and .version == "${{ steps.v.outputs.sha }}"' status.json
           jq -e '[.checks[].check] | index("IB Gateway port") != null' diag.json
+          [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:18765/live)" = 200 ] || { echo "/live is not 200"; exit 1; }
           jq -e '.java == true and .version == "${{ steps.v.outputs.sha }}" and (.api | startswith("server version"))' java.json
           [ "$(curl -sk -o /dev/null -w '%{http_code}' -H "$o" https://127.0.0.1:18765/java)" = 401 ] || { echo "/java answered without the key"; exit 1; }
           docker exec ibkr-test pgrep -f ibcstart.sh >/dev/null || docker exec ibkr-test pgrep -f ibcalpha >/dev/null || { echo "IBC not running"; exit 1; }

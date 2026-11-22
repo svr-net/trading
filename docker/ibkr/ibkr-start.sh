@@ -32,7 +32,7 @@ fi
 
 stop_all() {
   echo "ibkr-start: stopping"
-  kill "$GATEWAY_LOOP" "$JAVA_LOOP" 2>/dev/null
+  kill "$GATEWAY_LOOP" "$JAVA_LOOP" "$LIVE_LOOP" 2>/dev/null
   pkill -TERM -f ibcalpha.ibc 2>/dev/null
   pkill -TERM -f bridge.jar 2>/dev/null
   wait
@@ -61,11 +61,31 @@ export IB_PORT
 (
   cd /app || exit 1
   while true; do
-    PORT=8765 BIND=0.0.0.0 /app/java -Xmx384m -jar /app/bridge.jar
+    PORT=8765 BIND=0.0.0.0 /app/java -Xmx384m -XX:+ExitOnOutOfMemoryError -XX:+UseSerialGC -jar /app/bridge.jar
     echo "ibkr-start: the bridge stopped (exit $?); starting it again in 5 seconds"
     sleep 5
   done
 ) &
 JAVA_LOOP=$!
+
+# Liveness: a bridge whose process runs but no longer answers, or whose scheduler, watchdog or background reads
+# stopped turning (GET /live answers 503), is ended after 3 failed checks a minute apart; the loop above starts it
+# again. Its steps are marked done in the history, so the new one catches up and never repeats a step.
+(
+  if [ -n "${TLS_P12:-}" ]; then url=https://127.0.0.1:8765/live; else url=http://127.0.0.1:8765/live; fi
+  sleep 180
+  fails=0
+  while true; do
+    if curl -skf --max-time 20 "$url" >/dev/null 2>&1; then fails=0; else fails=$((fails + 1)); fi
+    if [ "$fails" -ge 3 ]; then
+      echo "ibkr-start: the bridge failed 3 liveness checks ($(curl -sk --max-time 10 "$url" 2>&1 | head -c 200)); restarting it"
+      pkill -TERM -f bridge.jar 2>/dev/null; sleep 20; pkill -KILL -f bridge.jar 2>/dev/null
+      fails=0
+      sleep 120
+    fi
+    sleep 60
+  done
+) &
+LIVE_LOOP=$!
 
 wait

@@ -74,6 +74,9 @@ public final class Bridge {
             String method = x.getRequestMethod();
             if (method.equals("OPTIONS")) {
                 preflight(x);
+            } else if (method.equals("GET") && path.equals("/live")) {  // no key: the start script's liveness check (only the loops' lateness)
+                Map<String, Long> late = Auto.late();
+                reply(x, late.isEmpty() ? 200 : 503, Json.obj("live", late.isEmpty(), "late", late));
             } else if (method.equals("GET") && path.equals("/status")) {
                 reply(x, 200, Json.write(Auto.status()));
             } else if (!allowed(x)) {

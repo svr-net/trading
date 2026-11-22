@@ -323,8 +323,8 @@ final class Auto {
             Done d;
             try {
                 d = job.apply(m);
-            } catch (RuntimeException e) {
-                d = new Done(false, String.valueOf(e.getMessage()));
+            } catch (Throwable e) {  // NOPMD: a failed step is logged, never lost silently
+                d = new Done(false, e.getClass().getSimpleName() + ": " + e.getMessage());
             } finally {
                 BACKGROUND.decrementAndGet();
             }
@@ -780,6 +780,7 @@ final class Auto {
                 }
             }
             if (ibdiagAt == null || ago(ibdiagAt) >= 300) readOnce("diag", Auto::readIbdiag);
+            beat("refresher");
             Recordings.sleep(20);
         }
     }
@@ -810,9 +811,11 @@ final class Auto {
                     while (LAST.size() > 10) LAST.remove(LAST.size() - 1);
                 }
                 err("IB Gateway did not answer 3 times: " + note);
+                beat("watchdog");
                 Recordings.sleep(240);
                 continue;
             }
+            beat("watchdog");
             Recordings.sleep(60);
         }
     }
@@ -877,6 +880,7 @@ final class Auto {
                     err("scheduler " + m + ": " + e);
                 }
             }
+            beat("scheduler");
             Recordings.sleep(30);
         }
     }
@@ -925,11 +929,47 @@ final class Auto {
         daemon("refresher", Auto::refresher);
     }
 
+    /**
+     * A loop that must never stop (the scheduler, the watchdog, the background reads): anything it throws is logged and the loop starts
+     * again 10 seconds later. Out of memory ends the bridge (-XX:+ExitOnOutOfMemoryError), which ibkr-start.sh starts again.
+     */
     static void daemon(String name, Runnable r) {
-        Thread t = new Thread(r, name);
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    r.run();
+                    err(name + " ended; started again in 10 seconds");
+                } catch (Throwable e) {  // NOPMD: the loop outlives anything but the JVM
+                    err(name + " failed (" + e + "); started again in 10 seconds");
+                }
+                Recordings.sleep(10);
+            }
+        }, name);
         t.setDaemon(true);
         t.start();
     }
+
+    // --- liveness: each loop's last turn; GET /live answers 503 when one is late (ibkr-start.sh then restarts the bridge)
+    static final Map<String, Long> BEATS = new ConcurrentHashMap<>();
+    static final Map<String, Integer> LATE_AFTER = Map.of("scheduler", 300, "watchdog", 600, "refresher", 300);
+
+    static void beat(String loop) {
+        BEATS.put(loop, System.nanoTime());
+    }
+
+    /** The loops late by more than their limit (seconds since their last turn), or none: the bridge is alive. */
+    static Map<String, Long> late() {
+        Map<String, Long> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : LATE_AFTER.entrySet()) {
+            if (AUTO.isEmpty() && !e.getKey().equals("refresher")) continue;  // no automatic markets: no scheduler or watchdog
+            Long b = BEATS.get(e.getKey());
+            long age = b == null ? ago(STARTED_NANOS) : ago(b);
+            if (age > e.getValue()) out.put(e.getKey(), age);
+        }
+        return out;
+    }
+
+    static final long STARTED_NANOS = System.nanoTime();
 
     // --- GET /status (no key: tells the page the bridge is there) and GET /diag
     static final List<String> TODAY = List.of("leftovers", "place", "paths", "auction", "close", "flat", "report");
@@ -995,6 +1035,9 @@ final class Auto {
         };
         add.accept("Bridge", new Object[] {true, "version " + Bridge.VERSION + " (Java, IBKR API " + Api.version() + "), running since "
                 + STARTED.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z")) + "; automatic: " + (AUTO.isEmpty() ? "off" : String.join(",", AUTO)) + "; capital " + Holds.g(CAPITAL) + " a trade"});
+        Map<String, Long> late = late();
+        add.accept("Bridge loops", new Object[] {late.isEmpty(), late.isEmpty() ? "the scheduler, the watchdog and the background reads turning"
+                : "late (seconds since their last turn): " + late + "; the container restarts the bridge after 3 minutes of this"});
         add.accept("Bridge update", new Object[] {true, "newest image checked when no market is near its day: " + UPDATE_NOTE});
         if (Store.TOKEN.isEmpty()) {
             add.accept("EOD_TOKEN", new Object[] {false, "not set in .env"});
