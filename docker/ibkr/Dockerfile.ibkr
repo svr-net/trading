@@ -33,6 +33,10 @@ RUN set -e; mkdir -p /build/classes; \
     javac --release 21 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java'); \
     jar --create --file /build/bridge.jar --main-class net.svrnet.bridge.Bridge -C /build/classes .
 
+# IBKR's Java client sources alone (GPL-3), exported by bridge-image.yml for developing the bridge against them.
+FROM scratch AS javaclient-src
+COPY --from=java /opt/twsapi/source/javaclient /javaclient
+
 # --- The container --------------------------------------------------------------------------------------------
 FROM ghcr.io/gnzsnz/ib-gateway:stable
 

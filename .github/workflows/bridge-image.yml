@@ -97,6 +97,15 @@ jobs:
             [ "$(docker exec ibkr-test sh -c "ps -o user= -p \$(pgrep -f $p | head -1)")" != root ] || { echo "$p runs as root"; exit 1; }
           done
           docker rm -f ibkr-test >/dev/null
+      - name: IBKR's Java client sources (GPL-3), for developing the bridge against them
+        run: |
+          docker buildx build --platform linux/amd64 --target javaclient-src --output type=local,dest=javaclient-src -f docker/ibkr/Dockerfile.ibkr .
+          tar czf twsapi-javaclient.tgz -C javaclient-src javaclient && ls -l twsapi-javaclient.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twsapi-javaclient
+          path: twsapi-javaclient.tgz
+          retention-days: 30
       - name: One file per image and processor
         if: steps.v.outputs.main
         run: |
