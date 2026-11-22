@@ -35,6 +35,15 @@ nothing the model decides:
 The CPU engine, the native engine and the daily scans are unchanged: their results stay bit for bit the same on every
 back end (`tools/check/strategy_check.sh`).
 
+## The adaptive nested Monte Carlo's network
+
+The same back end trains the adaptive nested Monte Carlo's differential network (docs/adaptive-nested-mc.md): it sets
+`anmc::diffnetOffload()`, and on the device it opened for the Monte Carlo runs a fit's fused kernel (`diffnetFused`,
+`include/strategy/diffnet_wgsl.hpp`; its reference in `include/strategy/diffnet_gpu.hpp`), 64 steps a command buffer.
+`docker/wasm/Dockerfile` links it into `ofm_anmc_gpu.js` beside the CPU build `ofm_anmc.js`; `web/tests/anmclab.mjs`
+runs both and the native build on the same basket check. The strategy engine's builds carry the hook but never train a
+network: their results, and the report line `strategy: webgpu: N Monte Carlo batches on ...`, are unchanged.
+
 ## Speed
 
 On a GPU each batch is one dispatch of thousands of independent paths. Each batch also waits once for the browser

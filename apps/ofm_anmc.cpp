@@ -10,6 +10,7 @@
 // the ES errors from regression-only: the CI's check that the library still does what the document says.
 //
 //   ofm_anmc --basket 10 [--outer 20000] [--reps 1] [--budget 1000000] [--threads -1] [--check]
+//            [--methods hermite2,hermite3,values,differential,trusted,fused] [--stats VaR,ES,EPE] [--epochs N] [--estimates]
 //
 // The differential network proxy (include/strategy/differential_proxy.hpp) against the Hermite regression on a book of
 // d correlated assets whose value at the horizon is exact (see Basket below); each outer path carries its pathwise
@@ -236,37 +237,68 @@ struct Basket {
   }
 };
 
-int basketMain(std::size_t d, std::size_t nOuter, std::size_t reps, std::size_t budget, int threads, bool check) {
+// A comma-separated list's members (empty list: everything).
+bool listed(const std::string& list, const char* name) {
+  if (list.empty()) return true;
+  for (std::size_t a = 0; a <= list.size();) {
+    const std::size_t b = std::min(list.find(',', a), list.size());
+    if (list.compare(a, b - a, name) == 0) return true;
+    a = b + 1;
+  }
+  return false;
+}
+
+struct BasketRun {
+  std::size_t d = 10, nOuter = 20000, reps = 1, budget = 1000000, epochs = 0;
+  int threads = -1;
+  bool check = false, estimates = false;
+  std::string methods, stats;  // comma lists (empty: all)
+};
+
+int basketMain(const BasketRun& run) {
+  const std::size_t d = run.d, nOuter = run.nOuter, reps = run.reps, budget = run.budget;
+  const int threads = run.threads;
+  const bool check = run.check;
   const Basket basket(d);
   struct Method {
+    const char* key;
     const char* name;
     anmc::ProxyFactory proxy;
     int degree;
   };
-  anmc::DifferentialOptions values, trusted;
+  anmc::DifferentialOptions net;
+  if (run.epochs) net.epochs = run.epochs;
+  anmc::DifferentialOptions values = net, trusted = net;
   values.useDerivatives = false;
   trusted.estimationVariance = false;
-  const Method methods[] = {{"Hermite degree 2", nullptr, 2},
-                            {"Hermite degree 3", nullptr, 3},
-                            {"network, values only", anmc::differentialProxy(values), 0},
-                            {"differential network", anmc::differentialProxy(), 0},
-                            {"differential, no estimation variance", anmc::differentialProxy(trusted), 0},
-                            {"differential, fused kernel (f32)", anmc::fusedDifferentialProxy(), 0}};
+  const Method methods[] = {{"hermite2", "Hermite degree 2", nullptr, 2},
+                            {"hermite3", "Hermite degree 3", nullptr, 3},
+                            {"values", "network, values only", anmc::differentialProxy(values), 0},
+                            {"differential", "differential network", anmc::differentialProxy(net), 0},
+                            {"trusted", "differential, no estimation variance", anmc::differentialProxy(trusted), 0},
+                            {"fused", "differential, fused kernel (f32)", anmc::fusedDifferentialProxy(net), 0}};
   constexpr std::size_t kMethods = sizeof(methods) / sizeof(methods[0]);
   const std::size_t values_ = 2, diff = 3, fused = 5;
   const char* stats[] = {"VaR", "ES", "EPE"};
+  if (check && (!run.methods.empty() || !run.stats.empty() || run.epochs)) {
+    std::fprintf(stderr, "--basket --check runs every method and statistic with the default training\n");
+    return 2;
+  }
   // bounds for --check: the differential network's adaptive RMSE, % of exact (EPE: the noise floor of the outer payoffs
   // the unrefined scenarios keep as their values)
   const double bound[] = {3.0, 3.0, 8.0};
-  auto skipped = [&](std::size_t m) {  // a Hermite basis past 500 functions: minutes a fit, and no better
+  auto tooBig = [&](std::size_t m) {  // a Hermite basis past 500 functions: minutes a fit, and no better
     return methods[m].degree > 0 && anmc::HermiteBasis(d, methods[m].degree).size() > 500;
   };
+  auto skipped = [&](std::size_t m) { return tooBig(m) || !listed(run.methods, methods[m].key); };
+  auto chosen = [&](int st) { return listed(run.stats, stats[st]); };
   double proxyErr[kMethods][3] = {}, adErr[kMethods][3] = {}, paths[kMethods][3] = {}, secs[kMethods] = {};
   std::string proxyName[kMethods];
   for (std::size_t r = 0; r < reps; ++r) {
     const anmc::OuterScenarios o = basket.outer(nOuter, 1000 + r);
     for (std::size_t m = 0; m < kMethods; ++m)
       for (int st = 0; st < 3 && !skipped(m); ++st) {
+        if (!chosen(st)) continue;
         anmc::Options opt;
         opt.totalInnerBudget = budget;
         opt.maxDegreeOfParallelism = threads;
@@ -284,6 +316,8 @@ int basketMain(std::size_t d, std::size_t nOuter, std::size_t reps, std::size_t 
         adErr[m][st] += std::pow((res.estimate - exact) / std::fabs(exact), 2);
         paths[m][st] += static_cast<double>(res.innerPathsUsed);
         proxyName[m] = res.proxy->describe();
+        if (run.estimates)
+          std::printf("estimate,%s,%s,%zu,%.10g,%.10g,%.10g,%zu\n", methods[m].key, stats[st], r, res.estimate, res.baselineEstimate, exact, res.innerPathsUsed);
       }
   }
   const double nr = static_cast<double>(reps);
@@ -291,7 +325,8 @@ int basketMain(std::size_t d, std::size_t nOuter, std::size_t reps, std::size_t 
   std::printf("proxy,statistic,regression-only RMSE %%,adaptive RMSE %%,inner paths,seconds (3 statistics)\n");
   for (std::size_t m = 0; m < kMethods; ++m)
     for (int st = 0; st < 3; ++st)
-      if (skipped(m)) std::printf("%s,%s,,,,(skipped: %zu functions)\n", methods[m].name, stats[st], anmc::HermiteBasis(d, methods[m].degree).size());
+      if (!listed(run.methods, methods[m].key) || !chosen(st)) continue;
+      else if (tooBig(m)) std::printf("%s,%s,,,,(skipped: %zu functions)\n", methods[m].name, stats[st], anmc::HermiteBasis(d, methods[m].degree).size());
       else
         std::printf("%s,%s,%.2f,%.2f,%.0f,%.1f\n", methods[m].name, stats[st], 100 * std::sqrt(proxyErr[m][st] / nr), 100 * std::sqrt(adErr[m][st] / nr),
                     paths[m][st] / nr, secs[m] / nr);
@@ -482,6 +517,7 @@ int main(int argc, char** argv) {
   std::vector<int> degrees = {1, 2, 4};
   bool check = false, outerGiven = false, budgetGiven = false, kernels = false;
   std::size_t basket = 0;
+  BasketRun run;
   const char* dump = nullptr;
   for (int a = 1; a < argc; ++a) {
     const std::string k = argv[a];
@@ -496,6 +532,10 @@ int main(int argc, char** argv) {
     else if (k == "--basket") basket = std::strtoul(next(), nullptr, 10);
     else if (k == "--kernels") kernels = true;
     else if (k == "--dump") dump = next();
+    else if (k == "--methods") run.methods = next();
+    else if (k == "--stats") run.stats = next();
+    else if (k == "--epochs") run.epochs = std::strtoul(next(), nullptr, 10);
+    else if (k == "--estimates") run.estimates = true;
     else if (k == "--threads") threads = std::atoi(next());
     else if (k == "--degrees") {
       degrees.clear();
@@ -505,14 +545,20 @@ int main(int argc, char** argv) {
         if (*p) ++p;
       }
     } else {
+      std::fprintf(stderr, "ofm_anmc: unknown argument %s\n", k.c_str());
       std::fprintf(stderr, "usage: ofm_anmc [--outer N] [--reps N] [--degrees 1,2,4] [--budget N] [--threads N] [--check]\n"
                            "       ofm_anmc --basket D [--outer N] [--reps N] [--budget N] [--threads N] [--check]\n"
+                           "                [--methods hermite2,hermite3,values,differential,trusted,fused] [--stats VaR,ES,EPE] [--epochs N] [--estimates]\n"
                            "       ofm_anmc --kernels [--check] [--dump FILE] [--threads N]\n");
       return 2;
     }
   }
   if (kernels) return kernelsMain(check, dump, threads);
-  if (basket) return basketMain(basket, outerGiven ? nOuter : 20000, reps, budgetGiven ? budget : 1000000, threads, check);
+  if (basket) {
+    run.d = basket, run.nOuter = outerGiven ? nOuter : 20000, run.reps = reps, run.budget = budgetGiven ? budget : 1000000;
+    run.threads = threads, run.check = check;
+    return basketMain(run);
+  }
   const Book straddle{"short straddle 100", straddlePay, straddleVal}, rr{"risk reversal 105/95", rrPay, rrVal};
   struct Case { const char* stat; const Book* book; double bound; };  // bound: the adaptive RMSE allowed, % of exact
   const Case cases[] = {{"VaR", &straddle, 6.0}, {"ES", &straddle, 3.0}, {"EPE", &rr, 3.0}};

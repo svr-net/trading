@@ -7,7 +7,11 @@
 #   gpu        the same engine with the webgpu back end (backends/webgpu.cpp, WebGPU's C API): the nested Monte Carlo's
 #              trade kernel (include/strategy/mc_wgsl.hpp) on the browser's GPU; Asyncify lets the engine wait for the
 #              GPU's answers. The Lab loads it only where the browser has WebGPU
-#   out        just ofm_strategy.js/.wasm and ofm_strategy_gpu.js/.wasm, exported with --output
+#   anmc       the adaptive nested Monte Carlo's checks (apps/ofm_anmc.cpp), on the CPU (ofm_anmc.js) and with the same
+#              webgpu back end (ofm_anmc_gpu.js), which trains its differential network on the GPU (the fused kernel,
+#              include/strategy/diffnet_wgsl.hpp); web/tests/anmclab.mjs runs both against the native build
+#   out        just ofm_strategy.js/.wasm, ofm_strategy_gpu.js/.wasm, ofm_anmc.js/.wasm and ofm_anmc_gpu.js/.wasm, exported
+#              with --output
 #
 #   docker buildx build -f docker/wasm/Dockerfile --target out --output type=local,dest=web/lab .
 #
@@ -42,5 +46,12 @@ RUN em++ $FLAGS -DOFM_WEBGPU -Iinclude apps/ofm_strategy.cpp strategies/*.cpp ba
       -sUSE_WEBGPU=1 -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=1048576 -sEXPORT_NAME=createOfmStrategyGpu \
  && ls -l /out
 
+FROM gpu AS anmc
+COPY apps/ofm_anmc.cpp apps/
+RUN em++ $FLAGS -Iinclude apps/ofm_anmc.cpp -o /out/ofm_anmc.js $LINK -sEXPORT_NAME=createOfmAnmc \
+ && em++ $FLAGS -DOFM_WEBGPU -Iinclude apps/ofm_anmc.cpp backends/webgpu.cpp -o /out/ofm_anmc_gpu.js $LINK \
+      -sUSE_WEBGPU=1 -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=1048576 -sEXPORT_NAME=createOfmAnmcGpu \
+ && ls -l /out
+
 FROM scratch AS out
-COPY --from=gpu /out/ /
+COPY --from=anmc /out/ /

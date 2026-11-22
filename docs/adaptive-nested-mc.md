@@ -167,6 +167,15 @@ that sets `diffnetOffload()` runs it on a GPU, as `mcOffload()` does the Lab's M
 so results never depend on whether a GPU was there, only on its single precision. In the tables above the kernel-trained
 network gives the same errors as the double-precision one to two decimals.
 
+**In the browser.** The Lab's webgpu back end (`backends/webgpu.cpp`, WebGPU's C API) sets `diffnetOffload()`: on the
+device it opens for the Monte Carlo, it runs a fit's `diffnetFused` 64 steps a command buffer (a dispatch of one workgroup
+each), reads the weights back once, and returns a fit it cannot run (no GPU, a validation error, a buffer over the
+device's limits, a lost device) to the reference. `docker/wasm/Dockerfile` builds `ofm_anmc` to WebAssembly twice,
+`web/lab/ofm_anmc.js` (the CPU) and `web/lab/ofm_anmc_gpu.js` (with that back end), and the GPU build reports
+`anmc: webgpu: N network fits on <adapter>` at its end. `web/tests/anmclab.mjs` runs the basket check in all three
+(`--basket 10 --outer 4000 --budget 200000 --methods fused --stats VaR,ES`: two fits of 480 steps): every fit of the GPU
+build on the GPU, and VaR and ES from each build within 0.5% of the exact value from the native build's.
+
 `ofm_anmc --kernels --check` (10 inputs, 4,000 rows, 2,497 weights, 128 steps; one row in seven without derivatives,
 one in five weighted 3):
 
@@ -219,9 +228,9 @@ and the WebGPU test.
 ## Limitations
 
 The differential network's estimation variance leaves out its hidden layers' uncertainty, and without it the loop
-trusts the network too far (above). Its kernels have a GPU hook (`diffnetOffload()`) but no back end sets it yet: the
-Lab's webgpu back end runs the strategy's Monte Carlo only. The kernels take at most 32 inputs, a width of 32 and 4
-hidden layers.
+trusts the network too far (above). The kernels take at most 32 inputs, a width of 32 and 4 hidden layers. In the browser
+the adaptive nested Monte Carlo runs as its own build (`ofm_anmc_gpu.js`): the Lab's page does not offer it, and the
+strategy engine does not call it.
 
 As in the document: τ² is constant within a bin of proxy values; VaR has no standard error; ES runs slightly low when
 the proxy ranks the tail imperfectly; quantiles of noisy estimates carry the usual nested-simulation bias; one horizon
