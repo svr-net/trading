@@ -13,6 +13,8 @@ on:
       - 'tools/ibkr/**'
       - 'docker/ibkr/Dockerfile.bridge'
       - 'docker/ibkr/Dockerfile.caddy'
+      - 'docker/ibkr/Dockerfile.ibkr'
+      - 'docker/ibkr/ibkr-start.sh'
       - '.github/workflows/bridge-image.yml'
 permissions:
   contents: write   # the nas-images release
@@ -35,7 +37,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: The short commit
         id: v
-        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          # Only main's images are "latest" (the NAS takes latest): a branch's build is tagged with its commit only.
+          [ "$GITHUB_REF" = refs/heads/main ] && echo "main=1" >> "$GITHUB_OUTPUT" || echo "main=" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -45,7 +50,7 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           push: true
           tags: |
-            ghcr.io/svr-net/trading-bridge:latest
+            ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-bridge:latest' || '' }}
             ghcr.io/svr-net/trading-bridge:${{ steps.v.outputs.sha }}
       - uses: docker/build-push-action@v6
         with:
@@ -55,13 +60,41 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           push: true
           tags: |
-            ghcr.io/svr-net/trading-caddy:latest
+            ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-caddy:latest' || '' }}
             ghcr.io/svr-net/trading-caddy:${{ steps.v.outputs.sha }}
+      # One container for the NAS (docker/ibkr/ibkr-nas.sh): IB Gateway, IBC and the bridge together.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ibkr/Dockerfile.ibkr
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.v.outputs.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          push: true
+          tags: |
+            ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-ibkr:latest' || '' }}
+            ghcr.io/svr-net/trading-ibkr:${{ steps.v.outputs.sha }}
+      - name: The one container starts (IB Gateway's start script and the bridge, without a login)
+        run: |
+          set -euo pipefail
+          img=ghcr.io/svr-net/trading-ibkr:${{ steps.v.outputs.sha }}
+          docker pull -q --platform linux/amd64 "$img"
+          mkdir -p /tmp/tls && openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/tls/key.pem -out /tmp/tls/cert.pem -subj /CN=localhost 2>/dev/null
+          chmod 600 /tmp/tls/key.pem
+          docker run -d --name t -e TWS_USERID=nobody -e TWS_PASSWORD=x -e TRADING_MODE=paper -e BRIDGE_KEY=k \
+            -v /tmp/tls:/certs:ro -e TLS_SRC_CERT=/certs/cert.pem -e TLS_SRC_KEY=/certs/key.pem -p 18765:8765 "$img"
+          for i in $(seq 1 30); do curl -skf -H 'Origin: https://svr-net.github.io' https://127.0.0.1:18765/status -o status.json && break; sleep 2; done
+          docker logs t 2>&1 | tail -25
+          jq -e '.bridge == true and .version == "${{ steps.v.outputs.sha }}"' status.json
+          docker exec t pgrep -f ibcstart.sh >/dev/null || docker exec t pgrep -f ibcalpha >/dev/null || { echo "IBC not running"; exit 1; }
+          [ "$(docker exec t sh -c 'ps -o user= -p $(pgrep -f bridge.py | head -1)')" != root ] || { echo "the bridge runs as root"; exit 1; }
+          docker rm -f t >/dev/null
       - name: One file per image and processor
+        if: steps.v.outputs.main
         run: |
           set -euo pipefail
           mkdir -p out
-          for name in trading-bridge trading-caddy; do
+          for name in trading-bridge trading-caddy trading-ibkr; do
             # Each processor's image by its own digest (pulling the tag a second time for another platform fails on
             # the newer runners: "unable to create manifests file: content digest not found", 17 Nov).
             ref="ghcr.io/svr-net/$name:${{ steps.v.outputs.sha }}"
@@ -76,6 +109,7 @@ jobs:
           done
           ls -l out
       - name: The nas-images release
+        if: steps.v.outputs.main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

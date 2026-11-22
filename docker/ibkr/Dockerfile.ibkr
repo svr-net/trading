@@ -1,0 +1,40 @@
+# One container for the NAS: IB Gateway logged in by IBC (the community image ghcr.io/gnzsnz/ib-gateway)
+# and the broker bridge (tools/ibkr) beside it, the bridge serving HTTPS itself (TLS_CERT, TLS_KEY) and
+# restarting IB Gateway in place (GATEWAY_RESTART=local). It replaces the four containers of
+# docker-compose.yml (ib-gateway, bridge, restarter, caddy). Built by GitHub (bridge-image.yml), never on
+# the NAS; started by docker/ibkr/ibkr-nas.sh. No keys or settings in the image: they come from the
+# NAS's .env at run time.
+FROM ghcr.io/gnzsnz/ib-gateway:stable
+
+USER root
+RUN apt-get update \
+ && apt-get install --no-install-recommends --yes python3 python3-venv procps util-linux \
+ && python3 -m venv /opt/bridge \
+ && /opt/bridge/bin/pip install --no-cache-dir ib_async tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /data/history && chown -R 1000:1000 /data
+
+WORKDIR /app
+COPY tools/ibkr/ tools/ibkr/
+COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
+RUN chmod 755 /app/ibkr-start.sh
+
+# The commit it was built from: the Bridge monitor checks the NAS runs the latest.
+ARG VERSION=unknown
+ENV BRIDGE_VERSION=$VERSION \
+    GATEWAY_RESTART=local \
+    IB_HOST=127.0.0.1 \
+    BIND=0.0.0.0 \
+    PORT=8765 \
+    HISTORY_DIR=/data/history \
+    ALLOWED_ORIGIN=https://svr-net.github.io \
+    READ_ONLY_API=no \
+    BYPASS_WARNING=yes \
+    TWOFA_TIMEOUT_ACTION=restart \
+    AUTO_RESTART_TIME="11:59 PM"
+
+# Starts as root only to copy the certificate (ibkr-start.sh), then runs everything as the image's user (1000).
+USER root
+WORKDIR /home/ibgateway
+EXPOSE 8765
+CMD ["/app/ibkr-start.sh"]
