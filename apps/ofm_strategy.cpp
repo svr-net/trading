@@ -1578,9 +1578,12 @@ int main(int argc, char** argv) {
     return q.sar / at - 1;
   };
   // stopmedian: the orders to buy (not the shares held) whose stop would start wider than the day's median left out.
+  std::set<std::size_t> wideStop;  // the orders the median-stop filter left out (named in the report)
   if (P["stopmedian"] > 0 && stops) {
     const double cut = stopMedianOf(L);
-    final.erase(std::remove_if(final.begin(), final.end(), [&](const Order& x) { return !x.held && startDist(L, x.i) > cut; }), final.end());
+    for (const auto& x : final)
+      if (!x.held && startDist(L, x.i) > cut) wideStop.insert(x.i);
+    final.erase(std::remove_if(final.begin(), final.end(), [&](const Order& x) { return wideStop.count(x.i) > 0; }), final.end());
   }
   // The orders by expected return per unit of stop (stops): the expected return after costs (times the chance to
   // fill) over the stop's distance under the last close (at least 0.5%), highest first, so a far stop must earn its
@@ -1737,7 +1740,10 @@ int main(int argc, char** argv) {
   for (const auto& x : orders)
     std::printf("strategy:   %-12s rank %zu: expected %+.2f%% before costs, costs %.2f%%: %+.2f%% after%s%s\n", d.tickers[x.i].c_str(), x.rank + 1, 100 * x.gross,
                 100 * costs.roundTrip(x.value, d.tickers[x.i], x.close / unit), 100 * (x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit)),
-                x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit) > 0 ? "" : " (dropped)", x.held ? " (held already)" : "");
+                x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit) > 0
+                    ? (wideStop.count(x.i) ? " (left out: its stop would start wider than the day's median, stopmedian)" : "")
+                    : " (dropped)",
+                x.held ? " (held already)" : "");
 
   const double holdDays = mcOn ? double(mc.horizon) : learnt.holdDays(double(reb));
   const strat::View last(d, decided, &in[decided * N], *backend);  // the target's day: its ranks and reasons
