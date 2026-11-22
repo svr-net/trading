@@ -179,6 +179,7 @@ final class Auto {
             Path f = state(m, action, today(m));
             Files.createDirectories(f.getParent());
             if (!Files.exists(f)) Files.createFile(f);
+            Mirror.changed();
         } catch (IOException e) {
             err("mark done " + m + " " + action + ": " + e.getMessage());
         }
@@ -215,6 +216,7 @@ final class Auto {
     static synchronized void historyAdd(Map<String, Object> record) throws IOException {
         Files.createDirectories(Path.of(HISTORY));
         Files.writeString(Path.of(HISTORY, "history.jsonl"), Json.write(record) + "\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        Mirror.changed();
     }
 
     /** The day's orders file (Book.fetch), the model's own result for its latest day kept once in the history. */
@@ -245,6 +247,7 @@ final class Auto {
             rec.put("trades", t);
             historyAdd(rec);
             Files.createFile(mark);
+            Mirror.changed();
         } catch (IOException | RuntimeException e) {
             err("model check " + m + ": " + e.getMessage());
         }
@@ -428,7 +431,12 @@ final class Auto {
     static Steps.Result holds(String m, String action, Map<String, Object> book) throws IOException {
         try (Ib ib = Ib.connect(Recordings.clientId(m) + 7)) {
             Holds h = new Holds(ib, m, action, holdState(m), 1000.0, LocalDate.now());
-            String last = h.run(book);
+            String last;
+            try {
+                last = h.run(book);
+            } finally {
+                Mirror.changed();  // the book's positions and stops: in the store within a minute
+            }
             return new Steps.Result(0, new ArrayList<>(h.lines()), last);
         }
     }
@@ -853,6 +861,7 @@ final class Auto {
                 buysNote = (on ? "on" : "off") + " (config/nas-buys.json, read " + ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm z")) + ")";
                 Files.createDirectories(Path.of(HISTORY));
                 Files.writeString(keep, on ? "1" : "0");
+                Mirror.changed();
             } catch (IOException | RuntimeException e) {
                 buysNote = (buysOn ? "on" : "off") + " (the last read; config/nas-buys.json not read: " + e.getClass().getSimpleName() + ")";
             }
@@ -926,7 +935,12 @@ final class Auto {
         if (within(now, REPORT.get(m), 0, 180) && !isDone(m, "report") && mayTry(m, "report", 10, 0)) job(m, "report", Auto::report, true);
     }
 
+    static volatile String restored = "not started";
+
     static void start() {
+        restored = Mirror.restore();  // before anything reads the history
+        err("state: " + restored);
+        Mirror.start();
         if (!AUTO.isEmpty()) {
             seedDone();
             daemon("scheduler", Auto::scheduler);
@@ -1044,6 +1058,10 @@ final class Auto {
         Map<String, Long> late = late();
         add.accept("Bridge loops", new Object[] {late.isEmpty(), late.isEmpty() ? "the scheduler, the watchdog and the background reads turning"
                 : "late (seconds since their last turn): " + late + "; the container restarts the bridge after 3 minutes of this"});
+        add.accept("State in the store", new Object[] {!Mirror.ON ? null : Mirror.ok, !Mirror.ON ? "off (STATE_MIRROR=0)"
+                : "svr-net/eod " + Mirror.PATH + ": " + Mirror.note + (Mirror.dirty ? "; changes waiting" : "") + "; at start: " + restored});
+        add.accept("Store cache", new Object[] {Store.lastStale.isEmpty() ? true : null, Store.lastStale.isEmpty()
+                ? "every store read from GitHub or its unchanged copy here" : "last served from the copy here: " + Store.lastStale});
         add.accept("Bridge update", new Object[] {true, "newest image checked when no market is near its day: " + UPDATE_NOTE});
         if (Store.TOKEN.isEmpty()) {
             add.accept("EOD_TOKEN", new Object[] {false, "not set in .env"});

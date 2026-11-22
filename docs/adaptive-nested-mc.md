@@ -84,7 +84,17 @@ rule pops a heap only as far as the excess needs instead of sorting every candid
 buffers, and the proxy fit accumulates its normal equations and HC0 meat in fixed chunks of 4,096 rows in parallel,
 added in chunk order. Each step was checked to give the same output as before it, and the output is identical on any
 number of threads. The validation's engine is a fused path kernel too (both normals of each Box-Muller draw, the
-constants once a batch). `ofm_anmc --reps 3`: 6.2 s before, 3.0 s now (4 cores).
+constants once a batch). `ofm_anmc --reps 3`: 6.2 s before, 3.0 s with the fused kernels, 2.5 s with the spin pool
+(4 cores).
+
+**Parallelism without locks or blocking.** The kernels run on a pool started once per estimate (`detail::SpinPool`):
+no mutex, condition variable or join inside a kernel. A task lives in one atomic 64-bit word (generation, chunk count,
+next chunk); the caller writes the task into the slot of its generation and publishes the word, the workers spin-wait
+(the CPU's pause hint, a yield after 2,048 spins) for a new generation and claim chunks by compare-exchange on the
+word, so a claim succeeds only against the live task and a late worker can never read a slot being rewritten. Finished
+chunks are counted in an atomic the caller spin-waits on (it claims chunks too); the first exception is kept by
+compare-exchange and rethrown in the caller. The output is bit for bit the same as before the pool and on 1, 3 and 4
+threads, and ThreadSanitizer finds no race in the whole validation or after a simulator that throws.
 
 CI runs `ofm_anmc --check` (one repetition, deterministic): the adaptive error must stay within 6% (VaR), 3% (ES) and
 3% (EPE), and refinement must cut the regression-only error for VaR at degree 1 and for ES at every degree.

@@ -25,15 +25,75 @@ final class Store {
         return c;
     }
 
-    /** One file of the store, or null when it is not there. */
+    /** A store read's outcome: the bytes (null: not in the store) and whether they are the cached copy GitHub could not refresh. */
+    record Read(byte[] body, boolean stale, String note) { }
+
+    static final java.util.concurrent.ConcurrentHashMap<String, Object> LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+    static volatile String lastStale = "";
+
+    static java.nio.file.Path cacheFile(String path) {
+        return java.nio.file.Path.of(Book.CACHE, "store", path.replace("..", "_"));
+    }
+
+    /** One file of the store, or null when it is not there (through the disk cache: see read). */
     static byte[] get(String path) throws IOException {
-        HttpURLConnection c = open(BASE + path, "application/vnd.github.raw", 60);
-        int code = c.getResponseCode();
-        if (code == 404) return null;
-        if (code != 200) throw new IOException("GitHub answered " + code + " for " + path);
-        try (InputStream in = c.getInputStream()) {
-            return in.readAllBytes();
+        return read(path).body();
+    }
+
+    /**
+     * One file of the store through a disk cache (ORDERS_DIR/store/<path>, with GitHub's ETag beside it): asked with
+     * If-None-Match, an unchanged file is a 304 (no download, no rate limit) and the cached copy is used; a changed one
+     * replaces it. When GitHub does not answer (a timeout, a 5xx, the NAS offline), the last good copy is used and the
+     * read says so (stale); only with no copy at all does it fail. A 404 removes the copy (the file is gone).
+     */
+    static Read read(String path) throws IOException {
+        final java.nio.file.Path file = cacheFile(path), tag = java.nio.file.Path.of(file + ".etag");
+        synchronized (LOCKS.computeIfAbsent(path, k -> new Object())) {
+            final boolean have = java.nio.file.Files.exists(file);
+            int code;
+            HttpURLConnection c;
+            try {
+                c = open(BASE + path, "application/vnd.github.raw", 60);
+                c.setRequestProperty("Cache-Control", "no-cache");
+                if (have && java.nio.file.Files.exists(tag)) c.setRequestProperty("If-None-Match", java.nio.file.Files.readString(tag).strip());
+                code = c.getResponseCode();
+            } catch (IOException e) {
+                if (have) return stale(path, file, "GitHub not reachable (" + e.getClass().getSimpleName() + ")");
+                throw e;
+            }
+            if (code == 304 && have) return new Read(java.nio.file.Files.readAllBytes(file), false, "");
+            if (code == 404) {
+                java.nio.file.Files.deleteIfExists(file);
+                java.nio.file.Files.deleteIfExists(tag);
+                return new Read(null, false, "");
+            }
+            if (code == 401 || code == 403) throw new Http(code);  // the token: never hidden behind a cached copy
+            if (code != 200) {
+                if (have) return stale(path, file, "GitHub answered " + code);
+                throw new Http(code);
+            }
+            byte[] body;
+            try (InputStream in = c.getInputStream()) {
+                body = in.readAllBytes();
+            } catch (IOException e) {
+                if (have) return stale(path, file, "the download broke off (" + e.getClass().getSimpleName() + ")");
+                throw e;
+            }
+            java.nio.file.Files.createDirectories(file.getParent());
+            final java.nio.file.Path tmp = java.nio.file.Path.of(file + ".tmp");
+            java.nio.file.Files.write(tmp, body);
+            java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            final String etag = c.getHeaderField("ETag");
+            if (etag != null) java.nio.file.Files.writeString(tag, etag);
+            else java.nio.file.Files.deleteIfExists(tag);
+            return new Read(body, false, "");
         }
+    }
+
+    private static Read stale(String path, java.nio.file.Path file, String why) throws IOException {
+        lastStale = path + ": " + why + " at " + java.time.ZonedDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"));
+        System.err.println("bridge: store " + path + ": " + why + "; the cached copy is used");
+        return new Read(java.nio.file.Files.readAllBytes(file), true, why);
     }
 
     /**

@@ -22,6 +22,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -32,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace anmc {
@@ -188,55 +190,168 @@ inline std::size_t threadCount(int threads, std::size_t n) {
   return std::max<std::size_t>(1, std::min(t, n));
 }
 
-// Runs body(begin, end) over [0, n) in contiguous chunks, one per thread: each index on exactly one thread. A body
-// that writes only its own indices gives the same result on any number of threads.
+// One spin-wait step: the CPU's pause hint, and after many of them a yield (never a sleep or a lock).
+inline void spinPause(unsigned& spins) {
+  if (++spins < 2048) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#endif
+  } else {
+    std::this_thread::yield();
+  }
+}
+
+// The kernels' workers: started once per estimate, never locked and never blocked. A task lives in one atomic word,
+// generation (24 bits) | chunk count (20 bits) | next chunk (20 bits). The caller writes the task into the slot of its
+// generation and publishes the word (release); the workers spin-wait for a word of a new generation and claim chunks by
+// compare-exchange on it, so a claim succeeds only against the live task (a late worker's exchange fails on the
+// generation) and the slot it then reads cannot be rewritten while a chunk of it is unclaimed. Each finished chunk is
+// counted in an atomic; the caller, which claims chunks too, spin-waits until all are counted. The first exception is
+// kept by compare-exchange and rethrown in the caller. Every index runs on exactly one thread, so a body that writes only
+// its own indices gives the same result on any number of threads and in any schedule.
+class SpinPool {
+ public:
+  explicit SpinPool(std::size_t workers) {
+    for (std::size_t w = 0; w < workers; ++w) threads_.emplace_back([this] { work(); });
+  }
+  SpinPool(const SpinPool&) = delete;
+  SpinPool& operator=(const SpinPool&) = delete;
+  ~SpinPool() {
+    stop_.store(true, std::memory_order_release);
+    for (auto& t : threads_) t.join();  // at the end of the estimate only, never inside a kernel
+  }
+  std::size_t size() const { return threads_.size() + 1; }
+
+  // body(begin, end) over [0, n) in chunks of `grain` (at most 2^20 chunks: the grain grows if needed).
+  template <class Body>
+  void run(std::size_t n, std::size_t grain, Body&& body) {
+    if (n == 0) return;
+    grain = std::max<std::size_t>(1, grain);
+    if ((n + grain - 1) / grain > kMaxChunks) grain = (n + kMaxChunks - 1) / kMaxChunks;
+    const std::uint64_t chunks = (n + grain - 1) / grain;
+    gen_ = (gen_ + 1) & kGenMask;
+    Slot& slot = slots_[gen_ & 1];
+    slot.body = [](void* ctx, std::size_t lo, std::size_t hi) { (*static_cast<std::remove_reference_t<Body>*>(ctx))(lo, hi); };
+    slot.ctx = const_cast<void*>(static_cast<const void*>(&body));
+    slot.n = n;
+    slot.grain = grain;
+    done_.store(0, std::memory_order_relaxed);
+    failed_.store(false, std::memory_order_relaxed);
+    error_ = nullptr;
+    word_.store(gen_ << 40 | chunks << 20, std::memory_order_release);  // publishes the task
+    drain(gen_);
+    unsigned spins = 0;
+    while (done_.load(std::memory_order_acquire) < chunks) spinPause(spins);
+    if (failed_.load(std::memory_order_acquire)) std::rethrow_exception(error_);
+  }
+
+ private:
+  static constexpr std::uint64_t kGenMask = (1ULL << 24) - 1, kMaxChunks = (1ULL << 20) - 1, kField = (1ULL << 20) - 1;
+  struct Slot {
+    void (*body)(void*, std::size_t, std::size_t) = nullptr;
+    void* ctx = nullptr;
+    std::size_t n = 0, grain = 1;
+  };
+
+  // Claims chunks of generation g by compare-exchange until none is left or the task is no longer live.
+  void drain(std::uint64_t g) {
+    std::uint64_t w = word_.load(std::memory_order_acquire);
+    while ((w >> 40) == g && (w & kField) < ((w >> 20) & kField)) {
+      if (!word_.compare_exchange_weak(w, w + 1, std::memory_order_acq_rel, std::memory_order_acquire)) continue;  // w reloaded
+      const Slot& slot = slots_[g & 1];  // live: the caller cannot rewrite it while this chunk is unfinished
+      const std::size_t lo = static_cast<std::size_t>(w & kField) * slot.grain, hi = std::min(slot.n, lo + slot.grain);
+      if (!failed_.load(std::memory_order_relaxed)) {
+        try {
+          slot.body(slot.ctx, lo, hi);
+        } catch (...) {
+          bool expected = false;
+          if (failed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) error_ = std::current_exception();
+        }
+      }
+      done_.fetch_add(1, std::memory_order_acq_rel);
+      w = word_.load(std::memory_order_acquire);
+    }
+  }
+  void work() {
+    std::uint64_t seen = word_.load(std::memory_order_acquire) >> 40;
+    unsigned spins = 0;
+    while (!stop_.load(std::memory_order_acquire)) {
+      const std::uint64_t w = word_.load(std::memory_order_acquire);
+      const std::uint64_t g = w >> 40;
+      if (g == seen) {
+        spinPause(spins);
+        continue;
+      }
+      seen = g;
+      spins = 0;
+      drain(g);
+    }
+  }
+
+  std::vector<std::thread> threads_;
+  std::atomic<std::uint64_t> word_{0};
+  std::atomic<std::uint64_t> done_{0};
+  std::atomic<bool> stop_{false}, failed_{false};
+  std::exception_ptr error_;
+  Slot slots_[2];
+  std::uint64_t gen_ = 0;  // the caller's alone
+};
+
+// The pool of the estimate running on this thread (none: the loops run serially, e.g. a statistic used on its own).
+inline SpinPool*& currentPool() {
+  thread_local SpinPool* pool = nullptr;
+  return pool;
+}
+
+// Runs body(begin, end) over [0, n) on the current pool, about 4 chunks a thread (small n: serially). Each index on
+// exactly one thread: a body that writes only its own indices gives the same result on any number of threads.
 template <class Body>
-void parallelChunks(std::size_t n, int threads, Body&& body) {
-  const std::size_t t = threadCount(threads, n);
-  if (t <= 1 || n < 2048) {
+void parallelChunks(std::size_t n, int, Body&& body) {
+  SpinPool* pool = currentPool();
+  if (!pool || pool->size() <= 1 || n < 2048) {
     body(std::size_t{0}, n);
     return;
   }
-  std::vector<std::thread> pool;
-  std::vector<std::exception_ptr> errors(t);
-  const std::size_t step = (n + t - 1) / t;
-  for (std::size_t w = 0; w < t; ++w) {
-    const std::size_t b = w * step, e = std::min(n, b + step);
-    if (b >= e) break;
-    pool.emplace_back([&, w, b, e] {
-      try {
-        body(b, e);
-      } catch (...) {
-        errors[w] = std::current_exception();
-      }
-    });
-  }
-  for (auto& th : pool) th.join();
-  for (auto& e : errors) if (e) std::rethrow_exception(e);
+  pool->run(n, (n + 4 * pool->size() - 1) / (4 * pool->size()), body);
 }
 
-// Runs job(i) for i in [0, n) on up to `threads` threads; each i on exactly one thread.
-inline void parallelFor(std::size_t n, int threads, const std::function<void(std::size_t)>& job) {
-  std::size_t t = threads > 0 ? static_cast<std::size_t>(threads) : std::max(1u, std::thread::hardware_concurrency());
-  t = std::min(t, n);
-  if (t <= 1) {
+// Runs job(i) for i in [0, n) on the current pool, one index a chunk (the inner batches, the fit's chunks).
+template <class Job>
+void parallelFor(std::size_t n, int, Job&& job) {
+  SpinPool* pool = currentPool();
+  if (!pool || pool->size() <= 1 || n < 2) {
     for (std::size_t i = 0; i < n; ++i) job(i);
     return;
   }
-  std::vector<std::thread> pool;
-  std::vector<std::exception_ptr> errors(t);
-  for (std::size_t w = 0; w < t; ++w) {
-    pool.emplace_back([&, w] {
-      try {
-        for (std::size_t i = w; i < n; i += t) job(i);
-      } catch (...) {
-        errors[w] = std::current_exception();
-      }
-    });
-  }
-  for (auto& th : pool) th.join();
-  for (auto& e : errors) if (e) std::rethrow_exception(e);
+  pool->run(n, 1, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t i = lo; i < hi; ++i) job(i);
+  });
 }
+
+// The pool for one estimate: started, made current on this thread, and ended (joined) when the estimate returns.
+class PoolScope {
+ public:
+  explicit PoolScope(int threads) : prev_(currentPool()) {
+    const std::size_t t = threadCount(threads, std::numeric_limits<std::size_t>::max());
+    if (t > 1) {
+      pool_ = std::make_unique<SpinPool>(t - 1);
+      currentPool() = pool_.get();
+    } else {
+      currentPool() = nullptr;
+    }
+  }
+  PoolScope(const PoolScope&) = delete;
+  PoolScope& operator=(const PoolScope&) = delete;
+  ~PoolScope() {
+    currentPool() = prev_;
+  }
+
+ private:
+  SpinPool* prev_;
+  std::unique_ptr<SpinPool> pool_;
+};
 }  // namespace detail
 
 // A fitted proxy: mu(x) and its estimation variance v(x) (finite training data, not misspecification). Immutable.
@@ -762,6 +877,7 @@ class AdaptiveNestedEstimator {
     for (std::size_t i = 0; i < outer.n; ++i)
       if (!std::isfinite(outer.payoff[i])) throw std::invalid_argument("outer payoff " + std::to_string(i) + " is not finite");
     Result res;
+    detail::PoolScope pool(opt_.maxDegreeOfParallelism);  // the spinning workers for this estimate's kernels
     // 1 · split
     std::vector<std::size_t> perm(outer.n);
     std::iota(perm.begin(), perm.end(), 0);
