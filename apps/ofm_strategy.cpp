@@ -655,7 +655,13 @@ int main(int argc, char** argv) {
   // costs it, so the stops are learnt against fills that happen, not at their exact level. 0: at the level.
   P.emplace("stopmin", 0.02), P.emplace("stopmax", 0.5), P.emplace("stopslip", 0.0);
   // stopmultlo, stopmulthi: adaptfine's grid of the stop's multiple (of the daily volatility) learnt for each share.
-  P.emplace("stopmultlo", 1.0), P.emplace("stopmulthi", 10.0);
+  P.emplace("stopmultlo", 1.0), P.emplace("stopmulthi", 10.0), P.emplace("stopprob", 0.0);
+  // stopmae: q in (0, 1) learns each share's stop band from its maximum adverse excursion (MAE) on its simulated futures:
+  // of the futures that end the horizon ahead of the price paid (net of its round trip), the deepest the price went
+  // under the price paid first, and the band at its q quantile: the stop a winning trade most probably never touches
+  // (q of them do not), in multiples of the share's daily volatility, kept to the grid's range (adaptfine: any value,
+  // else the nearest of 2, 3, 4, 6). Fewer than 20 winners: the most expected log growth. 0: off.
+  P.emplace("stopmae", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -905,6 +911,13 @@ int main(int argc, char** argv) {
   // coupled setting (instead of psarvoladapt and rebuystopadapt each alone); mcprob: 1 picks the setting best on the
   // most simulated paths (the most probable best) instead of the most expected log growth.
   const bool joint = rbStop && psarVol && mcOn && P["stopjoint"] > 0, probable = P["mcprob"] > 0;
+  // stopprob: 1 learns each share's stop band as the most probable best: every simulated future votes for the band that
+  // does best on it (a future where several do equally well shares its vote, one no band changes favours none), the band
+  // with the most votes (adaptfine: the peak of the smoothed vote curve between the grid's points); 0: the most
+  // expected log growth (the mean over the futures, which a few extreme futures move).
+  const bool stopProb = P["stopprob"] > 0;
+  const double stopMae = P["stopmae"];
+  if (!(stopMae >= 0 && stopMae < 1)) usage("stopmae must be in [0, 1)");
   const bool rbAdapt = rbStop && mcOn && (P["rebuystopadapt"] > 0 || joint);
   const std::vector<double> rbGrid{0.005, 0.01, 0.02, 0.03, 0.05};
   std::map<double, std::size_t> rbChosen;
@@ -1240,7 +1253,7 @@ int main(int argc, char** argv) {
     // probable: the setting that is best on the most paths instead (the most probable best; a path where several are best
     // shares its vote among them, so a path no setting changes favours none), the most expected log growth among equals.
     const auto bestSetting = [&](std::size_t i, double adj, double cap, double scale, const std::vector<strat::McSpec>& specs, bool byVotes = false,
-                                 std::vector<double>* meansOut = nullptr) {
+                                 std::vector<double>* meansOut = nullptr, std::vector<double>* votesOut = nullptr) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
       std::vector<double> gpu;
@@ -1303,6 +1316,7 @@ int main(int argc, char** argv) {
       for (std::size_t s2 = 1; s2 < G; ++s2)
         if (votes[s2] > votes[pick] + 1e-9 || (std::fabs(votes[s2] - votes[pick]) <= 1e-9 && mean[s2] > mean[pick] + 1e-12)) pick = s2;
       if (meansOut) *meansOut = mean;
+      if (votesOut) *votesOut = votes;
       if (!byVotes) scoreRef(pick);
       return pick;
     };
@@ -1339,6 +1353,47 @@ int main(int argc, char** argv) {
         ++sarChosen[pick];
       }
     }
+    // stopmae: share i's stop band (a multiple of its daily volatility) from the maximum adverse excursion of its winning
+    // futures (see the parameter); 0 when off or too few winners. The same futures as the settings' (mcDays, mcPath).
+    const auto maeBand = [&](std::size_t i, double adj, double scale, const std::vector<double>& vg) {
+      if (!(stopMae > 0)) return 0.0;
+      const std::size_t Pn = mc.paths;
+      std::vector<double> dd(Pn, -1.0);  // a winning future's adverse excursion (a fraction of the price paid); -1: not a winner
+      double sig = 0.02;
+      strat::McTable tab;
+      strat::mcTable(d, t, i, scale, mc, tab);
+      const double trip = mc.trip ? mc.trip[i] : 0.0;
+      backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
+        std::vector<std::size_t> days;
+        std::vector<double> pre;
+        strat::McPath path;
+        for (std::size_t q = a; q < e; ++q) {
+          strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
+          strat::mcRatios(d, i, days, scale, pre, &tab);
+          strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);
+          if (q == 0) sig = path.sig0;
+          if (path.b.size() < 16) continue;
+          const double entry = path.b[1];  // bought at the first open
+          double lo = entry;
+          for (std::size_t z = 0; z < path.b.size(); z += 8) lo = std::min(lo, path.b[z + 3]);
+          if (path.b[path.b.size() - 4] / entry - 1 > trip) dd[q] = 1 - lo / entry;
+        }
+      });
+      std::vector<double> w;
+      for (double x : dd)
+        if (x >= 0) w.push_back(x);
+      if (w.size() < 20 || !(sig > 0)) return 0.0;
+      std::sort(w.begin(), w.end());
+      const double pos = stopMae * double(w.size() - 1);
+      const std::size_t at = std::size_t(pos);
+      const double dist = w[at] + (at + 1 < w.size() ? (pos - double(at)) * (w[at + 1] - w[at]) : 0.0);
+      const double m = std::clamp(dist / sig, vg.front(), vg.back());
+      if (fine) return m;
+      double best = vg.front();  // the nearest of the short list (in log)
+      for (double v : vg)
+        if (std::fabs(std::log(v / m)) < std::fabs(std::log(best / m))) best = v;
+      return best;
+    };
     if (vAdapt && !joint) {  // each share's volatility stop from its simulated futures: the multiple with the most expected log growth
       std::vector<std::size_t> all(target);
       all.insert(all.end(), reserve.begin(), reserve.end());
@@ -1354,9 +1409,12 @@ int main(int argc, char** argv) {
       for (std::size_t j = 0; j < all.size(); ++j) {
         const std::size_t i = all[j];
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
-        std::vector<double> means;
-        const std::size_t b = bestSetting(i, adj, cap, sc2[j], specs, false, &means);
-        const double pick = fine ? fineArgmax(vg, means) : vg[b];
+        double pick = maeBand(i, adj, sc2[j], vg);
+        if (!(pick > 0)) {
+          std::vector<double> means, votes;
+          const std::size_t b = bestSetting(i, adj, cap, sc2[j], specs, stopProb, &means, &votes);
+          pick = fine ? fineArgmax(vg, stopProb ? votes : means) : vg[b];  // stopprob: the peak of the votes
+        }
         vPick[i] = pick;
         if (fine) vPicks.push_back(pick);
         else ++vChosen[pick];
