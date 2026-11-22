@@ -4,7 +4,9 @@
 //
 //   1 split      the outer scenarios shuffled (SplitMix64, derive(seed, -1, 0)) into a training and an evaluation half
 //   2 proxy      the training payoffs Y regressed on Hermite polynomials of the standardized horizon state (OLS, tiny
-//                ridge, Cholesky); each prediction with its estimation variance (HC0 sandwich)
+//                ridge, Cholesky); each prediction with its estimation variance (HC0 sandwich). Injectable
+//                (Options::proxy): a differential network trained on the payoffs and their pathwise derivatives
+//                (include/strategy/differential_proxy.hpp), for horizon states of many dimensions
 //   3 bins       the evaluation scenarios binned by proxy value (14 bins, finer in both tails); the payoff noise r_b^2
 //                per bin from the training residuals
 //   4 scenarios  each evaluation scenario: proxy mu, its variance v, its bin, two sample folds (fold 0: the outer
@@ -17,7 +19,8 @@
 //                seeded by (scenario, batch number); until nothing is urgent, the budget or the rounds run out
 //
 // The engine enters at two points: its ordinary paths (OuterScenarios: the horizon state and the payoff discounted to
-// the horizon) and a restart from a horizon state (InnerSimulator: fills payoffs from a state and a seed; thread-safe).
+// the horizon, and optionally its pathwise derivative by the state) and a restart from a horizon state (InnerSimulator:
+// fills payoffs from a state and a seed; thread-safe).
 // The same inputs and seed give the same result on any number of threads.
 #pragma once
 
@@ -70,6 +73,10 @@ inline std::uint64_t derive(std::uint64_t seed, std::int64_t stream, std::uint64
 inline double normCdf(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
 
 // ------------------------------------------------------------------------------------------------ settings and inputs
+class Proxy;
+// Makes the proxy for horizon states of d numbers (Options::proxy); empty: Hermite regression of degree hermiteDegree.
+using ProxyFactory = std::function<std::shared_ptr<Proxy>(std::size_t d)>;
+
 struct Options {
   std::size_t totalInnerBudget = 2000000;   // inner paths for the whole run, audit included
   std::size_t innerBatchSize = 64;          // paths per refinement step
@@ -86,6 +93,7 @@ struct Options {
   int maxDegreeOfParallelism = -1;          // -1: every core
   int hermiteDegree = 3;
   double relativeRidge = 1e-10;
+  ProxyFactory proxy;                       // empty: FittedProxy (Hermite regression, hermiteDegree, relativeRidge)
 
   void validate() const {
     if (innerBatchSize == 0) throw std::invalid_argument("innerBatchSize must be positive");
@@ -100,12 +108,15 @@ struct Options {
 };
 
 // The engine's ordinary run: for each path its horizon state (d numbers, Markov: they determine the value) and its
-// payoff discounted to the horizon.
+// payoff discounted to the horizon; optionally the payoff's pathwise derivative by each number of the state, whose
+// conditional mean is the value's gradient (the labels of a differential proxy; the Hermite proxy ignores them).
 struct OuterScenarios {
   std::size_t n = 0, d = 0;
-  std::vector<double> state;   // n * d, row by row
-  std::vector<double> payoff;  // n
+  std::vector<double> state;     // n * d, row by row
+  std::vector<double> payoff;    // n
+  std::vector<double> gradient;  // n * d, row by row, or empty: no derivatives
   const double* at(std::size_t i) const { return state.data() + i * d; }
+  const double* gradientAt(std::size_t i) const { return gradient.empty() ? nullptr : gradient.data() + i * d; }
 };
 
 // The engine restarted at a horizon state: fills `count` payoffs discounted to the horizon, drawing all its
@@ -354,14 +365,35 @@ class PoolScope {
 };
 }  // namespace detail
 
-// A fitted proxy: mu(x) and its estimation variance v(x) (finite training data, not misspecification). Immutable.
-class FittedProxy {
+// The proxy of the conditional value: fitted once on the training scenarios, then mu(x) and its estimation variance v(x)
+// (finite training data, not misspecification: the audit measures that, per bin). FittedProxy, the Hermite regression,
+// is the default; Options::proxy injects another (DifferentialProxy, include/strategy/differential_proxy.hpp).
+class Proxy {
  public:
-  FittedProxy(std::size_t d, int degree, int threads = -1) : basis_(d, degree), d_(d), threads_(threads) {}
+  virtual ~Proxy() = default;
+  virtual void fit(const OuterScenarios& o, const std::vector<std::size_t>& rows) = 0;
+  virtual void predict(const double* x, double& mu, double& v) const = 0;
+  // mu and v for the scenarios `rows` (mu[k], v[k] for rows[k]) on the current pool, each written by one thread.
+  virtual void predictRows(const OuterScenarios& o, const std::vector<std::size_t>& rows, double* mu, double* v) const {
+    detail::parallelChunks(rows.size(), -1, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t k = lo; k < hi; ++k) predict(o.at(rows[k]), mu[k], v[k]);
+    });
+  }
+  // Outside the box of the training states: the extrapolation guard refines such scenarios.
+  virtual bool outsideTraining(const double* x) const = 0;
+  virtual std::string describe() const = 0;
+};
+
+// A fitted proxy: mu(x) and its estimation variance v(x) (finite training data, not misspecification). Immutable.
+class FittedProxy : public Proxy {
+ public:
+  FittedProxy(std::size_t d, int degree, int threads = -1, double relativeRidge = 1e-10)
+      : basis_(d, degree), d_(d), threads_(threads), ridge_(relativeRidge), degree_(degree) {}
   const std::vector<double>& coefficients() const { return beta_; }
   std::size_t d() const { return d_; }
 
-  void predict(const double* x, double& mu, double& v) const {
+  void fit(const OuterScenarios& o, const std::vector<std::size_t>& rows) override { fit(o, rows, ridge_); }
+  void predict(const double* x, double& mu, double& v) const override {
     std::vector<double> z(d_), phi(basis_.size());
     predict(x, mu, v, z.data(), phi.data());
   }
@@ -485,16 +517,29 @@ class FittedProxy {
 
   std::size_t basisSize() const { return basis_.size(); }
 
-  bool outsideTraining(const double* x) const {
+  // The batch kernel: each chunk reuses its buffers.
+  void predictRows(const OuterScenarios& o, const std::vector<std::size_t>& rows, double* mu, double* v) const override {
+    detail::parallelChunks(rows.size(), threads_, [&](std::size_t lo, std::size_t hi) {
+      std::vector<double> z(d_), phi(basis_.size());
+      for (std::size_t k = lo; k < hi; ++k) predict(o.at(rows[k]), mu[k], v[k], z.data(), phi.data());
+    });
+  }
+
+  bool outsideTraining(const double* x) const override {
     for (std::size_t j = 0; j < d_; ++j)
       if (x[j] < lo_[j] || x[j] > hi_[j]) return true;
     return false;
+  }
+  std::string describe() const override {
+    return "Hermite regression, degree " + std::to_string(degree_) + ", " + std::to_string(basis_.size()) + " functions";
   }
 
  private:
   HermiteBasis basis_;
   std::size_t d_;
   int threads_;
+  double ridge_;
+  int degree_;
   std::vector<double> mean_, scale_, lo_, hi_, beta_, cov_;
 };
 
@@ -851,12 +896,13 @@ struct Result {
   std::size_t innerPathsUsed = 0, rounds = 0, refinedScenarios = 0, auditedScenarios = 0, unresolvedScenarios = 0;
   StopReason stopReason = StopReason::Converged;
   std::vector<BinDiagnostics> bins;
-  std::shared_ptr<FittedProxy> proxy;
+  std::shared_ptr<Proxy> proxy;
   ScenarioSet scenarios;
 
   std::string toString() const {
     std::ostringstream o;
     o << "estimate " << estimate << " (regression only " << baselineEstimate << "), standard error " << standardError << "\n"
+      << "proxy: " << (proxy ? proxy->describe() : std::string("none")) << "\n"
       << "inner paths " << innerPathsUsed << " in " << rounds << " rounds; refined " << refinedScenarios << ", audited " << auditedScenarios
       << "; stop: " << anmc::toString(stopReason) << ", unresolved " << unresolvedScenarios << "\n"
       << "bin,lower,upper,scenarios,refined,resid sd,bias rms\n";
@@ -874,8 +920,12 @@ class AdaptiveNestedEstimator {
 
   Result estimate(const OuterScenarios& outer, const InnerSimulator& sim, const RiskStatistic& stat) const {
     if (outer.payoff.size() != outer.n || outer.state.size() != outer.n * outer.d) throw std::invalid_argument("outer scenarios: sizes do not match");
+    if (!outer.gradient.empty() && outer.gradient.size() != outer.n * outer.d)
+      throw std::invalid_argument("outer scenarios: gradient must be empty or n * d numbers");
     for (std::size_t i = 0; i < outer.n; ++i)
       if (!std::isfinite(outer.payoff[i])) throw std::invalid_argument("outer payoff " + std::to_string(i) + " is not finite");
+    for (std::size_t k = 0; k < outer.gradient.size(); ++k)
+      if (!std::isfinite(outer.gradient[k])) throw std::invalid_argument("outer gradient of scenario " + std::to_string(k / outer.d) + " is not finite");
     Result res;
     detail::PoolScope pool(opt_.maxDegreeOfParallelism);  // the spinning workers for this estimate's kernels
     // 1 · split
@@ -889,8 +939,10 @@ class AdaptiveNestedEstimator {
     std::sort(eval.begin(), eval.end());  // evaluation index order: by original index (stable, reproducible)
 
     // 2 · proxy
-    auto proxy = std::make_shared<FittedProxy>(outer.d, opt_.hermiteDegree, opt_.maxDegreeOfParallelism);
-    proxy->fit(outer, train, opt_.relativeRidge);
+    std::shared_ptr<Proxy> proxy = opt_.proxy ? opt_.proxy(outer.d)
+                                              : std::make_shared<FittedProxy>(outer.d, opt_.hermiteDegree, opt_.maxDegreeOfParallelism, opt_.relativeRidge);
+    if (!proxy) throw std::invalid_argument("Options::proxy made no proxy");
+    proxy->fit(outer, train);
     res.proxy = proxy;
 
     // 3 · bins
@@ -903,10 +955,7 @@ class AdaptiveNestedEstimator {
     s.mu.resize(n);
     s.v.resize(n);
     s.original = eval;
-    detail::parallelChunks(n, opt_.maxDegreeOfParallelism, [&](std::size_t lo, std::size_t hi) {
-      std::vector<double> z(outer.d), phi(proxy->basisSize());
-      for (std::size_t i = lo; i < hi; ++i) proxy->predict(outer.at(eval[i]), s.mu[i], s.v[i], z.data(), phi.data());
-    });
+    proxy->predictRows(outer, eval, s.mu.data(), s.v.data());
     std::vector<double> sortedMu = s.mu;
     std::sort(sortedMu.begin(), sortedMu.end());
     std::vector<double> cuts;
@@ -914,13 +963,9 @@ class AdaptiveNestedEstimator {
     auto binOf = [&](double m) { return static_cast<int>(std::count_if(cuts.begin(), cuts.end(), [&](double c) { return c < m; })); };
     s.bin.resize(n);
     for (std::size_t i = 0; i < n; ++i) s.bin[i] = binOf(s.mu[i]);
-    std::vector<double> rsum(nb, 0), fitted(train.size());
+    std::vector<double> rsum(nb, 0), fitted(train.size()), fittedVar(train.size());
     std::vector<std::size_t> rcount(nb, 0);
-    detail::parallelChunks(train.size(), opt_.maxDegreeOfParallelism, [&](std::size_t lo, std::size_t hi) {
-      std::vector<double> z(outer.d), phi(proxy->basisSize());
-      double vv;
-      for (std::size_t t = lo; t < hi; ++t) proxy->predict(outer.at(train[t]), fitted[t], vv, z.data(), phi.data());
-    });
+    proxy->predictRows(outer, train, fitted.data(), fittedVar.data());
     double gsum = 0;
     for (std::size_t t = 0; t < train.size(); ++t) {
       const std::size_t r = train[t];
