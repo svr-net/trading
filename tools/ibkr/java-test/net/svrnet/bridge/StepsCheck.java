@@ -129,7 +129,39 @@ final class StepsCheck {
         return "";
     }
 
+    /** The state mirror: what a snapshot holds, a restore into an empty folder gives the same files, nothing else is written. */
+    static String mirror() throws Exception {
+        Path a = Files.createTempDirectory("mirror-a"), b = Files.createTempDirectory("mirror-b");
+        String today = LocalDate.now().toString(), old = LocalDate.now().minusDays(30).toString();
+        Files.writeString(a.resolve("history.jsonl"), "{\"kind\":\"placed\",\"note\":\"a \\\"quote\\\" and a line\"}\n");
+        Files.writeString(a.resolve("holds-UK.json"), "{\"positions\":{\"VOD\":{\"qty\":3}}}");
+        Files.writeString(a.resolve("buys-on"), "1");
+        Files.createFile(a.resolve("model-UK-2026-11-20"));
+        Files.createDirectories(a.resolve("state/" + today));
+        Files.createFile(a.resolve("state/" + today + "/UK-place"));
+        Files.createDirectories(a.resolve("state/" + old));
+        Files.createFile(a.resolve("state/" + old + "/UK-place"));      // older than 7 days: not kept
+        Files.writeString(a.resolve("ibkr-UK.csv"), "date,ticker\r\n");  // bars: stored on their own
+        Files.createDirectories(a.resolve("archive-1"));
+        Files.writeString(a.resolve("archive-1/history.jsonl"), "old");    // archives: not kept
+        Mirror.DIR = a;
+        String snap = Mirror.snapshot();
+        Mirror.DIR = b;
+        check(Mirror.emptyHere(), "an empty folder");
+        String r = Mirror.apply(snap);
+        check(r.startsWith("restored 5 files"), r);
+        for (String f : List.of("history.jsonl", "holds-UK.json", "buys-on", "model-UK-2026-11-20", "state/" + today + "/UK-place"))
+            check(Files.readString(b.resolve(f)).equals(Files.readString(a.resolve(f))), f + " differs after the restore");
+        check(!Files.exists(b.resolve("state/" + old)) && !Files.exists(b.resolve("ibkr-UK.csv")) && !Files.exists(b.resolve("archive-1")), "kept only the state");
+        check(!Mirror.emptyHere(), "the restored folder is not empty");
+        check(Mirror.apply("{\"version\":1,\"files\":{\"../escape\":\"x\",\"/etc/x\":\"y\"}}").startsWith("restored 0"), "a path outside the folder written");
+        check(Mirror.apply("{\"version\":1,\"files\":{}}").contains("empty (a reset)"), "an empty copy restored");
+        return "";
+    }
+
     public static void main(String[] args) throws Exception {
+        System.out.print(mirror());
+        System.out.println("state mirror: the history, the books, the switch, the checks and a week's step marks kept and restored; nothing else; OK");
         System.out.print(readerNeverBlocks());
         System.out.println("IBKR's messages recorded while a request waits, the reader never blocked; OK");
         System.out.print(leftovers());

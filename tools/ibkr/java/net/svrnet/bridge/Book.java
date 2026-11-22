@@ -25,30 +25,27 @@ final class Book {
     static final String CACHE = Bridge.env("ORDERS_DIR", "/tmp/ofm-orders");
     static final String HISTORY = Bridge.env("HISTORY_DIR", Bridge.env("ORDERS_DIR", "/tmp/ofm-orders"));
 
-    /** The day's orders file: a local one (ORDERS_FILE_<MARKET>), else svr-net/eod's through GitHub's contents API. */
+    /**
+     * The day's orders file: a local one (ORDERS_FILE_<MARKET>), else svr-net/eod's orders/<MARKET>.json through the
+     * store's disk cache (Store.read: unchanged is a 304; GitHub not answering: the last good copy).
+     */
     static Path fetch(String market) throws IOException {
         String local = System.getenv("ORDERS_FILE_" + market);
         if (local != null && !local.isEmpty()) return Path.of(local);
-        String token = Bridge.env("EOD_TOKEN", Bridge.env("EOD_READ_TOKEN", ""));
-        if (token.isEmpty()) throw new IOException("no EOD_TOKEN in the bridge (docker/ibkr/nas/.env)");
-        HttpURLConnection c = (HttpURLConnection) new URL("https://api.github.com/repos/svr-net/eod/contents/orders/" + market + ".json").openConnection();
-        c.setConnectTimeout(20_000);
-        c.setReadTimeout(20_000);
-        c.setRequestProperty("Authorization", "Bearer " + token);
-        c.setRequestProperty("Accept", "application/vnd.github.raw");
-        c.setRequestProperty("User-Agent", "ofm-bridge");
-        c.setRequestProperty("Cache-Control", "no-cache");
-        int code = c.getResponseCode();
-        if (code == 401) throw new IOException("EOD_TOKEN rejected by GitHub (expired or revoked): put the current token in .env");
-        if (code == 404) throw new IOException("orders/" + market + ".json not readable: the EOD_TOKEN has no access to svr-net/eod "
+        if (Store.TOKEN.isEmpty()) throw new IOException("no EOD_TOKEN in the bridge (docker/ibkr/nas/.env)");
+        Store.Read r;
+        try {
+            r = Store.read("orders/" + market + ".json");
+        } catch (Store.Http e) {
+            if (e.code == 401) throw new IOException("EOD_TOKEN rejected by GitHub (expired or revoked): put the current token in .env");
+            throw new IOException("GitHub answered " + e.code);
+        }
+        if (r.body() == null) throw new IOException("orders/" + market + ".json not readable: the EOD_TOKEN has no access to svr-net/eod "
                 + "(Repository access, Contents read), or the " + market + " job has not written it yet");
-        if (code != 200) throw new IOException("GitHub answered " + code);
         Files.createDirectories(Path.of(CACHE));
         Path out = Path.of(CACHE, market + ".json");
         Path tmp = Path.of(CACHE, market + ".json.java-tmp");
-        try (InputStream in = c.getInputStream()) {
-            Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
-        }
+        Files.write(tmp, r.body());
         Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         return out;
     }

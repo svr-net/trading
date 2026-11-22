@@ -97,6 +97,17 @@ Gateway through IBC's command server. A refusal by IBKR of the orders themselves
 not acknowledged) restarts it too, at most every 20 minutes. `/status` and the diagnostics show
 today's steps, the watchdog and the last actions; `docker logs trading-ibkr` shows every one.
 
+## 2e2. State and data in the private store
+
+The NAS folder is disposable. The bridge keeps its state in svr-net/eod too (`bridge/state.json`): the order history,
+each multi-day book's positions and stops (`holds-<MARKET>.json`), the buying switch's last value, the recorded model
+checks and the step marks of the last 7 days. It is uploaded within a minute of any change (and when the container
+stops); a container started on an empty history folder restores it from there. `POST /reset {"confirm": "reset"}`
+archives the records (into `history/archive-<time>/`; IBKR's bars stay) and empties the store's copy, so a reset is
+never undone by a restore. `STATE_MIRROR=0` turns the mirror off. Every read from the store (the orders, the store's
+bars and profiles for the charts, the shadow books) goes through a disk cache with GitHub's ETags: an unchanged file
+is a 304, and when GitHub does not answer the last good copy is used (diagnostics: *State in the store*, *Store cache*).
+
 ## 2f. History of orders and fills
 
 The bridge keeps a history on the NAS (`docker/ibkr/nas/history/history.jsonl`, kept across updates):

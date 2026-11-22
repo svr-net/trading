@@ -4,7 +4,7 @@
 // runs each automatic market's day (Auto: the multi-day book, the close, the report, the recordings, the watchdog).
 //
 // GET /status (no key), /diag, /history, /trades?market=, /orders?market=, /chart?market=&ticker=&days=, /bars.csv?market=, /java;
-// POST /place, /report, /close, /bars, /paths, /test-order {"market": UK | EU | US | APAC | INDEX}, /restart, /ibc {"command": RESTART |
+// POST /place, /report, /close, /bars, /paths, /test-order {"market": UK | EU | US | APAC | INDEX}, /restart, /reset {"confirm": "reset"}, /ibc {"command": RESTART |
 // RECONNECTACCOUNT | RECONNECTDATA}.
 //
 // Environment: BRIDGE_KEY, ALLOWED_ORIGIN, PORT (8765), BIND, TLS_P12 (the certificate as PKCS#12, password TLS_P12_PASSWORD; without it
@@ -239,6 +239,20 @@ public final class Bridge {
         }
         if (path.equals("/ibc")) {
             ibc(x, String.valueOf(body.getOrDefault("command", "")));
+            return;
+        }
+        if (path.equals("/reset")) {  // the records archived here and in the store (IBKR's bars kept): {"confirm": "reset"}
+            if (!"reset".equals(body.get("confirm"))) {
+                reply(x, 400, Json.obj("error", "send {\"confirm\": \"reset\"}: the history, the books' positions and the step marks are archived"));
+                return;
+            }
+            if (!Auto.RUNNING.isEmpty()) {
+                reply(x, 409, Json.obj("ok", false, "log", "steps are running (" + String.join(", ", Auto.RUNNING) + "): try again when they end"));
+                return;
+            }
+            String note = Mirror.reset();
+            Auto.log("-", "reset", true, note);
+            reply(x, 200, Json.obj("ok", true, "log", note));
             return;
         }
         if (path.equals("/restart")) {  // IB Gateway restarted on demand (the Bridge monitor's button)
