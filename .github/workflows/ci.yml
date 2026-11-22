@@ -27,6 +27,18 @@ jobs:
           ofm ofm_scan test
           ofm ofm_strategy --list
 
+  anmc:
+    # The adaptive nested Monte Carlo against exact Black-Scholes answers (apps/ofm_anmc.cpp, docs/adaptive-nested-mc.md).
+    if: ${{ !inputs.site-only }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and check (VaR, ES, EPE; Hermite degrees 1, 2, 4)
+        run: |
+          cmake -S . -B build-anmc -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-anmc --target ofm_anmc -j
+          build-anmc/ofm_anmc --check | tee -a "$GITHUB_STEP_SUMMARY"
+
   site:
     runs-on: ubuntu-24.04
     steps:

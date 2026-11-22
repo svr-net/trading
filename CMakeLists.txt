@@ -29,6 +29,15 @@ if(NOT MSVC AND NOT EMSCRIPTEN)
   endif()
 endif()
 
+# The adaptive nested Monte Carlo (include/strategy/adaptive_nested.hpp) checked against exact Black-Scholes answers
+# (docs/adaptive-nested-mc.md): ofm_anmc --check.
+add_executable(ofm_anmc apps/ofm_anmc.cpp)
+target_include_directories(ofm_anmc PRIVATE include)
+target_link_libraries(ofm_anmc PRIVATE Threads::Threads)
+if(NOT MSVC)
+  target_compile_options(ofm_anmc PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
+endif()
+
 # The loaders and the scan (apps/ofm_eod, apps/ofm_scan): the store svr-net/eod through libgit2, EODData's API and
 # the report's mail through libcurl, JSON through nlohmann-json (Ubuntu: libgit2-dev libcurl4-openssl-dev
 # nlohmann-json3-dev zlib1g-dev). Not built where they are missing (the WebAssembly Lab needs only the engine).
