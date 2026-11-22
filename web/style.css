@@ -113,6 +113,8 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 .summary { margin: 18px 0 6px; padding: 14px 16px; border-radius: 10px; border: 1px solid var(--rule); background: var(--surface); font-size: 16px; line-height: 1.45; }
 .summary.live { border-color: var(--good); background: var(--good-bg); }
 .summary.research { border-style: dashed; }
+.broker-note { margin: 18px 0 6px; padding: 14px 16px; border-radius: 10px; border: 1px solid var(--bad); background: var(--bad-bg); font-size: 16px; line-height: 1.45; }
+.broker-note + .summary { margin-top: 8px; }
 .fold { margin: 22px 0; border-top: 1px solid var(--rule); padding-top: 10px; }
 .fold > summary { cursor: pointer; font-weight: 600; font-size: 16px; padding: 6px 0; }
 .fold[open] > summary { margin-bottom: 8px; }

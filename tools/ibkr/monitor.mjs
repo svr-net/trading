@@ -15,6 +15,15 @@ const AUTO_REPORT = (process.env.TRADES_MARKETS || 'UK,EU').split(',').map((x) =
 
 let failed = false;
 const problems = [];
+// BROKER_OUT=web/data/broker.json: the broker's state for the page, results only (whether IBKR accepts the
+// orders, since when it refuses them, and how many shares each market's account holds; no prices, amounts,
+// keys or account numbers). BROKER_PREV: the published one, so a refusal keeps the time it was first seen.
+import fs from 'node:fs';
+const out = process.env.BROKER_OUT || '';
+let prev = {};
+try { prev = JSON.parse(fs.readFileSync(process.env.BROKER_PREV || out, 'utf8')); } catch { /* none yet */ }
+// accepts: false while the bridge's latest actions include IBKR's refusal; null otherwise (no refusal seen).
+const broker = { checked: new Date().toISOString().slice(0, 16) + 'Z', reachable: false, accepts: null, refusal: null, markets: {} };
 // A failed action counts as new for 35 minutes (a little more than the runs' spacing), so one failure
 // turns one run red (one email from GitHub), not every run for the rest of the day.
 const OFFSET = { UTC: 0, GMT: 0, BST: 1, CET: 1, CEST: 2, EST: -5, EDT: -4, AEST: 10, AEDT: 11, SGT: 8 };
@@ -52,8 +61,11 @@ try {
     if (!x.ok && age(x.when) < 35) problems.push(`${x.market} ${x.action} failed at ${x.when}`);
   }
   if (!b.gateway) problems.push('IB Gateway port closed');
+  broker.reachable = true, broker.gateway = !!b.gateway && g?.ok !== false;
+  for (const m of Object.keys(b.auto || {})) broker.markets[m] = { auto: true };
 } catch (e) {
   console.log(`bridge not reachable: ${e.message}`);
+  writeBroker();
   process.exit(1);
 }
 if (key) {
@@ -64,7 +76,14 @@ if (key) {
       if (!c || !c.check) continue;
       const detail = String(c.detail || '').replace(/\d+\.\d{2,}/g, '#').replace(/\b[DU]\d{5,}\b/g, 'ACCOUNT');
       console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : 'warn'} ${c.check}: ${detail}`);
-      if (c.check === 'IBKR accepts orders' && c.ok === false) problems.push('IBKR refuses the orders (paper trading not acknowledged)');
+      if (c.check === 'IBKR accepts orders' && c.ok === false) {
+        problems.push('IBKR refuses the orders (paper trading not acknowledged)');
+        const w = /^(\d{4}-\d\d-\d\d \d\d:\d\d \w+) (\w+) ([\w-]+):/.exec(String(c.detail || ''));
+        broker.accepts = false;
+        broker.refusal = { code: 2139, reason: 'paper trading not acknowledged', last: w ? `${w[1]} ${w[2]} ${w[3]}` : null,
+          since: prev.accepts === false && prev.refusal?.since ? prev.refusal.since : broker.checked,
+          fix: 'log in to the paper account once (Client Portal or TWS, paper mode), accept the paper-trading notice, then restart IB Gateway' };
+      }
     }
     for (const m of ['UK', 'EU']) {
       const o = await get(`/orders?market=${m}`, true);
@@ -83,6 +102,7 @@ if (key) {
         if (t.code !== 200 || !t.body.at) { console.log(`trades ${m}: not read yet (HTTP ${t.code}: ${t.body.error || ''})`); continue; }
         const rows = t.body.shares || [];
         const bought = rows.filter((r) => r.bought > 0 || r.held > 0);
+        (broker.markets[m] ||= {}).held = rows.filter((r) => r.held > 0).length, broker.markets[m].at = t.body.at || null;
         const moves = bought.map((r) => (r.sold >= r.bought && r.bought > 0 ? pct(r.sell, r.buy) : pct(r.price, r.buy))).filter((x) => x != null);
         const mean = moves.length ? moves.reduce((a, b) => a + b, 0) / moves.length : null;
         console.log(`trades ${m} (${t.body.at || ''}, read ${t.body.age ?? '?'} s ago${t.body.note ? `; last read failed: ${t.body.note}` : ''}): ${rows.length} shares, ${bought.length} bought or held, ${moves.filter((x) => x > 0).length} up, ${moves.filter((x) => x < 0).length} down, mean move ${f(mean)} before costs`);
@@ -97,5 +117,11 @@ if (key) {
 } else {
   console.log('(BRIDGE_KEY secret not set: diagnostics skipped)');
 }
+function writeBroker() {
+  if (!out) return;
+  fs.writeFileSync(out, JSON.stringify(broker, null, 1) + '\n');
+  console.log(`broker state written to ${out}: IBKR ${broker.accepts === false ? 'REFUSES the orders' : 'no refusal seen'}`);
+}
+writeBroker();
 if (problems.length) console.log(`\nNEEDS ATTENTION: ${problems.join('; ')}`);
 process.exit(failed || problems.length ? 2 : 0);

@@ -12,8 +12,8 @@ on:
   schedule:
     - cron: '7,37 7-17 * * 1-5'   # UTC: the UK and EU sessions, their closes and reports
 permissions:
-  contents: read
-  actions: read   # the previous run's result, so a failure is pushed once a day and on each new failure, not every half hour
+  contents: write  # web/data/broker.json (results only) to main when the broker's state changes
+  actions: write   # the previous run's result (a failure pushed once a day, not every half hour); the page redeployed
 jobs:
   status:
     runs-on: ubuntu-latest
@@ -63,12 +63,37 @@ jobs:
         env:
           BRIDGE_URL: ${{ vars.BRIDGE_URL || 'https://svrnet.synology.me:8765' }}
           BRIDGE_KEY: ${{ secrets.BRIDGE_KEY }}
+          BROKER_OUT: broker.json
+          BROKER_PREV: web/data/broker.json
         # pipefail: a failure the monitor finds turns the run red (and GitHub emails); without it tee's
         # success hid every one (3 Nov: the EU close failed, every run green).
         shell: bash
         run: |
           set -o pipefail
           LATEST=$(git log -1 --format=%h --abbrev=7 -- tools/ibkr docker/ibkr/Dockerfile.bridge) node tools/ibkr/monitor.mjs | tee monitor.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      # The broker's state on the page (web/data/broker.json: whether IBKR refuses the orders, since when, and
+      # how many shares each market's account holds; no prices, amounts or account numbers). Committed only
+      # when it changed (its check time aside), so the half-hourly runs do not fill main's history.
+      - name: Publish the broker's state to the page (when it changed)
+        if: always() && hashFiles('broker.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          same() { [ -f web/data/broker.json ] && [ "$(jq -cS 'del(.checked)' broker.json)" = "$(jq -cS 'del(.checked)' web/data/broker.json)" ]; }
+          if same; then echo "broker state unchanged"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for k in 1 2 3 4 5; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            if same; then echo "broker state unchanged"; exit 0; fi
+            cp broker.json web/data/broker.json
+            git add web/data/broker.json
+            git commit -q -m "Broker state $(date -u +'%Y-%m-%d %H:%M') (results only)"
+            git push -q origin HEAD:main && break
+            sleep $((k * 5))
+          done
+          gh workflow run pages.yml --ref main
       # A push to the phone (ntfy.sh: install the ntfy app and subscribe to the topic in the NTFY_TOPIC
       # secret, a long random name). Sent on the first failing run of each day and whenever a passing run
       # turns into a failing one, so a problem that lasts is repeated daily instead of every half hour.

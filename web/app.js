@@ -55,6 +55,38 @@ let live = new Set(['UK', 'EU']);
 try { const v = JSON.parse(localStorage.getItem(LIVE_KEY)); if (Array.isArray(v) && v.length) live = new Set(v); } catch { /* none kept */ }
 const SIZE = (c) => (c ? `${{ UK: '£', US: '$', EU: '€', INDEX: '€', FOREX: '$' }[c.market] || ''}${c.capital.toLocaleString('en-GB')}${c.venues ? ' (each exchange\'s currency)' : ''}` : '');
 
+// The broker's state (data/broker.json, from the bridge monitor on GitHub; results only): a warning above the
+// plan when IBKR refuses the bridge's orders, or when the account does not hold what the model's book holds.
+let brokerState = null;
+const brokerLoad = () => (brokerState ||= fetch('data/broker.json', { cache: 'no-cache' }).then((x) => (x.ok ? x.json() : null)).catch(() => null));
+const when = (t) => {
+  const d = new Date(/^\d{4}-\d\d-\d\d$/.test(t) ? `${t}T12:00:00Z` : t);
+  if (Number.isNaN(+d)) return t;
+  const day = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+  return /^\d{4}-\d\d-\d\d$/.test(t) ? day : `${day} ${d.toISOString().slice(11, 16)} UTC`;
+};
+function brokerNote(r, source, isLive) {
+  const el = $('broker-note');
+  el.hidden = true, el.innerHTML = '';
+  if (!isLive || source === 'FOREX') return;
+  brokerLoad().then((b) => {
+    if (!b || shown !== r) return;
+    const m = b.markets?.[source] || {};
+    const held = m.held, model = r.model === 'strategy' ? r.held : null;
+    const holds = held != null && model != null ? ` The account holds ${held} of the model's ${model} position${model === 1 ? '' : 's'}${held < model ? ': the book shown below is the model\'s, not what is held' : ''}.` : '';
+    if (b.accepts === false) {
+      const f = b.refusal || {};
+      el.innerHTML = `<strong>IBKR is refusing the bridge's orders</strong> (error ${f.code || 2139}: ${f.reason || 'paper trading not acknowledged'})`
+        + `${f.since ? ` since ${when(f.since)}` : ''}: nothing here is being placed.${holds} To fix it: ${f.fix || 'log in to the paper account and accept the paper-trading notice, then restart IB Gateway'}.`
+        + ` <span class="muted">Checked ${when(b.checked)}${f.last ? `; last refused: ${f.last}` : ''}.</span>`;
+      el.hidden = false;
+    } else if (held != null && model != null && held < model) {
+      el.innerHTML = `<strong>The account does not hold the model's book.</strong>${holds} <span class="muted">Checked ${when(b.checked)}.</span>`;
+      el.hidden = false;
+    }
+  });
+}
+
 // The plan in plain words, the orders, and the backtest (folded away).
 function render(r, source) {
   shown = r;
@@ -63,6 +95,10 @@ function render(r, source) {
   const isLive = live.has(source);
   const day = new Date(`${r.asOf}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   const unfunded = isLive && r.budget && !(r.budget.total > 0);  // the account gives this market no money today: nothing is placed
+  // The model's own book (apps/ofm_strategy "held": its positions after the last close, of "slots"): the model's,
+  // not the account's (the broker's state, data/broker.json, says what the account holds).
+  const full = r.model === 'strategy' && r.held != null && r.slots > 0 && r.held >= r.slots;
+  brokerNote(r, source, isLive);
   $('summary').className = `summary ${isLive && !unfunded ? 'live' : 'research'}`;
   if (source === 'FOREX') {  // research only: modelled, never traded
     $('summary').className = 'summary research';
@@ -72,7 +108,7 @@ function render(r, source) {
     : unfunded
     ? `<strong>No orders placed for the next trading day:</strong> this market's share of the account is 0 today (its record over the last year is not reliably positive)${n ? `; the ${n} order${n === 1 ? '' : 's'} below ${n === 1 ? 'is' : 'are'} what the model would place` : ''}.`
     : isLive
-    ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : 'No orders'}</strong> for the next trading day, placed automatically before the open; `
+    ? `<strong>${n ? `${n} order${n === 1 ? '' : 's'}, ${SIZE(c)} each` : full ? 'No new orders' : 'No orders'}</strong> for the next trading day${full ? `: the model's book holds all ${r.slots} of its slots until a stop frees one or the next rebalance` : ', placed automatically before the open'}; `
       + (r.model === 'strategy' ? `each held until the strategy drops it (${r.strategy}: rebalanced every ${r.rebalance} sessions).`
         : r.book === 'hold' ? `each held until its first close at its exit level, at most ${r.days} days.` : 'anything bought is sold by the close.')
     : (r.backtest?.sharpe ?? 0) < 1
@@ -119,7 +155,9 @@ function render(r, source) {
       if (states) row.push(o.state?.ahead == null ? ['–', 'num opt'] : [`${Math.round(100 * o.state.ahead)}% turbulent`, 'num opt']);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
       return row;
-    }) : [{ gap: `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
+    }) : [{ gap: full ? `No new orders: every one of the model's ${r.slots} slots is held, and no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}.`
+      : r.model === 'strategy' && r.held > 0 ? `No new orders: the model holds ${r.held} of its ${r.slots} slots; no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}, so the rest stays in cash.`
+      : `No orders: none is expected to gain${c?.net === false ? '' : ' after costs'}, so the money stays in cash.` }]);
   // Each share opens its chart (daily bars from IBKR through the bridge: never published).
   if (n) [...$('plan').tBodies[0].rows].forEach((tr, k) => {
     const o = r.orders[k], td = tr.cells[0];
@@ -503,6 +541,7 @@ function showMarket(m) {
   labSwitches(m);
   $('asof').textContent = `Loading the latest ${name} scan…`;
   $('plan').innerHTML = '', $('verdict').innerHTML = '', $('recent').innerHTML = '', $('legend').innerHTML = '';
+  $('broker-note').hidden = true;
   fetch(`data/${m}.json`, { cache: 'no-cache' })
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
     .then((r) => { if (market === m) render(r, name); })
