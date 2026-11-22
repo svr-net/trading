@@ -47,11 +47,13 @@ jobs:
       - name: The differential network proxy on 10 assets (against Hermite and a values-only network, exact values)
         shell: bash
         run: build-anmc/ofm_anmc --basket 10 --check | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: The fused kernels' plan, for their WebGPU test
+      - name: The fused kernels' plan and the native build, for the browser tests
         uses: actions/upload-artifact@v4
         with:
-          name: anmc-gpu
-          path: anmc-gpu.json
+          name: anmc
+          path: |
+            anmc-gpu.json
+            build-anmc/ofm_anmc
           retention-days: 3
 
   site:
@@ -124,10 +126,17 @@ jobs:
           node web/tests/labgpu.mjs site/lab engine/ofm_strategy | grep -v '^  \[page\]' | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v4
         with:
-          name: anmc-gpu
-          path: anmc-gpu
+          name: anmc
+          path: anmc
       - name: The differential network's fused kernels on WebGPU (Chromium's software GPU, against the C++ reference)
         env:
           PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
         shell: bash
-        run: node web/tests/anmcgpu.mjs anmc-gpu/anmc-gpu.json | tee -a "$GITHUB_STEP_SUMMARY"
+        run: node web/tests/anmcgpu.mjs anmc/anmc-gpu.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The adaptive nested Monte Carlo in the browser (its WebAssembly builds, the network trained on WebGPU)
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
+        shell: bash
+        run: |
+          chmod +x anmc/build-anmc/ofm_anmc
+          node web/tests/anmclab.mjs site/lab anmc/build-anmc/ofm_anmc | tee -a "$GITHUB_STEP_SUMMARY"

@@ -197,8 +197,13 @@ inline void cholSolve(const std::vector<double>& l, std::size_t p, double* b) {
 }
 
 inline std::size_t threadCount(int threads, std::size_t n) {
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+  (void)threads, (void)n;
+  return 1;  // WebAssembly without threads (the Lab's builds): one thread, no pool
+#else
   const std::size_t t = threads > 0 ? static_cast<std::size_t>(threads) : std::max(1u, std::thread::hardware_concurrency());
   return std::max<std::size_t>(1, std::min(t, n));
+#endif
 }
 
 // One spin-wait step: the CPU's pause hint, and after many of them a yield (never a sleep or a lock).
