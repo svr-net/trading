@@ -11,15 +11,22 @@ ARG TWSAPI_URL=https://download2.interactivebrokers.com/installers/tws-api/stabl
 RUN apt-get update && apt-get install --no-install-recommends --yes curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL -o /tmp/twsapi.sh "$TWSAPI_URL" \
  && sh /tmp/twsapi.sh -q -dir /opt/twsapi \
- && rm /tmp/twsapi.sh \
- && find /opt/twsapi -maxdepth 6 -type d -name JavaClient | head -1 > /tmp/javaclient \
- && test -s /tmp/javaclient
+ && rm /tmp/twsapi.sh
 COPY tools/ibkr/java /src/bridge
-RUN set -e; src=$(cat /tmp/javaclient); mkdir -p /build/classes \
- && find "$src" -path '*/com/ib/client/*.java' > /tmp/api.txt \
- && javac --release 11 -nowarn -encoding UTF-8 -d /build/classes @/tmp/api.txt \
- && javac --release 11 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java') \
- && find "$src" -maxdepth 3 -iname 'license*' -exec cp {} /build/classes/TWSAPI-LICENSE.txt \; ; \
+# IBKR's Java client: its sources (compiled here) or its jar, wherever the installer put them.
+RUN set -e; mkdir -p /build/classes; \
+    d=$(find /opt/twsapi -type d -path '*/com/ib/client' 2>/dev/null | head -1); \
+    jar=$(find /opt/twsapi -iname 'TwsApi*.jar' 2>/dev/null | head -1); \
+    if [ -n "$d" ] && ls "$d"/*.java >/dev/null 2>&1; then \
+      echo "IBKR Java client sources: $d"; find "$d" -name '*.java' > /tmp/api.txt; \
+      javac --release 11 -nowarn -encoding UTF-8 -d /build/classes @/tmp/api.txt; \
+    elif [ -n "$jar" ]; then \
+      echo "IBKR Java client jar: $jar"; (cd /build/classes && jar xf "$jar"); \
+    else \
+      echo "IBKR's Java client not found; the installed folders:"; find /opt/twsapi -maxdepth 5 | head -80; exit 1; \
+    fi; \
+    find /opt/twsapi -maxdepth 4 -iname 'license*' -type f | head -1 | xargs -r -I{} cp {} /build/classes/TWSAPI-LICENSE.txt; \
+    javac --release 11 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java'); \
     jar --create --file /build/bridge.jar --main-class net.svrnet.bridge.Bridge -C /build/classes .
 
 # --- The container --------------------------------------------------------------------------------------------
