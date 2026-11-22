@@ -45,7 +45,7 @@ t0 = Date.now();
   const lines = [];
   const create = (await import(pathToFileURL(path.resolve(wasmDir, 'ofm_anmc.js')).href)).default;
   const m = await create({ print: (s) => lines.push(s), printErr: (s) => lines.push(s) });
-  try { m.callMain(args); } catch (e) { if (!(e && e.name === 'ExitStatus')) throw e; }
+  try { m.callMain([...args]); } catch (e) { if (!(e && e.name === 'ExitStatus')) throw e; }  // a copy: callMain prepends argv[0] in place
   console.log(`WebAssembly, CPU build: ${Date.now() - t0} ms; ${(lines.find((l) => l.includes('fused-kernel')) || '?').trim()}`);
   compare('CPU build', estimates(lines), ref);
 }
@@ -76,7 +76,7 @@ const gpu = await page.evaluate(async ({ args, limit }) => {
     let ended;
     const end = new Promise((r) => { ended = r; });
     const m = await create({ print: (s) => lines.push(s), printErr: (s) => lines.push(s), onExit: ended });
-    try { m.callMain(args); } catch (e) { if (!(e && e.name === 'ExitStatus')) throw e; }
+    try { m.callMain([...args]); } catch (e) { if (!(e && e.name === 'ExitStatus')) throw e; }
     // Asyncify: callMain returns at the first wait for the GPU; the run ends at exit
     const code = await Promise.race([end, new Promise((r) => setTimeout(() => r('timeout'), limit * 1000))]);
     return { code, lines, ms: performance.now() - t0 };

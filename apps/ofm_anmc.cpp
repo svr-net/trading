@@ -545,6 +545,7 @@ int main(int argc, char** argv) {
         if (*p) ++p;
       }
     } else {
+      std::fprintf(stderr, "ofm_anmc: unknown argument %s\n", k.c_str());
       std::fprintf(stderr, "usage: ofm_anmc [--outer N] [--reps N] [--degrees 1,2,4] [--budget N] [--threads N] [--check]\n"
                            "       ofm_anmc --basket D [--outer N] [--reps N] [--budget N] [--threads N] [--check]\n"
                            "                [--methods hermite2,hermite3,values,differential,trusted,fused] [--stats VaR,ES,EPE] [--epochs N] [--estimates]\n"
