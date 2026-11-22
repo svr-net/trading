@@ -129,3 +129,9 @@ choices, 13 settings each, reference 4,000 futures):
 | race z = 3 | 89.6% | 2.7e-5 | |
 
 The race at 1.3 times the setting runs beats the plain choice at 2.2 times the futures.
+
+On the real markets (the scan of 22 Nov 2026, Friday's data, mcrace 2 against the live models) the backtests did not
+move beyond their noise: the account's Sharpe UK 0.98 -> 0.96, EU 0.50 -> 0.48, APAC 1.08 -> 1.09, INDEX 1.05 -> 1.02,
+the synthetic markets' the same within 0.03, for 1.6 to 2.4 times the setting runs (the scan 2 to 6 minutes longer).
+The settings are learnt more exactly, but the stop's and buy-back's exact values matter little to the result: the race
+stays off in the live models.
