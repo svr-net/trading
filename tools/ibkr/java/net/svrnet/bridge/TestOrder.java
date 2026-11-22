@@ -9,6 +9,7 @@ import com.ib.client.EClientSocket;
 import com.ib.client.EJavaSignal;
 import com.ib.client.EReader;
 import com.ib.client.Order;
+import com.ib.client.PriceIncrement;
 import com.ib.client.TickAttrib;
 
 import java.lang.reflect.Method;
@@ -44,6 +45,8 @@ final class TestOrder extends DefaultEWrapper {
     private final CountDownLatch connected = new CountDownLatch(1);
     private final CountDownLatch detailsDone = new CountDownLatch(1);
     private final CountDownLatch historyDone = new CountDownLatch(1);
+    private final CountDownLatch ruleDone = new CountDownLatch(1);
+    private volatile PriceIncrement[] ladder;
     private volatile int nextId = -1;
     private volatile ContractDetails details;
     private volatile double close = Double.NaN;
@@ -119,8 +122,24 @@ final class TestOrder extends DefaultEWrapper {
                 out.put("messages", masked());
                 return out;
             }
+            // The exchange's price ladder (IBKR's market rule for the share's exchange): the step depends on the price.
+            double target = 0.5 * close;
             double tick = details.minTick() > 0 ? details.minTick() : 0.01;
-            double limit = BigDecimal.valueOf(0.5 * close).divide(BigDecimal.valueOf(tick), 0, RoundingMode.DOWN)
+            String rules = details.marketRuleIds();
+            if (rules != null && !rules.isBlank()) {
+                try {
+                    client.reqMarketRule(Integer.parseInt(rules.split(",")[0].trim()));
+                    ruleDone.await(10, TimeUnit.SECONDS);
+                    PriceIncrement[] l = ladder;
+                    if (l != null) {
+                        for (PriceIncrement step : l) if (step.lowEdge() <= target && step.increment() > 0) tick = step.increment();
+                    }
+                } catch (NumberFormatException e) {
+                    note("market rule: " + rules);
+                }
+            }
+            out.put("tick", tick);
+            double limit = BigDecimal.valueOf(target).divide(BigDecimal.valueOf(tick), 0, RoundingMode.DOWN)
                     .multiply(BigDecimal.valueOf(tick)).doubleValue();
             Order o = new Order();
             o.action("BUY");
@@ -215,6 +234,12 @@ final class TestOrder extends DefaultEWrapper {
     @Override
     public void historicalDataEnd(int reqId, String start, String end) {
         historyDone.countDown();
+    }
+
+    @Override
+    public void marketRule(int marketRuleId, PriceIncrement[] increments) {
+        ladder = increments;
+        ruleDone.countDown();
     }
 
     @Override
