@@ -37,6 +37,7 @@ struct McGpuShare {  // a share at the reset
   std::uint32_t nl = 0;  // how many of lows/highs are real (the latest last)
   float mark = 0, sar = 0, ep = 0, af = 0;  // a held position (McHeld)
   std::uint32_t held = 0;                   // 1 held, 2 exitNext
+  float bandMin = 0.02f, bandMax = 0.5f, slip = 0;  // McSpec's (the same for every setting of a batch)
 };
 constexpr std::uint32_t kMcNoDay = 0xFFFFFFFFu;
 struct McBatch {
@@ -73,7 +74,9 @@ inline bool mcPack(const Data& d, std::size_t t0, const std::vector<std::size_t>
   if (specs.empty() || paths.empty()) return false;
   const McSpec& s0 = specs[0];
   for (const auto& s : specs)
-    if (s.trip != s0.trip || s.window != s0.window || s.skip != s0.skip || s.horizon != s0.horizon) return false;
+    if (s.trip != s0.trip || s.window != s0.window || s.skip != s0.skip || s.horizon != s0.horizon || s.bandMin != s0.bandMin || s.bandMax != s0.bandMax ||
+        s.slip != s0.slip)
+      return false;
   const std::size_t N = d.N;
   const std::size_t hi = t0 > s0.skip + 1 ? t0 - s0.skip : 1, lo = hi > s0.window ? hi - s0.window : 1;
   b.P = std::uint32_t(paths.size()), b.S = std::uint32_t(list.size()), b.G = std::uint32_t(specs.size()), b.D = std::uint32_t(hi - lo + 1);
@@ -109,6 +112,7 @@ inline bool mcPack(const Data& d, std::size_t t0, const std::vector<std::size_t>
     const McHeld& h = held[j];
     sh.held = (h.held ? 1u : 0u) | (h.exitNext ? 2u : 0u);
     sh.mark = float(h.mark), sh.sar = float(h.sar), sh.ep = float(h.ep), sh.af = float(h.af);
+    sh.bandMin = float(s0.bandMin), sh.bandMax = float(s0.bandMax), sh.slip = float(s0.slip);
   }
   b.specs.clear();
   for (const auto& s : specs) b.specs.push_back(mcGpuSpec(s));
@@ -149,7 +153,8 @@ inline void mcBatchRef(const McBatch& b, std::size_t g, std::size_t sIdx, std::s
   T vd = in ? T(sh.af) : T(0), hic = in && T(sh.af) < T(1) ? T(sh.ep) / (T(1) - T(sh.af)) : T(0);
   bool exitNext = sh.held & 2u;
   T dsar = T(0), dep = T(0), daf = T(0), level = T(0), low = T(0);
-  const T band = psarVol > T(0) ? std::clamp(psarVol * sig0, T(0.02), T(0.5)) : T(0);
+  const T band = psarVol > T(0) ? std::clamp(psarVol * sig0, T(sh.bandMin), T(sh.bandMax)) : T(0);
+  const T slip = T(1) - T(sh.slip) * sig0;
   T last = last0;
   for (std::uint32_t k = 0; k < b.H; ++k) {
     const std::uint32_t q = b.days[std::size_t(p) * b.H + k];
@@ -173,14 +178,14 @@ inline void mcBatchRef(const McBatch& b, std::size_t g, std::size_t sIdx, std::s
     if (vstop > T(0)) {
       if (!in && pending && o <= prev * (T(1) + cap)) {
         if (outStopped && tripOn) w *= T(1) - T(sh.trip);
-        in = true, pending = false, mark = o, vd = std::clamp(vstop * sig0, T(0.02), T(0.5));
+        in = true, pending = false, mark = o, vd = std::clamp(vstop * sig0, T(sh.bandMin), T(sh.bandMax));
         ep = o * (T(1) - vd), sar = o * (T(1) - T(1.5) * vd), hic = o, exitNext = false;
       }
       if (in) {
         if (exitNext) {
-          w *= o / mark, in = false, outStopped = stopped = true, exitNext = false, level = ep;
+          w *= o * slip / mark, in = false, outStopped = stopped = true, exitNext = false, level = ep;
         } else if (lo <= sar) {
-          w *= std::min(o, sar) / mark, in = false, outStopped = stopped = true, level = ep;
+          w *= std::min(o, sar) * slip / mark, in = false, outStopped = stopped = true, level = ep;
         } else {
           w *= c / mark, mark = c;
           if (c < ep) {
@@ -215,7 +220,7 @@ inline void mcBatchRef(const McBatch& b, std::size_t g, std::size_t sIdx, std::s
     }
     if (in) {
       if (stops && sar > T(0) && lo <= sar) {
-        const T px = intraday ? sar : std::min(o, sar);
+        const T px = (intraday ? sar : std::min(o, sar)) * slip;
         w *= px / mark, in = false, outStopped = stopped = true, turned = false, level = px, low = std::min(px, lo);
         if (psar) dsar = std::max(ep, px), dep = px, daf = afStep;
         if (rebuyStop > T(0) && !intraday && c >= px * (T(1) + rebuyStop)) {

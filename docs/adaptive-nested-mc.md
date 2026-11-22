@@ -234,6 +234,35 @@ strategy engine does not call it.
 
 As in the document: τ² is constant within a bin of proxy values; VaR has no standard error; ES runs slightly low when
 the proxy ranks the tail imperfectly; quantiles of noisy estimates carry the usual nested-simulation bias; one horizon
-per run. Not yet wired into the strategy engine: its nested Monte Carlo (include/strategy/montecarlo.hpp) chooses the
-book on simulated futures; a natural first use is the book's VaR and ES at the next reset, with the engine's own
-simulator as the inner restart.
+per run. The library itself is not called by the strategy engine; its rule is (below).
+
+## In the strategy engine: the settings learnt by a race (mcrace)
+
+After the market's hidden states are reverse-engineered at a reset (`mcregime`, include/strategy/regime.hpp), each share's
+stop band and buy-back distance are learnt on its simulated futures: the setting with the most expected log growth.
+Plainly every setting gets the same `mcpaths` futures, the clearly beaten ones as many as the close contenders. With
+`mcrace` z (apps/ofm_strategy) the inner simulations go where the choice is still open, as this library sends them where
+a statistic is: after the first `mcpaths` futures a setting is dropped once the leader beats it by more than z standard
+errors of their paired difference (both on the same futures), and the rest race on in rounds of half `mcpaths` new
+futures, until one is left or each has had (1 + `mcraceextra`) x `mcpaths`. A dropped setting's mean is moved by the
+leader's change since it dropped (the later futures' luck, paired), so the fine grid's curve (`adaptfine`) stays on one
+footing. With `mcprob` (votes) the race is off. Deterministic, the same on every back end; off (0) the engine is unchanged.
+
+`X_MCRACE_REF=N` scores every choice against N independent futures (none of the run's) and reports how often it is the
+setting those make best and the log growth it loses there. On the generated market with the UK's live settings (1,100
+choices, 13 settings each, reference 4,000 futures):
+
+| | the reference's best | log growth lost per choice | time |
+|---|---|---|---|
+| plain, 500 futures | 84.6% | 5.1e-5 | 1.23 s |
+| plain, 1,100 futures | 87.5% | 3.1e-5 | |
+| race z = 2 (500, at most 2,000) | 89.1% | 2.8e-5 | 1.52 s |
+| race z = 3 | 89.6% | 2.7e-5 | |
+
+The race at 1.3 times the setting runs beats the plain choice at 2.2 times the futures.
+
+On the real markets (the scan of 22 Nov 2026, Friday's data, mcrace 2 against the live models) the backtests did not
+move beyond their noise: the account's Sharpe UK 0.98 -> 0.96, EU 0.50 -> 0.48, APAC 1.08 -> 1.09, INDEX 1.05 -> 1.02,
+the synthetic markets' the same within 0.03, for 1.6 to 2.4 times the setting runs (the scan 2 to 6 minutes longer).
+The settings are learnt more exactly, but the stop's and buy-back's exact values matter little to the result: the race
+stays off in the live models.

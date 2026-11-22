@@ -168,7 +168,7 @@ WGPUBuffer upload(const void* data, std::size_t bytes, WGPUBufferUsageFlags usag
 
 // One batch on the GPU: fills ret and stopped (G * S * P); false: not run (the engine runs it itself).
 bool runBatch(const strat::McBatch& b, std::vector<float>& ret, std::vector<std::uint32_t>& stopped) {
-  static_assert(sizeof(strat::McGpuShare) == 21 * 4 && sizeof(strat::McGpuSpec) == 8 * 4, "the kernel's layout");
+  static_assert(sizeof(strat::McGpuShare) == 24 * 4 && sizeof(strat::McGpuSpec) == 8 * 4, "the kernel's layout");
   Gpu& g = gpu();
   if (!open()) return ++g.fallbacks, false;
   const std::size_t n = std::size_t(b.G) * b.S * b.P;
