@@ -40,6 +40,10 @@ struct McSpec {
   // psarVol: the volatility-adjusted SAR (with psar): it starts psarVol times the share's daily volatility under the
   // price paid, and rises as the SAR does but never closer than that under the close. 0: the plain SAR.
   double psarVol = 0;
+  // bandMin, bandMax: the stop's distance under the price (psarVol, vstop) at least and at most these fractions; slip:
+  // a stop sells below its level (or the open through a gap) by slip times the share's daily volatility, as a stop
+  // order at the broker fills (stopmin, stopmax, stopslip in apps/ofm_strategy; the backtest the same).
+  double bandMin = 0.02, bandMax = 0.5, slip = 0;
   // rebuyStop: the buy-back as an order at the broker, attached to the stop (with psar or a fixed stop): once the stop
   // sells at L, a buy stop at L * (1 + rebuyStop) works; bought back the day the price comes back through it (the stop's
   // own day only when the close is at or over it: the price crossed it after the stop), at that level or the open
@@ -197,21 +201,22 @@ inline McTrade mcSlotPath(const McPath& p, std::size_t i, double cap, const McSp
   bool exitNext = h.exitNext;
   double dsar = 0, dep = 0, daf = 0, level = 0;  // a stopped share's SAR on the way down, and the level it was stopped at
   double low = 0;  // rebuyTrail: the lowest low since the stop (the buy-back order trails it)
-  const double band = s.psarVol > 0 ? std::clamp(s.psarVol * sig0, 0.02, 0.5) : 0.0;
+  const double band = s.psarVol > 0 ? std::clamp(s.psarVol * sig0, s.bandMin, s.bandMax) : 0.0;
+  const double slip = 1 - s.slip * sig0;  // a stop's fill under its level
   for (std::size_t k = 0; k < p.b.size(); k += 8) {
     const double* x = &p.b[k];
     const double last = x[0], o = x[1], hi = x[2], lo = x[3], c = x[4], l5 = x[5], l2 = x[6], h2 = x[7];
     if (s.vstop > 0) {  // the volatility stop: its own day (the buy, the stop, the buy-back)
       if (!in && pending && o <= last * (1 + cap)) {
         if (out.stopped && s.trip) w *= 1 - s.trip[i];  // a buy-back: its round trip (mccost)
-        in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, 0.02, 0.5);
+        in = true, pending = false, mark = o, vd = std::clamp(s.vstop * sig0, s.bandMin, s.bandMax);
         ep = o * (1 - vd), sar = o * (1 - 1.5 * vd), hic = o, exitNext = false;
       }
       if (in) {
         if (exitNext) {  // a close under its level yesterday: sold at this open
-          w *= o / mark, in = false, out.stopped = stopped = true, exitNext = false, level = ep;
+          w *= o * slip / mark, in = false, out.stopped = stopped = true, exitNext = false, level = ep;
         } else if (lo <= sar) {  // the catastrophic stop: at its level, or the open through a gap
-          w *= std::min(o, sar) / mark, in = false, out.stopped = stopped = true, level = ep;
+          w *= std::min(o, sar) * slip / mark, in = false, out.stopped = stopped = true, level = ep;
         } else {
           w *= c / mark, mark = c;
           if (c < ep) {
@@ -246,7 +251,7 @@ inline McTrade mcSlotPath(const McPath& p, std::size_t i, double cap, const McSp
     }
     if (in) {
       if (stops && sar > 0 && lo <= sar) {  // stopped: at the stop, or the open through a gap
-        const double px = intraday ? sar : std::min(o, sar);
+        const double px = (intraday ? sar : std::min(o, sar)) * slip;
         w *= px / mark, in = false, out.stopped = stopped = true, turned = false, level = px, low = std::min(px, lo);
         if (s.psar) dsar = std::max(ep, px), dep = px, daf = s.afStep;
         if (s.rebuyStop > 0 && !intraday && c >= px * (1 + s.rebuyStop)) {  // back through the buy stop after the stop

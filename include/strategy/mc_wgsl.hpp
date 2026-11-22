@@ -17,6 +17,7 @@ struct Share {
   last0: f32, sig0: f32, adj: f32, cap: f32, trip: f32,
   lows: array<f32, 5>, highs: array<f32, 5>, nl: u32,
   mark: f32, sar: f32, ep: f32, af: f32, held: u32,
+  bandMin: f32, bandMax: f32, slip: f32,
 }
 struct Spec { stopLoss: f32, rebuy: f32, afStep: f32, afMax: f32, vstop: f32, psarVol: f32, rebuyStop: f32, flags: u32 }
 
@@ -77,7 +78,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   var exitNext = (sh.held & 2u) != 0u;
   var dsar = 0.0; var dep = 0.0; var daf = 0.0; var level = 0.0; var low = 0.0;
   var band = 0.0;
-  if (sp.psarVol > 0.0) { band = clamp(sp.psarVol * sig0, 0.02, 0.5); }
+  if (sp.psarVol > 0.0) { band = clamp(sp.psarVol * sig0, sh.bandMin, sh.bandMax); }
+  let slip = 1.0 - sh.slip * sig0;
   var last = last0;
   for (var k = 0u; k < prm.H; k++) {
     let q = days[p * prm.H + k];
@@ -99,14 +101,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
     if (sp.vstop > 0.0) {
       if (!inPos && pending && o <= prev * (1.0 + cap)) {
         if (outStopped && tripOn) { w *= 1.0 - sh.trip; }
-        inPos = true; pending = false; mark = o; vd = clamp(sp.vstop * sig0, 0.02, 0.5);
+        inPos = true; pending = false; mark = o; vd = clamp(sp.vstop * sig0, sh.bandMin, sh.bandMax);
         ep = o * (1.0 - vd); sar = o * (1.0 - 1.5 * vd); hic = o; exitNext = false;
       }
       if (inPos) {
         if (exitNext) {
-          w *= o / mark; inPos = false; outStopped = true; stopped = true; exitNext = false; level = ep;
+          w *= o * slip / mark; inPos = false; outStopped = true; stopped = true; exitNext = false; level = ep;
         } else if (lo <= sar) {
-          w *= min(o, sar) / mark; inPos = false; outStopped = true; stopped = true; level = ep;
+          w *= min(o, sar) * slip / mark; inPos = false; outStopped = true; stopped = true; level = ep;
         } else {
           w *= c / mark; mark = c;
           if (c < ep) {
@@ -147,7 +149,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
     }
     if (inPos) {
       if (stops && sar > 0.0 && lo <= sar) {
-        let px = select(min(o, sar), sar, intraday);
+        let px = select(min(o, sar), sar, intraday) * slip;
         w *= px / mark; inPos = false; outStopped = true; stopped = true; turned = false; level = px; low = min(px, lo);
         if (psar) { dsar = max(ep, px); dep = px; daf = sp.afStep; }
         if (sp.rebuyStop > 0.0 && !intraday && c >= px * (1.0 + sp.rebuyStop)) {

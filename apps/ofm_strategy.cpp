@@ -648,6 +648,14 @@ int main(int argc, char** argv) {
   // had had several times the futures, at a fraction of the cost. 0: every setting on the same `paths` futures.
   // With mcprob (the most probable best, by votes) the race is off: votes need every setting on every future.
   P.emplace("mcrace", 0.0), P.emplace("mcraceextra", 3.0);
+  // stopmin, stopmax: a volatility stop (psarvol, vstop) at least and at most that far under the price (fractions;
+  // the multiple learnt or set, times the share's daily volatility, is clamped to them), in the backtest, the live
+  // orders and the nested Monte Carlo alike. stopslip: a stop sells that many daily volatilities under its level (or
+  // the open, through a gap), as a stop order at the broker fills in a falling market: every stop and every whipsaw
+  // costs it, so the stops are learnt against fills that happen, not at their exact level. 0: at the level.
+  P.emplace("stopmin", 0.02), P.emplace("stopmax", 0.5), P.emplace("stopslip", 0.0);
+  // stopmultlo, stopmulthi: adaptfine's grid of the stop's multiple (of the daily volatility) learnt for each share.
+  P.emplace("stopmultlo", 1.0), P.emplace("stopmulthi", 10.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -756,9 +764,16 @@ int main(int argc, char** argv) {
     const auto st = stateAt(r.t, r.i);
     r.turbulence = st.turbulence, r.ahead = st.ahead, r.marketVol = st.marketVol, r.shareVol = st.shareVol;
   };
+  const double stopMin = P["stopmin"], stopMax = P["stopmax"], stopSlip = P["stopslip"];
+  if (!(stopMin > 0 && stopMin <= stopMax)) usage("stopmin must be above 0 and at most stopmax");
   const auto vDist = [&](std::size_t t, std::size_t i) {  // the stop's distance under the price (a fraction)
     const double sg = sigmaAt(t, i);
-    return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), 0.02, 0.5);
+    return std::clamp(vOf(i) * (std::isfinite(sg) ? sg : 0.02), stopMin, stopMax);
+  };
+  const auto slipAt = [&](std::size_t u, std::size_t i) {  // stopslip: the fraction of a stop's level it sells at
+    if (!(stopSlip > 0)) return 1.0;
+    const double sg = sigmaAt(u > 0 ? u - 1 : 0, i);
+    return 1 - stopSlip * (std::isfinite(sg) ? sg : 0.02);
   };
   const double afStep = P["psarstep"], afMax = P["psarmax"];
   std::map<std::size_t, std::pair<double, double>> sarPick;  // psaradapt: each share's SAR step and largest step
@@ -802,7 +817,7 @@ int main(int argc, char** argv) {
     if (!stops) return false;
     const double lo = d.L[u * N + i], hi = d.H[u * N + i], op = d.O[u * N + i];
     if (lo > 0 && p.sar > 0 && lo <= p.sar) {
-      px = op > 0 ? std::min(op, p.sar) : p.sar;
+      px = (op > 0 ? std::min(op, p.sar) : p.sar) * slipAt(u, i);
       return true;
     }
     if (vstop) {  // the close against its level: under it, sold at the next open; else the levels rise with the highest close
@@ -865,6 +880,7 @@ int main(int argc, char** argv) {
   };
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
+  mc.bandMin = stopMin, mc.bandMax = stopMax, mc.slip = stopSlip;
   mc.paths = std::max<std::size_t>(20, std::size_t(P["mcpaths"])), mc.horizon = P["mchorizon"] > 0 ? std::size_t(P["mchorizon"]) : reb;
   mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
@@ -908,7 +924,8 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < n; ++q) g[q] = lo * std::pow(hi / lo, double(q) / double(n - 1));
     return g;
   };
-  const std::vector<double> vFine = logGrid(1.0, 10.0, 13), rbFine = logGrid(0.0025, 0.10, 13);
+  if (!(P["stopmultlo"] > 0 && P["stopmultlo"] < P["stopmulthi"])) usage("stopmultlo must be above 0 and under stopmulthi");
+  const std::vector<double> vFine = logGrid(P["stopmultlo"], P["stopmulthi"], 13), rbFine = logGrid(0.0025, 0.10, 13);
   std::vector<double> vPicks, rbPicks;  // adaptfine: every value learnt (the report's spread)
   const std::vector<std::pair<double, double>> sarGrid{{0.005, 0.1}, {0.01, 0.1}, {0.02, 0.1}, {0.03, 0.1}, {0.005, 0.2}, {0.01, 0.2}, {0.02, 0.2}, {0.03, 0.2}};
   std::map<std::pair<double, double>, std::size_t> sarChosen;
@@ -1440,9 +1457,10 @@ int main(int argc, char** argv) {
       Row& r = rows[it->second.row];
       const double O = d.O[u * N + i], C = d.Cf[u * N + i];
       if (it->second.exitNext && O > 0) {  // vstop: yesterday's close under its level: sold at this open
-        day += O / it->second.mark - 1;
-        r.exit = O, r.ret = O / r.entry - 1, r.closed = true, r.stopped = true, r.days = u - r.since;
-        stoppedAt[i] = stoppedFrom(it->second, O, i, u), ++nStops;
+        const double X = O * slipAt(u, i);
+        day += X / it->second.mark - 1;
+        r.exit = X, r.ret = X / r.entry - 1, r.closed = true, r.stopped = true, r.days = u - r.since;
+        stoppedAt[i] = stoppedFrom(it->second, X, i, u), ++nStops;
         done.push_back(it->second.row);
         it = book.erase(it);
         continue;
@@ -1861,7 +1879,7 @@ int main(int argc, char** argv) {
     if (vAdapt) {
       std::string used;
       for (const auto& [m, n] : vChosen) used += (used.empty() ? "" : ", ") + jnum(m) + " " + std::to_string(n);
-      if (fine) used = "learnt as any value from 1 to 10: " + spread(vPicks, 1.0, "%.2f");
+      if (fine) used = "learnt as any value from " + jnum(P["stopmultlo"]) + " to " + jnum(P["stopmulthi"]) + ": " + spread(vPicks, 1.0, "%.2f");
       std::printf(psarVol ? "strategy: the SAR's volatility band learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
