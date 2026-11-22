@@ -815,33 +815,46 @@ std::string pct(const ojson& x, int d = 2) {
 
 ojson loadTrack(const std::string& p) {
   ojson t;
-  if (!tryOJson(p, t)) t = {{"about", "Live record, one entry per day: ret the model portfolio, day the daily trades (results only)."}, {"days", ojson::array()}};
+  if (!tryOJson(p, t)) t = {{"about", "Live record, only the days orders were made for: ret the model portfolio, day the daily trades (results only)."}, {"days", ojson::array()}};
   return t;
 }
 
+// The live record keeps only the days orders were made for: a scan with orders marks its date ("ordered": the
+// close they were made after), and the next scan's day after that date is added (its result); a day without
+// orders is not recorded.
 int cmdTrack(const std::vector<std::string>& a) {
   if (a.size() < 3) die("track report/ofm.json web/data/track.json");
   const ojson scan = readOJson(a[1]);
   ojson track = loadTrack(a[2]);
+  const std::string before = track.dump();
   const auto& recent = scan.contains("recent") ? scan["recent"] : ojson::array();
-  if (recent.empty()) {
+  const std::string asOf = scan.value("asOf", std::string()), ordered = track.value("ordered", std::string());
+  std::string added;
+  if (!recent.empty() && !ordered.empty()) {
+    const ojson& day = recent.back();
+    const std::string date = day.value("date", std::string());
+    bool have = false;
+    for (const auto& d : track["days"]) have = have || d["date"] == day["date"];
+    if (!have && date > ordered) {
+      ojson e{{"date", day["date"]}, {"ret", day.contains("ret") ? day["ret"] : day.value("day", ojson())}, {"ordersAfter", ordered}};
+      if (day.contains("day") && !day["day"].is_null()) e["day"] = day["day"];
+      track["days"].push_back(e);
+      std::vector<ojson> v(track["days"].begin(), track["days"].end());
+      std::stable_sort(v.begin(), v.end(), [](const ojson& x, const ojson& y) { return x["date"].get<std::string>() < y["date"].get<std::string>(); });
+      track["days"] = v;
+      added = date;
+      track.erase("ordered");
+    }
+  }
+  const auto& orders = scan.contains("orders") ? scan["orders"] : ojson::array();
+  if (!orders.empty() && !asOf.empty()) track["ordered"] = asOf;
+  else if (track.value("ordered", std::string()) == asOf) track.erase("ordered");  // a later scan of the same close dropped them
+  if (track.dump() == before) {
     std::cout << "track: unchanged\n";
     return 0;
   }
-  const ojson& day = recent.back();
-  for (const auto& d : track["days"])
-    if (d["date"] == day["date"]) {
-      std::cout << "track: unchanged\n";
-      return 0;
-    }
-  ojson e{{"date", day["date"]}, {"ret", day.contains("ret") ? day["ret"] : day.value("day", ojson())}};
-  if (day.contains("day") && !day["day"].is_null()) e["day"] = day["day"];
-  track["days"].push_back(e);
-  std::vector<ojson> v(track["days"].begin(), track["days"].end());
-  std::stable_sort(v.begin(), v.end(), [](const ojson& x, const ojson& y) { return x["date"].get<std::string>() < y["date"].get<std::string>(); });
-  track["days"] = v;
   writeFile(a[2], track.dump(1));
-  std::cout << "track: added " << day["date"].get<std::string>() << "\n";
+  std::cout << "track: " << (added.empty() ? "no day added" : "added " + added) << (track.contains("ordered") ? "; orders after the close of " + track["ordered"].get<std::string>() : "; no orders pending") << "\n";
   return 0;
 }
 

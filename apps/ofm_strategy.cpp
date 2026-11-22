@@ -60,7 +60,7 @@ using strat::kNaN;
 namespace {
 
 struct Options {
-  std::string csv, market = "UK", strategy, backend, stampFree, venues, overrideCsv, jsonOut, ordersOut, traceOut, synthetic;
+  std::string csv, market = "UK", strategy, backend, stampFree, venues, overrideCsv, jsonOut, ordersOut, traceOut, synthetic, account;
   std::map<std::string, double> params;
   double capital = 5000, minValue = -1, minPrice = -1, advShare = 0.01, minOrder = 500;
   long top = -1;
@@ -101,6 +101,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--stamp-free") o.stampFree = next();
     else if (a == "--venues") o.venues = next();
     else if (a == "--override") o.overrideCsv = next();
+    else if (a == "--account") o.account = next();
     else if (a == "--pricing") o.tiered = next() == "tiered";
     else if (a == "--min-value") o.minValue = std::atof(next().c_str());
     else if (a == "--min-price") o.minPrice = std::atof(next().c_str());
@@ -140,6 +141,26 @@ std::string slurp(const std::string& path) {
   std::ostringstream s;
   s << in.rdbuf();
   return s.str();
+}
+
+// --account FILE (config/account.json): the shares the broker's account really holds, by market:
+// {"UK": ["WPP", ...], "EU": [...]}. A market listed there has its model book checked against it: a share the
+// model holds but the account does not is ordered as a new buy (its costs, the median-stop filter, the
+// simulation from a fresh stop), so the account catches up with the model. A market not listed: the model's
+// book is taken as held. Returns false when the market is not listed.
+bool accountOf(const std::string& path, const std::string& market, std::set<std::string>& out) {
+  const std::string js = slurp(path);
+  const auto k = js.find("\"" + market + "\"");
+  if (k == std::string::npos) return false;
+  const auto a = js.find('[', k), c = a == std::string::npos ? a : js.find(']', a);
+  if (a == std::string::npos || c == std::string::npos) return false;
+  for (std::size_t q = js.find('"', a); q != std::string::npos && q < c;) {
+    const auto e = js.find('"', q + 1);
+    if (e == std::string::npos || e > c) break;
+    out.insert(js.substr(q + 1, e - q - 1));
+    q = js.find('"', e + 1);
+  }
+  return true;
 }
 
 // Every row of a CSV of bars, in the file's order; days and tickers in the order first seen (sorted after). b: the
@@ -899,6 +920,16 @@ int main(int argc, char** argv) {
   else armNames.push_back(o.strategy);
   std::vector<Row> rows;
   std::map<std::size_t, Pos> book;
+  // --account: what the broker's account really holds in this market (else the model's book is taken as held).
+  std::set<std::string> account;
+  const bool accountKnown = !o.account.empty() && accountOf(o.account, M, account);
+  const auto inAccount = [&](std::size_t i) {
+    if (!book.count(i)) return false;
+    if (!accountKnown) return true;
+    const std::string& t = d.tickers[i];
+    const auto c = t.rfind(':');
+    return account.count(t) > 0 || (c != std::string::npos && account.count(t.substr(c + 1)) > 0);
+  };
   std::vector<std::size_t> target, reserve;  // reserve (refill): the next shares for the slots stops free
   std::vector<std::size_t> simReserve;
   std::vector<double> score, daily, dailyNet;  // dailyNet: after the buy-backs' round trips
@@ -1475,7 +1506,7 @@ int main(int argc, char** argv) {
   for (std::size_t rank = 0; rank < targetAll.size(); ++rank) {
     const std::size_t i = targetAll[rank];
     if (!book.count(i) && !mayBuy(L, i)) continue;  // stopped and not recovered: not bought back yet
-    Order x{i, rank, d.Cf[L * N + i], 0, 0, learnt.expected(rank), 0, 0, 0, book.count(i) > 0};
+    Order x{i, rank, d.Cf[L * N + i], 0, 0, learnt.expected(rank), 0, 0, 0, inAccount(i)};
     x.limit = x.close * (1 + capOf(L, i));
     x.value = noVolume ? o.capital : std::min(o.capital, o.advShare * d.value[L * N + i]);
     if (!(x.value >= o.minOrder)) continue;
@@ -1498,7 +1529,7 @@ int main(int argc, char** argv) {
       caps.push_back(capOf(L, i));
       strat::McHeld h;
       const auto b = book.find(i);
-      if (b != book.end())
+      if (b != book.end() && inAccount(i))  // a share the account does not hold: simulated as bought afresh
         h.held = true, h.mark = d.Cf[L * N + i], h.sar = b->second.sar, h.ep = b->second.ep, h.af = b->second.af, h.exitNext = b->second.exitNext;
       held.push_back(h);
     }
@@ -1735,6 +1766,9 @@ int main(int argc, char** argv) {
       std::printf("strategy: the book over the next %zu sessions (from the last close): mean %+.2f%%, 5%% %+.2f%%, median %+.2f%%, 95%% %+.2f%%, a loss on %.0f%% of the futures\n",
                   mc.horizon, 100 * mcNext[0], 100 * mcNext[1], 100 * mcNext[2], 100 * mcNext[3], 100 * mcNext[4]);
   }
+  if (accountKnown)
+    std::printf("strategy: the account holds %zu of the model's %zu positions (--account %s); the others are ordered as new buys\n",
+                std::size_t(std::count_if(book.begin(), book.end(), [&](const auto& b) { return inAccount(b.first); })), book.size(), o.account.c_str());
   std::printf("strategy: next session (after the close of %s; the list from the rebalance after the close of %s): %zu on the list, %zu after costs\n", d.days[L].c_str(),
               d.days[decided].c_str(), orders.size(), final.size());
   for (const auto& x : orders)
@@ -1752,7 +1786,7 @@ int main(int argc, char** argv) {
     std::size_t stocks = 0;
     for (std::size_t i = 0; i < N; ++i) stocks += in[L * N + i] != 0;
     f << "{\"model\":\"strategy\",\"strategy\":" << jstr(o.strategy) << ",\"about\":" << jstr(strategy->about()) << ",\"backend\":" << jstr(backendName)
-      << ",\"asOf\":" << jstr(d.days[L]) << ",\"decided\":" << jstr(d.days[decided]) << ",\"stocks\":" << stocks << ",\"book\":\"hold\",\"slots\":" << k << ",\"held\":" << book.size() << ",\"rebalance\":" << reb << ",\"days\":" << maxDays
+      << ",\"asOf\":" << jstr(d.days[L]) << ",\"decided\":" << jstr(d.days[decided]) << ",\"stocks\":" << stocks << ",\"book\":\"hold\",\"slots\":" << k << ",\"held\":" << std::count_if(book.begin(), book.end(), [&](const auto& b) { return inAccount(b.first); }) << ",\"modelHeld\":" << book.size() << ",\"rebalance\":" << reb << ",\"days\":" << maxDays
       << ",\"costs\":{\"broker\":\"IBKR\",\"market\":" << jstr(M) << ",\"net\":false,\"atEnd\":true,\"capital\":" << jnum(o.capital) << ",\"stamp\":" << (uk ? "0.005" : "0")
       << ",\"stampFree\":" << costs.stampFree.size() << ",\"venues\":" << (costs.venue.empty() ? "false" : "true") << "}";
     f << ",\"backtest\":{\"from\":" << jstr(dailyDays.empty() ? "" : dailyDays.front()) << ",\"to\":" << jstr(dailyDays.empty() ? "" : dailyDays.back())
