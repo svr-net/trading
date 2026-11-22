@@ -1,11 +1,11 @@
 {
- "checked": "2026-11-22T09:42Z",
+ "checked": "2026-11-22T09:53Z",
  "reachable": true,
  "accepts": false,
  "refusal": {
   "code": 2139,
   "reason": "paper trading not acknowledged",
-  "last": "2026-11-20 17:53 UTC US hold-place",
+  "last": "2026-11-22 09:53 GMT UK test-order",
   "since": "2026-11-16",
   "fix": "log in to the paper account once (Client Portal or TWS, paper mode), accept the paper-trading notice, then restart IB Gateway"
  },
