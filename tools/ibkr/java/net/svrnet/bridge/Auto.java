@@ -761,6 +761,12 @@ final class Auto {
         ibdiagAt = System.nanoTime();
     }
 
+    /** The IBKR check is due: every 5 minutes, every minute while it last failed (IB Gateway still logging in after a start). */
+    static boolean diagDue() {
+        Map<String, Object> d = ibdiag;
+        return ibdiagAt == null || ago(ibdiagAt) >= (d != null && Boolean.TRUE.equals(d.get("api")) ? 300 : 60);
+    }
+
     static long ago(long nanos) {
         return (System.nanoTime() - nanos) / 1_000_000_000L;
     }
@@ -779,7 +785,7 @@ final class Auto {
                     err("refresher " + m + ": " + e.getMessage());
                 }
             }
-            if (ibdiagAt == null || ago(ibdiagAt) >= 300) readOnce("diag", Auto::readIbdiag);
+            if (diagDue()) readOnce("diag", Auto::readIbdiag);
             beat("refresher");
             Recordings.sleep(20);
         }
@@ -1064,7 +1070,7 @@ final class Auto {
         }
         add.accept("IB Gateway port", new Object[] {gatewayUp(), IB_HOST + ":" + IB_PORT});
         String m0 = AUTO.isEmpty() ? "UK" : AUTO.get(0);
-        if (ibdiagAt == null || ago(ibdiagAt) >= 300) readOnce("diag", Auto::readIbdiag);
+        if (diagDue()) readOnce("diag", Auto::readIbdiag);
         Map<String, Object> d = ibdiag;
         String agoNote = ibdiagAt != null ? " (checked " + ago(ibdiagAt) + " s ago)" : "";
         if (d == null) {
