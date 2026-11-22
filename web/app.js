@@ -818,6 +818,7 @@ const LAB_STRATEGIES = [
   ['lowvol', 'Low volatility, rebalanced monthly'],
   ['reversal', 'Residual reversal, held a week'],
 ];
+let labLive = null;  // the market's live strategy and its parameters (data/strategies.json)
 function labSwitches(m) {
   const box = $('lab-switches');
   if (!box) return;
@@ -826,12 +827,18 @@ function labSwitches(m) {
     const stop = document.createElement('label'), sc = document.createElement('input');
     sc.type = 'checkbox', sc.id = 'lab-psar', sc.checked = psar;
     stop.append(sc, document.createTextNode(`A PSAR stop, bought back when its SAR turns up${psar ? ' (live)' : ''}`));
+    // The live settings in full (the nested Monte Carlo choosing the book, the stops learnt): heavy, so on the GPU
+    // (WebGPU) where the browser has one, else on the CPU (minutes).
+    const full = document.createElement('label'), fc = document.createElement('input');
+    fc.type = 'checkbox', fc.id = 'lab-live', fc.disabled = !entry?.params;
+    labLive = entry ? { strategy: entry.strategy, params: entry.params } : null;
+    full.append(fc, document.createTextNode(`The live settings in full: the nested Monte Carlo${'gpu' in navigator ? ' (on this device\'s GPU)' : ' (no WebGPU here: on the CPU, minutes)'}`));
     box.replaceChildren(...LAB_STRATEGIES.map(([k, t]) => {
       const l = document.createElement('label'), c = document.createElement('input');
       c.type = 'radio', c.name = 'lab-strategy', c.value = k, c.checked = k === (live || 'momentum');
       l.append(c, document.createTextNode(`${t}${k === live ? ' (live)' : ''}`));
       return l;
-    }), stop);
+    }), stop, full);
   });
 }
 let labWorker = null;
@@ -850,7 +857,11 @@ $('lab-run').addEventListener('click', async () => {
   }
   const env = {}, chosen = $('lab-switches').querySelector('input[name="lab-strategy"]:checked')?.value || 'momentum';
   const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--strategy', chosen, '--backend', 'serial'];
-  if ($('lab-psar')?.checked) args.push('--param', 'psar=1', '--param', 'rebuy=0');
+  const liveFull = $('lab-live')?.checked && labLive;
+  if (liveFull) {  // the live strategy with every parameter of config/markets.json (the nested Monte Carlo on)
+    args.splice(args.indexOf('--strategy') + 1, 1, labLive.strategy);
+    for (const [k, v] of Object.entries(labLive.params)) args.push('--param', `${k}=${v}`);
+  } else if ($('lab-psar')?.checked) args.push('--param', 'psar=1', '--param', 'rebuy=0');
   if (['EU', 'APAC', 'INDEX'].includes(M)) { files['venues.txt'] = await (await fetch('lab/venues.txt')).text(); args.push('--venues', '/venues.txt'); }
   if (M === 'UK') { files['aim.txt'] = await (await fetch('lab/aim.txt')).text(); args.push('--stamp-free', '/aim.txt'); }
   status.textContent = `Running the model on ${(csv.length / 1e6).toFixed(1)} MB of bars…`;
@@ -860,7 +871,7 @@ $('lab-run').addEventListener('click', async () => {
     if (data.progress) { status.textContent = data.progress.replace(/^strategy: +/, '').slice(0, 120); return; }
     if (data.error) { status.textContent = `The model stopped: ${data.error}`; $('lab-log').textContent = data.log.join('\n'); $('lab-log').hidden = false; return; }
     const b = data.report?.backtest, n = data.orders?.orders?.length || 0;
-    status.textContent = `Done in ${(data.ms / 1000).toFixed(1)} s on this device.`;
+    status.textContent = `Done in ${(data.ms / 1000).toFixed(1)} s on this device${data.ran === 'on the CPU' ? '' : `: ${data.ran}`}.`;
     $('lab-verdict').innerHTML = b && b.trades
       ? `<div class="tile"><span class="k">On this device, ${b.from} – ${b.to}</span><span class="v">${pct(b.annualReturn)}</span><span class="s">a year · Sharpe ${b.sharpe.toFixed(2)} · worst fall ${pct(b.maxDrawdown, 0).slice(1)} · ${b.trades} trades</span></div>`
       : '<div class="tile"><span class="k">On this device</span><span class="v">–</span><span class="s">too little history in the bars for the strategy (it needs a year)</span></div>';
@@ -871,5 +882,5 @@ $('lab-run').addEventListener('click', async () => {
       }) : [{ gap: 'No orders: none expected to gain after its costs.' }]);
     $('lab-log').textContent = data.log.filter((l) => /^strategy: /.test(l)).join('\n'), $('lab-log').hidden = false;
   };
-  labWorker.postMessage({ csv, args, env, files }, [csv.buffer]);
+  labWorker.postMessage({ csv, args, env, files, gpu: !!liveFull }, [csv.buffer]);
 });

@@ -62,11 +62,22 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build -j4 --target ofm_strategy > /dev/null
           node tools/check/wasm_same.mjs build/ofm_strategy web/lab/ofm_strategy.js
+      - name: The Lab's GPU kernel against the engine's double precision (tools/check/mcgpu_check.sh)
+        if: ${{ !inputs.site-only }}
+        shell: bash
+        run: sh tools/check/mcgpu_check.sh build/ofm_strategy | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: site
           path: web/
           if-no-files-found: error
+      - name: The native engine, for the browser test of the Lab's GPU build
+        if: ${{ !inputs.site-only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: build/ofm_strategy
+          retention-days: 3
 
   e2e:
     if: ${{ !inputs.site-only }}
@@ -81,3 +92,18 @@ jobs:
         env:
           PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
         run: node web/tests/e2e.mjs
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: site
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine
+          path: engine
+      - name: The Lab's live settings on WebGPU (the GPU build against the native engine, Chromium's software GPU)
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/node_modules/playwright/index.mjs
+        shell: bash
+        run: |
+          chmod +x engine/ofm_strategy
+          node web/tests/labgpu.mjs site/lab engine/ofm_strategy | grep -v '^  \[page\]' | tee -a "$GITHUB_STEP_SUMMARY"

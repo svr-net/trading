@@ -50,6 +50,7 @@
 
 #include "strategy/backend.hpp"
 #include "strategy/kernels.hpp"
+#include "strategy/mc_gpu.hpp"
 #include "strategy/montecarlo.hpp"
 #include "strategy/neural.hpp"
 #include "strategy/resample.hpp"
@@ -549,6 +550,7 @@ int main(int argc, char** argv) {
   const auto bf = strat::backends().find(backendName);
   if (bf == strat::backends().end()) usage(("no back end '" + backendName + "' (see --list)").c_str());
   const auto backend = bf->second();
+  if (std::getenv("X_MCGPU_EMULATE")) strat::mcOffload() = strat::mcOffloadEmulate;  // the GPU's single precision, on the CPU
   strat::Params P = strategy->defaults();
   // The engine's own, for every strategy: a stop-loss (stop: a position sold once the price falls this far under
   // the price paid; 0: none) and the buy-back after one (rebuy: bought again, while the strategy still wants it,
@@ -1077,7 +1079,7 @@ int main(int argc, char** argv) {
       strat::McReset rr;
       shapesFor(t, cand, mu, sc);
       const double cs = clock();
-      strat::mcRun(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
+      strat::mcRunAny(d, t, cand, caps, std::vector<strat::McHeld>(cand.size()), k, mc, t, *backend, rr, mu, sc);
       prof.select += clock() - cs;
       std::vector<std::size_t> simBook;
       simReserve.clear();
@@ -1129,6 +1131,13 @@ int main(int argc, char** argv) {
                                  std::vector<double>* meansOut = nullptr) {
       const std::size_t G = specs.size(), Pn = mc.paths;
       std::vector<double> g(G * Pn, 0.0);
+      std::vector<double> gpu;
+      const bool check = strat::mcGpuCheck().on;
+      if (!check && strat::mcSettingsAny(d, t, i, adj, cap, scale, mc, specs, gpu)) {  // a GPU back end: the whole search as one batch
+        for (std::size_t x = 0; x < G * Pn; ++x) g[x] = std::log(std::max(1e-6, 1 + gpu[x]));
+      } else {
+      std::vector<double> rawRet(check ? G * Pn : 0);
+      std::vector<char> rawStop(rawRet.size(), 0);
       strat::McTable tab;  // the fused kernel: the share's scaled bars once for every path and setting
       strat::mcTable(d, t, i, scale, mc, tab);
       backend->parallelFor(Pn, [&](std::size_t a, std::size_t e) {
@@ -1139,9 +1148,15 @@ int main(int argc, char** argv) {
           strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
           strat::mcRatios(d, i, days, scale, pre, &tab);
           strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);  // the fused kernel: the path once, every setting on it
-          for (std::size_t s2 = 0; s2 < G; ++s2) g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + strat::mcSlotPath(path, i, cap, specs[s2], strat::McHeld{}).ret));
+          for (std::size_t s2 = 0; s2 < G; ++s2) {
+            const strat::McTrade x = strat::mcSlotPath(path, i, cap, specs[s2], strat::McHeld{});
+            g[s2 * Pn + q] = std::log(std::max(1e-6, 1 + x.ret));
+            if (check) rawRet[s2 * Pn + q] = x.ret, rawStop[s2 * Pn + q] = x.stopped;
+          }
         }
       });
+      if (check) strat::mcSettingsAny(d, t, i, adj, cap, scale, mc, specs, gpu, &rawRet, &rawStop);  // compared, not used
+      }
       std::vector<double> votes(G, 0.0), mean(G, 0.0);
       for (std::size_t s2 = 0; s2 < G; ++s2)
         for (std::size_t q = 0; q < Pn; ++q) mean[s2] += g[s2 * Pn + q];
@@ -1483,7 +1498,7 @@ int main(int argc, char** argv) {
       for (std::size_t i : list) caps.push_back(capOf(t0, i));
       if (!tripV.empty())  // mccost: the round trips as they were at this reset
         for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(t0, i);
-      strat::mcRun(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr, resetMu[x], resetSc[x]);
+      strat::mcRunAny(d, t0, list, caps, std::vector<strat::McHeld>(list.size()), k, mc, t0, *backend, rr, resetMu[x], resetSc[x]);
       const double real = strat::mcReal(d, t0, list, caps, k, mc);
       double below = 0, m = 0;
       for (double b : rr.book) below += b < real ? 1.0 : b == real ? 0.5 : 0.0, m += b;
@@ -1538,7 +1553,7 @@ int main(int argc, char** argv) {
     shapesFor(L, targetAll, mu, sc);
     if (!tripV.empty())  // mccost: the round trips at L
       for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(L, i);
-    strat::mcRun(d, L, targetAll, caps, held, k, mc, L, *backend, rr, mu, sc);
+    strat::mcRunAny(d, L, targetAll, caps, held, k, mc, L, *backend, rr, mu, sc);
     for (auto& x : orders) {
       const std::size_t j = std::size_t(std::find(targetAll.begin(), targetAll.end(), x.i) - targetAll.begin());
       std::vector<double> v(rr.share.begin() + long(j * mc.paths), rr.share.begin() + long((j + 1) * mc.paths));
