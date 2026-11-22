@@ -80,6 +80,7 @@
      "mcpool": 1,
      "mcnnstep": 5,
      "mcregime": 0,
+     "stopslip": 0.1,
      "mcregimestop": 0,
      "mccost": 1,
      "adaptfine": 1,
