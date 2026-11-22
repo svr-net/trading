@@ -940,7 +940,7 @@ final class Auto {
     static void start() {
         restored = Mirror.restore();  // before anything reads the history
         err("state: " + restored);
-        Mirror.start();
+        Mirror.start(restored);
         if (!AUTO.isEmpty()) {
             seedDone();
             daemon("scheduler", Auto::scheduler);
@@ -1058,7 +1058,7 @@ final class Auto {
         Map<String, Long> late = late();
         add.accept("Bridge loops", new Object[] {late.isEmpty(), late.isEmpty() ? "the scheduler, the watchdog and the background reads turning"
                 : "late (seconds since their last turn): " + late + "; the container restarts the bridge after 3 minutes of this"});
-        add.accept("State in the store", new Object[] {!Mirror.ON ? null : Mirror.ok, !Mirror.ON ? "off (STATE_MIRROR=0)"
+        add.accept("State in the store", new Object[] {!Mirror.ON ? null : Mirror.held ? Boolean.FALSE : Mirror.ok, !Mirror.ON ? "off (STATE_MIRROR=0)"
                 : "svr-net/eod " + Mirror.PATH + ": " + Mirror.note + (Mirror.dirty ? "; changes waiting" : "") + "; at start: " + restored});
         add.accept("Store cache", new Object[] {Store.lastStale.isEmpty() ? true : null, Store.lastStale.isEmpty()
                 ? "every store read from GitHub or its unchanged copy here" : "last served from the copy here: " + Store.lastStale});

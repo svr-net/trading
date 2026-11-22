@@ -75,7 +75,7 @@ final class Mirror {
 
     /** Uploads the state when it changed since the last upload; a failure keeps it to upload again. */
     static void upload() {
-        if (!ON || Store.TOKEN.isEmpty() || !dirty) return;
+        if (!ON || Store.TOKEN.isEmpty() || !dirty || held) return;
         synchronized (LOCK) {
             dirty = false;
             try {
@@ -148,6 +148,7 @@ final class Mirror {
                     n++;
                 }
             }
+            held = false;  // a reset is meant to replace the store's copy
             dirty = true;
             upload();
             final String store = !ON || Store.TOKEN.isEmpty() ? "no copy in the store (mirror off or no EOD_TOKEN)"
@@ -156,7 +157,14 @@ final class Mirror {
         }
     }
 
-    static void start() {
+    // A restore that failed (GitHub not answering at start) holds every upload: the state here would then be younger than
+    // the store's copy, and uploading it would overwrite that copy. A restart once GitHub answers restores it.
+    static volatile boolean held;
+
+    static void start(String restored) {
+        held = restored.startsWith("not restored");
+        if (held) note = "uploads held: the store's copy was not restored at start (" + restored + "); restart the bridge when GitHub answers";
+        else dirty = true;  // the state as found at start, uploaded within a minute (the store's write checked at once)
         final Thread t = new Thread(() -> {
             while (true) {
                 Recordings.sleep(60);
