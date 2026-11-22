@@ -1304,6 +1304,9 @@ def restart_local():
     if time.monotonic() - RESTARTED_LOCAL[0] < 300:
         return 'restarted less than 5 minutes ago: not again yet'
     RESTARTED_LOCAL[0] = time.monotonic()
+    answer = ibc_command('RESTART')  # IBC restarts IB Gateway itself and logs in again
+    if answer.startswith('OK'):
+        return f'IB Gateway restarted by IBC ({answer}); logged in again within about 2 minutes'
     killed = 0
     for pattern in ('ibcalpha.ibc', 'ibcstart.sh'):
         killed += subprocess.run(['pkill', '-TERM', '-f', pattern], capture_output=True).returncode == 0
@@ -1311,6 +1314,23 @@ def restart_local():
 
 
 RESTARTED_LOCAL = [-1e9]
+
+
+def ibc_command(command):
+    """IBC's command server in the one container (127.0.0.1, IBC_COMMAND_PORT 7462): its answer, or an ERROR line."""
+    try:
+        with socket.create_connection(('127.0.0.1', int(os.environ.get('IBC_COMMAND_PORT', '7462'))), timeout=5) as s:
+            s.settimeout(30)
+            s.sendall((command + '\n').encode())
+            data = b''
+            while b'\n' not in data:
+                chunk = s.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            return data.decode(errors='replace').strip() or 'ERROR no answer'
+    except OSError as e:
+        return f'ERROR IBC command server: {e}'
 
 
 def restart_gateway():
@@ -1471,6 +1491,13 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
         except ValueError:
             return self.reply(400, {'error': 'bad JSON'})
+        if urlparse(self.path).path == '/internal/action':  # the Java bridge's results (one container), from this machine only
+            if self.client_address[0] not in ('127.0.0.1', '::1'):
+                return self.reply(403, {'error': 'local only'})
+            LAST.insert(0, (datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M %Z'), str(body.get('market') or '-')[:8],
+                            str(body.get('action') or '-')[:40], bool(body.get('ok')), str(body.get('summary') or '')[:600]))
+            del LAST[10:]
+            return self.reply(200, {'ok': True})
         if urlparse(self.path).path == '/restart':  # IB Gateway restarted on demand (the Bridge monitor's button)
             note = restart_gateway()
             LAST.insert(0, (datetime.now(ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M %Z'), '-', 'gateway restart', not note.startswith('no restarter'), note))

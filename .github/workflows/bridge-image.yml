@@ -15,6 +15,7 @@ on:
       - 'docker/ibkr/Dockerfile.caddy'
       - 'docker/ibkr/Dockerfile.ibkr'
       - 'docker/ibkr/ibkr-start.sh'
+      - 'tools/ibkr/java/**'
       - '.github/workflows/bridge-image.yml'
 permissions:
   contents: write   # the nas-images release
@@ -81,14 +82,21 @@ jobs:
           docker pull -q --platform linux/amd64 "$img"
           mkdir -p /tmp/tls && openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/tls/key.pem -out /tmp/tls/cert.pem -subj /CN=localhost 2>/dev/null
           chmod 600 /tmp/tls/key.pem
-          docker run -d --name t -e TWS_USERID=nobody -e TWS_PASSWORD=x -e TRADING_MODE=paper -e BRIDGE_KEY=k \
+          docker run -d --name ibkr-test -e TWS_USERID=nobody -e TWS_PASSWORD=x -e TRADING_MODE=paper -e BRIDGE_KEY=k \
             -v /tmp/tls:/certs:ro -e TLS_SRC_CERT=/certs/cert.pem -e TLS_SRC_KEY=/certs/key.pem -p 18765:8765 "$img"
-          for i in $(seq 1 30); do curl -skf -H 'Origin: https://svr-net.github.io' https://127.0.0.1:18765/status -o status.json && break; sleep 2; done
-          docker logs t 2>&1 | tail -25
+          o='Origin: https://svr-net.github.io'
+          for i in $(seq 1 45); do curl -skf -H "$o" https://127.0.0.1:18765/status -o status.json && break; sleep 2; done
+          curl -skf -H "$o" -H 'X-Bridge-Key: k' https://127.0.0.1:18765/java -o java.json || true
+          docker logs ibkr-test 2>&1 | tail -30
+          echo "status (through the Java bridge): $(head -c 200 status.json)"; echo "java: $(cat java.json)"
           jq -e '.bridge == true and .version == "${{ steps.v.outputs.sha }}"' status.json
-          docker exec t pgrep -f ibcstart.sh >/dev/null || docker exec t pgrep -f ibcalpha >/dev/null || { echo "IBC not running"; exit 1; }
-          [ "$(docker exec t sh -c 'ps -o user= -p $(pgrep -f bridge.py | head -1)')" != root ] || { echo "the bridge runs as root"; exit 1; }
-          docker rm -f t >/dev/null
+          jq -e '.java == true and .version == "${{ steps.v.outputs.sha }}" and (.api | startswith("server version"))' java.json
+          [ "$(curl -sk -o /dev/null -w '%{http_code}' -H "$o" https://127.0.0.1:18765/java)" = 401 ] || { echo "/java answered without the key"; exit 1; }
+          docker exec ibkr-test pgrep -f ibcstart.sh >/dev/null || docker exec ibkr-test pgrep -f ibcalpha >/dev/null || { echo "IBC not running"; exit 1; }
+          for p in bridge.py bridge.jar; do
+            [ "$(docker exec ibkr-test sh -c "ps -o user= -p \$(pgrep -f $p | head -1)")" != root ] || { echo "$p runs as root"; exit 1; }
+          done
+          docker rm -f ibkr-test >/dev/null
       - name: One file per image and processor
         if: steps.v.outputs.main
         run: |

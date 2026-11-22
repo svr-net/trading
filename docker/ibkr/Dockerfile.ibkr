@@ -1,20 +1,48 @@
-# One container for the NAS: IB Gateway logged in by IBC (the community image ghcr.io/gnzsnz/ib-gateway)
-# and the broker bridge (tools/ibkr) beside it, the bridge serving HTTPS itself (TLS_CERT, TLS_KEY) and
-# restarting IB Gateway in place (GATEWAY_RESTART=local). It replaces the four containers of
-# docker-compose.yml (ib-gateway, bridge, restarter, caddy). Built by GitHub (bridge-image.yml), never on
-# the NAS; started by docker/ibkr/ibkr-nas.sh. No keys or settings in the image: they come from the
-# NAS's .env at run time.
+# One container for the NAS: IB Gateway logged in by IBC (the community image ghcr.io/gnzsnz/ib-gateway) and the
+# broker bridge beside it. The Java bridge (tools/ibkr/java: IBKR's official Java API, IBC's command server)
+# answers HTTPS and passes what it does not do yet to the Python bridge (tools/ibkr/bridge.py) inside the
+# container. It replaces the four containers of docker-compose.yml (ib-gateway, bridge, restarter, caddy).
+# Built by GitHub (bridge-image.yml), never on the NAS; started by docker/ibkr/ibkr-nas.sh. No keys or
+# settings in the image: they come from the NAS's .env at run time.
+
+# --- IBKR's Java API (GPL-3, from IBKR's own installer) and the Java bridge, built on the build machine --------
+FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk AS java
+ARG TWSAPI_URL=https://download2.interactivebrokers.com/installers/tws-api/stable/tws-api-stable-linux-x64.sh
+RUN apt-get update && apt-get install --no-install-recommends --yes curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/twsapi.sh "$TWSAPI_URL" \
+ && sh /tmp/twsapi.sh -q -dir /opt/twsapi \
+ && rm /tmp/twsapi.sh \
+ && find /opt/twsapi -maxdepth 6 -type d -name JavaClient | head -1 > /tmp/javaclient \
+ && test -s /tmp/javaclient
+COPY tools/ibkr/java /src/bridge
+RUN set -e; src=$(cat /tmp/javaclient); mkdir -p /build/classes \
+ && find "$src" -path '*/com/ib/client/*.java' > /tmp/api.txt \
+ && javac --release 11 -nowarn -encoding UTF-8 -d /build/classes @/tmp/api.txt \
+ && javac --release 11 -encoding UTF-8 -cp /build/classes -d /build/classes $(find /src/bridge -name '*.java') \
+ && find "$src" -maxdepth 3 -iname 'license*' -exec cp {} /build/classes/TWSAPI-LICENSE.txt \; ; \
+    jar --create --file /build/bridge.jar --main-class net.svrnet.bridge.Bridge -C /build/classes .
+
+# --- The container --------------------------------------------------------------------------------------------
 FROM ghcr.io/gnzsnz/ib-gateway:stable
 
 USER root
 RUN apt-get update \
- && apt-get install --no-install-recommends --yes python3 python3-venv procps util-linux \
+ && apt-get install --no-install-recommends --yes python3 python3-venv procps util-linux openssl \
  && python3 -m venv /opt/bridge \
  && /opt/bridge/bin/pip install --no-cache-dir ib_async tzdata \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data/history && chown -R 1000:1000 /data
+# IBC's command server on, inside the container only: the bridge restarts and reconnects IB Gateway through it.
+RUN set -e; t=$(find / -xdev -name 'config.ini.tmpl' -path '*ibc*' 2>/dev/null | head -1); test -n "$t"; \
+    sed -i -e 's/^CommandServerPort=.*/CommandServerPort=7462/' -e 's/^BindAddress=.*/BindAddress=127.0.0.1/' \
+           -e 's/^ControlFrom=.*/ControlFrom=127.0.0.1/' "$t"; grep -q '^CommandServerPort=7462' "$t"
+# The Java bridge runs on IB Gateway's own Java (found once here: /app/java).
+RUN set -e; j=$(find / -xdev -path '*/jre/bin/java' -type f 2>/dev/null | head -1); \
+    if [ -z "$j" ]; then j=$(find / -xdev -path '*/bin/java' -type f 2>/dev/null | grep -v '^/proc' | head -1); fi; \
+    test -n "$j"; mkdir -p /app; ln -s "$j" /app/java; /app/java -version
 
 WORKDIR /app
+COPY --from=java /build/bridge.jar /app/bridge.jar
 COPY tools/ibkr/ tools/ibkr/
 COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
 RUN chmod 755 /app/ibkr-start.sh
@@ -23,9 +51,8 @@ RUN chmod 755 /app/ibkr-start.sh
 ARG VERSION=unknown
 ENV BRIDGE_VERSION=$VERSION \
     GATEWAY_RESTART=local \
+    IBC_COMMAND_PORT=7462 \
     IB_HOST=127.0.0.1 \
-    BIND=0.0.0.0 \
-    PORT=8765 \
     HISTORY_DIR=/data/history \
     ALLOWED_ORIGIN=https://svr-net.github.io \
     READ_ONLY_API=no \
