@@ -36,6 +36,7 @@ struct RegimeFit {
   std::vector<std::vector<std::size_t>> starts;  // each state's days a block may start at (the drawable ones)
   std::vector<double> gamma;                     // each fitted day's chances of each state (smoothed), [q * K + k]
   std::vector<double> sigma;                     // each share's daily volatility in the states expected (NaN: too few days; regimeSigma)
+  std::vector<double> shareVar;                  // each share's daily variance in each state, [i * K + k] (NaN: too few days; regimeSigma)
   double loglik = 0, bic = 0;                    // bic: -2 loglik + the parameters' count times log(days)
 };
 
@@ -177,10 +178,12 @@ inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::si
 
 // Each share's volatility in the states a fit expects over its horizon: its days in the fitted window weighted by their
 // chances of each state (a state with fewer than 20 days' weight: the share's own over the window).
-inline void regimeSigma(const Data& d, const Backend& b, RegimeFit& f) {
+// setSigma false: the variances in each state only (shareVar, for the measures), the stops left on the last 60 sessions.
+inline void regimeSigma(const Data& d, const Backend& b, RegimeFit& f, bool setSigma = true) {
   const std::size_t N = d.N, K = f.K, n = f.hi + 1 - f.lo, loD = f.lo;
   const auto& ga = f.gamma;
-  f.sigma.assign(N, kNaN);
+  f.sigma.assign(setSigma ? N : 0, kNaN);
+  f.shareVar.assign(N * K, kNaN);
   b.parallelFor(N, [&](std::size_t a0, std::size_t e0) {
     std::vector<double> w(K), s2(K);
     for (std::size_t i = a0; i < e0; ++i) {
@@ -194,10 +197,69 @@ inline void regimeSigma(const Data& d, const Backend& b, RegimeFit& f) {
       }
       if (wAll < 60) continue;  // the 60 sessions the plain volatility needs
       double v0 = 0;
-      for (std::size_t k = 0; k < K; ++k) v0 += f.ahead[k] * (w[k] >= 20 ? s2[k] / w[k] : sAll / wAll);
-      f.sigma[i] = std::sqrt(v0);
+      for (std::size_t k = 0; k < K; ++k) {
+        f.shareVar[i * K + k] = w[k] >= 20 ? s2[k] / w[k] : sAll / wAll;
+        v0 += f.ahead[k] * f.shareVar[i * K + k];
+      }
+      if (setSigma) f.sigma[i] = std::sqrt(v0);
     }
   });
+}
+
+// The market's state at day t as continuous measures, from the last fit (at f.hi <= t): its chances carried forward
+// day by day to t by the matrix and each day's own move (the filter: only what t knew).
+//   turbulence  0 (all in the calmest state) .. 1 (all in the most turbulent): the states' volatilities placed on a
+//               line from the calmest to the most turbulent, weighted by their chances
+//   ahead       the same over the coming horizon (the chances carried forward by the matrix alone)
+//   marketVol, marketDrift  the market's yearly volatility and move expected from the chances
+//   shareVol    share i's yearly volatility expected from the chances (its own variance in each state; NaN: unknown)
+struct RegimeState {
+  double turbulence = kNaN, ahead = kNaN, marketVol = kNaN, marketDrift = kNaN, shareVol = kNaN;
+};
+inline RegimeState regimeState(const Data& d, const RegimeFit& f, std::size_t t, std::size_t i, std::size_t horizon) {
+  RegimeState r;
+  const std::size_t K = f.K;
+  if (!K || f.now.size() != K) return r;
+  std::vector<double> p = f.now, nx(K);
+  for (std::size_t q = f.hi + 1; q <= t && q < d.T; ++q) {  // the filter forward to t
+    const double x = std::isfinite(d.mkt[q]) ? d.mkt[q] : 0.0;
+    double s = 0;
+    for (std::size_t c = 0; c < K; ++c) {
+      double a = 0;
+      for (std::size_t k = 0; k < K; ++k) a += p[k] * f.A[k * K + c];
+      const double z = x - f.mean[c];
+      nx[c] = a * std::exp(-0.5 * z * z / f.var[c]) / std::sqrt(f.var[c]), s += nx[c];
+    }
+    if (s > 0)
+      for (std::size_t c = 0; c < K; ++c) p[c] = nx[c] / s;
+  }
+  const double lo = std::sqrt(f.var.front()), hi = std::sqrt(f.var.back());
+  const auto place = [&](std::size_t k) { return hi > lo ? (std::sqrt(f.var[k]) - lo) / (hi - lo) : 0.0; };
+  const auto turb = [&](const std::vector<double>& q) {
+    double v = 0;
+    for (std::size_t k = 0; k < K; ++k) v += q[k] * place(k);
+    return v;
+  };
+  r.turbulence = turb(p);
+  double mv = 0, md = 0, sv = 0;
+  bool shareOk = f.shareVar.size() == d.N * K;
+  for (std::size_t k = 0; k < K; ++k) {
+    mv += p[k] * f.var[k], md += p[k] * f.mean[k];
+    if (shareOk && std::isfinite(f.shareVar[i * K + k])) sv += p[k] * f.shareVar[i * K + k];
+    else shareOk = false;
+  }
+  r.marketVol = std::sqrt(252 * mv), r.marketDrift = 252 * md, r.shareVol = shareOk ? std::sqrt(252 * sv) : kNaN;
+  std::vector<double> q = p, a(K, 0.0);
+  const std::size_t H = std::max<std::size_t>(1, horizon);
+  for (std::size_t j = 0; j < H; ++j) {
+    std::fill(nx.begin(), nx.end(), 0.0);
+    for (std::size_t k = 0; k < K; ++k)
+      for (std::size_t c = 0; c < K; ++c) nx[c] += q[k] * f.A[k * K + c];
+    q = nx;
+    for (std::size_t k = 0; k < K; ++k) a[k] += q[k] / double(H);
+  }
+  r.ahead = turb(a);
+  return r;
 }
 
 // A path's days drawn in states (mcDays with a fit for t0): the first state from today's chances, each block from

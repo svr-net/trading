@@ -507,7 +507,7 @@ def holds(args):
     sell at IBKR for each position (orderRef ofm-<MARKET>S-...), placed once its buy fills, moved each morning to
     the day's level from the update, and cancelled before the book sells the position any other way."""
     from datetime import datetime, timezone
-    from ib_async import IB, LimitOrder, MarketOrder, StopLimitOrder, StopOrder
+    from ib_async import IB, LimitOrder, MarketOrder, Order, StopLimitOrder, StopOrder
     path = args.hold_state
     st = json.load(open(path)) if path and os.path.exists(path) else {'positions': {}, 'pending': {}}
     st.setdefault('stopped', {})  # shares sold by their stop whose buy-back order works: their plans
@@ -530,11 +530,13 @@ def holds(args):
     def rebuys_of(sym):  # the share's buy-back orders (attached to its stop, or working since it filled)
         return [t for t in stops_of(sym) if t.order.action == 'BUY']
 
-    def set_stop(sym, contract, qty, level, rebuy=None):
+    def set_stop(sym, contract, qty, level, rebuy=None, trail=False):
         """The position's stop at `level` (IBKR's price scale), on the price step under it, and (rebuy: apps/ofm_strategy's
         rebuyStop) its buy-back coupled to it: a buy stop-limit at the stop's level times 1 + rebuy (at most 1% over its
         trigger), attached to the stop as its child, so IBKR makes it work only once the stop has sold, good till
-        cancelled, as the backtest. Kept when both are already there; else the old ones cancelled and the pair placed."""
+        cancelled, as the backtest. trail (rebuyTrail): the buy-back a trailing buy stop-limit instead, starting there and
+        following the lowest price after the stop at rebuy over it, so it buys at the turn (under the level sold at once
+        the share has fallen further). Kept when both are already there; else the old ones cancelled and the pair placed."""
         c, ticks = exit_contract(ib, contract)
         if c is None:
             return f'{sym}: not found at IBKR, NO STOP'
@@ -543,7 +545,7 @@ def holds(args):
         cur = stops_of(sym)
         sells, buys = [t for t in cur if t.order.action == 'SELL'], [t for t in cur if t.order.action == 'BUY']
         if len(sells) == 1 and abs(float(sells[0].order.auxPrice) - lim) < 1e-9 and float(sells[0].order.totalQuantity) == float(qty) \
-                and (back is None and not buys or back is not None and len(buys) == 1 and abs(float(buys[0].order.auxPrice) - back) < 1e-9):
+                and (back is None and not buys or back is not None and len(buys) == 1 and same_back(buys[0].order, back, rebuy, trail)):
             return f'{sym}: its stop kept at {lim:g}' + (f', its buy-back at {back:g}' if back else '')
         cancel_stops(sym)
         day = date.today().isoformat()
@@ -553,12 +555,23 @@ def holds(args):
             fate, msgs = order_fate(ib, trade, errors)
             return f"{sym}: stop at {lim:g} (good till cancelled): {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else '')
         cap = round_to(back * 1.01, tick_at(ticks[0], ticks[1], back * 1.01), 'down')
-        child = StopLimitOrder('BUY', qty, cap, back, orderRef=f'{stop_ref}B-{day}', tif='GTC', parentId=stop.orderId, transmit=True)
+        if trail:  # IBKR's trailing buy stop-limit: its trigger follows the lowest price down at rebuy over it, its limit 1% over the trigger
+            off = round_to(back * 0.01, tick_at(ticks[0], ticks[1], back), 'down') or tick_at(ticks[0], ticks[1], back)
+            child = Order(action='BUY', totalQuantity=qty, orderType='TRAIL LIMIT', trailingPercent=round(100 * float(rebuy), 2), trailStopPrice=back,
+                          lmtPriceOffset=off, orderRef=f'{stop_ref}B-{day}', tif='GTC', parentId=stop.orderId, transmit=True)
+        else:
+            child = StopLimitOrder('BUY', qty, cap, back, orderRef=f'{stop_ref}B-{day}', tif='GTC', parentId=stop.orderId, transmit=True)
         fate, msgs = order_fate(ib, ib.placeOrder(c, child), errors)
         fate0, msgs0 = order_fate(ib, trade, errors)
         msgs = msgs0 + msgs
-        return (f"{sym}: stop at {lim:g} with its buy-back at {back:g} (at most {cap:g}) coupled to it, good till cancelled: {fate0}/{fate}"
+        how = f"trailing {100 * float(rebuy):.2f}% over the lowest price after the stop, starting at {back:g}" if trail else f"at {back:g} (at most {cap:g})"
+        return (f"{sym}: stop at {lim:g} with its buy-back {how} coupled to it, good till cancelled: {fate0}/{fate}"
                 + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
+
+    def same_back(o, back, rebuy, trail):  # the buy-back working is the one wanted (a fixed buy stop, or a trailing one)
+        if trail:
+            return o.orderType == 'TRAIL LIMIT' and abs(float(o.trailingPercent or 0) - round(100 * float(rebuy), 2)) < 1e-9
+        return o.orderType != 'TRAIL LIMIT' and abs(float(o.auxPrice) - back) < 1e-9
 
     def bought_back(sym, qty, entry, why):
         """A share bought again by its buy-back order: a position again (its stopped plan), its stop from the price paid
@@ -570,7 +583,7 @@ def holds(args):
         rel = plan.get('rebuyStopRel')
         pos['stop'] = entry * (1 + float(rel)) if rel is not None else 0.95 * entry
         st['positions'][sym] = pos
-        return f'{sym}: bought back {qty:g} at {entry:g} ({why}); ' + set_stop(sym, plan_contract(plan), qty, pos['stop'], plan.get('rebuyStop'))
+        return f'{sym}: bought back {qty:g} at {entry:g} ({why}); ' + set_stop(sym, plan_contract(plan), qty, pos['stop'], plan.get('rebuyStop'), plan.get('rebuyTrail'))
 
     def plan_contract(plan):
         from ib_async import Contract
@@ -653,7 +666,9 @@ def holds(args):
                     pos['rebuyStop'] = float(u['rebuyStop'])
                 if u.get('rebuyStopRel') is not None:
                     pos['rebuyStopRel'] = float(u['rebuyStopRel'])
-                lines.append(set_stop(sym, held[sym].contract, min(float(pos.get('qty', held[sym].position)), held[sym].position), pos['stop'], pos.get('rebuyStop')))
+                if u.get('rebuyTrail') is not None:
+                    pos['rebuyTrail'] = bool(u['rebuyTrail'])
+                lines.append(set_stop(sym, held[sym].contract, min(float(pos.get('qty', held[sym].position)), held[sym].position), pos['stop'], pos.get('rebuyStop'), pos.get('rebuyTrail')))
             elif u.get('exitAbove') is not None and abs(float(u['exitAbove']) - float(pos.get('exitAbove') or 0)) > 1e-9:
                 lines.append(f"{sym}: kept; its exit level {100 * float(pos.get('exitAbove') or 0):+.2f}% -> {100 * float(u['exitAbove']):+.2f}% above the price paid")
                 pos['exitAbove'] = float(u['exitAbove'])
@@ -729,7 +744,8 @@ def holds(args):
             if o.get('stopPrice') is not None and o.get('entry') == 'open':  # its stop once it fills (IBKR's price scale)
                 st['pending'][sym].update(stopPrice=float(o['stopPrice']) * scale, scale=scale)
             if o.get('rebuyStop') is not None:  # its buy-back order, coupled to the stop
-                st['pending'][sym].update(rebuyStop=float(o['rebuyStop']), rebuyStopRel=None if o.get('rebuyStopRel') is None else float(o['rebuyStopRel']))
+                st['pending'][sym].update(rebuyStop=float(o['rebuyStop']), rebuyStopRel=None if o.get('rebuyStopRel') is None else float(o['rebuyStopRel']),
+                                         rebuyTrail=bool(o.get('rebuyTrail')))
             free -= 1
             lines.append(f"{sym}: buy {qty} {how}: {fate}" + (f" [IBKR: {' | '.join(msgs)}]" if msgs else ''))
     elif args.holds == 'close':
@@ -755,7 +771,7 @@ def holds(args):
                 lvl = float(plan['stopPrice'])
                 st['positions'][sym].update(stop=lvl if lvl < v / q else 0.95 * v / q, scale=float(plan.get('scale') or 1.0))
             if plan.get('rebuyStop') is not None:
-                st['positions'][sym].update(rebuyStop=plan['rebuyStop'], rebuyStopRel=plan.get('rebuyStopRel'))
+                st['positions'][sym].update(rebuyStop=plan['rebuyStop'], rebuyStopRel=plan.get('rebuyStopRel'), rebuyTrail=bool(plan.get('rebuyTrail')))
             lines.append(f'{sym}: bought {q:g} at {v / q:g}')
         st['pending'] = {}
         for sym, pos in st['positions'].items():
@@ -777,7 +793,7 @@ def holds(args):
                 continue
             last = int(pos.get('days') or 5)
             if pos.get('stop') and pos['closes'] < last:  # the position's stop working at IBKR (placed after its fill; moved each morning)
-                lines.append(set_stop(sym, p.contract, qty, float(pos['stop']), pos.get('rebuyStop')))
+                lines.append(set_stop(sym, p.contract, qty, float(pos['stop']), pos.get('rebuyStop'), pos.get('rebuyTrail')))
             if pos['closes'] >= last:  # its last day: sold at the close whatever the price (a limit at the 20-day low if the exchange refuses a MOC)
                 cancel_stops(sym)
                 ok, line = sell_out(ib, c, qty, ref + '-close', errors, at_close=True)
