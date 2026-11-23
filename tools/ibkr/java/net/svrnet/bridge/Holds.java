@@ -216,7 +216,7 @@ final class Holds {
         for (Broker.Ord o : cur) (o.action().equals("SELL") ? sells : buys).add(o);
         if (sells.size() == 1 && Math.abs(sells.get(0).aux() - lim) < 1e-9 && sells.get(0).qty() == qty
                 && (back == null && buys.isEmpty() || back != null && buys.size() == 1 && sameBack(buys.get(0), back, rebuy, trail))) {
-            return sym + ": its stop kept at " + g(lim) + (back != null ? ", its buy-back at " + g(back) : "");
+            return sym + ": its stop kept" + (back != null ? ", with its buy-back" : "");
         }
         cancelStops(sym);
         Broker.NewOrder stop = Broker.NewOrder.of("SELL", "STP", qty, 0, lim, stopRef + "-" + today, "GTC");
@@ -224,7 +224,7 @@ final class Holds {
         int stopId = ib.place(c, stop);
         if (back == null) {
             Broker.Fate f = ib.fate(stopId, 20);
-            return sym + ": stop at " + g(lim) + " (good till cancelled): " + f.fate() + said(f.messages());
+            return sym + ": stop placed (good till cancelled): " + f.fate() + said(f.messages());
         }
         double cap = roundTo(back * 1.01, t.at(back * 1.01), "down");
         Broker.NewOrder child;
@@ -240,9 +240,9 @@ final class Holds {
         Broker.Fate f0 = ib.fate(stopId, 20);
         List<String> msgs = new ArrayList<>(f0.messages());
         msgs.addAll(f.messages());
-        String how = trail ? String.format(Locale.ROOT, "trailing %.2f%% over the lowest price after the stop, starting at %s", 100 * rebuy, g(back))
-                : "at " + g(back) + " (at most " + g(cap) + ")";
-        return sym + ": stop at " + g(lim) + " with its buy-back " + how + " coupled to it, good till cancelled: " + f0.fate() + "/" + f.fate() + said(msgs);
+        String how = trail ? String.format(Locale.ROOT, "trailing %.2f%% over the lowest price after the stop", 100 * rebuy)
+                : "at its level (with a cap)";
+        return sym + ": stop placed with its buy-back " + how + " coupled to it, good till cancelled: " + f0.fate() + "/" + f.fate() + said(msgs);
     }
 
     private Broker.Share planShare(Map<String, Object> plan) {
@@ -264,7 +264,7 @@ final class Holds {
         Object rel = plan.get("rebuyStopRel");
         pos.put("stop", rel != null ? entry * (1 + num(rel)) : 0.95 * entry);
         map("positions").put(sym, pos);
-        return sym + ": bought back " + g(qty) + " at " + g(entry) + " (" + why + "); "
+        return sym + ": bought back " + g(qty) + " (" + why + "); "
                 + setStop(sym, planShare(plan), qty, num(pos.get("stop")), plan.get("rebuyStop"), plan.get("rebuyTrail"));
     }
 
@@ -473,16 +473,19 @@ final class Holds {
                 scale = sc;
                 Broker.Ticks t = ib.ticks(c2);
                 double lim = roundTo(num(o.get("limit")) * scale, t.at(num(o.get("limit")) * scale), "down");
-                if (openEntry) {  // the auction only, at most its limit
+                if (openEntry && Boolean.TRUE.equals(o.get("entryDay"))) {  // entryDay: the auction, then the whole session, at most its limit
+                    order = Broker.NewOrder.of("BUY", "LMT", qty, lim, 0, ref, "DAY");
+                    how = "in the opening auction, then all day, at most its limit (a day order)";
+                } else if (openEntry) {  // the auction only, at most its limit
                     order = Broker.NewOrder.of("BUY", "LMT", qty, lim, 0, ref, "GTD").until(auctionEndUtc(market, ticker));
-                    how = "in the opening auction, at most " + g(lim);
+                    how = "in the opening auction, at most its limit";
                     if (order.goodTill().compareTo(ZonedDateTime.now(clock.withZone(ZoneOffset.UTC)).format(DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss"))) <= 0) {
                         order = Broker.NewOrder.of("BUY", "LMT", qty, lim, 0, ref, "DAY");  // placed by hand after the auction
-                        how = "at most " + g(lim) + " (a day order: the opening auction is over)";
+                        how = "at most its limit (a day order: the opening auction is over)";
                     }
                 } else {
                     order = Broker.NewOrder.of("BUY", "LMT", qty, lim, 0, ref, "DAY");
-                    how = "at " + g(lim);
+                    how = "at its limit";
                 }
             } else {
                 order = Broker.NewOrder.of("BUY", "MKT", qty, 0, 0, ref, "DAY");
@@ -553,7 +556,7 @@ final class Holds {
                 pos.put("rebuyTrail", Boolean.TRUE.equals(plan.get("rebuyTrail")));
             }
             map("positions").put(sym, pos);
-            lines.add(sym + ": bought " + g(q) + " at " + g(v / q));
+            lines.add(sym + ": bought " + g(q));
         }
         st.put("pending", new LinkedHashMap<>());
         for (Map.Entry<String, Object> e : map("positions").entrySet()) {
@@ -597,13 +600,13 @@ final class Holds {
             double tick = ticks.at(entry);
             double level = entry * (1 + (pos.get("exitAbove") == null ? 0 : num(pos.get("exitAbove"))));
             double lim = Math.max(roundTo(entry + tick, tick, "up"), roundTo(level, ticks.at(level), "up"));
-            String how = "in the closing auction only at or above " + g(lim) + " (LOC, close " + closes + " of " + last + ")";
+            String how = "in the closing auction only at or above its exit level (LOC, close " + closes + " of " + last + ")";
             Broker.Fate f = ib.fate(ib.place(c, Broker.NewOrder.of("SELL", "LOC", qty, lim, 0, ref + "-close", "DAY")), 20);
             List<String> msgs = f.messages();
             String fate = f.fate();
             if (fate.equals("dead") && msgs.stream().anyMatch(m -> m.startsWith("387") || m.contains("Error 387"))) {
                 Broker.Fate f2 = ib.fate(ib.place(c, Broker.NewOrder.of("SELL", "LMT", qty, lim, 0, ref + "-close", "DAY")), 20);
-                how += " refused (IBKR " + msgs.get(0).split(":")[0] + ": no LOC here); a limit at " + g(lim) + " for the rest of the day instead";
+                how += " refused (IBKR " + msgs.get(0).split(":")[0] + ": no LOC here); a limit at its exit level for the rest of the day instead";
                 fate = f2.fate();
                 msgs = f2.messages();
             }

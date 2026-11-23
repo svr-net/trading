@@ -29,7 +29,7 @@ namespace strat {
 
 struct McGpuSpec {  // a stop setting (montecarlo.hpp's McSpec, as the shader reads it)
   float stopLoss = 0, rebuy = -1, afStep = 0.02f, afMax = 0.2f, vstop = 0, psarVol = 0, rebuyStop = 0;
-  std::uint32_t flags = 0;  // 1 psar, 2 rebuyTrail, 4 trip (each buy-back pays the share's round trip)
+  std::uint32_t flags = 0;  // 1 psar, 2 rebuyTrail, 4 trip (each buy-back pays the share's round trip), 8 entryDay
 };
 struct McGpuShare {  // a share at the reset
   float last0 = 0, sig0 = 0.02f, adj = 1, cap = 0, trip = 0;
@@ -61,7 +61,7 @@ inline McGpuSpec mcGpuSpec(const McSpec& s) {
   McGpuSpec g;
   g.stopLoss = float(s.stopLoss), g.rebuy = float(s.rebuy), g.afStep = float(s.afStep), g.afMax = float(s.afMax);
   g.vstop = float(s.vstop), g.psarVol = float(s.psarVol), g.rebuyStop = float(s.rebuyStop);
-  g.flags = (s.psar ? 1u : 0u) | (s.rebuyTrail ? 2u : 0u) | (s.trip ? 4u : 0u);
+  g.flags = (s.psar ? 1u : 0u) | (s.rebuyTrail ? 2u : 0u) | (s.trip ? 4u : 0u) | (s.entryDay ? 8u : 0u);
   return g;
 }
 
@@ -128,7 +128,7 @@ inline void mcBatchRef(const McBatch& b, std::size_t g, std::size_t sIdx, std::s
   retOut = T(0), stoppedOut = false;
   const T last0 = T(sh.last0);
   if (!(last0 > T(0))) return;
-  const bool psar = s.flags & 1u, trail = s.flags & 2u, tripOn = s.flags & 4u;
+  const bool psar = s.flags & 1u, trail = s.flags & 2u, tripOn = s.flags & 4u, entryDay = s.flags & 8u;
   const T sig0 = T(sh.sig0), cap = T(sh.cap), adj = T(sh.adj);
   const T stopLoss = T(s.stopLoss), rebuy = T(s.rebuy), afStep = T(s.afStep), afMax = T(s.afMax), vstop = T(s.vstop), psarVol = T(s.psarVol),
           rebuyStop = T(s.rebuyStop);
@@ -210,8 +210,12 @@ inline void mcBatchRef(const McBatch& b, std::size_t g, std::size_t sIdx, std::s
         sar = stopLoss > T(0) ? px * (T(1) - stopLoss) : T(0);
       }
     };
-    if (!in && pending && o <= prev * (T(1) + cap)) enter(o);
     bool intraday = false;
+    if (!in && pending) {
+      const T lim = prev * (T(1) + cap);
+      if (o <= lim) enter(o);
+      else if (entryDay && lo <= lim) enter(lim), intraday = true;
+    }
     if (!in && stopped && rebuyStop > T(0)) {
       const T trig = (trail ? low : level) * (T(1) + rebuyStop);
       if (o >= trig) enter(o);

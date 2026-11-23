@@ -123,15 +123,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       continue;
     }
     // enter(px), inlined at each call: a position opened at px, with its stop
-    if (!inPos && pending && o <= prev * (1.0 + cap)) {
-      let px = o;
+    var intraday = false;
+    let lim = prev * (1.0 + cap);
+    let dayIn = (sp.flags & 8u) != 0u && o > lim && lo <= lim;  // entryDay: at the cap, later in the day
+    if (!inPos && pending && (o <= lim || dayIn)) {
+      let px = select(o, lim, dayIn);
+      intraday = dayIn;
       if (outStopped && tripOn) { w *= 1.0 - sh.trip; }
       inPos = true; pending = false; stopped = false; mark = px;
       if (psar && sp.psarVol > 0.0) { sar = px * (1.0 - band); ep = px; af = sp.afStep; }
       else if (psar) { sar = select(0.95 * px, l5, l5 > 0.0 && l5 < px); ep = px; af = sp.afStep; }
       else { sar = select(0.0, px * (1.0 - sp.stopLoss), sp.stopLoss > 0.0); }
     }
-    var intraday = false;
     if (!inPos && stopped && sp.rebuyStop > 0.0) {
       let trig = select(level, low, trail) * (1.0 + sp.rebuyStop);
       var px = 0.0;

@@ -51,6 +51,9 @@ struct McSpec {
   double rebuyStop = 0;
   // rebuyTrail: the buy-back order trails the lowest low since the stop at rebuyStop over it (instead of the level sold at).
   bool rebuyTrail = false;
+  // entryDay: the buy is a day limit order at the cap (it joins the opening auction and works the whole session):
+  // bought at the open under the cap, else at the cap once the day's low reaches it. false: the open only.
+  bool entryDay = false;
   // drift: 0 each share's days as they were (its own past trend kept); 1 each share's own mean daily move over the
   // window taken out and the market's put in (the futures carry the share's risk, not its past trend)
   int drift = 1;
@@ -241,8 +244,12 @@ inline McTrade mcSlotPath(const McPath& p, std::size_t i, double cap, const McSp
         sar = s.stopLoss > 0 ? px * (1 - s.stopLoss) : 0.0;
       }
     };
-    if (!in && pending && o <= last * (1 + cap)) enter(o);  // bought at the open, under the cap
-    bool intraday = false;  // bought back during the day at the buy stop's level: a stop that day sells at its level
+    bool intraday = false;  // bought (back) during the day at an order's level: a stop that day sells at its level
+    if (!in && pending) {
+      const double lim = last * (1 + cap);
+      if (o <= lim) enter(o);  // bought at the open, under the cap
+      else if (s.entryDay && lo <= lim) enter(lim), intraday = true;  // entryDay: at the cap, later in the day
+    }
     if (!in && stopped && s.rebuyStop > 0) {  // the buy-back order, working since the stop
       const double trig = (s.rebuyTrail ? low : level) * (1 + s.rebuyStop);
       if (o >= trig) enter(o);
