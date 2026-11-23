@@ -432,7 +432,7 @@ final class Holds {
                 continue;
             }
             if (held.containsKey(sym) || map("positions").containsKey(sym)) {
-                lines.add(sym + ": held already or in the day's orders, not bought");
+                lines.add(sym + (held.containsKey(sym) ? ": held at IBKR (bought), not bought again" : ": in the book's positions, not bought again"));
                 continue;
             }
             if (map("stopped").containsKey(sym)) {

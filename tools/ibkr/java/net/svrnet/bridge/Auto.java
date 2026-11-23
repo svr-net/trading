@@ -226,6 +226,19 @@ final class Auto {
         return p;
     }
 
+    /** A diagnostics read of GitHub (the store's write access, a market's orders file), kept 5 minutes: GET /diag answers
+     *  at once while GitHub is slow (23 Nov: 102 s), and a failure is not kept. */
+    interface IoCall<T> { T call() throws IOException; }
+    private static final Map<String, Object[]> DIAG_MEMO = new java.util.concurrent.ConcurrentHashMap<>();
+    @SuppressWarnings("unchecked")
+    static <T> T diagMemo(String key, IoCall<T> f) throws IOException {
+        final Object[] hit = DIAG_MEMO.get(key);
+        if (hit != null && System.nanoTime() - (long) hit[0] < 300_000_000_000L) return (T) hit[1];
+        final T v = f.call();
+        DIAG_MEMO.put(key, new Object[] {System.nanoTime(), v});
+        return v;
+    }
+
     static Map<String, Object> orders(String m) throws IOException {
         return JsonParse.object(Files.readString(fetchOrders(m), StandardCharsets.UTF_8));
     }
@@ -1067,7 +1080,7 @@ final class Auto {
             add.accept("EOD_TOKEN", new Object[] {false, "not set in .env"});
         } else {
             try {
-                boolean push = Boolean.TRUE.equals(Store.canPush());
+                boolean push = Boolean.TRUE.equals(diagMemo("canPush", () -> Store.canPush()));
                 add.accept("EOD_TOKEN", new Object[] {push ? true : null, "reads svr-net/eod" + (push ? "" : "; may not write (recordings stay on the NAS)")});
             } catch (Store.Http e) {
                 add.accept("EOD_TOKEN", new Object[] {false, e.code == 401 ? "rejected (expired or revoked)" : e.code == 404 ? "no access to svr-net/eod" : "HTTP " + e.code});
@@ -1077,7 +1090,7 @@ final class Auto {
         }
         for (String m : AUTO.isEmpty() ? List.of("UK") : AUTO) {
             try {
-                Map<String, Object> book = orders(m);
+                Map<String, Object> book = diagMemo("orders-" + m, () -> orders(m));
                 String asOf = String.valueOf(book.getOrDefault("asOf", "1970-01-01"));
                 long age = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.parse(asOf), LocalDate.now());
                 add.accept(m + " orders", new Object[] {age <= 4 ? true : null, "after the close of " + asOf + " (" + age + " day" + (age != 1 ? "s" : "") + " ago): "

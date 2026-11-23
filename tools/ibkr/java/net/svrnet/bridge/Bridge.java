@@ -170,7 +170,7 @@ public final class Bridge {
     static String market(HttpExchange x, Object value) throws IOException {
         String m = value == null ? "" : value.toString().toUpperCase(Locale.ROOT);
         if (!Book.MARKETS.contains(m)) {
-            reply(x, 400, Json.obj("error", "market must be UK, EU, US or APAC"));
+            reply(x, 400, Json.obj("error", "market must be UK, EU, US, APAC or INDEX"));
             return null;
         }
         return m;
@@ -341,7 +341,7 @@ public final class Bridge {
             if (part.startsWith("market=")) market = java.net.URLDecoder.decode(part.substring(7), StandardCharsets.UTF_8).toUpperCase(Locale.ROOT);
         }
         if (!Book.MARKETS.contains(market)) {
-            reply(x, 400, Json.obj("error", "market must be UK, EU, US or APAC"));
+            reply(x, 400, Json.obj("error", "market must be UK, EU, US, APAC or INDEX"));
             return;
         }
         Map<String, Object> book;

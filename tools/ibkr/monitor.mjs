@@ -11,13 +11,13 @@ const get = async (path, keyed, ms = 60000) => {
   return { code: r.status, body: await r.json().catch(() => ({})) };
 };
 import { execFileSync } from 'node:child_process';
-const AUTO_REPORT = (process.env.TRADES_MARKETS || 'UK,EU').split(',').map((x) => x.trim()).filter(Boolean);
+const AUTO_REPORT = (process.env.TRADES_MARKETS || 'UK,EU,US,APAC,INDEX').split(',').map((x) => x.trim()).filter(Boolean);
 
 // Prices never reach the public log: any decimal number, any number after "at most", "at or above", "at or below",
 // "limit", "price", "capped at" or "@", and account ids (ACCOUNT). Counts (shares, orders, days) stay.
 const mask = (v) => String(v || '')
   .replace(/\b[DU]{1,2}\d{5,}\b/g, 'ACCOUNT')
-  .replace(/\d+\.\d+/g, '#')
+  .replace(/(?<![\d.])\d+\.\d+(?![\d.])/g, '#')  // a price, never an address (127.0.0.1)
   .replace(/\b(at most|at or above|at or below|limit|price|capped at)\s+\d+\b/gi, '$1 #')
   .replace(/@\s*\d+\b/g, '@ #');
 let failed = false;
