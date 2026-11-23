@@ -13,6 +13,13 @@ const get = async (path, keyed, ms = 60000) => {
 import { execFileSync } from 'node:child_process';
 const AUTO_REPORT = (process.env.TRADES_MARKETS || 'UK,EU').split(',').map((x) => x.trim()).filter(Boolean);
 
+// Prices never reach the public log: any decimal number, any number after "at most", "at or above", "at or below",
+// "limit", "price", "capped at" or "@", and account ids (ACCOUNT). Counts (shares, orders, days) stay.
+const mask = (v) => String(v || '')
+  .replace(/\b[DU]{1,2}\d{5,}\b/g, 'ACCOUNT')
+  .replace(/\d+\.\d+/g, '#')
+  .replace(/\b(at most|at or above|at or below|limit|price|capped at)\s+\d+\b/gi, '$1 #')
+  .replace(/@\s*\d+\b/g, '@ #');
 let failed = false;
 const problems = [];
 // BROKER_OUT=web/data/broker.json: the broker's state for the page, results only (whether IBKR accepts the
@@ -58,7 +65,7 @@ try {
   }
   console.log('latest automatic actions:');
   for (const x of b.last || []) {
-    console.log(`  ${x.when} ${x.market} ${x.action}: ${x.ok ? 'ok' : 'FAILED'} ${String(x.summary || '').replace(/\d+\.\d{2,}/g, '#')}`);
+    console.log(`  ${x.when} ${x.market} ${x.action}: ${x.ok ? 'ok' : 'FAILED'} ${mask(x.summary)}`);
     if (!x.ok && age(x.when) < 35) problems.push(`${x.market} ${x.action} failed at ${x.when}`);
   }
   if (!b.gateway) problems.push('IB Gateway port closed');
@@ -75,7 +82,7 @@ if (key) {
     console.log(`diagnostics (HTTP ${d.code}):`);
     for (const c of d.body.checks || d.body || []) {
       if (!c || !c.check) continue;
-      const detail = String(c.detail || '').replace(/\d+\.\d{2,}/g, '#').replace(/\b[DU]\d{5,}\b/g, 'ACCOUNT');
+      const detail = mask(c.detail);
       console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : 'warn'} ${c.check}: ${detail}`);
       if (c.check === 'IBKR accepts orders' && c.ok === true) broker.accepts = true, broker.refusal = null, broker.accepted = String(c.detail || '').slice(0, 120);
       if (c.check === 'IBKR accepts orders' && c.ok === false) {

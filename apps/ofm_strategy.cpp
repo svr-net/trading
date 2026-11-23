@@ -662,6 +662,11 @@ int main(int argc, char** argv) {
   // (q of them do not), in multiples of the share's daily volatility, kept to the grid's range (adaptfine: any value,
   // else the nearest of 2, 3, 4, 6). Fewer than 20 winners: the most expected log growth. 0: off.
   P.emplace("stopmae", 0.0);
+  // entryday: 1 makes each buy a day limit order at its limit (the bridge places it so: it joins the opening auction
+  // and works the whole session; the close cancels what is left): bought at the open under the limit, else at the
+  // limit once the day's low reaches it, in the backtest, the nested Monte Carlo and the orders' chance to fill
+  // alike. 0: the opening auction only (an order the open does not fill is gone: its trade is lost).
+  P.emplace("entryday", 0.0);
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
@@ -819,11 +824,12 @@ int main(int argc, char** argv) {
   };
   // Day u's bar against the stop: hit if the low reached it (sold there, or at the open through a gap); else the
   // SAR moves up for the next day (never above the last two lows).
-  const auto stopDay = [&](Pos& p, std::size_t u, std::size_t i, double& px) {
+  // intraday: bought during day u (entryday): a stop that day sells at its level, never at the open (before the buy).
+  const auto stopDay = [&](Pos& p, std::size_t u, std::size_t i, double& px, bool intraday = false) {
     if (!stops) return false;
     const double lo = d.L[u * N + i], hi = d.H[u * N + i], op = d.O[u * N + i];
     if (lo > 0 && p.sar > 0 && lo <= p.sar) {
-      px = (op > 0 ? std::min(op, p.sar) : p.sar) * slipAt(u, i);
+      px = (op > 0 && !intraday ? std::min(op, p.sar) : p.sar) * slipAt(u, i);
       return true;
     }
     if (vstop) {  // the close against its level: under it, sold at the next open; else the levels rise with the highest close
@@ -887,6 +893,8 @@ int main(int argc, char** argv) {
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
   mc.bandMin = stopMin, mc.bandMax = stopMax, mc.slip = stopSlip;
+  const bool entryDay = P["entryday"] > 0;
+  mc.entryDay = entryDay;
   mc.paths = std::max<std::size_t>(20, std::size_t(P["mcpaths"])), mc.horizon = P["mchorizon"] > 0 ? std::size_t(P["mchorizon"]) : reb;
   mc.block = std::max<std::size_t>(1, std::size_t(P["mcblock"])), mc.window = std::max<std::size_t>(60, std::size_t(P["mcwindow"]));
   mc.seed = std::uint64_t(P["mcseed"]), mc.drift = P["mcdrift"] > 0 ? 1 : 0, mc.psar = psar, mc.stopLoss = stopLoss, mc.rebuy = rebuy, mc.afStep = afStep, mc.afMax = afMax;
@@ -1582,22 +1590,24 @@ int main(int argc, char** argv) {
       r.limit = d.Cf[t * N + i] * (1 + capOf(t, i));
       stamp(r);
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
-      const double O = d.O[u * N + i], C = d.Cf[u * N + i];
-      if (O > 0 && O <= r.limit) {
-        r.filled = true, r.entry = O, r.since = u;
+      const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
+      // bought at the open under the limit; entryday: else at the limit once the day's low reaches it
+      const double E = O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
+      if (E > 0) {
+        r.filled = true, r.entry = E, r.since = u;
         if (again) stoppedAt.erase(i), ++nRebuys, dayCost += tripOf(t, i);
         --free;
         double px = 0;
-        Pos p{rows.size(), C > 0 ? C : O};
-        openStop(p, u, i, O);
-        if (stopDay(p, u, i, px)) {  // stopped the day it was bought
-          day += px / O - 1;
-          r.exit = px, r.ret = px / O - 1, r.closed = true, r.stopped = true, r.days = 0;
+        Pos p{rows.size(), C > 0 ? C : E};
+        openStop(p, u, i, E);
+        if (stopDay(p, u, i, px, E < O)) {  // stopped the day it was bought
+          day += px / E - 1;
+          r.exit = px, r.ret = px / E - 1, r.closed = true, r.stopped = true, r.days = 0;
           stoppedAt[i] = stoppedFrom(p, px, i, u), ++nStops;
           done.push_back(rows.size());
           if (rbStop && C >= stoppedAt[i].trigger) sameDayBack.push_back(i);  // after this row is in
         } else {
-          day += p.mark / O - 1;
+          day += p.mark / E - 1;
           book[i] = p;
           lastHeld[i] = u;
         }
@@ -1718,7 +1728,8 @@ int main(int argc, char** argv) {
     double n = 0, f = 0;
     for (std::size_t q = L > 251 ? L - 251 : 0; q < L; ++q) {
       const double c = d.Cf[q * N + i], O = d.O[(q + 1) * N + i];
-      if (c > 0 && O > 0) n += 1, f += O <= c * (1 + capOf(q, i));
+      const double lo = d.L[(q + 1) * N + i], lim = c * (1 + capOf(q, i));
+      if (c > 0 && O > 0) n += 1, f += O <= lim || (entryDay && lo > 0 && lo <= lim);
     }
     x.fill = n > 0 ? f / n : kNaN;
     orders.push_back(x);
@@ -2056,7 +2067,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
-      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"limit\":" << jnum(x.limit / x.close - 1)
+      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"limit\":" << jnum(x.limit / x.close - 1)
         << ",\"stop\":" << (stops ? jnum(stopPrice(x.i, !x.held) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
         << ",\"rebuyAt\":" << (stops && (rebuy >= 0 || rbStop) ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
         << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false")
@@ -2104,7 +2115,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
-      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"open\":true,\"limit\":" << jnum(x.limit)
+      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"open\":true,\"limit\":" << jnum(x.limit)
         << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i, !x.held)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)

@@ -154,7 +154,17 @@ public final class HoldsCheck {
         String late = run(b2, "EU", "place", dir.resolve("holds-EU-late.json"), book);
         FakeBroker.T buy2 = b2.find("MC", "BUY");
         check(buy2.order.tif().equals("DAY") && buy2.order.limit() == 503 && late.contains("the opening auction is over"), late);
-        return placed + late;
+        // entryDay: a day order from the start (the opening auction, then the whole session), the same limit
+        at("Europe/Paris", 8, 50);
+        FakeBroker b3 = new FakeBroker();
+        Map<String, Object> od = order("PAR:MC", 500, 503, 0.01, 5, 6000, 8000);
+        od.put("entryDay", true);
+        String day = run(b3, "EU", "place", dir.resolve("holds-EU-day.json"), book("uk", 5, 5, List.of(od)));
+        FakeBroker.T buy3 = b3.find("MC", "BUY");
+        check(buy3.order.tif().equals("DAY") && buy3.order.limit() == 503 && day.contains("then all day"), day);
+        // the summaries name no price (they go to the public monitor's log)
+        for (String x : List.of(placed, late, day)) check(!x.contains("503") && !x.contains("500"), x);
+        return placed + late + day;
     }
 
     static String usBook() throws Exception {
