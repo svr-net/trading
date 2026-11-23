@@ -48,6 +48,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: VERSION=${{ steps.v.outputs.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          # The build cache keeps the system and IB Gateway layers byte for byte while the base image is the same, so
+          # the NAS downloads only the bridge's small layers on an update (docker pull fetches the layers it lacks).
+          cache-from: type=gha,scope=trading-ibkr
+          cache-to: type=gha,mode=max,scope=trading-ibkr
           push: true
           tags: |
             ${{ steps.v.outputs.main && 'ghcr.io/svr-net/trading-ibkr:latest' || '' }}

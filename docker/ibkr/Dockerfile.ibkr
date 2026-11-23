@@ -65,18 +65,21 @@ RUN set -e; for f in /home/ibgateway/Jts/ibgateway/*/ibgateway.vmoptions; do \
 # GATEWAY_WEB=1 keeps them.
 ARG GATEWAY_WEB=0
 RUN set -e; [ "$GATEWAY_WEB" = 1 ] || rm -f /home/ibgateway/Jts/ibgateway/*/jars/jxbrowser-linux64-*.jar /home/ibgateway/Jts/ibgateway/*/jre/lib/libjfxwebkit.so
-RUN set -e; j=$(find /home/ibgateway -path '*/jre/bin/java' -type f | head -1); test -n "$j"; mkdir -p /app/scripts; ln -s "$j" /app/java; /app/java -version
-COPY --from=java /build/bridge.jar /app/bridge.jar
-COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
-COPY docker/ibkr/gateway-run.sh /app/scripts/run.sh
 COPY docker/ibkr/slim-rootfs.sh /tmp/slim-rootfs.sh
-RUN chmod 755 /app/ibkr-start.sh /app/scripts/run.sh \
- && bash /tmp/slim-rootfs.sh /rootfs \
- && cp -a /app /rootfs/app \
- && chroot /rootfs /bin/bash -c 'set -e; test -x "$(readlink /app/java)"; xkbcomp -version; envsubst --version | head -1; setpriv --version; openssl version; curl --version | head -1; pgrep --version; busybox true; command -v Xvfb'
+# Two filesystems, two layers that change only with the base image: the system (/rootfs: libraries, binaries, data)
+# and IB Gateway with IBC (/rootfs-gw). The bridge and its scripts are the image's last, small layers, so an update
+# of the bridge downloads only them.
+RUN set -e; bash /tmp/slim-rootfs.sh /rootfs; \
+    mkdir -p /rootfs-gw/home /rootfs-gw/app; mv /rootfs/home/ibgateway /rootfs-gw/home/; \
+    j=$(cd /rootfs-gw && find home/ibgateway -path '*/jre/bin/java' -type f | head -1); test -n "$j"; ln -s "/$j" /rootfs-gw/app/java; \
+    chroot /rootfs /bin/bash -c 'set -e; xkbcomp -version; envsubst --version | head -1; setpriv --version; openssl version; curl --version | head -1; pgrep --version; busybox true; command -v Xvfb'
 
 FROM scratch
 COPY --from=gateway /rootfs /
+COPY --from=gateway /rootfs-gw /
+COPY --from=java --chmod=644 /build/bridge.jar /app/bridge.jar
+COPY --chmod=755 docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
+COPY --chmod=755 docker/ibkr/gateway-run.sh /app/scripts/run.sh
 ARG VERSION=unknown
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/home/ibgateway \
