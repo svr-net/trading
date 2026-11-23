@@ -82,6 +82,7 @@
      "mcnnstep": 5,
      "mcregime": 0,
      "stopslip": 0.1,
+     "stopmae": 0.9,
      "mcregimestop": 0,
      "mccost": 1,
      "adaptfine": 1,
