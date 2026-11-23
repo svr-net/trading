@@ -46,6 +46,7 @@
      "mcnnstep": 5,
      "mcregime": 2,
      "stopslip": 0.1,
+     "stopmae": 0.9,
      "stopmultlo": 2,
      "stopmulthi": 6,
      "stopmax": 0.15,
