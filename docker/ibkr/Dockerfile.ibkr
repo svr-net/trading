@@ -43,30 +43,52 @@ FROM scratch AS javaclient-src
 COPY --from=java /opt/twsapi/source/javaclient /javaclient
 
 # --- The container --------------------------------------------------------------------------------------------
-FROM ghcr.io/gnzsnz/ib-gateway:stable
-
+# IB Gateway and IBC come from this image; only what the container runs is kept (slim-rootfs.sh): the image is the
+# last stage, FROM scratch: IB Gateway (its own Java runtime), IBC, the bridge, bash, busybox, Xvfb, openssl, curl,
+# procps and the exact shared libraries and data they load. No OpenGL stack (Xvfb without GLX, JavaFX drawing in
+# software), no VNC, socat, ssh, Python, package manager or systemd.
+FROM ghcr.io/gnzsnz/ib-gateway:stable AS gateway
 USER root
 RUN apt-get update \
- && apt-get install --no-install-recommends --yes procps util-linux openssl curl ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /data/history && chown -R 1000:1000 /data
-# IBC's command server on, inside the container only: the bridge restarts and reconnects IB Gateway through it.
+ && apt-get install --no-install-recommends --yes procps util-linux openssl curl ca-certificates busybox-static gettext-base \
+ && rm -rf /var/lib/apt/lists/*
+# IBC's command server on localhost only (the bridge restarts the gateway through it).
 RUN set -e; t=$(find / -xdev -name 'config.ini.tmpl' -path '*ibc*' 2>/dev/null | head -1); test -n "$t"; \
     sed -i -e 's/^CommandServerPort=.*/CommandServerPort=7462/' -e 's/^BindAddress=.*/BindAddress=127.0.0.1/' \
            -e 's/^ControlFrom=.*/ControlFrom=127.0.0.1/' "$t"; grep -q '^CommandServerPort=7462' "$t"
-# The Java bridge runs on IB Gateway's own Java (found once here: /app/java).
-RUN set -e; j=$(find / -xdev -path '*/jre/bin/java' -type f 2>/dev/null | head -1); \
-    if [ -z "$j" ]; then j=$(find / -xdev -path '*/bin/java' -type f 2>/dev/null | grep -v '^/proc' | head -1); fi; \
-    test -n "$j"; mkdir -p /app; ln -s "$j" /app/java; /app/java -version
-
-WORKDIR /app
+# JavaFX's software pipeline: no OpenGL (Mesa, LLVM) in the image.
+RUN set -e; for f in /home/ibgateway/Jts/ibgateway/*/ibgateway.vmoptions; do \
+      grep -q '^-Dprism.order=sw$' "$f" || sed -i 's/^### keep on update$/-Dprism.order=sw\n-Dprism.verbose=false\n### keep on update/' "$f"; \
+      grep -q '^-Dprism.order=sw$' "$f"; done
+# No web views: the embedded Chromium (jxbrowser's native part, 130 MB) and JavaFX's WebKit (111 MB) draw only web
+# pages, which the API-only gateway does not show (it starts, logs in and serves the API without them).
+# GATEWAY_WEB=1 keeps them.
+ARG GATEWAY_WEB=0
+RUN set -e; [ "$GATEWAY_WEB" = 1 ] || rm -f /home/ibgateway/Jts/ibgateway/*/jars/jxbrowser-linux64-*.jar /home/ibgateway/Jts/ibgateway/*/jre/lib/libjfxwebkit.so
+RUN set -e; j=$(find /home/ibgateway -path '*/jre/bin/java' -type f | head -1); test -n "$j"; mkdir -p /app/scripts; ln -s "$j" /app/java; /app/java -version
 COPY --from=java /build/bridge.jar /app/bridge.jar
 COPY docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
-RUN chmod 755 /app/ibkr-start.sh
+COPY docker/ibkr/gateway-run.sh /app/scripts/run.sh
+COPY docker/ibkr/slim-rootfs.sh /tmp/slim-rootfs.sh
+RUN chmod 755 /app/ibkr-start.sh /app/scripts/run.sh \
+ && bash /tmp/slim-rootfs.sh /rootfs \
+ && cp -a /app /rootfs/app \
+ && chroot /rootfs /bin/bash -c 'set -e; test -x "$(readlink /app/java)"; xkbcomp -version; envsubst --version | head -1; setpriv --version; openssl version; curl --version | head -1; pgrep --version; busybox true; command -v Xvfb'
 
-# The commit it was built from: the Bridge monitor checks the NAS runs the latest.
+FROM scratch
+COPY --from=gateway /rootfs /
 ARG VERSION=unknown
-ENV BRIDGE_VERSION=$VERSION \
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/home/ibgateway \
+    TWS_PATH=/home/ibgateway/Jts \
+    TWS_INI=jts.ini \
+    TWS_INI_TMPL=jts.ini.tmpl \
+    IBC_PATH=/home/ibgateway/ibc \
+    IBC_INI=/home/ibgateway/ibc/config.ini \
+    IBC_INI_TMPL=/home/ibgateway/ibc/config.ini.tmpl \
+    SCRIPT_PATH=/app/scripts \
+    GATEWAY_OR_TWS=gateway \
+    BRIDGE_VERSION=$VERSION \
     GATEWAY_RESTART=local \
     IBC_COMMAND_PORT=7462 \
     IB_HOST=127.0.0.1 \
@@ -76,12 +98,8 @@ ENV BRIDGE_VERSION=$VERSION \
     BYPASS_WARNING=yes \
     TWOFA_TIMEOUT_ACTION=restart \
     AUTO_RESTART_TIME="11:59 PM"
-
-# Starts as root only to copy the certificate (ibkr-start.sh), then runs everything as the image's user (1000).
-USER root
 WORKDIR /home/ibgateway
 EXPOSE 8765
-# Docker's own view (docker ps: healthy or unhealthy); the start script restarts a bridge that stops answering.
 HEALTHCHECK --interval=60s --timeout=20s --start-period=180s --retries=3 \
   CMD curl -skf --max-time 15 https://127.0.0.1:8765/live >/dev/null || curl -sf --max-time 15 http://127.0.0.1:8765/live >/dev/null || exit 1
 CMD ["/app/ibkr-start.sh"]

@@ -4,6 +4,7 @@
 # setup had before (ib-gateway, bridge, restarter, caddy). Run it again to update to the newest image.
 #
 #   sudo sh /volume1/DEV/trading/docker/ibkr/ibkr-nas.sh
+#   sudo IBKR_TAG=351caa8 sh /volume1/DEV/trading/docker/ibkr/ibkr-nas.sh   (back to an earlier image, by its commit)
 #
 # It reads the answers setup-nas.sh saved in docker/ibkr/nas/.env (IBKR_ENV to use another file):
 # the IBKR login, TRADING_MODE, EOD_TOKEN, CAPITAL, AUTO_MARKETS, TZ, BRIDGE_KEY, HTTPS_MODE,
@@ -16,7 +17,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 DIR=${IBKR_DIR:-$HERE/nas}
 ENV=${IBKR_ENV:-$DIR/.env}
 NAME=trading-ibkr
-IMG=ghcr.io/svr-net/$NAME:latest
+IMG=ghcr.io/svr-net/$NAME:${IBKR_TAG:-latest}  # IBKR_TAG=<commit>: an earlier image (sudo IBKR_TAG=351caa8 sh ibkr-nas.sh)
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
