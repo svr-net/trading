@@ -395,21 +395,60 @@ inline double mcReal(const Data& d, std::size_t t0, const std::vector<std::size_
 // candidate (the strategy's higher score). The paths keep the days the market moved together, so shares that fall
 // together add less than their means. No costs (they come off the final orders only). Returns candidate positions.
 // mean: true chooses by the expected return alone (the k highest simulated means), no penalty for risk.
-inline std::vector<std::size_t> mcChoose(const McReset& r, std::size_t candidates, std::size_t paths, std::size_t k, bool mean = false) {
+// cash: a slot stays empty (in cash) once no candidate left raises the book's value over leaving it empty; the book
+// may hold fewer than k. esl: the book's value is its expected log growth less esl times its expected shortfall (the
+// mean loss of its worst 2.5% of futures, a fraction of the book): the tail priced, not only the mean.
+inline double mcBookValue(const std::vector<double>& sum, const double* add, std::size_t paths, double kk, double esl, std::vector<double>& tmp) {
+  double v = 0;
+  if (esl > 0) tmp.resize(paths);
+  for (std::size_t p = 0; p < paths; ++p) {
+    const double x = (sum[p] + (add ? add[p] : 0.0)) / kk;
+    v += std::log(std::max(1e-9, 1.0 + x));
+    if (esl > 0) tmp[p] = x;
+  }
+  v /= double(paths);
+  if (esl > 0) {
+    const std::size_t n = std::max<std::size_t>(1, paths / 40);
+    std::nth_element(tmp.begin(), tmp.begin() + std::ptrdiff_t(n - 1), tmp.end());
+    double es = 0;
+    for (std::size_t q = 0; q < n; ++q) es += tmp[q];
+    v += esl * es / double(n);  // es is a (negative) return: its mean over the tail lowers the value
+  }
+  return v;
+}
+
+inline std::vector<std::size_t> mcChoose(const McReset& r, std::size_t candidates, std::size_t paths, std::size_t k, bool mean = false,
+                                         bool cash = false, double esl = 0) {
   std::vector<std::size_t> chosen;
   std::vector<char> used(candidates, 0);
-  std::vector<double> sum(paths, 0.0);
+  std::vector<double> sum(paths, 0.0), tmp;
   const double kk = double(std::max<std::size_t>(1, k));
   for (std::size_t step = 0; step < std::min(k, candidates); ++step) {
     std::size_t best = candidates;
     double bestV = -1e300;
+    const bool scored = !mean && (cash || esl > 0);
     for (std::size_t j = 0; j < candidates; ++j) {
       if (used[j]) continue;
       double v = 0;
-      for (std::size_t p = 0; p < paths; ++p) v += mean ? r.share[j * paths + p] : std::log(std::max(1e-9, 1.0 + (sum[p] + r.share[j * paths + p]) / kk));
+      if (scored) {
+        v = mcBookValue(sum, &r.share[j * paths], paths, kk, esl, tmp);
+      } else if (mean && esl > 0) {  // each share alone: its mean return less esl times its own expected shortfall
+        tmp.assign(r.share.begin() + std::ptrdiff_t(j * paths), r.share.begin() + std::ptrdiff_t((j + 1) * paths));
+        for (double x : tmp) v += x;
+        v /= double(paths);
+        const std::size_t n = std::max<std::size_t>(1, paths / 40);
+        std::nth_element(tmp.begin(), tmp.begin() + std::ptrdiff_t(n - 1), tmp.end());
+        double es = 0;
+        for (std::size_t q = 0; q < n; ++q) es += tmp[q];
+        v += esl * es / double(n);
+      } else {
+        for (std::size_t p = 0; p < paths; ++p) v += mean ? r.share[j * paths + p] : std::log(std::max(1e-9, 1.0 + (sum[p] + r.share[j * paths + p]) / kk));
+      }
       if (v > bestV + 1e-12) bestV = v, best = j;
     }
     if (best == candidates) break;
+    if (scored && cash && !(bestV > mcBookValue(sum, nullptr, paths, kk, esl, tmp) + 1e-12)) break;  // the slot better in cash
+    if (mean && cash && !(bestV > 1e-12)) break;  // each share alone: none left worth more than cash
     used[best] = 1, chosen.push_back(best);
     for (std::size_t p = 0; p < paths; ++p) sum[p] += r.share[best * paths + p];
   }

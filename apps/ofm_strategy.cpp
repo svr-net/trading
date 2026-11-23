@@ -617,6 +617,13 @@ int main(int argc, char** argv) {
   P.emplace("mcnn", 0.0);
   // mcobj: the simulation's choice by 0 the expected log growth of the book together, 1 each share's expected return.
   P.emplace("mcobj", 0.0);
+  // mccash: 1 lets the simulation leave a slot in cash when no candidate left raises the book's expected log growth
+  // on its futures (drawn in the market's reverse-engineered states with mcregime) over the slot empty: the book holds
+  // fewer than k then. mcesl: L > 0 values the book at its expected log growth less L times its expected shortfall
+  // (the mean of its worst 2.5% of futures): the tail priced, so a candidate that adds more crash than gain is not
+  // chosen. With mcobj 1 (each share alone) the same on each share's own futures: its mean return less L times its
+  // own expected shortfall, and (mccash) a slot left in cash once no share left is worth more than 0.
+  P.emplace("mccash", 0.0), P.emplace("mcesl", 0.0);
   // mcpool: 1 injects every strategy (strategies/*.cpp) into the network's Monte Carlo: each one's score of every
   // share is an input to the network, and each one's best mccandk a slot join the candidates the simulation chooses
   // from. mcgate: 1 makes it autonomous: at each reset the book held is the arm (the simulation's choice, or one
@@ -1144,7 +1151,7 @@ int main(int argc, char** argv) {
       std::vector<std::size_t> simBook;
       simReserve.clear();
       {
-        const auto ch = strat::mcChoose(rr, cand.size(), mc.paths, refill ? 2 * k : k, P["mcobj"] > 0);  // greedy: the first k are the book
+        const auto ch = strat::mcChoose(rr, cand.size(), mc.paths, refill ? 2 * k : k, P["mcobj"] > 0, P["mccash"] > 0, P["mcesl"]);  // greedy: the first k are the book
         for (std::size_t q = 0; q < ch.size(); ++q) (q < k ? simBook : simReserve).push_back(cand[ch[q]]);
       }
       for (std::size_t i : simBook) {
