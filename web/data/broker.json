@@ -1,5 +1,5 @@
 {
- "checked": "2026-11-23T14:36Z",
+ "checked": "2026-11-23T14:39Z",
  "reachable": true,
  "accepts": true,
  "refusal": null,
@@ -7,12 +7,12 @@
   "UK": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-23T14:35:51Z"
+   "at": "2026-11-23T14:38:51Z"
   },
   "EU": {
    "auto": true,
    "held": 1,
-   "at": "2026-11-23T14:36:30Z"
+   "at": "2026-11-23T14:38:30Z"
   },
   "US": {
    "auto": true
