@@ -77,6 +77,8 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     private volatile Req ruleReq;
     private volatile int ruleId = -1;
     private volatile int nextId = -1;
+    private final Object idLock = new Object();  // the order ids (not the Ib monitor: openOrders() holds that while IBKR lists them)
+    private final Map<Integer, Object[]> sent = new ConcurrentHashMap<>();  // a top-level order's contract and order, for a re-place on 103
     volatile String barsError = "";  // the last bars request's IBKR error (code: message), for the bars fetch's summary
     private volatile String account = "";
 
@@ -495,7 +497,10 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
 
     @Override
     public synchronized int place(Share s, NewOrder n) {
-        int id = nextId++;
+        int id;
+        synchronized (idLock) {
+            id = nextId++;
+        }
         Order o = new Order();
         o.action(n.action());
         o.orderType(n.type());
@@ -511,8 +516,32 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         if (n.parentId() != 0) o.parentId(n.parentId());
         o.transmit(n.transmit());
         orders.put(id, new Live());
-        client.placeOrder(id, contract(s), o);
+        Contract k = contract(s);
+        if (n.parentId() == 0 && n.transmit()) sent.put(id, new Object[] {k, o});
+        client.placeOrder(id, k, o);
         return id;
+    }
+
+    /**
+     * IBKR refused an order's id as a duplicate (103: an id an earlier session's order still holds; 24 Nov, APAC): the
+     * order again under a fresh id, once. The same Live follows both ids, so fate() on the first id sees the new one's
+     * status. Only a top-level order: a child names its parent's id.
+     */
+    private boolean replace(int id) {
+        Object[] x = sent.remove(id);
+        Live l = orders.get(id);
+        if (x == null || l == null) return false;
+        int fresh;
+        synchronized (idLock) {
+            if (nextId <= id) nextId = id + 1;
+            fresh = nextId++;
+        }
+        orders.put(fresh, l);
+        synchronized (l.log) {
+            l.log.add("placed again as order " + fresh + " (IBKR refused id " + id + " as a duplicate)");
+        }
+        client.placeOrder(fresh, (Contract) x[0], (Order) x[1]);
+        return true;
     }
 
     /** cancelOrder's arguments differ between API versions (a String in older ones, an OrderCancel in newer). */
@@ -629,7 +658,9 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     // --- EWrapper
     @Override
     public void nextValidId(int id) {
-        if (nextId < id) nextId = id;
+        synchronized (idLock) {
+            if (nextId < id) nextId = id;
+        }
         ready.countDown();
     }
 
@@ -736,6 +767,9 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
 
     @Override
     public void openOrder(int orderId, Contract c, Order o, OrderState st) {
+        synchronized (idLock) {
+            if (orderId >= nextId && nextId >= 0) nextId = orderId + 1;  // never an id an order IBKR lists already holds
+        }
         Live l = orders.get(orderId);
         if (l != null && l.permId == 0) l.permId = permIdOf(o);
         Req r = openReq;
@@ -821,6 +855,12 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         if (l != null) {
             synchronized (l.log) {
                 l.log.add(code + ": " + msg);
+            }
+            if (code == 103 && sent.containsKey(id)) {  // off the reader's thread (it must keep reading)
+                Thread t = new Thread(() -> replace(id), "ibkr-replace");
+                t.setDaemon(true);
+                t.start();
+                return;
             }
             // refused (2139 paper trading not acknowledged, 201 rejected, 203 not allowed, 110 price, 103 duplicate id)
             if (code == 2139 || code == 201 || code == 203 || code == 110 || code == 103) l.status = "Inactive";
