@@ -198,6 +198,7 @@
     "currency": "EUR",
     "paper": true,
     "reserve": 12000,
-    "paper_floor": 0.15
+    "paper_floor": 0.15,
+    "paper_floors": {"US": 0.3, "UK": 0.1}
   }
 }
