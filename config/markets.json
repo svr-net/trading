@@ -20,8 +20,8 @@
           "psarmax": 0.1,
           "psarvol": 3,
           "psarvoladapt": 1,
-          "rebuystop": 0,
-          "rebuystopadapt": 0,
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
           "stopmedian": 0
         }
       },
