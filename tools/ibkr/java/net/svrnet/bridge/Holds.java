@@ -462,7 +462,8 @@ final class Holds {
             boolean openEntry = "open".equals(o.get("entry")) && has(o, "limit") && has(o, "close");
             if (openEntry || (!Boolean.TRUE.equals(o.get("open")) && has(o, "limit") && num(o.get("limit")) != 0)) {
                 double ibkrClose = ib.referenceClose(c);
-                Double r = !Double.isNaN(ibkrClose) ? ibkrClose / num(o.get("close")) : (market.equals("UK") ? null : 1.0);
+                // boxed on both sides: a double on one side unboxes the null (24 Nov: a NullPointerException, UK without IBKR data)
+                Double r = !Double.isNaN(ibkrClose) ? Double.valueOf(ibkrClose / num(o.get("close"))) : market.equals("UK") ? null : Double.valueOf(1.0);
                 Double sc = null;
                 if (r != null && r > 0) for (double s : new double[] {1.0, 0.01, 100.0}) if (Math.abs(Math.log(r / s)) < 0.05) { sc = s; break; }
                 Broker.Share c2 = ib.exitShare(c);

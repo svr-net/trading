@@ -12,7 +12,7 @@ import java.util.Set;
  * between connections, positions from the fills. The hold-book checks (HoldsCheck) run the Python suite's
  * scenarios against it.
  */
-final class FakeBroker implements Broker {
+class FakeBroker implements Broker {
     static final Map<String, Integer> CONIDS = Map.ofEntries(Map.entry("AAA", 1), Map.entry("BBB", 2), Map.entry("CCC", 3), Map.entry("DDD", 4),
             Map.entry("EEE", 5), Map.entry("XXX", 6), Map.entry("MC", 7), Map.entry("BRK B", 8), Map.entry("BHP", 9), Map.entry("D05", 10), Map.entry("SPY", 11));
     static final Map<String, Double> CLOSES = Map.ofEntries(Map.entry("AAA", 350.0), Map.entry("BBB", 120.0), Map.entry("CCC", 80.0), Map.entry("DDD", 100.0),

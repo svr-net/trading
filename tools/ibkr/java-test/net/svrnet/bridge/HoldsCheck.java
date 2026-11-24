@@ -347,8 +347,25 @@ public final class HoldsCheck {
         return placed + closed + prot + morning + dropped;
     }
 
+    /** 24 Nov: the UK with no IBKR price to check the scale against (no market data): skipped, not a NullPointerException. */
+    static String ukNoPrice() throws Exception {
+        at("Europe/London", 7, 50);
+        FakeBroker b = new FakeBroker() {
+            @Override
+            public double referenceClose(Share s) {
+                return Double.NaN;
+            }
+        };
+        Map<String, Object> book = book("uk", 5, 5, List.of(order("XXX", 100, 101, 0.012, 5, 1000, 1000)));
+        String placed = run(b, "UK", "place", dir.resolve("holds-UK-noprice.json"), book);
+        check(b.find("XXX", "BUY") == null && placed.contains("no IBKR price to check the price scale against"), placed);
+        return placed;
+    }
+
     public static void main(String[] args) throws Exception {
         dir = Files.createTempDirectory("holds-check");
+        System.out.print(ukNoPrice());
+        System.out.println("UK without IBKR's price: the buy skipped with its reason; OK");
         System.out.print(holdBook());
         System.out.println("hold book: bought in the opening auction only; offered at each close at or above its exit level; sold at any price on its last day; "
                 + "updated every morning (kept with its new exit level, or sold at the open); OK");
