@@ -359,16 +359,22 @@ final class Recordings {
                 out.put("historyBars", bars.size());
                 if (bars.isEmpty() && !ib.barsError.isEmpty()) out.put("historyError", ib.barsError);  // IBKR's reason (162, 354, ...)
             }
-            List<Map<String, Object>> held = new ArrayList<>();  // the account's positions, for the book-against-IBKR check
-            for (Broker.Position p : ib.positions()) {
-                if (p.qty() == 0) continue;
-                Map<String, Object> h = new LinkedHashMap<>();
-                h.put("symbol", p.share().symbol());
-                h.put("conId", (long) p.share().conId());
-                h.put("currency", p.share().currency());
-                held.add(h);
+            // the account's positions, for the book-against-IBKR check: a slow answer (IBKR busy at a close, 24 Nov 16:21)
+            // leaves that check out, never the whole IBKR check
+            try {
+                List<Map<String, Object>> held = new ArrayList<>();
+                for (Broker.Position p : ib.positions()) {
+                    if (p.qty() == 0) continue;
+                    Map<String, Object> h = new LinkedHashMap<>();
+                    h.put("symbol", p.share().symbol());
+                    h.put("conId", (long) p.share().conId());
+                    h.put("currency", p.share().currency());
+                    held.add(h);
+                }
+                out.put("positions", held);
+            } catch (RuntimeException e) {
+                out.put("positionsError", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
-            out.put("positions", held);
             List<String> errs = new ArrayList<>();
             for (String n : ib.notes()) if (!n.startsWith("reader")) errs.add(n);
             out.put("errors", errs.subList(Math.max(0, errs.size() - 5), errs.size()));
