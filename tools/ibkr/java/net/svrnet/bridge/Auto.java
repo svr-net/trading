@@ -1165,6 +1165,7 @@ final class Auto {
             add.accept(m0 + " historical data", new Object[] {hb > 0, hb + " daily bars" + (d.get("historyError") != null ? " (" + d.get("historyError") + ")" : "")});
             if (!errs.isEmpty()) add.accept("IBKR messages", new Object[] {null, String.join(" | ", errs)});
             if (d.get("positions") instanceof List) add.accept("Books against IBKR", inSync((List<Object>) d.get("positions")));
+            else if (d.get("positionsError") != null) add.accept("Books against IBKR", new Object[] {null, "not checked: IBKR's positions did not come (" + d.get("positionsError") + "); next check in 5 minutes"});
         }
         List<String> plan = new ArrayList<>();
         for (String m : AUTO) plan.add(m + ": place " + TIMES.get(m)[0] + (AUCTION.containsKey(m) ? ", auction " + AUCTION.get(m) : "") + ", hold book" + (PATHS ? ", paths" : "")
