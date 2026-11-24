@@ -404,8 +404,35 @@ public final class HoldsCheck {
         return placed + closed + next;
     }
 
+    /** 24 Nov: IB Gateway hung through the close's window; the catch-up records the day's buy and places its stop (no offer at the close). */
+    static String closeCatchUp() throws Exception {
+        at("Europe/London", 7, 50);
+        FakeBroker b = new FakeBroker();
+        Map<String, Object> o = order("XXX", 100, 101, null, 260, 1000, 1000);
+        o.put("stopKind", "psar");
+        o.put("stopPrice", 94.0);
+        Map<String, Object> book = book("strategy", 260, 5, List.of(o));
+        book.put("updates", new ArrayList<>());
+        Path state = dir.resolve("holds-UK-catchup.json");
+        String placed = run(b, "UK", "place", state, book);
+        b.fill(b.find("XXX", "BUY"), 990, 100.0);
+        at("Europe/London", 19, 0);
+        String rec = run(b, "UK", "record", state, null);
+        Map<String, Object> p = pos(state(state), "XXX");
+        List<FakeBroker.T> stops = b.where(t -> t.share.symbol().equals("XXX") && t.order.type().equals("STP") && !t.status.equals("Cancelled"));
+        List<FakeBroker.T> offers = b.where(t -> t.share.symbol().equals("XXX") && t.order.action().equals("SELL") && !t.order.type().equals("STP"));
+        check(p != null && Holds.num(p.get("qty")) == 990 && Holds.num(p.get("closes")) == 0 && stops.size() == 1 && stops.get(0).order.aux() == 94.0
+                && stops.get(0).order.tif().equals("GTC") && offers.isEmpty() && ((Map<?, ?>) state(state).get("pending")).isEmpty(), rec);
+        String again = run(b, "UK", "record", state, null);
+        List<FakeBroker.T> stops2 = b.where(t -> t.share.symbol().equals("XXX") && t.order.type().equals("STP") && !t.status.equals("Cancelled"));
+        check(stops2.size() == 1 && again.contains("its stop kept"), again);
+        return placed + rec + again;
+    }
+
     public static void main(String[] args) throws Exception {
         dir = Files.createTempDirectory("holds-check");
+        System.out.print(closeCatchUp());
+        System.out.println("the close missed: caught up in the evening (the day's buy recorded, its stop placed, nothing offered; kept when run again); OK");
         System.out.print(adoptAcrossDates());
         System.out.println("APAC across dates: what IBKR holds that the book bought is recorded (from its plan, or its fills); a share bought by hand is not; OK");
         System.out.print(ukNoPrice());

@@ -114,7 +114,7 @@ final class Store {
                         sha = s == null ? null : s.toString();
                     }
                 } else if (gc != 404) {
-                    throw new Http(gc);
+                    throw new Http(gc, why(g));
                 }
                 Map<String, Object> body = new LinkedHashMap<>();
                 body.put("message", message);
@@ -124,14 +124,18 @@ final class Store {
                 p.setRequestMethod("PUT");
                 p.setDoOutput(true);
                 p.setRequestProperty("Content-Type", "application/json");
+                byte[] bytes = Json.write(body).getBytes(StandardCharsets.UTF_8);
+                p.setFixedLengthStreamingMode(bytes.length);  // streamed as written, not held whole a second time (12 MB of bars)
                 try (OutputStream o = p.getOutputStream()) {
-                    o.write(Json.write(body).getBytes(StandardCharsets.UTF_8));
+                    o.write(bytes);
                 }
                 int pc = p.getResponseCode();
                 if (pc == 200 || pc == 201) return;
-                throw new Http(pc);
+                throw new Http(pc, why(p));
             } catch (Http e) {
-                if (!(e.code == 409 || e.code == 422 || e.code >= 500) || attempt == 2) throw e;
+                // 401 too (23-24 Nov: the bars' uploads refused with 401 while every read with the same token worked):
+                // once more after the wait, with GitHub's reason in the summary when it stays refused
+                if (!(e.code == 401 || e.code == 409 || e.code == 422 || e.code >= 500) || attempt == 2) throw e;
                 last = e;
             } catch (IOException e) {
                 if (attempt == 2) throw e;
@@ -159,6 +163,24 @@ final class Store {
         Http(int code) {
             super("HTTP Error " + code);
             this.code = code;
+        }
+
+        Http(int code, String why) {
+            super("HTTP Error " + code + (why == null || why.isEmpty() ? "" : ": " + why));
+            this.code = code;
+        }
+    }
+
+    /** GitHub's reason with an error (its JSON "message", a few words), for the step's summary. */
+    static String why(HttpURLConnection c) {
+        try (InputStream e = c.getErrorStream()) {
+            if (e == null) return "";
+            String b = new String(e.readAllBytes(), StandardCharsets.UTF_8);
+            Object m = JsonParse.object(b).get("message");
+            String s = m == null ? b : m.toString();
+            return s.length() > 120 ? s.substring(0, 120) : s;
+        } catch (IOException | RuntimeException x) {
+            return "";
         }
     }
 

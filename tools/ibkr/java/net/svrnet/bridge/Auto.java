@@ -545,6 +545,13 @@ final class Auto {
         return done(step(() -> holds(m, "close", null)));
     }
 
+    /** The close's catch-up (its 9-minute window missed): the day's buys recorded and their stops placed; then the close counts as done. */
+    static Done recordHolds(String m) {
+        Done d = done(step(() -> holds(m, "record", null)));
+        if (d.ok()) markDone(m, "hold-close");
+        return d;
+    }
+
     /** The shares the model placed in this market lately (the history): the only holdings the leftovers step may sell (never the book's). */
     @SuppressWarnings("unchecked")
     static List<String> modelTickers(String m) {
@@ -929,7 +936,7 @@ final class Auto {
     static boolean stepsPending() {
         for (String k : RUNNING) {
             String a = k.substring(k.indexOf(' ') + 1);
-            if (List.of("leftovers", "place", "close", "flat", "report", "hold-place", "hold-close").contains(a)) return true;
+            if (List.of("leftovers", "place", "close", "flat", "report", "hold-place", "hold-close", "hold-record").contains(a)) return true;
         }
         for (String m : AUTO) {
             ZonedDateTime now = now(m);
@@ -984,6 +991,10 @@ final class Auto {
             job(m, "hold-place", Auto::placeHolds, true);
         if (hold && up && within(now, close, 0, 9) && !isDone(m, "hold-close") && !PROTECT_RUNNING.contains(m) && mayTry(m, "hold-close", 2, 3))
             job(m, "hold-close", Auto::closeHolds, true);
+        // its window missed (IB Gateway down or hung at the close, 24 Nov): caught up within 6 hours of the close
+        if (hold && up && between(now, at(now, close, 10), at(now, close, 360)) && isDone(m, "hold-place") && !isDone(m, "hold-close")
+                && !running(m, "hold-close") && !PROTECT_RUNNING.contains(m) && mayTry(m, "hold-record", 10, 3))
+            job(m, "hold-record", Auto::recordHolds, false);
         if (hold && up && between(now, at(now, place, 0), at(now, close, 0)) && !running(m, "hold-place") && !running(m, "hold-close") && mayTry(m, "hold-protect", 5, 0)) {
             ATTEMPTS.put(m + " hold-protect " + day, new long[] {0, System.nanoTime()});
             protectSoon(m);
