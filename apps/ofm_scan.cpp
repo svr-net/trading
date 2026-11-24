@@ -121,9 +121,12 @@ using Record = std::map<std::string, double>;  // date -> the day's result
 
 // The account's limit split over the markets to maximise its risk-adjusted return: each market's record gives its
 // shrunk mean (half of it the outlook, where given) and the covariance, shrunk halfway to its diagonal; the
-// mean-variance weights, none negative, adding up to the whole, none over the cap; on paper each at least the floor.
+// mean-variance weights, none negative, adding up to the whole, none over the cap; on paper each at least the floor
+// (floors: a market's own floor, where given, in place of floor_).
 std::map<std::string, double> allocate(const std::map<std::string, Record>& records, double cap = 0.5, double floor_ = 0.0, const std::map<std::string, double>* forward = nullptr,
-                                       double blend = 0.5, double halfLife = HALF_LIFE, std::size_t window = SPLIT_WINDOW) {
+                                       double blend = 0.5, double halfLife = HALF_LIFE, std::size_t window = SPLIT_WINDOW,
+                                       const std::map<std::string, double>* floors = nullptr) {
+  const auto floorOf = [&](const std::string& m) { return floors && floors->count(m) ? floors->at(m) : floor_; };
   std::vector<std::string> names;
   for (const auto& [m, r] : records) names.push_back(m);
   if (names.empty()) return {};
@@ -200,11 +203,14 @@ std::map<std::string, double> allocate(const std::map<std::string, Record>& reco
     for (const auto& [m, v] : rest) t += v;
     for (const auto& [m, v] : rest) w[m] = v + spare * v / t;
   }
-  if (floor_ > 0) {  // the floors from the limit left unused first, then from the others
+  bool anyFloor = floor_ > 0;
+  if (floors)
+    for (const auto& [m, f] : *floors) anyFloor = anyFloor || f > 0;
+  if (anyFloor) {  // the floors from the limit left unused first, then from the others
     double lift = 0, sumW = 0, big = 0;
-    for (const auto& [m, v] : w) lift += std::max(0.0, floor_ - v), sumW += v, big += v > floor_ ? v : 0.0;
+    for (const auto& [m, v] : w) lift += std::max(0.0, floorOf(m) - v), sumW += v, big += v > floorOf(m) ? v : 0.0;
     const double need = std::max(0.0, lift - std::max(0.0, 1.0 - sumW));
-    for (auto& [m, v] : w) v = floor_ - v > 0 ? floor_ : v - need * (big > 0 ? v / big : 0);
+    for (auto& [m, v] : w) v = floorOf(m) - v > 0 ? floorOf(m) : v - need * (big > 0 ? v / big : 0);
   }
   return w;
 }
@@ -648,7 +654,10 @@ int cmdRun(const std::vector<std::string>& args) {
     for (const auto& [m, v] : held) room -= v;
     room = std::max(0.0, room);
     floor_ = paper ? acc.value("paper_floor", 0.05) : 0.0;
-    for (const auto& [m, v] : allocate(recs, acc.value("market_cap", 0.5), floor_, &fwd)) alloc[m] = v * room;
+    std::map<std::string, double> floors;  // paper_floors: a market's own floor on paper ({"US": 0.3, "UK": 0.1})
+    if (paper && acc.contains("paper_floors") && acc["paper_floors"].is_object())
+      for (auto it = acc["paper_floors"].begin(); it != acc["paper_floors"].end(); ++it) floors[it.key()] = it.value().get<double>();
+    for (const auto& [m, v] : allocate(recs, acc.value("market_cap", 0.5), floor_, &fwd, 0.5, HALF_LIFE, SPLIT_WINDOW, &floors)) alloc[m] = v * room;
     share = alloc.count(market) ? alloc[market] : 0.0;
     if (!paper) {  // growing only into its part of what is free
       std::vector<std::string> withBudget;
