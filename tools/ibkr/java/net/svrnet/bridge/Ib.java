@@ -195,6 +195,24 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     /** Whether IBKR knows the share (one contract, as ib_async's qualifyContracts: an ambiguous one is not an answer). */
     @Override
     public Share qualify(Share s) {
+        Share q = qualifyOne(s);
+        if (q != null || s.conId() != 0 || s.symbol() == null || s.symbol().isEmpty()) return q;
+        // Xetra's ETFs are IBIS2 at IBKR, not IBIS (24 Nov: SXR8, EUNL, VUSA "not found at IBKR"); then IBKR's SMART
+        // routing with the listing exchange as its primary, then any listing in the currency
+        if ("IBIS".equals(s.exchange())) {
+            q = qualifyOne(new Share(0, s.symbol(), "IBIS2", "", s.currency()));
+            if (q != null) return q;
+            q = qualifyOne(new Share(0, s.symbol(), "SMART", "IBIS2", s.currency()));
+            if (q != null) return q;
+        }
+        if (s.exchange() != null && !s.exchange().equals("SMART")) {
+            q = qualifyOne(new Share(0, s.symbol(), "SMART", s.exchange(), s.currency()));
+            if (q != null) return q;
+        }
+        return null;
+    }
+
+    private Share qualifyOne(Share s) {
         try {
             List<ContractDetails> d = details(s);
             Map<Integer, Contract> byId = new LinkedHashMap<>();

@@ -299,7 +299,7 @@ final class Holds {
      * average cost. 24 Nov, APAC: the close looked for the fills of the NAS's date, not Sydney's, and recorded none.
      * Only the same contract as the plan's, and at most the quantity the book bought.
      */
-    private void adopt() {
+    private void adopt(boolean withToday) {
         Map<String, Object> plans = map("plans");
         String oldest = LocalDate.parse(today).minusDays(14).toString();
         plans.values().removeIf(x -> String.valueOf(asMap(x).getOrDefault("placed", "")).compareTo(oldest) < 0);
@@ -324,7 +324,7 @@ final class Holds {
         cands.addAll(plans.keySet());
         cands.addAll(bought.keySet());
         for (String sym : cands) {
-            if (map("positions").containsKey(sym) || map("stopped").containsKey(sym) || todays.contains(sym)) continue;
+            if (map("positions").containsKey(sym) || map("stopped").containsKey(sym) || (!withToday && todays.contains(sym))) continue;
             Broker.Position p = held.get(sym);
             if (p == null || p.qty() <= 0) continue;
             Map<String, Object> plan = asMap(map("pending").get(sym));
@@ -345,6 +345,24 @@ final class Holds {
             plans.remove(sym);
             lines.add(sym + ": recorded: IBKR holds " + g(q) + " the book bought but had not recorded" + (plan.isEmpty() ? " (its plan lost: no stop until the strategy updates it)" : ""));
         }
+    }
+
+    /**
+     * The close's catch-up, when its window was missed (24 Nov: IB Gateway hung through the UK's and EU's closes): the
+     * day's buys recorded from IBKR (with today's, see adopt) and every held position's stop placed: good till
+     * cancelled, so valid after the close. Nothing is offered at the close (that is past), and the day does not count
+     * among a position's closes.
+     */
+    private void record() {
+        for (Map.Entry<String, Object> e : map("positions").entrySet()) {
+            String sym = e.getKey();
+            Broker.Position p = held.get(sym);
+            Map<String, Object> pos = asMap(e.getValue());
+            if (p == null || pos.get("stop") == null || num(pos.get("stop")) == 0) continue;
+            double qty = Math.min(pos.get("qty") != null ? num(pos.get("qty")) : p.qty(), p.qty());
+            lines.add(setStop(sym, p.share(), qty, num(pos.get("stop")), pos.get("rebuyStop"), pos.get("rebuyTrail")));
+        }
+        st.put("pending", new LinkedHashMap<>());  // the day's buys not filled ended with the session (day orders)
     }
 
     @SuppressWarnings("unchecked")
@@ -389,8 +407,9 @@ final class Holds {
     String run(Map<String, Object> book) throws IOException {
         held = new LinkedHashMap<>();
         for (Broker.Position p : ib.positions()) if (p.qty() > 0) held.put(p.share().symbol(), p);
-        adopt();
+        adopt(action.equals("record"));
         if (action.equals("protect")) protect();
+        if (action.equals("record")) record();
         if (action.equals("place")) place(book == null ? new LinkedHashMap<>() : book);
         else if (action.equals("close")) close();
         ib.sleep(2);
