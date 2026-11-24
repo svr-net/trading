@@ -1,5 +1,5 @@
 {
- "checked": "2026-11-24T07:15Z",
+ "checked": "2026-11-24T08:14Z",
  "reachable": true,
  "accepts": true,
  "refusal": null,
@@ -7,12 +7,12 @@
   "UK": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-24T04:18:09Z"
+   "at": "2026-11-24T08:13:47Z"
   },
   "EU": {
    "auto": true,
-   "held": 1,
-   "at": "2026-11-24T04:18:09Z"
+   "held": 2,
+   "at": "2026-11-24T08:13:47Z"
   },
   "US": {
    "auto": true,
@@ -27,9 +27,9 @@
   "INDEX": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-24T04:18:10Z"
+   "at": "2026-11-24T08:13:47Z"
   }
  },
- "gateway": false,
+ "gateway": true,
  "accepted": "2026-11-22 18:34 GMT UK: test order accepted by IBKR (VOD, cancelled: true)"
 }
