@@ -67,7 +67,11 @@ public final class HoldsCheck {
     }
 
     static String run(FakeBroker b, String market, String action, Path state, Map<String, Object> book) throws Exception {
-        Holds h = new Holds(b, market, action, state, 5000, TODAY);
+        return run(b, market, action, state, book, TODAY);
+    }
+
+    static String run(FakeBroker b, String market, String action, Path state, Map<String, Object> book, LocalDate day) throws Exception {
+        Holds h = new Holds(b, market, action, state, 5000, day);
         String last = h.run(book == null ? null : JsonParse.object(Json.write(book)));  // as read from the orders file
         StringBuilder s = new StringBuilder();
         for (String l : h.lines()) s.append("  ").append(l).append('\n');
@@ -362,8 +366,48 @@ public final class HoldsCheck {
         return placed;
     }
 
+    /**
+     * 24 Nov, APAC: the buys tagged with one date (the NAS's), the close run with another (Sydney's): the close found
+     * none of the fills. Now the book records what IBKR holds that it bought: from the plan kept since the placing,
+     * and, with the plan lost, from the fills with the book's reference.
+     */
+    @SuppressWarnings("unchecked")
+    static String adoptAcrossDates() throws Exception {
+        at("Australia/Sydney", 9, 45);
+        FakeBroker b = new FakeBroker();
+        Path state = dir.resolve("holds-APAC-dates.json");
+        LocalDate d1 = TODAY.minusDays(1);
+        String placed = run(b, "APAC", "place", state, book("uk", 5, 5, List.of(order("ASX:BHP", 45, 45.5, 0.01, 5, 5000, 9000))), d1);
+        FakeBroker.T buy = b.find("BHP", "BUY");
+        check(buy != null && buy.order.ref().equals("ofm-APACH-" + d1), placed);
+        b.fill(buy, buy.order.qty(), 45.2);
+        at("Australia/Sydney", 15, 50);
+        String closed = run(b, "APAC", "close", state, null, TODAY);
+        Map<String, Object> p = pos(state(state), "BHP");
+        check(p != null && Holds.num(p.get("qty")) == buy.order.qty() && Holds.num(p.get("days")) == 5 && closed.contains("BHP: recorded"), closed);
+        check(!((Map<String, Object>) state(state).get("plans")).containsKey("BHP"), state(state));
+        // the plan lost (the state before this fix): recorded from the fills with the book's reference, any day
+        Map<String, Object> st = state(state);
+        ((Map<String, Object>) st.get("positions")).clear();
+        st.remove("plans");
+        save(state, st);
+        at("Australia/Sydney", 9, 45);
+        String next = run(b, "APAC", "place", state, book("uk", 5, 5, List.of()), TODAY.plusDays(1));
+        p = pos(state(state), "BHP");
+        check(p != null && next.contains("BHP: recorded") && next.contains("its plan lost"), next);
+        // a share of the same symbol bought by hand (no plan, no fill of the book): not taken
+        FakeBroker b2 = new FakeBroker();
+        b2.fills.add(new Broker.Fill(new Broker.Share(FakeBroker.CONIDS.get("AAA"), "AAA", "LSE", "LSE", "GBP"), "BOT", 10, 100.0, "manual", 0, "m1", "", 0, 0));
+        Path s2 = dir.resolve("holds-UK-hand.json");
+        String hand = run(b2, "UK", "place", s2, book("uk", 5, 5, List.of()));
+        check(((Map<String, Object>) state(s2).get("positions")).isEmpty() && !hand.contains("recorded"), hand);
+        return placed + closed + next;
+    }
+
     public static void main(String[] args) throws Exception {
         dir = Files.createTempDirectory("holds-check");
+        System.out.print(adoptAcrossDates());
+        System.out.println("APAC across dates: what IBKR holds that the book bought is recorded (from its plan, or its fills); a share bought by hand is not; OK");
         System.out.print(ukNoPrice());
         System.out.println("UK without IBKR's price: the buy skipped with its reason; OK");
         System.out.print(holdBook());

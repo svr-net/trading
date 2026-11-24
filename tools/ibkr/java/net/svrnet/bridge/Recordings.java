@@ -357,8 +357,18 @@ final class Recordings {
                 ib.unstream(id);
                 List<Bar> bars = ib.bars(q, "5 D", 20);
                 out.put("historyBars", bars.size());
-                if (bars.isEmpty() && ib.barsError.startsWith("exception")) out.put("historyError", ib.barsError);
+                if (bars.isEmpty() && !ib.barsError.isEmpty()) out.put("historyError", ib.barsError);  // IBKR's reason (162, 354, ...)
             }
+            List<Map<String, Object>> held = new ArrayList<>();  // the account's positions, for the book-against-IBKR check
+            for (Broker.Position p : ib.positions()) {
+                if (p.qty() == 0) continue;
+                Map<String, Object> h = new LinkedHashMap<>();
+                h.put("symbol", p.share().symbol());
+                h.put("conId", (long) p.share().conId());
+                h.put("currency", p.share().currency());
+                held.add(h);
+            }
+            out.put("positions", held);
             List<String> errs = new ArrayList<>();
             for (String n : ib.notes()) if (!n.startsWith("reader")) errs.add(n);
             out.put("errors", errs.subList(Math.max(0, errs.size() - 5), errs.size()));

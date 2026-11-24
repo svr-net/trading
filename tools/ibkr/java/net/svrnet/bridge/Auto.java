@@ -147,6 +147,14 @@ final class Auto {
         return now(m).toLocalDate().toString();
     }
 
+    /**
+     * The market's own date, for its steps' order references and fills. Not the NAS's: Sydney's morning is still the
+     * day before in London (24 Nov: APAC's buys were tagged 23 Nov and its close, on 24 Nov, found none of them).
+     */
+    static LocalDate marketDay(String m) {
+        return now(m).toLocalDate();
+    }
+
     static ZonedDateTime at(ZonedDateTime now, String hhmm, int minutes) {
         String[] p = hhmm.split(":");
         return now.withHour(Integer.parseInt(p[0])).withMinute(Integer.parseInt(p[1])).withSecond(0).withNano(0).plusMinutes(minutes);
@@ -385,6 +393,42 @@ final class Auto {
         return Path.of(HISTORY, "holds-" + m + ".json");
     }
 
+    /**
+     * Each multi-day book against IBKR's positions: a share the book holds that IBKR does not, one IBKR holds that the
+     * book bought but has not recorded (its plan kept), and one IBKR holds that no book has (bought by hand, or lost).
+     */
+    @SuppressWarnings("unchecked")
+    static Object[] inSync(List<Object> positions) {
+        Set<String> atIbkr = new LinkedHashSet<>();
+        for (Object o : positions) if (o instanceof Map) atIbkr.add(String.valueOf(((Map<String, Object>) o).get("symbol")));
+        Set<String> anyBook = new LinkedHashSet<>();
+        List<String> wrong = new ArrayList<>();
+        for (String m : AUTO) {
+            Map<String, Object> st;
+            try {
+                if (!Files.exists(holdState(m))) continue;
+                st = JsonParse.object(Files.readString(holdState(m), StandardCharsets.UTF_8));
+            } catch (IOException | RuntimeException e) {
+                wrong.add(m + ": its book unreadable (" + e.getMessage() + ")");
+                continue;
+            }
+            Set<String> book = st.get("positions") instanceof Map ? ((Map<String, Object>) st.get("positions")).keySet() : Set.of();
+            Set<String> plans = st.get("plans") instanceof Map ? ((Map<String, Object>) st.get("plans")).keySet() : Set.of();
+            anyBook.addAll(book);
+            List<String> gone = new ArrayList<>(), unrec = new ArrayList<>();
+            for (String s : book) if (!atIbkr.contains(s)) gone.add(s);
+            for (String s : plans) if (atIbkr.contains(s) && !book.contains(s)) unrec.add(s);
+            anyBook.addAll(unrec);
+            if (!gone.isEmpty()) wrong.add(m + ": in the book, not at IBKR: " + String.join(" ", gone));
+            if (!unrec.isEmpty()) wrong.add(m + ": at IBKR, bought by the book, not recorded yet: " + String.join(" ", unrec));
+        }
+        List<String> none = new ArrayList<>();
+        for (String s : atIbkr) if (!anyBook.contains(s)) none.add(s);
+        if (!none.isEmpty()) wrong.add("at IBKR, in no book (the day's buys not yet recorded, or bought by hand): " + String.join(" ", none));
+        return wrong.isEmpty() ? new Object[] {true, "every book's positions held at IBKR, and every IBKR position in a book (" + atIbkr.size() + ")"}
+                : new Object[] {null, String.join("; ", wrong)};
+    }
+
     @SuppressWarnings("unchecked")
     static Set<String> holdSymbols(String m) {
         try {
@@ -423,7 +467,7 @@ final class Auto {
         try {
             Map<String, Object> book = orders(m);
             String asOf = String.valueOf(book.getOrDefault("asOf", ""));
-            if (asOf.isEmpty() || asOf.equals("null") || LocalDate.parse(asOf).isBefore(LocalDate.now().minusDays(4)))
+            if (asOf.isEmpty() || asOf.equals("null") || LocalDate.parse(asOf).isBefore(marketDay(m).minusDays(4)))
                 return new Done(false, "orders from " + (asOf.isEmpty() || asOf.equals("null") ? "?" : asOf) + " are too old: not placed");
             if ("hold".equals(book.get("book"))) {
                 LIVE_HOLD.put(m, new Object[] {today(m), true});
@@ -443,7 +487,7 @@ final class Auto {
 
     static Steps.Result holds(String m, String action, Map<String, Object> book) throws IOException {
         try (Ib ib = Ib.connect(Recordings.clientId(m) + 7)) {
-            Holds h = new Holds(ib, m, action, holdState(m), 1000.0, LocalDate.now());
+            Holds h = new Holds(ib, m, action, holdState(m), 1000.0, marketDay(m));
             String last;
             try {
                 last = h.run(book);
@@ -524,7 +568,7 @@ final class Auto {
     static Steps.Result leftovers(String m, List<String> tickers, boolean check) {
         return step(() -> {
             try (Ib ib = Ib.connect(Recordings.clientId(m) + 5)) {
-                return Steps.leftovers(ib, m, String.join(",", tickers), check, LocalDate.now());
+                return Steps.leftovers(ib, m, String.join(",", tickers), check, marketDay(m));
             }
         });
     }
@@ -551,7 +595,7 @@ final class Auto {
     static Done closeMarket(String m) {
         Steps.Result r = step(() -> {
             try (Ib ib = Ib.connect(Recordings.clientId(m))) {
-                return Steps.close(ib, m, LocalDate.now());
+                return Steps.close(ib, m, marketDay(m));
             }
         });
         String last = r.last();
@@ -572,7 +616,7 @@ final class Auto {
         Map<String, Object>[] rec = new Map[1];
         Steps.Result r = step(() -> {
             try (Ib ib = Ib.connect(Recordings.clientId(m))) {
-                rec[0] = Steps.report(ib, m, LocalDate.now());
+                rec[0] = Steps.report(ib, m, marketDay(m));
                 return new Steps.Result(0, List.of(), "");
             }
         });
@@ -753,7 +797,7 @@ final class Auto {
         Map<String, Object>[] got = new Map[1];
         Steps.Result r = step(() -> {
             try (Ib ib = Ib.connect(Bridge.env("IB_HOST", "127.0.0.1"), IB_PORT, Recordings.clientId(m) + 6, 2)) {
-                got[0] = Steps.state(ib, m, String.join(",", tickers), CAPITAL, LocalDate.now());
+                got[0] = Steps.state(ib, m, String.join(",", tickers), CAPITAL, marketDay(m));
                 return new Steps.Result(0, List.of(), "");
             }
         });
@@ -1120,6 +1164,7 @@ final class Auto {
             int hb = d.get("historyBars") instanceof Number ? ((Number) d.get("historyBars")).intValue() : 0;
             add.accept(m0 + " historical data", new Object[] {hb > 0, hb + " daily bars" + (d.get("historyError") != null ? " (" + d.get("historyError") + ")" : "")});
             if (!errs.isEmpty()) add.accept("IBKR messages", new Object[] {null, String.join(" | ", errs)});
+            if (d.get("positions") instanceof List) add.accept("Books against IBKR", inSync((List<Object>) d.get("positions")));
         }
         List<String> plan = new ArrayList<>();
         for (String m : AUTO) plan.add(m + ": place " + TIMES.get(m)[0] + (AUCTION.containsKey(m) ? ", auction " + AUCTION.get(m) : "") + ", hold book" + (PATHS ? ", paths" : "")

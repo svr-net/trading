@@ -168,6 +168,7 @@ final class Holds {
         s.putIfAbsent("positions", new LinkedHashMap<>());
         s.putIfAbsent("pending", new LinkedHashMap<>());
         s.putIfAbsent("stopped", new LinkedHashMap<>());
+        s.putIfAbsent("plans", new LinkedHashMap<>());
         this.st = s;
     }
 
@@ -268,6 +269,84 @@ final class Holds {
                 + setStop(sym, planShare(plan), qty, num(pos.get("stop")), plan.get("rebuyStop"), plan.get("rebuyTrail"));
     }
 
+    /** A position from its plan (kept at the placing): the price paid, its days, exit level, stop and buy-back. */
+    private Map<String, Object> position(long conId, double q, double entry, Map<String, Object> plan) {
+        Map<String, Object> pos = new LinkedHashMap<>();
+        pos.put("conId", conId);
+        pos.put("qty", q);
+        pos.put("entry", entry);
+        pos.put("since", today);
+        pos.put("closes", 0L);
+        pos.put("exitAbove", plan.containsKey("exitAbove") && plan.get("exitAbove") == null ? null : (plan.get("exitAbove") == null ? 0.0 : num(plan.get("exitAbove"))));
+        long days = st.get("bookDays") instanceof Number ? ((Number) st.get("bookDays")).longValue() : 5L;
+        pos.put("days", plan.get("days") == null || num(plan.get("days")) == 0 ? days : (long) num(plan.get("days")));
+        if (plan.get("stopPrice") != null) {
+            double lvl = num(plan.get("stopPrice"));
+            pos.put("stop", lvl < entry ? lvl : 0.95 * entry);
+            pos.put("scale", plan.get("scale") == null || num(plan.get("scale")) == 0 ? 1.0 : num(plan.get("scale")));
+        }
+        if (plan.get("rebuyStop") != null) {
+            pos.put("rebuyStop", plan.get("rebuyStop"));
+            pos.put("rebuyStopRel", plan.get("rebuyStopRel"));
+            pos.put("rebuyTrail", Boolean.TRUE.equals(plan.get("rebuyTrail")));
+        }
+        return pos;
+    }
+
+    /**
+     * IBKR is the truth: a share this book bought (its plan kept since the placing, or a fill or filled order with
+     * the book's reference, any day) that IBKR holds but the book has not recorded becomes a position, at IBKR's
+     * average cost. 24 Nov, APAC: the close looked for the fills of the NAS's date, not Sydney's, and recorded none.
+     * Only the same contract as the plan's, and at most the quantity the book bought.
+     */
+    private void adopt() {
+        Map<String, Object> plans = map("plans");
+        String oldest = LocalDate.parse(today).minusDays(14).toString();
+        plans.values().removeIf(x -> String.valueOf(asMap(x).getOrDefault("placed", "")).compareTo(oldest) < 0);
+        String mine = "ofm-" + market + "H-";
+        Map<String, Double> bought = new LinkedHashMap<>(), paid = new HashMap<>();
+        Map<String, Integer> conIds = new HashMap<>();
+        Set<String> todays = new LinkedHashSet<>();  // filled under today's reference: the close records them from their fills
+        for (Broker.Fill f : ib.fills()) {
+            if (f.ref() == null || !f.ref().startsWith(mine) || !f.side().equals("BOT")) continue;
+            if (f.ref().equals(ref)) todays.add(f.share().symbol());
+            bought.merge(f.share().symbol(), f.shares(), Double::sum);
+            paid.merge(f.share().symbol(), f.shares() * f.price(), Double::sum);
+            conIds.put(f.share().symbol(), f.share().conId());
+        }
+        for (Broker.Ord o : ib.completedOrders()) {
+            if (o.ref() == null || !o.ref().startsWith(mine) || !o.action().equals("BUY") || o.filled() <= 0) continue;
+            String sym = o.share().symbol();
+            bought.merge(sym, o.filled(), Math::max);
+            conIds.putIfAbsent(sym, o.share().conId());
+        }
+        Set<String> cands = new LinkedHashSet<>(map("pending").keySet());
+        cands.addAll(plans.keySet());
+        cands.addAll(bought.keySet());
+        for (String sym : cands) {
+            if (map("positions").containsKey(sym) || map("stopped").containsKey(sym) || todays.contains(sym)) continue;
+            Broker.Position p = held.get(sym);
+            if (p == null || p.qty() <= 0) continue;
+            Map<String, Object> plan = asMap(map("pending").get(sym));
+            if (plan.isEmpty()) plan = asMap(plans.get(sym));
+            long want = plan.get("conId") != null ? (long) num(plan.get("conId")) : conIds.getOrDefault(sym, 0);
+            if (want != 0 && p.share().conId() != 0 && want != p.share().conId()) continue;  // another share of the same symbol
+            if (plan.isEmpty() && !bought.containsKey(sym)) continue;
+            double cap = plan.get("qty") != null ? num(plan.get("qty")) : bought.getOrDefault(sym, 0.0);
+            double q = cap > 0 ? Math.min(p.qty(), cap) : p.qty();
+            double entry = p.avgCost() > 0 ? p.avgCost() : paid.getOrDefault(sym, 0.0) / Math.max(1e-9, bought.getOrDefault(sym, 0.0));
+            if (!(entry > 0)) {
+                lines.add(sym + ": IBKR holds it, bought by the book, but no price paid known: NOT RECORDED");
+                continue;
+            }
+            Map<String, Object> pos = position(p.share().conId(), q, entry, plan);
+            pos.put("adopted", today);
+            map("positions").put(sym, pos);
+            plans.remove(sym);
+            lines.add(sym + ": recorded: IBKR holds " + g(q) + " the book bought but had not recorded" + (plan.isEmpty() ? " (its plan lost: no stop until the strategy updates it)" : ""));
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void protect() {
         List<Object> execs = st.get("rebuyExecs") instanceof List ? (List<Object>) st.get("rebuyExecs") : new ArrayList<>();
@@ -310,6 +389,7 @@ final class Holds {
     String run(Map<String, Object> book) throws IOException {
         held = new LinkedHashMap<>();
         for (Broker.Position p : ib.positions()) if (p.qty() > 0) held.put(p.share().symbol(), p);
+        adopt();
         if (action.equals("protect")) protect();
         if (action.equals("place")) place(book == null ? new LinkedHashMap<>() : book);
         else if (action.equals("close")) close();
@@ -416,6 +496,7 @@ final class Holds {
         if (own < map("positions").size()) {
             lines.add((map("positions").size() - own) + " positions of an earlier book held (sold by their own rule); " + free + " of the book's " + slots + " slots free");
         }
+        if (book.get("days") instanceof Number) st.put("bookDays", ((Number) book.get("days")).longValue());
         Object os = book.get("orders");
         for (Object x : os instanceof List ? (List<Object>) os : List.of()) {
             Map<String, Object> o = asMap(x);
@@ -514,6 +595,9 @@ final class Holds {
                 plan.put("rebuyTrail", Boolean.TRUE.equals(o.get("rebuyTrail")));
             }
             map("pending").put(sym, plan);
+            Map<String, Object> kept = new LinkedHashMap<>(plan);
+            kept.put("placed", today);
+            map("plans").put(sym, kept);
             free--;
             lines.add(sym + ": buy " + (long) qty + " " + how + ": " + f.fate() + said(f.messages()));
         }
@@ -538,25 +622,10 @@ final class Holds {
             double q = e.getValue()[0], v = e.getValue()[1];
             if (today.equals(asMap(map("positions").get(sym)).get("since"))) continue;  // recorded by an earlier run today
             Map<String, Object> plan = asMap(pend.get(sym));
-            Map<String, Object> pos = new LinkedHashMap<>();
-            pos.put("conId", (long) gotShare.get(sym).conId());
-            pos.put("qty", q);
-            pos.put("entry", v / q);
-            pos.put("since", today);
-            pos.put("closes", 0L);
-            pos.put("exitAbove", plan.containsKey("exitAbove") && plan.get("exitAbove") == null ? null : (plan.get("exitAbove") == null ? 0.0 : num(plan.get("exitAbove"))));
-            pos.put("days", plan.get("days") == null || num(plan.get("days")) == 0 ? 5L : (long) num(plan.get("days")));
-            if (plan.get("stopPrice") != null) {
-                double lvl = num(plan.get("stopPrice"));
-                pos.put("stop", lvl < v / q ? lvl : 0.95 * v / q);
-                pos.put("scale", plan.get("scale") == null || num(plan.get("scale")) == 0 ? 1.0 : num(plan.get("scale")));
-            }
-            if (plan.get("rebuyStop") != null) {
-                pos.put("rebuyStop", plan.get("rebuyStop"));
-                pos.put("rebuyStopRel", plan.get("rebuyStopRel"));
-                pos.put("rebuyTrail", Boolean.TRUE.equals(plan.get("rebuyTrail")));
-            }
+            if (plan.isEmpty()) plan = asMap(map("plans").get(sym));
+            Map<String, Object> pos = position(gotShare.get(sym).conId(), q, v / q, plan);
             map("positions").put(sym, pos);
+            map("plans").remove(sym);
             lines.add(sym + ": bought " + g(q));
         }
         st.put("pending", new LinkedHashMap<>());
