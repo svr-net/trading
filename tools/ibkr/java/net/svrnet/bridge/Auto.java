@@ -878,17 +878,23 @@ final class Auto {
             GATEWAY.put("ok", ok);
             GATEWAY.put("checked", checked);
             GATEWAY.put("fails", hung ? (int) GATEWAY.get("fails") + 1 : 0);
-            if ((int) GATEWAY.get("fails") >= 3) {
+            // a closed port is the gateway starting, but not for 10 minutes: 24-25 Nov its port stayed closed from 22:38
+            // to 08:04 GMT after a restart (the login never finished) and nothing restarted it
+            int closed = !ok && !hung ? (int) GATEWAY.getOrDefault("closed", 0) + 1 : 0;
+            GATEWAY.put("closed", closed);
+            if ((int) GATEWAY.get("fails") >= 3 || closed >= 10) {
+                String what = closed >= 10 ? "IB Gateway's port closed for " + closed + " minutes" : "IB Gateway did not answer 3 times";
+                GATEWAY.put("closed", 0);
                 String note = restartGateway();
                 GATEWAY.put("fails", 0);
                 GATEWAY.put("restarts", (int) GATEWAY.get("restarts") + 1);
                 GATEWAY.put("restarted", checked);
                 GATEWAY.put("note", note);
                 synchronized (LAST) {
-                    LAST.add(0, new Action(checked, "IB", "gateway restart", note.contains("restarted"), "IB Gateway did not answer 3 times: " + note));
+                    LAST.add(0, new Action(checked, "IB", "gateway restart", note.contains("restarted") || note.contains("stopped"), what + ": " + note));
                     while (LAST.size() > 10) LAST.remove(LAST.size() - 1);
                 }
-                err("IB Gateway did not answer 3 times: " + note);
+                err(what + ": " + note);
                 beat("watchdog");
                 Recordings.sleep(240);
                 continue;
