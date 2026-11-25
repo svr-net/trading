@@ -1,5 +1,5 @@
 {
- "checked": "2026-11-24T17:39Z",
+ "checked": "2026-11-25T07:16Z",
  "reachable": true,
  "accepts": true,
  "refusal": null,
@@ -7,29 +7,29 @@
   "UK": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-24T17:14:30Z"
+   "at": "2026-11-24T21:16:38Z"
   },
   "EU": {
    "auto": true,
    "held": 3,
-   "at": "2026-11-24T17:14:31Z"
+   "at": "2026-11-24T21:16:38Z"
   },
   "US": {
    "auto": true,
-   "held": 5,
-   "at": "2026-11-24T17:39:32Z"
+   "held": 3,
+   "at": "2026-11-24T21:16:39Z"
   },
   "APAC": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-24T17:14:31Z"
+   "at": "2026-11-24T22:35:04Z"
   },
   "INDEX": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-24T17:14:31Z"
+   "at": "2026-11-24T21:16:39Z"
   }
  },
- "gateway": true,
+ "gateway": false,
  "accepted": "2026-11-22 18:34 GMT UK: test order accepted by IBKR (VOD, cancelled: true)"
 }
