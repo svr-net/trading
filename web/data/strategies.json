@@ -40,7 +40,7 @@
     "strategy": "momentum",
     "params": {
      "mc": 1,
-     "mcselect": 1,
+     "mcselect": 0,
      "mcnn": 1,
      "mcobj": 1,
      "mccandk": 2,
