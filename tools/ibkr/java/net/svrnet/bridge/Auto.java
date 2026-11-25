@@ -512,6 +512,10 @@ final class Auto {
                 Files.write(Path.of(CACHE, m + "-" + name + ".json"), body);
                 book = JsonParse.object(new String(body, StandardCharsets.UTF_8));
             }
+            if (!marketBuys(m)) {  // no new buys in this market: its book's updates only (stops moved, shares the strategy drops sold)
+                book = new LinkedHashMap<>(book);
+                book.put("orders", new ArrayList<>());
+            }
             return holds(m, "place", book);
         });
         return new Done(r.code() == 0 && !refused(r.out()), r.last());
@@ -882,8 +886,10 @@ final class Auto {
             // to 08:04 GMT after a restart (the login never finished) and nothing restarted it
             int closed = !ok && !hung ? (int) GATEWAY.getOrDefault("closed", 0) + 1 : 0;
             GATEWAY.put("closed", closed);
-            if ((int) GATEWAY.get("fails") >= 3 || closed >= 10) {
-                String what = closed >= 10 ? "IB Gateway's port closed for " + closed + " minutes" : "IB Gateway did not answer 3 times";
+            // a bars fetch slows the gateway's answers: 6 misses in a row then, not 3, before a restart
+            int most = BARS_RUNNING.isEmpty() ? 3 : 6;
+            if ((int) GATEWAY.get("fails") >= most || closed >= 10) {
+                String what = closed >= 10 ? "IB Gateway's port closed for " + closed + " minutes" : "IB Gateway did not answer " + most + " times";
                 GATEWAY.put("closed", 0);
                 String note = restartGateway();
                 GATEWAY.put("fails", 0);
@@ -905,6 +911,22 @@ final class Auto {
     }
 
     /** The repository's switch for the automatic buying (config/nas-buys.json), read every 5 minutes; a failed read keeps the last value. */
+    static volatile Set<String> buysOff;
+
+    /** Whether the market may buy (config/nas-buys.json's "markets": {"EU": false}): off, its book still updated (stops, exits). */
+    static boolean marketBuys(String m) {
+        buysOn();
+        if (buysOff == null) {
+            try {
+                String t = Files.readString(Path.of(HISTORY, "buys-off-markets")).strip();
+                buysOff = t.isEmpty() ? Set.of() : new TreeSet<>(List.of(t.split(",")));
+            } catch (IOException e) {
+                buysOff = Set.of();
+            }
+        }
+        return !buysOff.contains(m);
+    }
+
     static boolean buysOn() {
         Path keep = Path.of(HISTORY, "buys-on");
         if (buysOn == null) {
@@ -924,11 +946,18 @@ final class Auto {
                 c.setRequestProperty("Cache-Control", "no-cache");
                 if (c.getResponseCode() != 200) throw new IOException("HTTP Error " + c.getResponseCode());
                 boolean on;
+                Set<String> off = new TreeSet<>();
                 try (InputStream in = c.getInputStream()) {
-                    on = !Boolean.FALSE.equals(JsonParse.object(new String(in.readAllBytes(), StandardCharsets.UTF_8)).get("buys"));
+                    Map<String, Object> j = JsonParse.object(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+                    on = !Boolean.FALSE.equals(j.get("buys"));
+                    if (j.get("markets") instanceof Map)
+                        for (Map.Entry<?, ?> e : ((Map<?, ?>) j.get("markets")).entrySet()) if (Boolean.FALSE.equals(e.getValue())) off.add(String.valueOf(e.getKey()));
                 }
+                buysOff = off;
+                Files.createDirectories(Path.of(HISTORY));
+                Files.writeString(Path.of(HISTORY, "buys-off-markets"), String.join(",", off));
                 buysOn = on;
-                buysNote = (on ? "on" : "off") + " (config/nas-buys.json, read " + ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm z")) + ")";
+                buysNote = (on ? "on" : "off") + (off.isEmpty() ? "" : ", no new buys in " + String.join(", ", off)) + " (config/nas-buys.json, read " + ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm z")) + ")";
                 Files.createDirectories(Path.of(HISTORY));
                 Files.writeString(keep, on ? "1" : "0");
                 Mirror.changed();
@@ -979,7 +1008,13 @@ final class Auto {
         String place = TIMES.get(m)[0], close = TIMES.get(m)[1];
         boolean up = !Boolean.FALSE.equals(GATEWAY.get("ok"));
         if (BARS_DAILY && up && within(now, REPORT.get(m), 15, 360) && !isDone(m, "bars") && BARS_RUNNING.isEmpty() && !stepsPending() && mayTry(m, "bars", 20, 4))
-            job(m, "bars", mk -> fetchBars(mk, true), true);
+            job(m, "bars", mk -> {
+                // IBKR refusing the data (162: another session holds it) is not cured by asking again in 20 minutes: the
+                // day's daily fetch stops there (25 Nov: 4 refused fetches a market an evening, and the gateway hung twice)
+                Done d = fetchBars(mk, true);
+                if (!d.ok() && d.summary().contains("162:")) markDone(mk, "bars");
+                return d;
+            }, true);
         boolean session = between(now, at(now, place, -30), at(now, close, -15));
         if (up && session && !isDone(m, "leftovers") && mayTry(m, "leftovers", 5, 3)) job(m, "leftovers", Auto::sellLeftovers, true);
         long[] lt = ATTEMPTS.get(m + " leftovers " + day);
