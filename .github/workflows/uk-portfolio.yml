@@ -180,6 +180,9 @@ jobs:
           # The market's strategy (config/markets.json), run by the strategy engine: its orders are the ones the bridge places.
           ofm ofm_scan run --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
           grep -E "^strategies|^budget|^strategy:" report/strategies.log || true  # the strategy's headline in the log
+          # Day trades only (apps/ofm_day, research): bought at the open, sold at the close, before and after the costs.
+          SF=(); if [ "$MARKET" = UK ]; then SF=(--stamp-free tools/eoddata/aim.txt); fi
+          case "$MARKET" in UK|EU|US|APAC) ofm ofm_day --csv data/stocks.csv --market "$MARKET" --k 5,10 "${SF[@]}" | tee -a "$GITHUB_STEP_SUMMARY" || true;; esac
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The day's fundamentals (started above)
         if: ${{ always() }}

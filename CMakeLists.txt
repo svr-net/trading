@@ -33,6 +33,7 @@ endif()
 # (docs/adaptive-nested-mc.md): ofm_anmc --check; its differential network proxy (differential_proxy.hpp) on a basket,
 # ofm_anmc --basket 10 --check; the network's fused kernels (diffnet_gpu.hpp, diffnet_wgsl.hpp), ofm_anmc --kernels --check.
 add_executable(ofm_anmc apps/ofm_anmc.cpp)
+add_executable(ofm_day apps/ofm_day.cpp)
 target_include_directories(ofm_anmc PRIVATE include)
 target_link_libraries(ofm_anmc PRIVATE Threads::Threads)
 if(NOT MSVC)

@@ -37,8 +37,8 @@ RUN --mount=type=secret,id=ca,required=false \
  && apk add --no-cache libgit2 libcurl zlib libstdc++ ca-certificates
 # Made only when the checks passed (the check stage's mark).
 COPY --from=check /checked /etc/ofm-checked
-COPY --from=build /src/build/ofm_strategy /src/build/ofm_eod /src/build/ofm_scan /usr/local/bin/
+COPY --from=build /src/build/ofm_strategy /src/build/ofm_eod /src/build/ofm_scan /src/build/ofm_day /usr/local/bin/
 WORKDIR /work
 
 FROM scratch AS out
-COPY --from=build /src/build/ofm_strategy /src/build/ofm_eod /src/build/ofm_scan /
+COPY --from=build /src/build/ofm_strategy /src/build/ofm_eod /src/build/ofm_scan /src/build/ofm_day /
