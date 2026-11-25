@@ -610,6 +610,10 @@ int main(int argc, char** argv) {
   // strategy's mccand best (0: mccandk a slot) simulated on the same futures, the k with the most expected
   // log growth together kept (include/strategy/montecarlo.hpp: mcChoose). mcskip: the window ends that many
   // sessions before the reset (the futures drawn from [t0 - mcwindow, t0 - mcskip]).
+  P.emplace("scorepos", 0.0), P.emplace("mkttrend", 0.0);
+  // scorepos: only shares with a positive score (momentum's edge is in its winners: 25 Nov, live picks with negative 12-1
+  // returns). mkttrend N: no book while the market (its tradable shares' mean return, compounded) is below its N-day
+  // average (Faber 2007's trend filter; momentum's crashes follow falling markets: Daniel and Moskowitz 2016)
   P.emplace("mcselect", 0.0), P.emplace("mccand", 0.0), P.emplace("mccandk", 4.0), P.emplace("mcskip", 0.0);  // mccandk: candidates a slot when mccand is 0
   // mcnn: 1 overlays the differential neural network (include/strategy/neural.hpp) on the nested Monte Carlo: at
   // every reset each share's futures shaped (a drift and a volatility scale on its drawn real days) by what the
@@ -1100,12 +1104,35 @@ int main(int argc, char** argv) {
     prof.sample += clock() - c1;
   };
   const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
+  // mkttrend: the market's level (its mean daily return compounded) against its average over the last mktN days, at t
+  const std::size_t mktN = std::size_t(std::max(0.0, P["mkttrend"]));
+  std::vector<double> mktLevel;
+  if (mktN > 0) {
+    mktLevel.assign(d.T, 0.0);
+    double l = 0;
+    for (std::size_t u = 0; u < d.T; ++u) {
+      const double r = u < d.mkt.size() ? d.mkt[u] : NAN;
+      l += std::isfinite(r) ? r : 0.0;
+      mktLevel[u] = l;
+    }
+  }
+  std::size_t mktDownDays = 0;
+  const auto mktDown = [&](std::size_t t) {
+    if (t + 1 < mktN) return false;
+    double m = 0;
+    for (std::size_t u = t + 1 - mktN; u <= t; ++u) m += mktLevel[u];
+    const bool down = mktLevel[t] < m / double(mktN);
+    mktDownDays += down;
+    return down;
+  };
   const auto decide = [&](std::size_t t) {
     if ((t - start) % reb != 0 && t != start) return;
     std::vector<std::pair<double, std::size_t>> c;
     ranked(*strategy, P, t, c);
     of = c.size(), decided = t;
     target.clear();
+    if (P["scorepos"] > 0) c.erase(std::remove_if(c.begin(), c.end(), [](const auto& x) { return !(x.first > 0); }), c.end());
+    if (mktN > 0 && mktDown(t)) c.clear();
     if (!tripV.empty())
       for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(t, i);
     if (regK) {  // this cycle's reverse engineering: the market's states refitted up to t (warm from the last cycle)
