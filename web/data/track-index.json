@@ -1,5 +1,12 @@
 {
  "about": "Live record, only the days orders were made for: ret the model portfolio, day the daily trades (results only). Reset 22 Nov 2026: none of the earlier days was traded at IBKR.",
- "days": [],
- "ordered": "2026-11-23"
+ "days": [
+  {
+   "date": "2026-11-24",
+   "ret": -0.00898316,
+   "ordersAfter": "2026-11-23",
+   "day": -0.00898316
+  }
+ ],
+ "ordered": "2026-11-24"
 }
