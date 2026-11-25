@@ -31,7 +31,7 @@
           "mccost": 1,
           "adaptfine": 1,
           "rebuytrail": 0,
-          "psar": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
@@ -40,8 +40,7 @@
           "psarvoladapt": 1,
           "rebuystop": 0,
           "rebuystopadapt": 0,
-          "stopmedian": 0,
-          "stop": 0.2
+          "stopmedian": 0
         }
       },
       "shadows": [],
@@ -80,7 +79,7 @@
           "mcregimestop": 0,
           "mccost": 1,
           "adaptfine": 0,
-          "psar": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
@@ -89,7 +88,6 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
-          "stop": 0.2,
           "rebuytrail": 0
         }
       },
@@ -129,7 +127,7 @@
           "mcregimestop": 0,
           "mccost": 1,
           "adaptfine": 1,
-          "psar": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
@@ -139,7 +137,6 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
-          "stop": 0.2,
           "rebuytrail": 0
         }
       },
@@ -176,7 +173,7 @@
           "mcregimestop": 0,
           "mccost": 1,
           "adaptfine": 0,
-          "psar": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
@@ -185,7 +182,6 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
-          "stop": 0.2,
           "rebuytrail": 0
         }
       },
