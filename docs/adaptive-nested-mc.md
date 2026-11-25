@@ -266,3 +266,23 @@ move beyond their noise: the account's Sharpe UK 0.98 -> 0.96, EU 0.50 -> 0.48, 
 the synthetic markets' the same within 0.03, for 1.6 to 2.4 times the setting runs (the scan 2 to 6 minutes longer).
 The settings are learnt more exactly, but the stop's and buy-back's exact values matter little to the result: the race
 stays off in the live models.
+
+## Review: the simulation's choice against the plain top k (25 Nov 2026)
+
+After the first live days the momentum books held shares with weak or negative 12-1 momentum (ranks 15-20 of the
+candidates, chosen by the simulation from the top 2k). Each market's scan was run with its live settings (V0) and
+with `mcselect 0` (V1, the strategy's own top k; stops, sizing and the rest unchanged), on the same data. Sharpe on
+the real market / on 5 synthetic markets drawn from it:
+
+| market | V0 (simulation chooses) | V1 (top k) |
+|---|---|---|
+| US | 0.97 / 0.85 | 0.83 / 1.19 |
+| APAC | 0.85 / 0.70 | 1.06 / 1.18 |
+| UK | 1.05 / 0.40 | 0.73 / 0.65 |
+| EU | 0.20 / 0.30 | 0.23 / 0.41 |
+
+The simulation's choice fits the real history and loses on the markets it never saw: the plain top k is the better
+bet in every market. `scorepos` (positive scores only) changed nothing with the top k. `mkttrend 200` (no book
+below the market's 200-day average) cut the real drawdowns (the US 37% -> 26%) and the synthetic Sharpe with them.
+Live since: UK, US and APAC `mcselect 0`; EU places no new buys (config/nas-buys.json), no variant showing an edge
+after costs (0.04-0.20).
