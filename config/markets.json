@@ -6,7 +6,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mkttrend": 200,
           "mc": 1,
           "mcselect": 1,
           "mcnn": 1,
@@ -40,7 +39,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mkttrend": 200,
           "mc": 1,
           "mcselect": 1,
           "mcnn": 1,
@@ -73,7 +71,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mkttrend": 200,
           "mc": 1,
           "mcselect": 1,
           "mcnn": 1,
@@ -107,7 +104,6 @@
         "name": "momentum",
         "strategy": "momentum",
         "params": {
-          "mkttrend": 200,
           "mc": 1,
           "mcselect": 1,
           "mcnn": 1,
