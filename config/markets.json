@@ -2,15 +2,7 @@
   "about": "Each market's strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy. 'live' makes the orders the bridge places. A strategy: name (lowercase, digits, -), strategy (one of the engine's injectable strategies, strategies/*.cpp: momentum, trend, lowvol, reversal; ofm_strategy --list), optional params ({name: number}, overriding the strategy's defaults), optional backend (the compute back end, backends/*.cpp: threads or serial), optional only (\"aim\": the UK's AIM shares only), optional args. Every market's params turn on the nested Monte Carlo with the differential neural overlay choosing the book (mc, mcselect, mcnn, mcobj, mccandk), every strategy injected into it (mcpool: each one's scores the network's inputs, each one's best among the candidates), the network learning every week from the bars realised since (mcnnstep; apps/ofm_strategy). Every position has a stop at IBKR: the volatility-adjusted Parabolic SAR (psar, psarvol: it starts that many times the share's daily volatility under the price paid and never comes closer than that under the close; slow steps, psarstep 0.01, psarmax 0.1), its multiple learnt for each share at every reset by the nested Monte Carlo where psarvoladapt is set; a share bought only when its stop would start no wider than the median of that day's candidates (stopmedian: the day's own threshold, nothing fixed); its buy-back coupled to the stop at IBKR (rebuystop: a buy stop over the level the stop sold at, attached to the stop as its child, so it works only once the stop has sold; bought back while the strategy still wants the share), the buy-back's distance learnt for each share at every reset (rebuystopadapt: 0.5% to 5%, the most expected log growth on its simulated futures; on 19 Nov's backtest it beat learning it together with the stop band by the most probable best, stopjoint and mcprob, in UK, EU, US and APAC), and the slot a stop frees goes to the simulation's next choice meanwhile (refill). Every stop is learnt and backtested as it fills at the broker (stopslip 0.1: sold a tenth of the share's daily volatility under its level, or the open through a gap), so a stop and its buy-back are never free; in the UK the multiple is learnt between 2 and 6 daily volatilities and no stop is wider than 15% (stopmultlo, stopmulthi, stopmax: with the fills priced, 1 to 10 ran to 10, no stop at all; 22 Nov's scan: Sharpe 0.92 -> 1.00). In the UK and the US each share's stop is the most probable stop-loss (stopmae 0.9): the band 90% of its winning simulated futures never dip to, from their maximum adverse excursion (22 Nov: UK Sharpe 1.00 -> 1.07, US 0.81 -> 0.80 with the drawdown 49% -> 44%); EU, APAC and INDEX keep their fixed bands (learnt so, their Sharpe fell to 0.19, 0.67 and 0.47). In EU, the US and APAC each buy is a day limit order at its limit (entryday: it joins the opening auction and works the whole session, so an order the open misses can still fill; an unfilled order is a lost trade): 23 Nov's scans, Sharpe US 0.80 -> 1.10, APAC 1.12 -> 1.19, EU 0.45 -> 0.48; the UK's buys stay in the opening auction only (there the day's later fills were the falling shares': 1.07 -> 0.76). In EU a slot stays in cash when no candidate left is worth more than 0 on the simulated futures (mccash; 23 Nov: Sharpe 0.48 -> 0.54, max drawdown 31% -> 28%; elsewhere it did not help: APAC 1.19 -> 1.08). The engine learns and backtests before any cost; the broker's costs come off the final order list only. Changing a market's strategy is a change to this file, reviewed in a pull request. A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions, T/k each, and keeps the k whose year before was best, chosen day by day. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets, each market's share following its record. \"paper\": true gives every market at least a small share whatever its record.",
   "markets": {
     "UK": {
-      "live": {
-        "args": [
-          "--resample-runs",
-          "5",
-          "--account",
-          "config/account.json",
-          "--pricing",
-          "tiered"
-        ],
+      "live": {"args": ["--resample-runs", "5", "--account", "config/account.json", "--pricing", "tiered"], 
         "name": "momentum",
         "strategy": "momentum",
         "params": {
@@ -20,28 +12,17 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 2,
-          "stopslip": 0.1,
-          "stopmae": 0.9,
-          "stopmultlo": 2,
-          "stopmulthi": 6,
-          "stopmax": 0.15,
-          "mcregimestop": 0,
-          "mccost": 1,
-          "adaptfine": 1,
-          "rebuytrail": 0,
-          "psar": 0,
+          "mcnnstep": 5, "mcregime": 2, "stopslip": 0.1, "stopmae": 0.9, "stopmultlo": 2, "stopmulthi": 6, "stopmax": 0.15, "mcregimestop": 0, "mccost": 1, "adaptfine": 1, "rebuytrail": 1,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
           "psarvoladapt": 1,
-          "rebuystop": 0,
-          "rebuystopadapt": 0,
-          "stopmedian": 0,
-          "stop": 0.2
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopmedian": 0
         }
       },
       "shadows": [],
@@ -54,15 +35,7 @@
       }
     },
     "EU": {
-      "live": {
-        "args": [
-          "--resample-runs",
-          "5",
-          "--account",
-          "config/account.json",
-          "--pricing",
-          "tiered"
-        ],
+      "live": {"args": ["--resample-runs", "5", "--account", "config/account.json", "--pricing", "tiered"], 
         "name": "momentum",
         "strategy": "momentum",
         "params": {
@@ -72,25 +45,16 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 3,
-          "stopslip": 0.1,
-          "mccash": 1,
-          "entryday": 1,
-          "mcregimestop": 0,
-          "mccost": 1,
-          "adaptfine": 0,
-          "psar": 0,
+          "mcnnstep": 5, "mcregime": 3, "stopslip": 0.1, "mccash": 1, "entryday": 1, "mcregimestop": 0, "mccost": 1, "adaptfine": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 5,
-          "rebuystop": 0,
-          "rebuystopadapt": 0,
-          "stopmedian": 1,
-          "stop": 0.2,
-          "rebuytrail": 0
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopmedian": 1
         }
       },
       "shadows": [],
@@ -103,15 +67,7 @@
       }
     },
     "US": {
-      "live": {
-        "args": [
-          "--resample-runs",
-          "5",
-          "--account",
-          "config/account.json",
-          "--pricing",
-          "tiered"
-        ],
+      "live": {"args": ["--resample-runs", "5", "--account", "config/account.json", "--pricing", "tiered"], 
         "name": "momentum",
         "strategy": "momentum",
         "params": {
@@ -121,26 +77,17 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 0,
-          "stopslip": 0.1,
-          "entryday": 1,
-          "stopmae": 0.9,
-          "mcregimestop": 0,
-          "mccost": 1,
-          "adaptfine": 1,
-          "psar": 0,
+          "mcnnstep": 5, "mcregime": 0, "stopslip": 0.1, "entryday": 1, "stopmae": 0.9, "mcregimestop": 0, "mccost": 1, "adaptfine": 1,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
           "psarvoladapt": 1,
-          "rebuystop": 0,
-          "rebuystopadapt": 0,
-          "stopmedian": 1,
-          "stop": 0.2,
-          "rebuytrail": 0
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopmedian": 1
         }
       },
       "shadows": [],
@@ -153,13 +100,7 @@
       }
     },
     "APAC": {
-      "live": {
-        "args": [
-          "--resample-runs",
-          "5",
-          "--account",
-          "config/account.json"
-        ],
+      "live": {"args": ["--resample-runs", "5", "--account", "config/account.json"], 
         "name": "momentum",
         "strategy": "momentum",
         "params": {
@@ -169,24 +110,16 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 2,
-          "stopslip": 0.1,
-          "entryday": 1,
-          "mcregimestop": 0,
-          "mccost": 1,
-          "adaptfine": 0,
-          "psar": 0,
+          "mcnnstep": 5, "mcregime": 2, "stopslip": 0.1, "entryday": 1, "mcregimestop": 0, "mccost": 1, "adaptfine": 0,
+          "psar": 1,
           "rebuy": 0,
           "refill": 1,
           "psarstep": 0.01,
           "psarmax": 0.1,
           "psarvol": 3,
-          "rebuystop": 0,
-          "rebuystopadapt": 0,
-          "stopmedian": 1,
-          "stop": 0.2,
-          "rebuytrail": 0
+          "rebuystop": 0.01,
+          "rebuystopadapt": 1,
+          "stopmedian": 1
         }
       },
       "shadows": [],
@@ -199,15 +132,7 @@
       }
     },
     "INDEX": {
-      "live": {
-        "args": [
-          "--resample-runs",
-          "5",
-          "--account",
-          "config/account.json",
-          "--pricing",
-          "tiered"
-        ],
+      "live": {"args": ["--resample-runs", "5", "--account", "config/account.json", "--pricing", "tiered"], 
         "name": "trend",
         "strategy": "trend",
         "params": {
@@ -217,12 +142,7 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 0,
-          "stopslip": 0.1,
-          "mcregimestop": 0,
-          "mccost": 0,
-          "adaptfine": 1,
+          "mcnnstep": 5, "mcregime": 0, "stopslip": 0.1, "mcregimestop": 0, "mccost": 0, "adaptfine": 1,
           "psar": 1,
           "rebuy": 0,
           "refill": 1,
@@ -249,9 +169,7 @@
         "strategy": "trend",
         "args": [
           "--capital",
-          "25000",
-          "--resample-runs",
-          "5"
+          "25000", "--resample-runs", "5"
         ],
         "params": {
           "mc": 1,
@@ -260,12 +178,7 @@
           "mcobj": 1,
           "mccandk": 2,
           "mcpool": 1,
-          "mcnnstep": 5,
-          "mcregime": 0,
-          "stopslip": 0.1,
-          "mcregimestop": 0,
-          "mccost": 0,
-          "adaptfine": 0,
+          "mcnnstep": 5, "mcregime": 0, "stopslip": 0.1, "mcregimestop": 0, "mccost": 0, "adaptfine": 0,
           "psar": 1,
           "rebuy": 0,
           "refill": 1,
@@ -286,9 +199,6 @@
     "paper": true,
     "reserve": 12000,
     "paper_floor": 0.15,
-    "paper_floors": {
-      "US": 0.3,
-      "UK": 0.1
-    }
+    "paper_floors": {"US": 0.3, "UK": 0.1}
   }
 }
