@@ -40,7 +40,8 @@
           "psarvoladapt": 1,
           "rebuystop": 0,
           "rebuystopadapt": 0,
-          "stopmedian": 0
+          "stopmedian": 0,
+          "stop": 0.2
         }
       },
       "shadows": [],
@@ -88,6 +89,7 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
+          "stop": 0.2,
           "rebuytrail": 0
         }
       },
@@ -137,6 +139,7 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
+          "stop": 0.2,
           "rebuytrail": 0
         }
       },
@@ -182,6 +185,7 @@
           "rebuystop": 0,
           "rebuystopadapt": 0,
           "stopmedian": 1,
+          "stop": 0.2,
           "rebuytrail": 0
         }
       },
