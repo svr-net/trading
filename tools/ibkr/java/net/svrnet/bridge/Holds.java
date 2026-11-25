@@ -572,7 +572,10 @@ final class Holds {
                     continue;
                 }
                 scale = sc;
-                Broker.Ticks t = ib.ticks(c2);
+                // the buy goes to c (SMART when that is where IBKR found it): its price on that venue's ticks
+                // (25 Nov: VUSA's limit on Xetra's ticks, refused at SMART with 110), else the exit's
+                Broker.Ticks tb = c.exchange() != null && !c.exchange().equals(c2.exchange()) ? ib.ticks(c) : null;
+                Broker.Ticks t = tb != null ? tb : ib.ticks(c2);
                 double lim = roundTo(num(o.get("limit")) * scale, t.at(num(o.get("limit")) * scale), "down");
                 if (openEntry && Boolean.TRUE.equals(o.get("entryDay"))) {  // entryDay: the auction, then the whole session, at most its limit
                     order = Broker.NewOrder.of("BUY", "LMT", qty, lim, 0, ref, "DAY");

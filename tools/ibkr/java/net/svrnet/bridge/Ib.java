@@ -217,6 +217,15 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
             List<ContractDetails> d = details(s);
             Map<Integer, Contract> byId = new LinkedHashMap<>();
             for (ContractDetails x : d) byId.putIfAbsent(x.contract().conid(), x.contract());
+            if (byId.size() > 1 && s.primaryExchange() != null && !s.primaryExchange().isEmpty()) {
+                // several listings: the one whose primary is the exchange asked for, when exactly one is (EUNL, 25 Nov)
+                Map<Integer, Contract> on = new LinkedHashMap<>();
+                for (ContractDetails x : d) {
+                    String pe = x.contract().primaryExch();
+                    if (s.primaryExchange().equals(pe)) on.putIfAbsent(x.contract().conid(), x.contract());
+                }
+                if (on.size() == 1) byId = on;
+            }
             if (byId.size() != 1) return null;
             Contract c = byId.values().iterator().next();
             Share q = share(c);
