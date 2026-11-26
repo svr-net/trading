@@ -3,41 +3,21 @@
  "markets": {
   "eu": [
    {
-    "name": "momentum",
+    "name": "breakout",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "breakout",
     "params": {
      "mc": 1,
-     "mcselect": 1,
      "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 3,
-     "stopslip": 0.1,
-     "mccash": 1,
-     "entryday": 1,
-     "mcregimestop": 0,
-     "mccost": 1,
-     "adaptfine": 0,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 5,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "mcnnstep": 5
     }
    }
   ],
   "uk": [
    {
-    "name": "momentum",
+    "name": "hvp",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "hvp",
     "params": {
      "mc": 1,
      "mcselect": 0,
@@ -46,6 +26,9 @@
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcreuse": 0.1,
+     "mcprune": 2,
+     "mcprunepaths": 128,
      "mcregime": 2,
      "stopslip": 0.1,
      "stopmae": 0.9,
@@ -71,9 +54,9 @@
   ],
   "us": [
    {
-    "name": "momentum",
+    "name": "rsi2",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "rsi2",
     "params": {
      "mc": 1,
      "mcselect": 0,
@@ -82,6 +65,9 @@
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcreuse": 0.1,
+     "mcprune": 2,
+     "mcprunepaths": 128,
      "mcregime": 0,
      "stopslip": 0.1,
      "entryday": 1,
@@ -104,17 +90,18 @@
   ],
   "apac": [
    {
-    "name": "momentum",
+    "name": "ibs",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "ibs",
     "params": {
      "mc": 1,
-     "mcselect": 1,
+     "mcselect": 0,
      "mcnn": 1,
      "mcobj": 1,
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcreuse": 0.1,
      "mcregime": 2,
      "stopslip": 0.1,
      "entryday": 1,
@@ -135,9 +122,9 @@
   ],
   "forex": [
    {
-    "name": "trend",
+    "name": "rsi2",
     "role": "live",
-    "strategy": "trend",
+    "strategy": "rsi2",
     "params": {
      "mc": 1,
      "mcselect": 1,
@@ -146,6 +133,7 @@
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcreuse": 0.1,
      "mcregime": 0,
      "stopslip": 0.1,
      "mcregimestop": 0,
@@ -165,9 +153,9 @@
   ],
   "index": [
    {
-    "name": "trend",
+    "name": "tom",
     "role": "live",
-    "strategy": "trend",
+    "strategy": "tom",
     "params": {
      "mc": 1,
      "mcselect": 1,
@@ -176,6 +164,7 @@
      "mccandk": 2,
      "mcpool": 1,
      "mcnnstep": 5,
+     "mcreuse": 0.1,
      "mcregime": 0,
      "stopslip": 0.1,
      "mcregimestop": 0,
