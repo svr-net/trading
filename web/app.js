@@ -144,7 +144,7 @@ function render(r, source) {
       const how = o.stopMode === 'trail' ? ' trailing' : o.stopMode === 'breakeven' && o.breakeven != null ? `, to 0 once ${pct(o.breakeven, 1)}` : '';
       if (levels) row.push([o.stop == null ? 'none' : pct(o.stop, 1) + (o.stopKind === 'psar' ? ' PSAR' : how), o.stop == null ? 'num' : 'num neg']);
       if (levels && !stopOnly) row.push([o.take == null ? 'none' : pct(o.take, 1), o.take == null ? 'num' : 'num pos']);
-      if (holds) row.push(o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
+      if (holds) row.push(o.intraday ? [sameDaySale(o), 'num'] : o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos']);  // short enough for a phone: the notes say what it means
       // The buy-back's price from the buy price: rebuy of the way from the stop back up to it.
       if (rebuys) row.push(o.rebuy === true ? (o.rebuyTrail && o.rebuyStop != null ? [`${pct(o.rebuyStop, 1).slice(1)} off the low`, 'num'] : o.rebuyAt != null ? [`${o.rebuyStop != null ? '≥' : '>'} ${pct(o.rebuyAt, 1)}`, 'num'] : ['SAR turns up', 'num']) : o.rebuy > 0 && o.stop != null ? [pct(o.stop * (1 - o.rebuy), 1), 'num neg'] : ['none', 'num']);
       if (chances) row.push([o.fill == null ? '–' : `${Math.round(100 * o.fill)}%`, 'num opt']);
@@ -175,8 +175,12 @@ function render(r, source) {
     hint.dataset.base ??= hint.innerHTML;
     hint.innerHTML = r.model === 'strategy'
       ? `<b>${esc(r.strategy)}</b>: ${esc(r.about || '')}. The list was made at the rebalance after the close of ${r.decided}; the book holds ${r.slots} positions. `
-        + '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is tried again the next morning. '
-        + '<b>Sell at</b>: <i>when dropped</i>, at the open of the morning after the strategy leaves it out of its list. '
+        + (r.orders.some((o) => o.intraday)
+          ? '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there lapses. '
+            + '<b>Sell at</b>: the same day, nothing held overnight: <b>TP</b> a take-profit limit this far above the last close and <b>SL</b> a stop-loss this far under it, '
+            + 'placed at IBKR with the buy and working once it fills, one cancelling the other; whatever is left is sold in the closing auction (<i>close</i>). '
+          : '<b>Buy at open</b>: in the opening auction only, paying at most this far above the last close; an order that does not buy there is tried again the next morning. '
+            + '<b>Sell at</b>: <i>when dropped</i>, at the open of the morning after the strategy leaves it out of its list. ')
         + (r.orders.some((o) => o.stopKind === 'psar') ? '<b>Stop</b>: a Parabolic SAR stop at IBKR (good till cancelled), from the lows before the buy and rising each day with the price; after a stop the share is bought back once its SAR turns up again, while the strategy still wants it. ' : '')
         + (r.orders.some((o) => o.stopKind === 'psar-vol') ? '<b>Stop</b>: a Parabolic SAR stop at IBKR (good till cancelled), starting this far under the price paid (a multiple of the share\'s daily volatility) and rising with the price. ' : '')
         + (r.orders.some((o) => o.rebuyTrail) ? '<b>Buy-back</b>: attached to the stop at IBKR, working only once the stop has sold: a trailing buy order that follows the price down and buys this far off the lowest price after the stop, so it buys at the turn, under the price the stop sold at once the share fell further, while the strategy still wants it. '
@@ -305,10 +309,17 @@ const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // The pop-up's top: the order's facts, why the strategy holds it (apps/ofm_strategy: the strategy's own reason,
 // from the rebalance that made the list), and its expected return: before costs, what the strategy's past trades
 // at the same place on the list made; its costs, applied at the end; and that times its chance to buy.
+// An intraday order's sale (intraday: 1): its take-profit and stop-loss from the last close, else the closing auction.
+function sameDaySale(o) {
+  const parts = [];
+  if (o.takeRel != null) parts.push(`TP ${pct(o.takeRel, 1)}`);
+  if (o.stopRel != null) parts.push(`SL ${pct(o.stopRel, 1)}`);
+  return (parts.length ? parts.join(' · ') + ' · ' : '') + 'close';
+}
 function chartWhy(o) {
   const facts = [
     ['Expected after costs', signed(o.expected, 2)[0]], ['Chance to buy', o.fill != null ? `${Math.round(100 * o.fill)}%` : '–'],
-    ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Sell', o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : 'when dropped'],
+    ['Buy cap', o.limit != null ? `≤ ${pct(o.limit, 1)}` : '–'], ['Sell', o.intraday ? sameDaySale(o) : o.exitAbove != null ? `${pct(o.exitAbove, 2)}, ≤ ${o.days} d` : 'when dropped'],
     ['Daily move', o.sigma ? pct(o.sigma, 1).slice(1) : '–'], ['Rank', o.rank ? `${o.rank} of ${o.of}` : '–'],
   ];
   if (o.stop != null) facts.splice(4, 0, ['Stop', `${pct(o.stop, 1)}${o.stopKind === 'psar' ? ' (PSAR)' : ''}`]);
@@ -878,7 +889,10 @@ $('lab-run').addEventListener('click', async () => {
     table($('lab-orders'), [['Share'], ['Buy at open', 'num'], ['Sell at', 'num'], ['Expected', 'num']],
       n ? data.orders.orders.map((o) => {
         const last = o.close, cap = o.limit / last - 1;
-        return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'], signed(o.expected, 2)];
+        const sale = o.bracketTake != null || o.bracketStop != null || o.days === 1
+          ? [sameDaySale({ takeRel: o.bracketTake != null ? o.bracketTake / last - 1 : null, stopRel: o.bracketStop != null ? o.bracketStop / last - 1 : null }), 'num']
+          : o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'];
+        return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], sale, signed(o.expected, 2)];
       }) : [{ gap: 'No orders: none expected to gain after its costs.' }]);
     $('lab-log').textContent = data.log.filter((l) => /^strategy: /.test(l)).join('\n'), $('lab-log').hidden = false;
   };

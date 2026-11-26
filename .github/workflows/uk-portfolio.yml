@@ -44,10 +44,12 @@ jobs:
         market: ${{ fromJSON(github.event_name == 'schedule' && (github.event.schedule == '0 19 * * 1-5' && '["UK"]' || github.event.schedule == '0 10 * * 1-5' && '["APAC"]' || github.event.schedule == '30 18 * * 1-5' && '["EU","INDEX"]' || (github.event.schedule == '30 21 * * 1-5' || github.event.schedule == '30 5 * * 1-5') && '["UK","EU","INDEX"]' || '["US","FOREX"]') || (inputs.market == 'UK' && '["UK"]' || inputs.market == 'US' && '["US"]' || inputs.market == 'APAC' && '["APAC"]' || inputs.market == 'EU' && '["EU"]' || inputs.market == 'INDEX' && '["INDEX"]' || inputs.market == 'FOREX' && '["FOREX"]' || '["UK","EU","US","APAC","INDEX","FOREX"]')) }}
     env:
       MARKET: ${{ matrix.market }}
-      # EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
+      # EU: Amsterdam and Frankfurt/Xetra only, the venues without a transaction tax (26 Nov, intraday: Paris's FTT and the
+      # Belgian, Spanish and Portuguese taxes made every order a loss after costs; AMS+FRA: Sharpe 1.66 against 1.26, the
+      # round trip 0.12% against 0.86%). EU without Oslo (no trading permission at IBKR). Amsterdam back (5 Nov, the live setting with IBKR's
       # fills and costs, 8-year walk-forward): 8.4% a year, Sharpe 1.38 -> 18.2%, Sharpe 1.71.
       # INDEX: UCITS index ETFs on Xetra (tools/eoddata/index.txt; with Europe's scans); FOREX: currency pairs (forex.txt; research only).
-      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'PAR,AMS,BRU,LIS,MSE,FRA' || matrix.market == 'INDEX' && 'FRA' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
+      EXCHANGES: ${{ matrix.market == 'US' && (inputs.us_exchanges || 'NYSE,NASDAQ') || matrix.market == 'APAC' && 'ASX,SGX' || matrix.market == 'EU' && 'AMS,FRA' || matrix.market == 'INDEX' && 'FRA' || matrix.market == 'FOREX' && 'FOREX' || 'LSE' }}
     steps:
       - uses: actions/checkout@v4
       # The native tools (docker/native/Dockerfile, Alpine): the strategy engine, the loaders and the scan, in C++.
