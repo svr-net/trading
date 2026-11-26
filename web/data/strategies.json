@@ -8,13 +8,9 @@
     "strategy": "breakout",
     "params": {
      "intraday": 1,
-     "mc": 1,
-     "mcnn": 1,
-     "mcnnstep": 5,
-     "bracketadapt": 1,
-     "bracketobj": 3,
-     "stopslip": 0.1,
-     "mcreuse": 0.1
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
@@ -29,7 +25,6 @@
      "mcnn": 1,
      "mcnnstep": 5,
      "bracketadapt": 1,
-     "bracketobj": 3,
      "stopslip": 0.1,
      "mcreuse": 0.1
     }
@@ -42,13 +37,9 @@
     "strategy": "tom",
     "params": {
      "intraday": 1,
-     "mc": 1,
-     "mcnn": 1,
-     "mcnnstep": 5,
-     "bracketadapt": 1,
-     "bracketobj": 3,
-     "stopslip": 0.1,
-     "mcreuse": 0.1
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
@@ -59,13 +50,9 @@
     "strategy": "rsi2",
     "params": {
      "intraday": 1,
-     "mc": 1,
-     "mcnn": 1,
-     "mcnnstep": 5,
-     "bracketadapt": 1,
-     "bracketobj": 3,
-     "stopslip": 0.1,
-     "mcreuse": 0.1
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
@@ -76,13 +63,9 @@
     "strategy": "rsi2",
     "params": {
      "intraday": 1,
-     "mc": 1,
-     "mcnn": 1,
-     "mcnnstep": 5,
-     "bracketadapt": 1,
-     "bracketobj": 3,
-     "stopslip": 0.1,
-     "mcreuse": 0.1
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
@@ -93,13 +76,9 @@
     "strategy": "tom",
     "params": {
      "intraday": 1,
-     "mc": 1,
-     "mcnn": 1,
-     "mcnnstep": 5,
-     "bracketadapt": 1,
-     "bracketobj": 3,
-     "stopslip": 0.1,
-     "mcreuse": 0.1
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ]

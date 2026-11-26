@@ -1,5 +1,5 @@
 {
-  "about": "Each market's live strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy; 'live' makes the orders the bridge places. Trading is intraday (26 Nov 2026): every share is bought in the opening auction and sold the same day, nothing held overnight (intraday: 1; the bridge: days 1, sold market-on-close at its first close). Each buy carries a bracket at IBKR, a take-profit limit and a stop-loss, one cancelling the other, both fixed from the decision's close when the order is made (the backtest uses the same prices; a day touching both counts the stop): in every market each trade's two levels are learnt on its own simulated futures as any value (bracketadapt, with the nested Monte Carlo and its network: mc, mcnn), and the objective they are learnt by (the expected growth, the Sortino ratio, or the mean over the expected shortfall) is itself learnt walk-forward from the real days, the one whose brackets did best so far (bracketobj 3); nothing is fixed by hand (26 Nov). stopslip: a stop sells a tenth of a daily volatility under its level. Strategies (strategies/*.cpp, daily signals; ofm_strategy --list): UK hvp (AIM only: no stamp duty), EU breakout, US tom, APAC rsi2, INDEX tom, FOREX rsi2 (research only), each the best open-to-close of the seven on the store's bars. The engine learns and backtests before any cost; the broker's costs come off the final order list only, and the scan sizes the final orders to their costs (budget.fit_costs). A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions and keeps the k whose year before was best. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets. \"paper\": true gives every market at least a small share.",
+  "about": "Each market's live strategy for the daily scan (apps/ofm_scan), run by the strategy engine apps/ofm_strategy; 'live' makes the orders the bridge places. Trading is intraday (26 Nov 2026): every share is bought in the opening auction and sold the same day, nothing held overnight (intraday: 1; the bridge: days 1, sold market-on-close at its first close). Each buy carries a bracket at IBKR, a take-profit limit and a stop-loss, one cancelling the other, both fixed from the decision's close when the order is made (the backtest uses the same prices; a day touching both counts the stop): in the UK each trade's two levels are learnt on its own simulated futures, any value (bracketadapt, with the nested Monte Carlo and its network: mc, mcnn; Sharpe 2.25 against 1.98 for the best fixed bracket, AIM, 5 positions, before costs); elsewhere a take-profit 1.5 daily volatilities over the close and a stop 4 under it (takesd, stopsd; adaptive there did worse: EU 1.12 against 1.26, US 0.24 against 0.26, APAC 0.76 against 0.76). stopslip: a stop sells a tenth of a daily volatility under its level. Strategies (strategies/*.cpp, daily signals; ofm_strategy --list): UK hvp (AIM only: no stamp duty), EU breakout, US tom, APAC rsi2, INDEX tom, FOREX rsi2 (research only), each the best open-to-close of the seven on the store's bars. The engine learns and backtests before any cost; the broker's costs come off the final order list only, and the scan sizes the final orders to their costs (budget.fit_costs). A market's budget ({\"total\": T, \"slots\": [k, ...]}) runs the live strategy once for each book of k positions and keeps the k whose year before was best. The account ({\"daily_max\": D, \"currency\": \"EUR\"}): at most D across the markets. \"paper\": true gives every market at least a small share.",
   "markets": {
     "UK": {
       "live": {
@@ -20,7 +20,6 @@
           "mcnn": 1,
           "mcnnstep": 5,
           "bracketadapt": 1,
-          "bracketobj": 3,
           "stopslip": 0.1,
           "mcreuse": 0.1
         }
@@ -48,13 +47,9 @@
         "strategy": "breakout",
         "params": {
           "intraday": 1,
-          "mc": 1,
-          "mcnn": 1,
-          "mcnnstep": 5,
-          "bracketadapt": 1,
-          "bracketobj": 3,
-          "stopslip": 0.1,
-          "mcreuse": 0.1
+          "takesd": 1.5,
+          "stopsd": 4,
+          "stopslip": 0.1
         }
       },
       "shadows": [],
@@ -80,13 +75,9 @@
         "strategy": "tom",
         "params": {
           "intraday": 1,
-          "mc": 1,
-          "mcnn": 1,
-          "mcnnstep": 5,
-          "bracketadapt": 1,
-          "bracketobj": 3,
-          "stopslip": 0.1,
-          "mcreuse": 0.1
+          "takesd": 1.5,
+          "stopsd": 4,
+          "stopslip": 0.1
         }
       },
       "shadows": [],
@@ -110,13 +101,9 @@
         "strategy": "rsi2",
         "params": {
           "intraday": 1,
-          "mc": 1,
-          "mcnn": 1,
-          "mcnnstep": 5,
-          "bracketadapt": 1,
-          "bracketobj": 3,
-          "stopslip": 0.1,
-          "mcreuse": 0.1
+          "takesd": 1.5,
+          "stopsd": 4,
+          "stopslip": 0.1
         }
       },
       "shadows": [],
@@ -142,13 +129,9 @@
         "strategy": "tom",
         "params": {
           "intraday": 1,
-          "mc": 1,
-          "mcnn": 1,
-          "mcnnstep": 5,
-          "bracketadapt": 1,
-          "bracketobj": 3,
-          "stopslip": 0.1,
-          "mcreuse": 0.1
+          "takesd": 1.5,
+          "stopsd": 4,
+          "stopslip": 0.1
         }
       },
       "shadows": [],
@@ -172,13 +155,9 @@
         ],
         "params": {
           "intraday": 1,
-          "mc": 1,
-          "mcnn": 1,
-          "mcnnstep": 5,
-          "bracketadapt": 1,
-          "bracketobj": 3,
-          "stopslip": 0.1,
-          "mcreuse": 0.1
+          "takesd": 1.5,
+          "stopsd": 4,
+          "stopslip": 0.1
         }
       },
       "shadows": []
