@@ -38,8 +38,8 @@ check() {
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
     || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
   # intraday (bought in the opening auction, sold the same day, a take-profit working): no look-ahead
-  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --trace "$W/$s-id.tr" > "$W/$s-id.out"
-  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --trace "$W/$s-id-cut.tr" > /dev/null
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --param stopsd=4 --trace "$W/$s-id.tr" > "$W/$s-id.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --param stopsd=4 --trace "$W/$s-id-cut.tr" > /dev/null
   ni=$(wc -l < "$W/$s-id-cut.tr")
   head -n "$ni" "$W/$s-id.tr" | cmp -s - "$W/$s-id-cut.tr" || { echo "FAIL: $s intraday: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "intraday: every share bought" "$W/$s-id.out" || { cat "$W/$s-id.out"; echo "FAIL: $s: the intraday book did not run"; exit 1; }
@@ -114,6 +114,17 @@ check() {
   head -n "$na" "$W/$s-ad-$first.tr" | cmp -s - "$W/$s-ad-cut.tr" || { echo "FAIL: $s with the adaptive Monte Carlo: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "viability pilots" "$W/$s-ad-$first.out" && grep -q "learnt again only where" "$W/$s-ad-$first.out" && grep -q "adaptive refits" "$W/$s-ad-$first.out" \
     || { cat "$W/$s-ad-$first.out"; echo "FAIL: $s: the adaptive Monte Carlo did not run"; exit 1; }
+  # intraday with each trade's bracket learnt on its futures (bracketadapt): the same on every back end, no look-ahead
+  BA="--param intraday=1 --param mc=1 --param mcnn=1 --param mcnnstep=5 --param mcpaths=100 --param bracketadapt=1 --param stopslip=0.1 --param mcreuse=0.1"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $BA --json "$W/$s-ba-$b.json" --trace "$W/$s-ba-$b.tr" > "$W/$s-ba-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-ba-$b.json" > "$W/$s-ba-$b.cmp"
+    cmp -s "$W/$s-ba-$first.cmp" "$W/$s-ba-$b.cmp" || { echo "FAIL: $s: the learnt brackets differ between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $BA --trace "$W/$s-ba-cut.tr" > /dev/null
+  nb=$(wc -l < "$W/$s-ba-cut.tr")
+  head -n "$nb" "$W/$s-ba-$first.tr" | cmp -s - "$W/$s-ba-cut.tr" || { echo "FAIL: $s with the learnt brackets: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "bracket learnt for each trade" "$W/$s-ba-$first.out" || { cat "$W/$s-ba-$first.out"; echo "FAIL: $s: the brackets were not learnt"; exit 1; }
   # a synthetic market drawn from the real one (--resample): the same for a seed and on every back end, another for another seed
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --resample 3 --json "$W/$s-rs-$b.json" > /dev/null

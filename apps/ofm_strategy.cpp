@@ -28,6 +28,7 @@
 // private store only), X_TRADELOG every order of the backtest and its .days the daily results (the budget's
 // split), --trace each day's orders (the look-ahead check: a run on fewer days must give the same lines).
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -692,7 +693,7 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -729,8 +730,8 @@ int main(int argc, char** argv) {
   // same day (the bridge: days 1, sold at its first close, market-on-close); nothing is held overnight, so the book
   // starts every day empty and the rebalance is daily.
   const bool flatDaily = P["intraday"] > 0;
-  const double takeSd = P["takesd"];
-  std::size_t nTakes = 0;
+  const double takeSd = P["takesd"], stopSd = P["stopsd"];
+  std::size_t nTakes = 0, nStopsDay = 0;
   if (flatDaily) P["rebalance"] = 1, P["maxdays"] = 1;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
   if (T < warm + 30) usage("too few days for the strategy's warm-up");
@@ -921,6 +922,24 @@ int main(int argc, char** argv) {
     const double s = d.sigma[t * N + i];
     return std::min(capMax, capSd * (std::isfinite(s) ? s : 0.02));
   };
+  // The intraday bracket's levels for a buy decided at t's close (0: none): the take-profit takesd daily volatilities
+  // over the close, at least the buy's limit; the stop stopsd under it.
+  // bracketadapt: each trade's own multiples, learnt at its reset on its simulated futures (any value; 0: none), in
+  // place of takesd and stopsd.
+  const bool bracketAdapt = flatDaily && P["bracketadapt"] > 0;
+  std::map<std::size_t, double> takeMult, stopMult;
+  std::map<std::size_t, std::array<double, 4>> bracketStat;  // the learnt bracket's mean, 5%, 95% and chance of a loss
+  std::vector<double> bracketTakes, bracketStops;            // every multiple learnt (the report's spread)
+  const auto takeMultOf = [&](std::size_t i) { const auto it = takeMult.find(i); return it != takeMult.end() ? it->second : takeSd; };
+  const auto stopMultOf = [&](std::size_t i) { const auto it = stopMult.find(i); return it != stopMult.end() ? it->second : stopSd; };
+  const auto takeOf = [&](std::size_t t, std::size_t i) {
+    const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], a = takeMultOf(i);
+    return a > 0 && s > 0 && c > 0 ? std::max(c * (1 + capOf(t, i)), c * (1 + a * s)) : 0.0;
+  };
+  const auto stopOf = [&](std::size_t t, std::size_t i) {
+    const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], b = stopMultOf(i);
+    return b > 0 && s > 0 && c > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
+  };
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
   mc.bandMin = stopMin, mc.bandMax = stopMax, mc.slip = stopSlip;
@@ -1008,6 +1027,8 @@ int main(int argc, char** argv) {
   };
   if (!(P["stopmultlo"] > 0 && P["stopmultlo"] < P["stopmulthi"])) usage("stopmultlo must be above 0 and under stopmulthi");
   const std::vector<double> vFine = logGrid(P["stopmultlo"], P["stopmulthi"], 13), rbFine = logGrid(0.0025, 0.10, 13);
+  // bracketadapt's grids, in daily volatilities: the take-profit 0.5 to 5, the stop 1 to 8 (each also none)
+  const std::vector<double> bGridA = logGrid(0.5, 5.0, 13), bGridB = logGrid(1.0, 8.0, 11);
   std::vector<double> vPicks, rbPicks;  // adaptfine: every value learnt (the report's spread)
   const std::vector<std::pair<double, double>> sarGrid{{0.005, 0.1}, {0.01, 0.1}, {0.02, 0.1}, {0.03, 0.1}, {0.005, 0.2}, {0.01, 0.2}, {0.02, 0.2}, {0.03, 0.2}};
   std::map<std::pair<double, double>, std::size_t> sarChosen;
@@ -1642,6 +1663,68 @@ int main(int argc, char** argv) {
         }
       }
     }
+    if (bracketAdapt && mcOn) {  // bracketadapt: each trade's take-profit and stop learnt on its own simulated futures
+      const std::size_t A = bGridA.size() + 1, B = bGridB.size() + 1, Pn = mc.paths;  // the last of each: none
+      for (std::size_t j = 0; j < target.size(); ++j) {
+        const std::size_t i = target[j];
+        const double sg = d.sigma[t * N + i], cap = capOf(t, i);
+        if (!(sg > 0)) continue;
+        const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu[j]), scale = sc[j];
+        if (takeMult.count(i) && !stale(t, i, adj, scale)) continue;  // mcreuse: nothing observed has moved
+        std::vector<double> g(A * B * Pn, 0.0);
+        strat::McTable tab;
+        strat::mcTable(d, t, i, scale, mc, tab);
+        const double slip = stopSlip > 0 ? 1 - stopSlip * sg : 1.0;
+        backend->parallelFor(Pn, [&](std::size_t a0, std::size_t e0) {
+          std::vector<std::size_t> days;
+          std::vector<double> pre;
+          strat::McPath path;
+          for (std::size_t q = a0; q < e0; ++q) {
+            strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
+            strat::mcRatios(d, i, days, scale, pre, &tab);
+            strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);
+            if (path.b.size() < 8) continue;  // no bar the first day: no trade (0)
+            const double c0 = path.b[0], O = path.b[1], H = path.b[2], Lw = path.b[3], C = path.b[4], lim = c0 * (1 + cap);
+            if (!(c0 > 0 && O > 0 && O <= lim && C > 0)) continue;  // not bought under its limit: no trade (0)
+            for (std::size_t a = 0; a < A; ++a) {
+              const double tk = a + 1 < A ? std::max(lim, c0 * (1 + bGridA[a] * sg)) : 1e300;
+              for (std::size_t b = 0; b < B; ++b) {
+                const double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
+                const double X = sl > 0 && Lw <= sl ? std::min(sl, O) * slip : H >= tk ? std::max(tk, O) : C;
+                g[(a * B + b) * Pn + q] = std::log(std::max(1e-6, X / O));
+              }
+            }
+          }
+        });
+        std::vector<double> mean(A * B, 0.0);
+        for (std::size_t x = 0; x < A * B; ++x) {
+          double m = 0;
+          for (std::size_t q = 0; q < Pn; ++q) m += g[x * Pn + q];
+          mean[x] = m / double(Pn);
+        }
+        std::size_t best = 0;
+        for (std::size_t x = 1; x < A * B; ++x)
+          if (mean[x] > mean[best] + 1e-15) best = x;
+        const std::size_t ba = best / B, bb = best % B;
+        double ta = 0, tb = 0;  // the fractional multiples (0: none), each refined along its own axis at the other's best
+        if (ba + 1 < A) {
+          std::vector<double> curve(A - 1);
+          for (std::size_t a = 0; a + 1 < A; ++a) curve[a] = mean[a * B + bb];
+          ta = fineArgmax(bGridA, curve);
+        }
+        if (bb + 1 < B) {
+          std::vector<double> curve(B - 1);
+          for (std::size_t b = 0; b + 1 < B; ++b) curve[b] = mean[ba * B + b];
+          tb = fineArgmax(bGridB, curve);
+        }
+        takeMult[i] = ta, stopMult[i] = tb;
+        bracketTakes.push_back(ta), bracketStops.push_back(tb);
+        std::vector<double> r(Pn);
+        double m = 0, loss = 0;
+        for (std::size_t q = 0; q < Pn; ++q) r[q] = std::exp(g[best * Pn + q]) - 1, m += r[q], loss += r[q] < 0;
+        bracketStat[i] = {m / double(Pn), strat::mcQuantile(r, 0.05), strat::mcQuantile(r, 0.95), loss / double(Pn)};
+      }
+    }
     prof.adapt += clock() - ca;
     resetMu.push_back(mu), resetSc.push_back(sc);
   };
@@ -1793,10 +1876,16 @@ int main(int argc, char** argv) {
         } else if (flatDaily) {  // sold in the day's closing auction: flat overnight
           // takesd: a take-profit limit takesd daily volatilities over the price paid, working through the day: sold
           // there once the day's high reaches it, else in the closing auction.
-          const double sg = d.sigma[t * N + i], tk = takeSd > 0 && sg > 0 ? E * (1 + takeSd * sg) : 0.0, Hi = d.H[u * N + i];
-          const bool took = tk > 0 && Hi >= tk;
-          const double X = took ? tk : C > 0 ? C : E;
-          nTakes += took;
+          // takesd and stopsd: the bracket at IBKR, both levels fixed from the decision's close when the order is made
+          // (so the bridge places the very prices the backtest uses): a take-profit limit takesd daily volatilities
+          // over it (at least the buy's limit) and a stop stopsd under it, working through the day; sold at the first
+          // touched, else in the closing auction. A day that touched both counts the stop (a daily bar does not say
+          // which came first). A stop the open is already through sells at the open (with the stop's slip).
+          const double Hi = d.H[u * N + i];
+          const double tk = takeOf(t, i), sl = stopOf(t, i);
+          double X = C > 0 ? C : E;
+          if (sl > 0 && Lo > 0 && Lo <= sl) X = std::min(sl, E) * slipAt(u, i), ++nStopsDay;
+          else if (tk > 0 && Hi >= tk) X = std::max(tk, E), ++nTakes;
           day += X / E - 1;
           r.exit = X, r.ret = X / E - 1, r.closed = true, r.days = 0;
           done.push_back(rows.size());
@@ -1956,6 +2045,8 @@ int main(int argc, char** argv) {
       for (std::size_t p = 0; p < mc.paths; ++p) m += v[p], loss += v[p] < 0, st += rr.stop[j * mc.paths + p];
       x.gross = m / double(mc.paths), x.pLoss = loss / double(mc.paths), x.pStop = st / double(mc.paths);
       x.p5 = strat::mcQuantile(v, 0.05), x.p95 = strat::mcQuantile(v, 0.95);
+      const auto bs = bracketStat.find(x.i);  // bracketadapt: on the same futures under the trade's own bracket
+      if (bracketAdapt && bs != bracketStat.end()) x.gross = bs->second[0], x.p5 = bs->second[1], x.p95 = bs->second[2], x.pLoss = bs->second[3];
     }
     double m = 0, loss = 0;
     for (double b : rr.book) m += b, loss += b < 0;
@@ -2088,9 +2179,17 @@ int main(int argc, char** argv) {
                 nRebuys, 100 * annualNet, sharpeNet, P["mccost"] > 0 ? " (the stops and buy-backs learnt net of them: mccost)" : "");
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
               rows.empty() ? 0.0 : 100 * nFilled / double(rows.size()), nFilled ? 100 * sumTrade / nFilled : 0.0, nFilled ? 100 * nWin / nFilled : 0.0, learnt.holdDays(double(reb)));
+  const auto bracketSpread = [](std::vector<double> v) {  // the median and the 10-90% range
+    std::sort(v.begin(), v.end());
+    const auto at = [&](double q) { return jnum(v[std::size_t(q * double(v.size() - 1))], "%.2f"); };
+    return "median " + at(0.5) + " (10-90%: " + at(0.1) + " to " + at(0.9) + ")";
+  };
+  if (bracketAdapt && !bracketTakes.empty())
+    std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
+                bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
   if (flatDaily)
     std::printf("strategy:   intraday: every share bought in the opening auction and sold the same day (%s); nothing held overnight\n",
-                takeSd > 0 ? (std::to_string(nTakes) + " at a take-profit " + jnum(takeSd) + " daily volatilities over the price paid, the rest in the closing auction").c_str() : "in the closing auction");
+                (takeSd > 0 || stopSd > 0 || bracketAdapt) ? (std::to_string(nTakes) + " at the take-profit, " + std::to_string(nStopsDay) + " at the stop-loss, the rest in the closing auction").c_str() : "in the closing auction");
   if (mcOn) {
     std::printf("strategy: nested Monte Carlo: %.0f resets on the real market, %zu futures of %zu sessions each (blocks of %zu real days from the %zu before); "
                 "the real book fell in the simulated 5-95%% band %.0f%% of the time (90%% if honest), at percentile %.0f on average (50 if honest); "
@@ -2327,6 +2426,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"open\":true,\"limit\":" << jnum(x.limit)
+        << ",\"bracketTake\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i)) : "null") << ",\"bracketStop\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i)) : "null")
         << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i, !x.held)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)

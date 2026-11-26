@@ -134,6 +134,41 @@ one, McConnell and Xu's 31 of 35 countries). FOREX takes `rsi2` (research only; 
 `hvp` and `volrev` cannot run). Picking the best of seven on the same data overstates what to expect: the
 research figures and the opposite-picks gap are the better guide.
 
+## Intraday trading with a bracket (26 Nov 2026)
+
+Every market now trades within the day (`intraday: 1`). Each share is bought in the opening auction and sold the same
+day, and nothing is held overnight. The bridge sells it market-on-close at its first close (`days: 1`).
+
+**The bracket.** Each buy carries a take-profit limit and a stop-loss at IBKR, as children of the buy. They work only
+once it fills, and one cancels the other; whatever is left is cancelled before the closing auction's sale.
+- **Levels:** both are fixed from the decision day's close when the order is made, so the backtest and the bridge use
+  the same prices.
+- **Both touched:** a day that touched both levels counts the stop, since a daily bar doesn't say which came first.
+- **Settings:**
+  - `takesd` and `stopsd`: fixed levels, in daily volatilities over and under the close.
+  - `bracketadapt`: each trade's own levels, learnt at its reset on its simulated futures as any value.
+    - **Grid:** the take-profit from 0.5 to 5 volatilities and the stop from 1 to 8, each also "none".
+    - **Choice:** the pair with the most expected log growth, refined between grid points.
+    - **Orders:** each order's expected return and range come from its futures under its own bracket.
+
+**Open-to-close, on the store's bars, 5 positions, before costs (Sharpe):**
+
+| Market (strategy) | Close only | Take-profit 1.5σ | Take-profit 1.5σ, stop 4σ | Bracket learnt per trade |
+|---|---|---|---|---|
+| UK, AIM (`hvp`) | 1.07 | 1.98 | 1.82 | **2.25** (+48.7% a year) |
+| EU (`breakout`) | 1.22 | 1.60 | **1.26** | 1.12 |
+| US (`tom`) | 0.32 | 0.32 | **0.26** | 0.24 |
+| APAC (`rsi2`) | 0.70 | 0.91 | **0.76** | 0.76 |
+
+- **What's live:** the UK learns each trade's bracket. The other markets take a profit at 1.5σ with a stop at 4σ.
+- **Stops cost Sharpe everywhere.** Same-day noise trips them and the share then often recovers by the close. They
+  are kept as a cap on the day's loss.
+- **The overnight edge is lost.** Most short-horizon effects come overnight, and an intraday book gives them up. The
+  US has almost no same-day edge.
+- **UK fills may be optimistic.** The UK's take-profit gain relies on intraday highs of thin AIM shares, so its fills
+  may be better in the backtest than live.
+- **The learnt levels:** take-profits at a median 0.9 to 1.6σ over the close, stops wide at a median 4 to 6σ.
+
 ## The adaptive Monte Carlo for daily strategies (26 Nov 2026)
 
 With daily strategies, the nested Monte Carlo resets every session: 2,072 resets in the UK backtest instead of

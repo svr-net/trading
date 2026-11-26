@@ -595,7 +595,32 @@ final class Holds {
                 order = Broker.NewOrder.of("BUY", "MKT", qty, 0, 0, ref, "DAY");
                 how = "in the opening auction";
             }
-            int id = ib.place(c, order);
+            // The intraday bracket (bracketTake, bracketStop: the engine's levels, fixed from the decision's close): the buy
+            // as the parent (not transmitted yet), then a take-profit limit and a stop, day orders, children of it; the last
+            // transmits all three. IBKR works the children only once the buy fills, and one filling cancels the other
+            // (a bracket's children are one-cancels-other). Their reference starts with the stops' (cancelStops), so the
+            // close cancels what is left before the market-on-close sale.
+            boolean bracket = has(o, "bracketTake") || has(o, "bracketStop");
+            int id;
+            if (bracket) {
+                Broker.Share cx = ib.exitShare(c);
+                Broker.Ticks tt = ib.ticks(cx != null ? cx : c);
+                id = ib.place(c, order.child(0, false));
+                boolean hasStop = has(o, "bracketStop") && num(o.get("bracketStop")) > 0;
+                if (has(o, "bracketTake") && num(o.get("bracketTake")) > 0) {
+                    double tk = num(o.get("bracketTake")) * scale;
+                    ib.place(c, Broker.NewOrder.of("SELL", "LMT", qty, roundTo(tk, tt.at(tk), "up"), 0, stopRef + "T-" + today, "DAY").child(id, !hasStop));
+                    how += "; a take-profit at " + g(roundTo(tk, tt.at(tk), "up"));
+                }
+                if (hasStop) {
+                    double sl = num(o.get("bracketStop")) * scale;
+                    ib.place(c, Broker.NewOrder.of("SELL", "STP", qty, 0, roundTo(sl, tt.at(sl), "down"), stopRef + "L-" + today, "DAY").child(id, true));
+                    how += "; a stop-loss at " + g(roundTo(sl, tt.at(sl), "down"));
+                }
+                how += " (a bracket: one cancels the other; the rest sold in the closing auction)";
+            } else {
+                id = ib.place(c, order);
+            }
             Broker.Fate f = ib.fate(id, 20);
             if (f.fate().equals("dead") && "GTD".equals(order.tif()) && f.messages().stream().anyMatch(m -> m.contains("GTD") || m.toLowerCase(Locale.ROOT).contains("time in force") || m.contains("TIF"))) {
                 f = ib.fate(ib.place(c, Broker.NewOrder.of("BUY", "LMT", qty, order.limit(), 0, ref, "DAY")), 20);
