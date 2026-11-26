@@ -698,7 +698,7 @@ int main(int argc, char** argv) {
   // and largest step learnt walk-forward for the market (each pair scored on every real trade day so far; the best
   // record places the next day's orders): in a rising SAR the stop at its next level, the take-profit as far over
   // the close; in a falling SAR the take-profit at its next level, the stop as far under the close.
-  P.emplace("psarbracket", 0.0), P.emplace("combobracket", 0.0);
+  P.emplace("psarbracket", 0.0), P.emplace("combobracket", 0.0), P.emplace("bracketopen", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -2131,8 +2131,11 @@ int main(int argc, char** argv) {
           // touched, else in the closing auction. A day that touched both counts the stop (a daily bar does not say
           // which came first). A stop the open is already through sells at the open (with the stop's slip).
           const double Hi = d.H[u * N + i];
-          const double tk = takeOf(t, i);
-          const double sl = stopOf(t, i);
+          // bracketopen: the levels moved with the open (each the same fraction from the price paid as from the
+          // decision's close): the bridge re-prices the bracket once the buy fills
+          const double sh = P["bracketopen"] > 0 && d.Cf[t * N + i] > 0 ? E / d.Cf[t * N + i] : 1.0;
+          const double tk = takeOf(t, i) * sh;
+          const double sl = stopOf(t, i) * sh;
           if (bracketObj == 3 && objCand.count(i) && C > 0) {  // every objective's bracket on this real day (known at its close)
             const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i], lim = c0 * (1 + capOf(t, i));
             for (int ob = 0; ob < 3; ++ob) {
@@ -2161,10 +2164,10 @@ int main(int argc, char** argv) {
             std::vector<double> xs(nStop), xt(nTake);
             std::vector<char> hs(nStop);
             for (std::size_t a = 0; a < nStop; ++a) {
-              const double lv = f.stop[a];
+              const double lv = f.stop[a] * sh;
               hs[a] = lv > 0 && Lo > 0 && Lo <= lv, xs[a] = std::min(lv, E) * slipAt(u, i);
             }
-            for (std::size_t a = 0; a < nTake; ++a) xt[a] = f.take[a] > 0 && Hi >= f.take[a] ? std::max(f.take[a], E) : C;
+            for (std::size_t a = 0; a < nTake; ++a) xt[a] = f.take[a] > 0 && Hi >= f.take[a] * sh ? std::max(f.take[a] * sh, E) : C;
             for (std::size_t a = 0; a < nTake; ++a)
               for (std::size_t b = 0; b < nStop; ++b) {
                 const double y = std::log(std::max(1e-6, (hs[b] ? xs[b] : xt[a]) / E));
