@@ -14,7 +14,11 @@ cut=$(tail -n +2 "$W/full.csv" | cut -d, -f1 | sort -u | tail -n 120 | head -n 1
 awk -F, -v c="$cut" 'NR == 1 || $1 < c' "$W/full.csv" > "$W/cut.csv"
 names=$("$BIN" --list | awk '/^strategies:/ { s = 1; next } /^back ends:/ { s = 0 } s { print $1 }')
 backs=$("$BIN" --list | awk '/^back ends:/ { s = 1; next } s { print $1 }')
-for s in $names; do
+# Each strategy's checks in its own process, all strategies at once (their files are their own: $W/<strategy>-...): half
+# the runs use the one-thread back end, so one after another left most of the CPU idle. Each strategy's report is
+# printed in the strategies' order once all have finished; any failure fails the check.
+check() {
+  s=$1
   first=""
   for b in $backs; do
     X_TRADELOG="$W/$s-$b.log" "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --json "$W/$s-$b.json" --orders "$W/$s-$b.orders" --trace "$W/$s-$b.tr" > "$W/$s-$b.out"
@@ -106,4 +110,13 @@ for s in $names; do
          and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
     || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
   echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back, $nn with the neural Monte Carlo choosing); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+}
+pids=""
+for s in $names; do
+  ( check "$s" ) > "$W/$s.report" 2>&1 &
+  pids="$pids $!"
 done
+fail=0
+for p in $pids; do wait "$p" || fail=1; done
+for s in $names; do cat "$W/$s.report"; done
+[ "$fail" -eq 0 ] || { echo "FAIL: a strategy's checks failed (above)"; exit 1; }
