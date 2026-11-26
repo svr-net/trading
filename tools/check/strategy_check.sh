@@ -14,6 +14,7 @@ cut=$(tail -n +2 "$W/full.csv" | cut -d, -f1 | sort -u | tail -n 120 | head -n 1
 awk -F, -v c="$cut" 'NR == 1 || $1 < c' "$W/full.csv" > "$W/cut.csv"
 names=$("$BIN" --list | awk '/^strategies:/ { s = 1; next } /^back ends:/ { s = 0 } s { print $1 }')
 backs=$("$BIN" --list | awk '/^back ends:/ { s = 1; next } s { print $1 }')
+HEAVY=${HEAVY:-rsi2}
 # Each strategy's checks in its own process, all strategies at once (their files are their own: $W/<strategy>-...): half
 # the runs use the one-thread back end, so one after another left most of the CPU idle. Each strategy's report is
 # printed in the strategies' order once all have finished; any failure fails the check.
@@ -32,6 +33,22 @@ check() {
   n=$(wc -l < "$W/$s-cut.tr")
   [ "$n" -gt 10 ] || { echo "FAIL: $s: only $n orders on the shorter market"; exit 1; }
   head -n "$n" "$W/$s-$first.tr" | cmp -s - "$W/$s-cut.tr" || { echo "FAIL: $s: an order changed with later data (look-ahead)"; exit 1; }
+  jq -e '.costs.net == false and .costs.atEnd == true
+         and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
+         and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
+    || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
+  # intraday (bought in the opening auction, sold the same day, a take-profit working): no look-ahead
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --trace "$W/$s-id.tr" > "$W/$s-id.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --trace "$W/$s-id-cut.tr" > /dev/null
+  ni=$(wc -l < "$W/$s-id-cut.tr")
+  head -n "$ni" "$W/$s-id.tr" | cmp -s - "$W/$s-id-cut.tr" || { echo "FAIL: $s intraday: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "intraday: every share bought" "$W/$s-id.out" || { cat "$W/$s-id.out"; echo "FAIL: $s: the intraday book did not run"; exit 1; }
+  # The Monte Carlo, the network, the stops and the market's states are the engine's own code, the same whatever the
+  # strategy: checked once, with one strategy ($HEAVY); every strategy gets the checks above.
+  if [ "$s" != "$HEAVY" ]; then
+    echo "strategy $s: $n orders unchanged by later data (and intraday); the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+    return 0
+  fi
   # the nested Monte Carlo: the same on every back end (counter-based draws), with the trailing buy-back learnt for each share
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --param psarvol=3 --param rebuystop=0.01 --param rebuystopadapt=1 --param rebuytrail=1 --param mc=1 --param mcpaths=200 --json "$W/$s-mc-$b.json" > "$W/$s-mc-$b.out"
@@ -105,18 +122,24 @@ check() {
   done
   "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --resample 4 --json "$W/$s-rs4.json" > /dev/null
   [ "$(jq -c '.backtest | del(.resample)' "$W/$s-rs-$first.json")" != "$(jq -c '.backtest | del(.resample)' "$W/$s-rs4.json")" ] || { echo "FAIL: $s: two seeds drew the same market"; exit 1; }
-  jq -e '.costs.net == false and .costs.atEnd == true
-         and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
-         and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
-    || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
   echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back, $nn with the neural Monte Carlo choosing); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
 }
+# At most half the CPUs' worth of strategies at once (a run on the threads back end uses every CPU and spin-waits:
+# more only oversubscribed the runner).
+jobs=$(( $(nproc 2>/dev/null || echo 2) / 2 )); [ "$jobs" -ge 1 ] || jobs=1
+fail=0
+running=0
 pids=""
 for s in $names; do
   ( check "$s" ) > "$W/$s.report" 2>&1 &
   pids="$pids $!"
+  running=$((running + 1))
+  if [ "$running" -ge "$jobs" ]; then
+    for p in $pids; do wait "$p" || fail=1; done
+    pids=""
+    running=0
+  fi
 done
-fail=0
 for p in $pids; do wait "$p" || fail=1; done
 for s in $names; do cat "$W/$s.report"; done
 [ "$fail" -eq 0 ] || { echo "FAIL: a strategy's checks failed (above)"; exit 1; }

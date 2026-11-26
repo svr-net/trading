@@ -692,7 +692,7 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -725,6 +725,13 @@ int main(int argc, char** argv) {
   }
   if (std::getenv("X_PROFILE")) std::fprintf(stderr, "profile: reading %.2fs, the panel %.2fs, repairs %.2fs\n", ld1 - ld0, ld2 - ld1, now() - ld2);
   const std::size_t T = d.T, N = d.N, k = o.slots;
+  // intraday: 1 trades within the day: every share bought in the opening auction is sold in the closing auction the
+  // same day (the bridge: days 1, sold at its first close, market-on-close); nothing is held overnight, so the book
+  // starts every day empty and the rebalance is daily.
+  const bool flatDaily = P["intraday"] > 0;
+  const double takeSd = P["takesd"];
+  std::size_t nTakes = 0;
+  if (flatDaily) P["rebalance"] = 1, P["maxdays"] = 1;
   const std::size_t reb = std::max<std::size_t>(1, std::size_t(P["rebalance"])), warm = std::size_t(P["warmup"]), maxDays = std::size_t(P["maxdays"]);
   if (T < warm + 30) usage("too few days for the strategy's warm-up");
 
@@ -1783,6 +1790,16 @@ int main(int argc, char** argv) {
           stoppedAt[i] = stoppedFrom(p, px, i, u), ++nStops;
           done.push_back(rows.size());
           if (rbStop && C >= stoppedAt[i].trigger) sameDayBack.push_back(i);  // after this row is in
+        } else if (flatDaily) {  // sold in the day's closing auction: flat overnight
+          // takesd: a take-profit limit takesd daily volatilities over the price paid, working through the day: sold
+          // there once the day's high reaches it, else in the closing auction.
+          const double sg = d.sigma[t * N + i], tk = takeSd > 0 && sg > 0 ? E * (1 + takeSd * sg) : 0.0, Hi = d.H[u * N + i];
+          const bool took = tk > 0 && Hi >= tk;
+          const double X = took ? tk : C > 0 ? C : E;
+          nTakes += took;
+          day += X / E - 1;
+          r.exit = X, r.ret = X / E - 1, r.closed = true, r.days = 0;
+          done.push_back(rows.size());
         } else {
           day += p.mark / E - 1;
           book[i] = p;
@@ -2071,6 +2088,9 @@ int main(int argc, char** argv) {
                 nRebuys, 100 * annualNet, sharpeNet, P["mccost"] > 0 ? " (the stops and buy-backs learnt net of them: mccost)" : "");
   std::printf("strategy:   %zu orders, %.0f bought (%.0f%%); a trade on average %+.2f%% before costs, %.0f%% gained, held %.1f sessions\n", rows.size(), nFilled,
               rows.empty() ? 0.0 : 100 * nFilled / double(rows.size()), nFilled ? 100 * sumTrade / nFilled : 0.0, nFilled ? 100 * nWin / nFilled : 0.0, learnt.holdDays(double(reb)));
+  if (flatDaily)
+    std::printf("strategy:   intraday: every share bought in the opening auction and sold the same day (%s); nothing held overnight\n",
+                takeSd > 0 ? (std::to_string(nTakes) + " at a take-profit " + jnum(takeSd) + " daily volatilities over the price paid, the rest in the closing auction").c_str() : "in the closing auction");
   if (mcOn) {
     std::printf("strategy: nested Monte Carlo: %.0f resets on the real market, %zu futures of %zu sessions each (blocks of %zu real days from the %zu before); "
                 "the real book fell in the simulated 5-95%% band %.0f%% of the time (90%% if honest), at percentile %.0f on average (50 if honest); "
