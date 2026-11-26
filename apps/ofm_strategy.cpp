@@ -1131,7 +1131,7 @@ int main(int argc, char** argv) {
   const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
   const bool nnAdaptive = nnStep > reb;
   const std::size_t nnEvery = nnAdaptive ? nnStep : reb;
-  std::size_t lastTrain = SIZE_MAX, nnTrainings = 0, nnDrifted = 0, nnSkipped = 0;
+  std::size_t lastTrain = SIZE_MAX, nnTrainings = 0, nnDrifted = 0, nnSkipped = 0, idleResets = 0;
   const auto trainNow = [&](std::size_t t) {
     if (!nnAdaptive || lastTrain == SIZE_MAX || !net.trained || t >= lastTrain + nnStep) return true;
     double a = 0, b = 0, n = 0;
@@ -1156,11 +1156,22 @@ int main(int argc, char** argv) {
     if (P["mcnnsample"] <= 0 && (t - start) % nnEvery != 0) return;
     features(t);
     const double c1 = clock();
+    // Resets more often than mcnnstep: the network learns only from the shares worth a forecast, those a strategy
+    // scores that day (the live one, and with mcpool each injected one's best 2k): its shapes are asked for no others,
+    // and the rest only crowded its window and its training time.
+    std::vector<char> worthy;
+    if (nnAdaptive) {
+      worthy.assign(N, 0);
+      for (std::size_t i = 0; i < N && i < score.size(); ++i) worthy[i] = std::isfinite(score[i]);
+      for (const auto& pr : poolRanked)
+        for (std::size_t r = 0; r < std::min(pr.size(), 2 * k); ++r) worthy[pr[r].second] = 1;
+      for (const auto& [i, pos] : book) worthy[i] = 1;
+    }
     {  // each share's sample in parallel, then kept in the shares' order
       std::vector<strat::NnSample> got(N);
       std::vector<char> has(N, 0);
       backend->parallelFor(N, [&](std::size_t a, std::size_t e) {
-        for (std::size_t i = a; i < e; ++i) has[i] = nnOk[i] && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, got[i]);
+        for (std::size_t i = a; i < e; ++i) has[i] = nnOk[i] && (worthy.empty() || worthy[i]) && strat::nnSample(d, t, i, &nnF[i * strat::kNF], mc, got[i]);
       });
       for (std::size_t i = 0; i < N; ++i)
         if (has[i]) nnSamples.push_back(got[i]);
@@ -1196,6 +1207,14 @@ int main(int argc, char** argv) {
     target.clear();
     if (P["scorepos"] > 0) c.erase(std::remove_if(c.begin(), c.end(), [](const auto& x) { return !(x.first > 0); }), c.end());
     if (mktN > 0 && mktDown(t)) c.clear();
+    // Early stop of the whole reset (resets more often than mcnnstep, the book chosen from the live strategy's list):
+    // no candidate and nothing held, so nothing to decide and nothing to stop; the market's states, the network and
+    // the simulation are not run for the day.
+    if (nnAdaptive && !mcSelect && c.empty() && book.empty()) {
+      ++idleResets;
+      resets.emplace_back(t, target), resetMu.emplace_back(), resetSc.emplace_back();
+      return;
+    }
     if (!tripV.empty())
       for (std::size_t i = 0; i < N; ++i) tripV[i] = tripOf(t, i);
     if (regK) {  // this cycle's reverse engineering: the market's states refitted up to t (warm from the last cycle)
@@ -2065,8 +2084,9 @@ int main(int argc, char** argv) {
                   net.trained, nnStep ? (" (every " + std::to_string(nnStep) + " session" + (nnStep > 1 ? "s" : "") + ", the day's bars taken in)").c_str() : " (the resets)",
                   nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
       if (nnAdaptive)
-        std::printf("strategy:   adaptive learning (resets every %zu session(s), mcnnstep %zu): trained at %zu resets (%zu early, its error on the outcomes realised since had drifted), the last training kept at %zu\n",
-                    reb, nnStep, nnTrainings, nnDrifted, nnSkipped);
+        std::printf("strategy:   adaptive learning (resets every %zu session(s), mcnnstep %zu): trained at %zu resets (%zu early, its error on the outcomes realised since had drifted), the last training kept at %zu, "
+                    "%zu resets skipped (no candidate, nothing held); samples only from the shares a strategy scored\n",
+                    reb, nnStep, nnTrainings, nnDrifted, nnSkipped, idleResets);
     }
     if (regK && !turbThird.empty()) {
       std::string by;
