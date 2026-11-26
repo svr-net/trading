@@ -55,6 +55,9 @@ class View {
   bool bar(std::size_t s, std::size_t i) const { return std::isfinite(d_.C[at(s, i)]); }  // a real bar on day s
   double close(std::size_t s, std::size_t i) const { return d_.Cf[at(s, i)]; }
   double open(std::size_t s, std::size_t i) const { return d_.O[at(s, i)]; }
+  double high(std::size_t s, std::size_t i) const { return d_.H[at(s, i)]; }    // NaN: no bar
+  double low(std::size_t s, std::size_t i) const { return d_.L[at(s, i)]; }     // NaN: no bar
+  double volume(std::size_t s, std::size_t i) const { return d_.V[at(s, i)]; }  // NaN: no bar (0: no volumes)
   double ret(std::size_t s, std::size_t i) const { return d_.ret[at(s, i)]; }
   double sigma(std::size_t s, std::size_t i) const { return d_.sigma[at(s, i)]; }
   double value(std::size_t s, std::size_t i) const { return d_.value[at(s, i)]; }

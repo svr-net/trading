@@ -22,6 +22,8 @@ jobs:
       # market (no look-ahead, every back end the same, costs at the end; tools/check/strategy_check.sh) and the scan
       # its own (ofm_scan test: the account's split over the markets, the walk-forward choice).
       - uses: ./.github/actions/ofm-tools
+        with:
+          check: 'true'
       - name: The tools run from the image (ofm)
         run: |
           ofm ofm_scan test

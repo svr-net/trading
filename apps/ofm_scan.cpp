@@ -742,21 +742,57 @@ int cmdRun(const std::vector<std::string>& args) {
     nxt = std::max(1, fit);
     if (!fit) total = 0.0;
   }
+  // The final orders at the amount the bridge places: the same strategy and book again, costs at the end. Their size
+  // fitted to the costs (budget.fit_costs, default on): the broker's fixed minimums weigh less on a larger order, so
+  // the market's money is also tried over fewer, larger trades (k, k/2, ... 1). The number kept is the one whose
+  // final orders (those still expected to gain after their costs) carry the most expected profit after costs; more
+  // trades among equals. Nothing before the final order list sees a cost: the backtests are the same.
+  const auto finalRun = [&](int kk) {  // the expected profit after costs of the final orders at total/kk each (-1: failed)
+    const std::string Kk = std::to_string(kk);
+    auto env = senv;
+    env["X_NPICK"] = Kk;
+    std::vector<std::string> cmd = engine;
+    const auto wa = withCapital(finalArgs, total / kk, "final");
+    cmd.insert(cmd.end(), wa.begin(), wa.end());
+    cmd.insert(cmd.end(), {"--json", "data/budget/final-" + Kk + ".json", "--orders", "data/budget/final-orders-" + Kk + ".json"});
+    if (waitFor(spawn(cmd, env, "data/budget/final-" + Kk + ".txt"))) return -1.0;
+    ojson r;
+    double v = 0;
+    if (tryOJson("data/budget/final-" + Kk + ".json", r) && r.contains("orders"))
+      for (const auto& o : r["orders"]) v += o.value("expected", 0.0) * o.value("amount", 0.0);
+    return v;
+  };
+  if (total > 0) {
+    const bool fit = b.value("fit_costs", true);
+    std::vector<int> tries{nxt};
+    for (int kk = nxt; fit && kk > 1;) tries.push_back(kk = (kk + 1) / 2 == kk ? kk - 1 : (kk + 1) / 2);
+    int best = nxt;
+    double bestV = -1;
+    std::string tried;
+    for (int kk : tries) {
+      const double v = finalRun(kk);
+      if (v < 0) {
+        std::cout << readFile("data/budget/final-" + std::to_string(kk) + ".txt");
+        die("the live strategy " + s["name"].get<std::string>() + "'s final run at " + thousands(total / kk) + " a trade failed");
+      }
+      ojson r;
+      std::size_t n = 0;
+      if (tryOJson("data/budget/final-" + std::to_string(kk) + ".json", r) && r.contains("orders")) n = r["orders"].size();
+      tried += (tried.empty() ? "" : ", ") + std::to_string(kk) + " of " + thousands(total / kk) + ": " + std::to_string(n) + " order" + (n == 1 ? "" : "s") + " " + f("%+.2f", v);
+      if (v > bestV + 1e-9) bestV = v, best = kk;
+    }
+    if (tries.size() > 1)
+      lines.push_back("budget:   the orders' size fitted to the costs (the expected profit after costs of the final orders, in " + mcur + "): " + tried + "; kept " + std::to_string(best) +
+                      (bestV > 0 ? "" : " (none expected to gain after costs at any size)"));
+    if (bestV <= 0) best = nxt;
+    nxt = best;
+    const std::string Kb = std::to_string(nxt);
+    fs::copy_file("data/budget/final-" + Kb + ".json", "data/budget/report-" + Kb + ".json", fs::copy_options::overwrite_existing);
+    fs::copy_file("data/budget/final-orders-" + Kb + ".json", "data/budget/orders-" + Kb + ".json", fs::copy_options::overwrite_existing);
+    fs::copy_file("data/budget/final-" + Kb + ".txt", "data/budget/report-" + Kb + ".txt", fs::copy_options::overwrite_existing);
+  }
   lines.push_back("budget:   next session: " + std::to_string(nxt) + " trades of " + thousands(total / nxt) + (total <= 0 ? " (no orders: no positive record)" : "") + (paper ? " (paper account)" : ""));
   const std::string K = std::to_string(nxt);
-  // The final orders at the amount the bridge places: the same strategy and book again, costs at the end.
-  if (total > 0) {
-    auto env = senv;
-    env["X_NPICK"] = K;
-    std::vector<std::string> cmd = engine;
-    const auto wa = withCapital(finalArgs, total / nxt, "final");
-    cmd.insert(cmd.end(), wa.begin(), wa.end());
-    cmd.insert(cmd.end(), {"--json", "data/budget/report-" + K + ".json", "--orders", "data/budget/orders-" + K + ".json"});
-    if (waitFor(spawn(cmd, env, "data/budget/report-" + K + ".txt"))) {
-      std::cout << readFile("data/budget/report-" + K + ".txt");
-      die("the live strategy " + s["name"].get<std::string>() + "'s final run at " + thousands(total / nxt) + " a trade failed");
-    }
-  }
   // The opposite picks on the same list and book (invert=1): the gap is the strategy's own edge.
   ojson opposite;
   {

@@ -34,17 +34,23 @@ The engine does the same for every strategy:
 7. **Costs at the end:** the broker's costs are applied only to the final order list, which is sorted by
    expected return, highest first. An order its costs would make a loss is dropped.
 
-| Strategy | What it does | Evidence |
+| Strategy | What it does (decided after every close, bought at the next open) | Evidence |
 |---|---|---|
-| `momentum` | the highest 12-month returns, skipping the last month; rebalanced monthly | Jegadeesh and Titman 1993; replicates (Hou, Xue and Zhang 2020; Jensen, Kelly and Pedersen 2023) |
-| `trend` | held while its own 12-month return is positive, strongest first; weekly | Hurst, Ooi and Pedersen 2017 (67 markets since 1880) |
-| `lowvol` | the calmest shares over the last year; monthly | Frazzini and Pedersen 2014 |
-| `reversal` | the week's largest falls against the market (residual); weekly | Blitz, Huij, Lansdorp and Verbeek 2013 |
+| `rsi2` | RSI(2) under 10 while over the 200-day average; held until a close over the 5-day average | Connors and Alvarez 2009 |
+| `ibs` | a close in the bottom 20% of the day's range; held a day | Pagonidis 2013; Pandey and Joshi 2023 |
+| `revday` | the day's largest falls against the market, in volatilities; held a day | Lehmann 1990; Lo and MacKinlay 1990; Nagel 2012 |
+| `volrev` | 3-day falls against the market on at least 1.5 times the usual volume; held days | Conrad, Hameed and Niden 1994; Avramov, Chordia and Goyal 2006 |
+| `hvp` | a day of at least 2.5 times the usual volume that did not close lower; held up to a week | Gervais, Kaniel and Mingelgrin 2001; Kaniel, Ozoguz and Starks 2012 |
+| `tom` | held from the month's last session to its third, the highest betas over their 200-day average | Lakonishok and Smidt 1988; McConnell and Xu 2008 |
+| `breakout` | a new 20-day closing high over the 200-day average; out under the 10-day low | Donchian; Faith 2007; George and Hwang 2004 |
+
+The monthly and weekly strategies (momentum, trend, low volatility, weekly reversal and the rest) were replaced by
+these daily ones on 26 Nov 2026 (docs/strategies.md).
 
 The engine's command:
 
 ```
-ofm_strategy --csv stocks.csv --costs UK --strategy momentum [--param name=value] [--backend threads]
+ofm_strategy --csv stocks.csv --costs UK --strategy rsi2 [--param name=value] [--backend threads]
              [--capital 5000] [--slots 5] [--stamp-free aim.txt] [--venues tools/venues.txt] [--override ibkr.csv]
              [--json page.json] [--orders orders.json] [--trace orders.trace]
 ofm_strategy --list
@@ -71,8 +77,8 @@ Every market's book is chosen by the nested Monte Carlo (`include/strategy/monte
   paths. It learns every week (`mcnnstep=5`) from the bars realised since, its training cases still taken at the
   resets: learning only at the monthly resets left it up to a month behind; taking a day's cases every day crowded
   its window with the last months (both tested walk-forward, 17 Nov).
-- **Every strategy injected:** the eight strategies (momentum, residual momentum, 52-week high, trend, low
-  volatility, no lottery shares, short-term and long-term reversal) each score every share at every reset. Their
+- **Every strategy injected:** the seven daily strategies (RSI(2), internal bar strength, daily reversal, volume
+  reversal, the high-volume premium, the turn of the month and the breakout) each score every share at every reset. Their
   ranks are inputs to the network, so it learns which strategy to trust for which share, in which market.
 - **The choice:** each strategy proposes its best 2 a slot, and the simulation keeps the k with the highest expected
   return. The same futures give each order's expected return, its 5-95% band and its chance of a loss. The real

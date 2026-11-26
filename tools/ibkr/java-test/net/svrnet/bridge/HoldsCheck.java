@@ -171,6 +171,25 @@ public final class HoldsCheck {
         return placed + late + day;
     }
 
+    static String bracketBook() throws Exception {
+        at("America/New_York", 9, 20);
+        FakeBroker b = new FakeBroker();
+        Map<String, Object> o = order("BRK.B", 480, 484, null, 1, 10000, 20000);
+        o.put("bracketTake", 489.6);
+        o.put("bracketStop", 460.8);
+        String placed = run(b, "US", "place", dir.resolve("holds-US-bracket.json"), book("uk", 1, 5, List.of(o)));
+        FakeBroker.T buy = b.find("BRK B", "BUY");
+        List<FakeBroker.T> sells = b.where(t -> t.share.symbol().equals("BRK B") && t.order.action().equals("SELL"));
+        check(sells.size() == 2, placed);
+        FakeBroker.T take = sells.get(0), stop = sells.get(1);
+        check(!buy.order.transmit() && buy.order.parentId() == 0, "the buy waits for its children: " + placed);
+        check(take.order.type().equals("LMT") && take.order.limit() >= 489.6 && take.order.parentId() == buy.id && !take.order.transmit() && take.order.tif().equals("DAY"), "take-profit: " + placed);
+        check(stop.order.type().equals("STP") && stop.order.aux() <= 460.8 && stop.order.parentId() == buy.id && stop.order.transmit() && stop.order.tif().equals("DAY"), "stop-loss: " + placed);
+        check(take.order.ref().startsWith("ofm-USS") && stop.order.ref().startsWith("ofm-USS"), "cancelled with the stops at the close: " + placed);
+        check(placed.contains("a bracket"), placed);
+        return placed;
+    }
+
     static String usBook() throws Exception {
         at("America/New_York", 9, 20);
         FakeBroker b = new FakeBroker();
@@ -448,6 +467,8 @@ public final class HoldsCheck {
         System.out.println("strategy book: the buy-back coupled to the stop, a position again with its own pair once filled, cancelled when the strategy drops it; OK");
         System.out.print(euBook());
         System.out.println("Europe: an EXCHANGE:CODE order in euros, good only through Paris's opening auction; OK");
+        System.out.print(bracketBook());
+        System.out.println("intraday bracket: the buy the parent, a take-profit limit and a stop its day-order children, the last transmitting all; OK");
         System.out.print(usBook());
         System.out.println("US: BRK.B as BRK B, routed SMART, good only through New York's opening auction; OK");
         System.out.print(apacBook());

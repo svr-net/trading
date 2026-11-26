@@ -61,7 +61,211 @@ expected return before costs, highest first. Then each order's own IBKR costs co
 An order its costs would make a loss is dropped. No other order takes its place, and the order of the list
 does not change.
 
-## The first backtests (store data to 13 Nov 2026)
+## The daily strategies (26 Nov 2026)
+
+The monthly and weekly strategies (momentum, trend, low volatility, weekly reversal, residual momentum, 52-week
+high, no lottery shares and long-term reversal) were removed and replaced by seven daily ones from the published
+research on short-horizon returns. Each strategy decides after every close (`rebalance: 1`). A share stops being
+wanted when its signal ends, and the engine then sells it at the next open. `maxdays` is the time stop.
+
+| Strategy | Rule | Evidence |
+|---|---|---|
+| `rsi2` | close over its 200-day average and RSI(2) under 10; held until a close over the 5-day average | Connors and Alvarez 2009 |
+| `ibs` | close in the bottom 20% of the day's range (internal bar strength); held a day | Pagonidis 2013; Pandey and Joshi 2023 (arXiv 2306.12434) |
+| `revday` | the day's largest falls net of beta times the market, at least 1.5 volatilities; held a day | Lehmann 1990; Lo and MacKinlay 1990; Nagel 2012 |
+| `volrev` | 3-day falls against the market on at least 1.5 times the usual volume | Conrad, Hameed and Niden 1994; Avramov, Chordia and Goyal 2006 |
+| `hvp` | a day of at least 2.5 times the median volume of the 49 sessions before, that did not close lower; held up to 5 sessions | Gervais, Kaniel and Mingelgrin 2001; Kaniel, Ozoguz and Starks 2012 |
+| `tom` | from the month's last session to its third, the highest betas over their 200-day average; read from the calendar, never a later day | Lakonishok and Smidt 1988; McConnell and Xu 2008 |
+| `breakout` | a new 20-day closing high within 5 sessions, over the 200-day average and the 10-day low | Donchian; Faith 2007; George and Hwang 2004 |
+
+The View gained `high`, `low` and `volume`, and the shared helpers live in `include/strategy/daily.hpp`.
+
+**Backtests on the store's bars** (`markets/<MARKET>/`, Nov 2017 to 25 Nov 2026, a year of warm-up), 10 equal
+positions, no Monte Carlo and no stop, **before any cost**. IBKR's tiered costs come off only the final order list
+(the last column). "Opposite picks" holds the lowest scores of the same list. For a filter strategy, that means the
+weakest signals among the shares that qualify, so "own edge" there measures the ranking, not the filter.
+
+| Market | Strategy | Annual | Sharpe | Max DD | Opposite picks | Own edge | Trades/yr | Avg trade | Win | Held | Next orders: list -> after costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| UK | breakout | +10.7% | 0.69 | 32% | +7.8% | +2.9% | 662 | +0.18% | 45% | 4.0 | 10 -> 0 |
+| UK | hvp | +21.9% | 1.18 | 42% | +11.6% | +10.3% | 746 | +0.31% | 51% | 3.6 | 10 -> 0 |
+| UK | ibs | -3.9% | -0.13 | 55% | +26.3% | -30.2% | 2415 | -0.01% | 48% | 1.1 | 10 -> 0 |
+| UK | revday | +11.0% | 0.65 | 42% | +12.8% | -1.8% | 1948 | +0.07% | 50% | 1.1 | 9 -> 0 |
+| UK | rsi2 | +8.3% | 0.57 | 34% | +6.3% | +2.0% | 916 | +0.11% | 54% | 2.6 | 10 -> 0 |
+| UK | tom | +6.0% | 0.57 | 14% | +2.6% | +3.4% | 176 | +0.39% | 51% | 2.9 | 0 -> 0 |
+| UK | volrev | +9.7% | 0.59 | 44% | +9.1% | +0.6% | 1197 | +0.10% | 52% | 1.7 | 10 -> 1 |
+| EU | breakout | +25.5% | 1.54 | 18% | +9.2% | +16.3% | 870 | +0.34% | 42% | 3.6 | 8 -> 1 |
+| EU | hvp | +11.9% | 0.69 | 37% | +12.8% | -0.9% | 960 | +0.16% | 44% | 3.4 | 8 -> 0 |
+| EU | ibs | -6.0% | -0.27 | 49% | -12.8% | +6.8% | 2775 | -0.03% | 40% | 1.1 | 10 -> 0 |
+| EU | revday | -6.0% | -0.31 | 52% | -7.4% | +1.4% | 2251 | -0.04% | 41% | 1.1 | 4 -> 0 |
+| EU | rsi2 | +0.7% | 0.12 | 34% | +0.8% | -0.1% | 1111 | +0.01% | 50% | 2.5 | 10 -> 0 |
+| EU | tom | +7.8% | 0.76 | 23% | +0.1% | +7.7% | 177 | +0.57% | 53% | 3.1 | 0 -> 0 |
+| EU | volrev | -1.5% | -0.01 | 39% | +2.6% | -4.1% | 1218 | -0.01% | 46% | 1.9 | 5 -> 0 |
+| US | breakout | -1.8% | 0.05 | 44% | -3.5% | +1.7% | 753 | +0.01% | 43% | 3.5 | 10 -> 2 |
+| US | hvp | +0.1% | 0.16 | 57% | +9.7% | -9.6% | 747 | +0.07% | 51% | 3.6 | 10 -> 6 |
+| US | ibs | +6.5% | 0.36 | 48% | +2.3% | +4.2% | 2452 | +0.04% | 51% | 1.0 | 10 -> 6 |
+| US | revday | +7.9% | 0.41 | 40% | +20.9% | -13.0% | 2350 | +0.05% | 51% | 1.0 | 10 -> 8 |
+| US | rsi2 | +12.2% | 0.62 | 33% | +10.0% | +2.2% | 1062 | +0.14% | 57% | 2.4 | 10 -> 8 |
+| US | tom | +4.2% | 0.30 | 34% | +0.8% | +3.4% | 182 | +0.41% | 50% | 2.9 | 0 -> 0 |
+| US | volrev | +14.1% | 0.58 | 54% | +15.0% | -0.9% | 1308 | +0.14% | 53% | 1.8 | 10 -> 8 |
+| APAC | breakout | +0.9% | 0.14 | 49% | +10.6% | -9.7% | 719 | +0.02% | 39% | 3.7 | 10 -> 2 |
+| APAC | hvp | +18.0% | 0.87 | 37% | -3.1% | +21.1% | 750 | +0.27% | 48% | 3.6 | 10 -> 6 |
+| APAC | ibs | +21.8% | 1.18 | 36% | +8.8% | +13.0% | 2495 | +0.09% | 46% | 1.0 | 10 -> 0 |
+| APAC | revday | +5.3% | 0.36 | 40% | +12.5% | -7.2% | 2209 | +0.03% | 47% | 1.1 | 10 -> 0 |
+| APAC | rsi2 | +14.8% | 0.80 | 39% | +11.9% | +2.9% | 980 | +0.17% | 54% | 2.5 | 10 -> 2 |
+| APAC | tom | +5.8% | 0.41 | 25% | +0.3% | +5.5% | 178 | +0.43% | 47% | 3.0 | 0 -> 0 |
+| APAC | volrev | +5.1% | 0.34 | 52% | +4.3% | +0.8% | 1280 | +0.06% | 49% | 1.7 | 10 -> 0 |
+
+**What it shows:**
+- **No strategy works everywhere.** The best per market: UK `hvp` (Sharpe 1.18), EU `breakout` (1.54), US `rsi2`
+  (0.62) and APAC `ibs` (1.18). Each one is weak or negative somewhere else. For example, `ibs` returns −4% in the UK
+  and −6% in the EU, and `breakout` returns −2% in the US.
+- **Small trades.** A trade earns +0.01% to +0.57% before costs. That is less than a UK round trip (stamp duty: about
+  0.6%) and less than most EU ones (France's tax). So the final cost step drops nearly every UK and EU order. In the
+  US and APAC, where costs are a few basis points, most orders survive.
+- **Turn of the month.** It is the only strategy whose average trade beats every market's costs (+0.4% to +0.6%).
+  It is invested only about 4 sessions a month, which explains its low drawdowns.
+- **Weaker than the old strategies before costs.** The removed monthly momentum made +34% a year in the UK and US
+  (5 positions, store data to 13 Nov 2026, below), against +22% and +12% here for the best daily strategy.
+
+**The live choice:** one rule for every market, the highest Sharpe among the strategies whose picks beat their own
+opposite picks: UK `hvp`, EU `breakout`, US `rsi2`, APAC `ibs`. INDEX takes `tom` (the effect is a market-index
+one, McConnell and Xu's 31 of 35 countries). FOREX takes `rsi2` (research only; currency bars carry no volume, so
+`hvp` and `volrev` cannot run). Picking the best of seven on the same data overstates what to expect: the
+research figures and the opposite-picks gap are the better guide.
+
+## Intraday trading with a bracket (26 Nov 2026)
+
+Every market now trades within the day (`intraday: 1`). Each share is bought in the opening auction and sold the same
+day, and nothing is held overnight. The bridge sells it market-on-close at its first close (`days: 1`).
+
+**The bracket.** Each buy carries a take-profit limit and a stop-loss at IBKR, as children of the buy. They work only
+once it fills, and one cancels the other; whatever is left is cancelled before the closing auction's sale.
+- **Levels:** both are fixed from the decision day's close when the order is made, so the backtest and the bridge use
+  the same prices.
+- **Both touched:** a day that touched both levels counts the stop, since a daily bar doesn't say which came first.
+- **Settings:**
+  - `takesd` and `stopsd`: fixed levels, in daily volatilities over and under the close.
+  - `bracketadapt`: each trade's own levels, learnt at its reset on its simulated futures as any value.
+    - **Grid:** the take-profit from 0.5 to 5 volatilities and the stop from 1 to 8, each also "none".
+    - **Choice:** the pair with the most expected log growth, refined between grid points.
+    - **Orders:** each order's expected return and range come from its futures under its own bracket.
+
+**Open-to-close, on the store's bars, 5 positions, before costs (Sharpe):**
+
+| Market (strategy) | Close only | Take-profit 1.5σ | Take-profit 1.5σ, stop 4σ | Bracket learnt per trade |
+|---|---|---|---|---|
+| UK, AIM (`hvp`) | 1.07 | 1.98 | 1.82 | **2.25** (+48.7% a year) |
+| EU (`breakout`) | 1.22 | 1.60 | **1.26** | 1.12 |
+| US (`tom`) | 0.32 | 0.32 | **0.26** | 0.24 |
+| APAC (`rsi2`) | 0.70 | 0.91 | **0.76** | 0.76 |
+
+- **What's live:** the UK learns each trade's bracket. The other markets take a profit at 1.5σ with a stop at 4σ.
+- **Stops cost Sharpe everywhere.** Same-day noise trips them and the share then often recovers by the close. They
+  are kept as a cap on the day's loss.
+- **The overnight edge is lost.** Most short-horizon effects come overnight, and an intraday book gives them up. The
+  US has almost no same-day edge.
+- **UK fills may be optimistic.** The UK's take-profit gain relies on intraday highs of thin AIM shares, so its fills
+  may be better in the backtest than live.
+- **The learnt levels:** take-profits at a median 0.9 to 1.6σ over the close, stops wide at a median 4 to 6σ.
+
+## The adaptive Monte Carlo for daily strategies (26 Nov 2026)
+
+With daily strategies, the nested Monte Carlo resets every session: 2,072 resets in the UK backtest instead of
+about 98. One UK run (live settings, 10 positions) took 203 s. The profile (`X_PROFILE=1`) showed that the futures
+themselves were not the cost:
+
+| Stage | Before | After |
+|---|---|---|
+| Network training | 153 s | 20 s |
+| Learnt stops | 27 s | 7 s |
+| The market's hidden states | 16 s | 8 s |
+| Viability pilots (new) | | 8 s |
+| The whole run | 203 s | 48 s |
+
+What changed:
+- **Fused training kernel** (`neural.hpp`): a minibatch's gradient is now one pass over fixed blocks of 16
+  samples, in parallel over the blocks, with the blocks summed in their order. Before, it took two passes: every
+  sample's gradient copied out, then a separate reduction. The order is fixed whatever the back end or the number of
+  threads, so every back end still gives the same numbers.
+- **Adaptive learning from what is observable.** These rules apply when the resets come more often than `mcnnstep`:
+  - The network trains every `mcnnstep` sessions, or sooner when its CRPS on the outcomes realised since it last
+    trained is worse than the plain Monte Carlo's (`mcnndrift`).
+  - The hidden-state model runs a full fit (afresh and warm) every `mcnnstep` sessions, or sooner when the market's
+    days fit it worse by more than `mcregimedrift` (0.02) a day. In between, it starts from the last fit and stops
+    once it converges.
+  - Configurations whose resets are no more frequent than `mcnnstep` behave as before.
+- **`mcreuse` (0.1):** a share's stop and buy-back are learnt again only when one of these has moved:
+  - its daily volatility, by 10%;
+  - the network's scale for it, by 10%;
+  - its drift, by 0.1 daily volatilities;
+  - or the setting is `mcnnstep` sessions old.
+  Otherwise the last setting stands. In the UK, 69% of the settings were kept.
+- **`mcprune` (2): early stops for positions that aren't viable.** Every target share and reserve gets a
+  sequential pilot on its simulated futures: rounds of 32, 64 and then 128 futures (`mcprunepaths`).
+  - A share is stopped as soon as its expected log growth is below 0 by more than 2 standard errors. No more futures
+    are spent on it. A candidate is not bought, and a held position is sold at the next open, its slot going to the
+    next viable reserve.
+  - It is viable once it is above 0 by as much, and an undecided share stays.
+  - The pilots took 23% of the futures a full simulation would.
+- **`mcrace`**, the adaptive race between stop settings, made no difference here (UK Sharpe 1.24 either way) and
+  costs time, since it spends extra futures on close contenders. It stays off.
+
+The effect of the pilots and the reuse together, before costs (live settings, 10 positions):
+
+| Market | Without | With |
+|---|---|---|
+| UK `hvp` | Sharpe 1.08 | 1.24 (+22.6% a year, drawdown 37%) |
+| US `rsi2` | +14.4%, 0.78, drawdown 31% | +19.3%, 1.05, drawdown 23% |
+| APAC `ibs` | +17.1%, 1.34, drawdown 21% | +14.3%, 1.28, drawdown 19% |
+| EU `breakout` | +1.4%, 0.18 | +1.0%, 0.14 |
+
+`mcprune` is live in the UK and the US only. `mcreuse` and the adaptive learning are live everywhere.
+
+**EU:** under the EU's live settings (the Monte Carlo choosing the book, `mccash`, the learnt stops), `breakout`
+makes Sharpe 0.18. The plain backtest makes 1.54. Those settings were tuned for monthly momentum and don't suit
+a breakout held for days.
+
+## EU on simpler settings, the UK on AIM, orders sized to their costs (26 Nov 2026)
+
+**EU**, `breakout`, 10 positions, before costs:
+
+| Settings | Annual | Sharpe | Max drawdown | Average trade | Trades |
+|---|---|---|---|---|---|
+| Plain | +25.5% | 1.54 | 17.5% | +0.34% | 6,962 |
+| The Monte Carlo for expected returns only (live) | +25.5% | 1.54 | 17.5% | +0.34% | 6,962 |
+| With the learnt stops | +15.7% | 1.05 | 17.6% | +0.33% | 4,769 |
+| With the Monte Carlo choosing the book | +10.7% | 0.72 | 33.2% | +0.07% | 16,845 |
+| The settings tuned for monthly momentum | +1.4% | 0.18 | 41.4% | +0.01% | 13,978 |
+
+When the simulation chooses the book from every strategy's candidates, it trades 2.4 times as often for a fifth of
+the edge a trade. The EU keeps the nested Monte Carlo only for each order's expected return and range.
+
+**Costs against the order's size** (IBKR tiered, the median order's round trip):
+
+| Order size | 500 | 1,000 | 2,500 | 5,000 | 10,000 |
+|---|---|---|---|---|---|
+| UK (GBP) | 0.96% | 0.73% | 0.61% | 0.61% | 0.61% |
+| EU (EUR) | 0.92% | 0.67% | 0.52% | 0.52% | 0.52% |
+| US (USD) | 0.14% | 0.07% | 0.03% | 0.02% | 0.01% |
+| APAC (AUD) | 2.40% | 1.20% | 0.48% | 0.24% | 0.16% |
+
+The fixed minimums weigh on small orders; the UK's stamp duty and France's tax stay whatever the size.
+- **Sizing:** `ofm_scan` now tries the final orders over fewer, larger trades from the same money (k, k/2, ... 1).
+  It keeps the number whose final orders expect the most profit after costs (`budget.fit_costs`, default on).
+  Nothing before the final order list sees a cost.
+- **UK:** with stamp duty, no order covered its costs at any size, so the UK now trades AIM shares only
+  (`"only": "aim"`, no stamp duty, a round trip of about 0.11%).
+  - The plain `hvp` makes +32.9% a year, Sharpe 1.27, on AIM, against +21.9%, 1.18 on the 300 most traded shares.
+  - In the 26 Nov scan, the budget made +24.0% a year, Sharpe 1.22, and 2 of the 3 next orders expect to gain after
+    costs (2 trades of GBP 3,974).
+  - The AIM list is today's (survivorship), and these are thin shares, bought in the opening auction.
+
+## The removed monthly and weekly strategies
+
+The sections below record the strategies replaced on 26 Nov 2026.
+
+### The first backtests (store data to 13 Nov 2026)
 
 Each strategy on each market, with 5 equal positions, before costs: annual return, Sharpe ratio and the worst
 drawdown, from Nov 2018 (a year of warm-up) to 13 Nov 2026. The US figures are for NYSE only, because NASDAQ

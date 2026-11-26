@@ -14,7 +14,12 @@ cut=$(tail -n +2 "$W/full.csv" | cut -d, -f1 | sort -u | tail -n 120 | head -n 1
 awk -F, -v c="$cut" 'NR == 1 || $1 < c' "$W/full.csv" > "$W/cut.csv"
 names=$("$BIN" --list | awk '/^strategies:/ { s = 1; next } /^back ends:/ { s = 0 } s { print $1 }')
 backs=$("$BIN" --list | awk '/^back ends:/ { s = 1; next } s { print $1 }')
-for s in $names; do
+HEAVY=${HEAVY:-rsi2}
+# Each strategy's checks in its own process, all strategies at once (their files are their own: $W/<strategy>-...): half
+# the runs use the one-thread back end, so one after another left most of the CPU idle. Each strategy's report is
+# printed in the strategies' order once all have finished; any failure fails the check.
+check() {
+  s=$1
   first=""
   for b in $backs; do
     X_TRADELOG="$W/$s-$b.log" "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --json "$W/$s-$b.json" --orders "$W/$s-$b.orders" --trace "$W/$s-$b.tr" > "$W/$s-$b.out"
@@ -28,6 +33,22 @@ for s in $names; do
   n=$(wc -l < "$W/$s-cut.tr")
   [ "$n" -gt 10 ] || { echo "FAIL: $s: only $n orders on the shorter market"; exit 1; }
   head -n "$n" "$W/$s-$first.tr" | cmp -s - "$W/$s-cut.tr" || { echo "FAIL: $s: an order changed with later data (look-ahead)"; exit 1; }
+  jq -e '.costs.net == false and .costs.atEnd == true
+         and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
+         and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
+    || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
+  # intraday (bought in the opening auction, sold the same day, a take-profit working): no look-ahead
+  "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --param stopsd=4 --trace "$W/$s-id.tr" > "$W/$s-id.out"
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 --param intraday=1 --param takesd=1.5 --param stopsd=4 --trace "$W/$s-id-cut.tr" > /dev/null
+  ni=$(wc -l < "$W/$s-id-cut.tr")
+  head -n "$ni" "$W/$s-id.tr" | cmp -s - "$W/$s-id-cut.tr" || { echo "FAIL: $s intraday: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "intraday: every share bought" "$W/$s-id.out" || { cat "$W/$s-id.out"; echo "FAIL: $s: the intraday book did not run"; exit 1; }
+  # The Monte Carlo, the network, the stops and the market's states are the engine's own code, the same whatever the
+  # strategy: checked once, with one strategy ($HEAVY); every strategy gets the checks above.
+  if [ "$s" != "$HEAVY" ]; then
+    echo "strategy $s: $n orders unchanged by later data (and intraday); the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+    return 0
+  fi
   # the nested Monte Carlo: the same on every back end (counter-based draws), with the trailing buy-back learnt for each share
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --param psarvol=3 --param rebuystop=0.01 --param rebuystopadapt=1 --param rebuytrail=1 --param mc=1 --param mcpaths=200 --json "$W/$s-mc-$b.json" > "$W/$s-mc-$b.out"
@@ -80,6 +101,30 @@ for s in $names; do
   head -n "$nr" "$W/$s-rg-$first.tr" | cmp -s - "$W/$s-rg-cut.tr" || { echo "FAIL: $s with the market's states: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "hidden states, refitted" "$W/$s-rg-$first.out" && jq -e '.backtest.mc.regime.states == 3 and (.backtest.mc.regime.now | add | . > 0.999 and . < 1.001)' "$W/$s-rg-$first.json" > /dev/null \
     || { cat "$W/$s-rg-$first.out"; echo "FAIL: $s: the market's states did not run"; exit 1; }
+  # adaptive: the stops learnt again only where the observed moved, the positions not viable stopped early, the network
+  # and the market's states learning adaptively between full fits: no look-ahead, the same on every back end
+  AD="$RG --param mcnnstep=5 --param psarvoladapt=1 --param rebuystop=0.01 --param rebuystopadapt=1 --param mcreuse=0.1 --param mcprune=2 --param mcprunepaths=64 --param rebalance=1"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $AD --json "$W/$s-ad-$b.json" --trace "$W/$s-ad-$b.tr" > "$W/$s-ad-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-ad-$b.json" > "$W/$s-ad-$b.cmp"
+    cmp -s "$W/$s-ad-$first.cmp" "$W/$s-ad-$b.cmp" || { echo "FAIL: $s: the adaptive Monte Carlo differs between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $AD --trace "$W/$s-ad-cut.tr" > /dev/null
+  na=$(wc -l < "$W/$s-ad-cut.tr")
+  head -n "$na" "$W/$s-ad-$first.tr" | cmp -s - "$W/$s-ad-cut.tr" || { echo "FAIL: $s with the adaptive Monte Carlo: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "viability pilots" "$W/$s-ad-$first.out" && grep -q "learnt again only where" "$W/$s-ad-$first.out" && grep -q "adaptive refits" "$W/$s-ad-$first.out" \
+    || { cat "$W/$s-ad-$first.out"; echo "FAIL: $s: the adaptive Monte Carlo did not run"; exit 1; }
+  # intraday with each trade's bracket learnt on its futures (bracketadapt): the same on every back end, no look-ahead
+  BA="--param intraday=1 --param mc=1 --param mcnn=1 --param mcnnstep=5 --param mcpaths=100 --param bracketadapt=1 --param stopslip=0.1 --param mcreuse=0.1"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $BA --json "$W/$s-ba-$b.json" --trace "$W/$s-ba-$b.tr" > "$W/$s-ba-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-ba-$b.json" > "$W/$s-ba-$b.cmp"
+    cmp -s "$W/$s-ba-$first.cmp" "$W/$s-ba-$b.cmp" || { echo "FAIL: $s: the learnt brackets differ between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $BA --trace "$W/$s-ba-cut.tr" > /dev/null
+  nb=$(wc -l < "$W/$s-ba-cut.tr")
+  head -n "$nb" "$W/$s-ba-$first.tr" | cmp -s - "$W/$s-ba-cut.tr" || { echo "FAIL: $s with the learnt brackets: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "bracket learnt for each trade" "$W/$s-ba-$first.out" || { cat "$W/$s-ba-$first.out"; echo "FAIL: $s: the brackets were not learnt"; exit 1; }
   # a synthetic market drawn from the real one (--resample): the same for a seed and on every back end, another for another seed
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --resample 3 --json "$W/$s-rs-$b.json" > /dev/null
@@ -88,9 +133,24 @@ for s in $names; do
   done
   "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --min-value 0 --param psar=1 --param rebuy=0 --resample 4 --json "$W/$s-rs4.json" > /dev/null
   [ "$(jq -c '.backtest | del(.resample)' "$W/$s-rs-$first.json")" != "$(jq -c '.backtest | del(.resample)' "$W/$s-rs4.json")" ] || { echo "FAIL: $s: two seeds drew the same market"; exit 1; }
-  jq -e '.costs.net == false and .costs.atEnd == true
-         and ([.orders[] | .gross] as $g | $g == ($g | sort | reverse))
-         and all(.orders[]; .cost > 0 and .ifFilled > 0 and ((.gross - .cost - .ifFilled) | fabs) < 1e-6)' "$W/$s-$first.json" > /dev/null \
-    || { echo "FAIL: $s: the final orders are not in order of expected return, or a cost is missing"; jq -c '.orders[] | {ticker, gross, cost, ifFilled}' "$W/$s-$first.json"; exit 1; }
   echo "strategy $s: $n orders unchanged by later data ($np with the PSAR stop and its buy-back, $nn with the neural Monte Carlo choosing); the Monte Carlo the same on every back end; the same on every back end ($(echo $backs | tr ' ' ',')); the final orders by expected return, costs applied at the end"
+}
+# At most half the CPUs' worth of strategies at once (a run on the threads back end uses every CPU and spin-waits:
+# more only oversubscribed the runner).
+jobs=$(( $(nproc 2>/dev/null || echo 2) / 2 )); [ "$jobs" -ge 1 ] || jobs=1
+fail=0
+running=0
+pids=""
+for s in $names; do
+  ( check "$s" ) > "$W/$s.report" 2>&1 &
+  pids="$pids $!"
+  running=$((running + 1))
+  if [ "$running" -ge "$jobs" ]; then
+    for p in $pids; do wait "$p" || fail=1; done
+    pids=""
+    running=0
+  fi
 done
+for p in $pids; do wait "$p" || fail=1; done
+for s in $names; do cat "$W/$s.report"; done
+[ "$fail" -eq 0 ] || { echo "FAIL: a strategy's checks failed (above)"; exit 1; }

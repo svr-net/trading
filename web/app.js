@@ -810,10 +810,13 @@ showView(firstView);
 // start as the market's live strategy's (data/strategies.json).
 // The strategies built into the engine (strategies/*.cpp); the market's live one is chosen first.
 const LAB_STRATEGIES = [
-  ['momentum', '12-month momentum, rebalanced monthly'],
-  ['trend', 'Trend following, rebalanced weekly'],
-  ['lowvol', 'Low volatility, rebalanced monthly'],
-  ['reversal', 'Residual reversal, held a week'],
+  ['rsi2', 'RSI(2) pullback in an uptrend, daily'],
+  ['ibs', 'Internal bar strength: closes near the low, held a day'],
+  ['revday', 'Daily residual reversal, held a day'],
+  ['volrev', 'Heavy-volume 3-day falls, held days'],
+  ['hvp', 'High-volume return premium, held a week'],
+  ['tom', 'Turn of the month, high betas'],
+  ['breakout', '20-day breakout in an uptrend, daily'],
 ];
 let labLive = null;  // the market's live strategy and its parameters (data/strategies.json)
 function labSwitches(m) {
@@ -832,7 +835,7 @@ function labSwitches(m) {
     full.append(fc, document.createTextNode(`The live settings in full: the nested Monte Carlo${'gpu' in navigator ? ' (on this device\'s GPU)' : ' (no WebGPU here: on the CPU, minutes)'}`));
     box.replaceChildren(...LAB_STRATEGIES.map(([k, t]) => {
       const l = document.createElement('label'), c = document.createElement('input');
-      c.type = 'radio', c.name = 'lab-strategy', c.value = k, c.checked = k === (live || 'momentum');
+      c.type = 'radio', c.name = 'lab-strategy', c.value = k, c.checked = k === (live || 'rsi2');
       l.append(c, document.createTextNode(`${t}${k === live ? ' (live)' : ''}`));
       return l;
     }), stop, full);
@@ -852,7 +855,7 @@ $('lab-run').addEventListener('click', async () => {
     status.textContent = /key|401|Failed to fetch|NetworkError|Load failed/i.test(String(e.message)) ? 'Connect your bridge under Broker (its address and key): the bars come from your IBKR account.' : `No bars: ${e.message}.`;
     return;
   }
-  const env = {}, chosen = $('lab-switches').querySelector('input[name="lab-strategy"]:checked')?.value || 'momentum';
+  const env = {}, chosen = $('lab-switches').querySelector('input[name="lab-strategy"]:checked')?.value || 'rsi2';
   const files = {}, args = ['--csv', '/bars.csv', '--costs', M, '--strategy', chosen, '--backend', 'serial'];
   const liveFull = $('lab-live')?.checked && labLive;
   if (liveFull) {  // the live strategy with every parameter of config/markets.json (the nested Monte Carlo on)

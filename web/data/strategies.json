@@ -3,193 +3,82 @@
  "markets": {
   "eu": [
    {
-    "name": "momentum",
+    "name": "breakout",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "breakout",
     "params": {
-     "mc": 1,
-     "mcselect": 1,
-     "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 3,
-     "stopslip": 0.1,
-     "mccash": 1,
-     "entryday": 1,
-     "mcregimestop": 0,
-     "mccost": 1,
-     "adaptfine": 0,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 5,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "intraday": 1,
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
   "uk": [
    {
-    "name": "momentum",
+    "name": "hvp",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "hvp",
     "params": {
+     "intraday": 1,
      "mc": 1,
-     "mcselect": 0,
      "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
      "mcnnstep": 5,
-     "mcregime": 2,
+     "bracketadapt": 1,
      "stopslip": 0.1,
-     "stopmae": 0.9,
-     "stopmultlo": 2,
-     "stopmulthi": 6,
-     "stopmax": 0.15,
-     "mcregimestop": 0,
-     "mccost": 1,
-     "adaptfine": 1,
-     "rebuytrail": 1,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 3,
-     "psarvoladapt": 1,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 0
+     "mcreuse": 0.1
     }
    }
   ],
   "us": [
    {
-    "name": "momentum",
+    "name": "tom",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "tom",
     "params": {
-     "mc": 1,
-     "mcselect": 0,
-     "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 0,
-     "stopslip": 0.1,
-     "entryday": 1,
-     "stopmae": 0.9,
-     "mcregimestop": 0,
-     "mccost": 1,
-     "adaptfine": 1,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 3,
-     "psarvoladapt": 1,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "intraday": 1,
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
   "apac": [
    {
-    "name": "momentum",
+    "name": "rsi2",
     "role": "live",
-    "strategy": "momentum",
+    "strategy": "rsi2",
     "params": {
-     "mc": 1,
-     "mcselect": 0,
-     "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 2,
-     "stopslip": 0.1,
-     "entryday": 1,
-     "mcregimestop": 0,
-     "mccost": 1,
-     "adaptfine": 0,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 3,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "intraday": 1,
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
   "forex": [
    {
-    "name": "trend",
+    "name": "rsi2",
     "role": "live",
-    "strategy": "trend",
+    "strategy": "rsi2",
     "params": {
-     "mc": 1,
-     "mcselect": 1,
-     "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 0,
-     "stopslip": 0.1,
-     "mcregimestop": 0,
-     "mccost": 0,
-     "adaptfine": 0,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 3,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "intraday": 1,
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ],
   "index": [
    {
-    "name": "trend",
+    "name": "tom",
     "role": "live",
-    "strategy": "trend",
+    "strategy": "tom",
     "params": {
-     "mc": 1,
-     "mcselect": 1,
-     "mcnn": 1,
-     "mcobj": 1,
-     "mccandk": 2,
-     "mcpool": 1,
-     "mcnnstep": 5,
-     "mcregime": 0,
-     "stopslip": 0.1,
-     "mcregimestop": 0,
-     "mccost": 0,
-     "adaptfine": 1,
-     "psar": 1,
-     "rebuy": 0,
-     "refill": 1,
-     "psarstep": 0.01,
-     "psarmax": 0.1,
-     "psarvol": 3,
-     "rebuystop": 0.01,
-     "rebuystopadapt": 1,
-     "stopmedian": 1
+     "intraday": 1,
+     "takesd": 1.5,
+     "stopsd": 4,
+     "stopslip": 0.1
     }
    }
   ]

@@ -23,6 +23,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <atomic>
+#include <thread>
+
 #include "strategy/montecarlo.hpp"
 #include "strategy/strategy.hpp"
 
@@ -30,6 +33,33 @@ namespace strat {
 
 constexpr std::size_t kNS = 8;            // the strategies' scores a sample can carry (mcpool: every strategy's rank)
 constexpr std::size_t kNF = 9 + kNS, kNH = 16, kNP = 32;  // features, hidden units, the paths a training sample keeps
+
+// The network's math is portable: exp from IEEE operations alone (+, -, *, / and an exact power of two), tanh from it.
+// The C libraries' exp, log, pow and tanh differ in the last bit between platforms (glibc natively, the WebAssembly
+// Lab's), and a network trained at every daily reset makes millions of calls, so one differing bit grew and the native
+// engine and the Lab drifted apart (26 Nov). These give the same bits everywhere (no fused multiply-add: the build
+// turns contraction off, and WebAssembly has none).
+inline double nnExp(double x) {
+  if (!(x > -745)) return x != x ? x : 0.0;
+  if (x > 700) x = 700;
+  constexpr double kLn2Hi = 6.93147180369123816490e-01, kLn2Lo = 1.90821492927058770002e-10, kInvLn2 = 1.44269504088896338700e+00;
+  const double k = std::floor(x * kInvLn2 + 0.5);
+  const double r = (x - k * kLn2Hi) - k * kLn2Lo;  // |r| <= ln2 / 2
+  // exp(r) by Horner on 1/n! to r^13 (the rest under 1e-17 of it): multiplies and adds only, no division (fast); the
+  // coefficients are literals, read the same everywhere.
+  constexpr double c[14] = {1.0, 1.0, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008333333333333333, 0.001388888888888889,
+                            0.0001984126984126984, 2.48015873015873e-05, 2.7557319223985893e-06, 2.755731922398589e-07,
+                            2.505210838544172e-08, 2.08767569878681e-09, 1.6059043836821613e-10};
+  double p = c[13];
+  for (int n = 12; n >= 0; --n) p = p * r + c[n];
+  return std::ldexp(p, int(k));
+}
+inline double nnTanh(double x) {
+  const double a = std::fabs(x);
+  if (a > 20) return x > 0 ? 1.0 : -1.0;
+  const double e = nnExp(-2 * a), t = (1 - e) / (1 + e);
+  return x < 0 ? -t : t;
+}
 
 struct NnShape {
   double mu = 0, scale = 1;
@@ -55,7 +85,7 @@ class DiffNet {
   NnShape shape(const double* f) const {
     double hid[kNH], o[2];
     forward(f, hid, o);
-    return {kMu * std::tanh(o[0]), std::exp(kS * std::tanh(o[1]))};
+    return {kMu * nnTanh(o[0]), nnExp(kS * nnTanh(o[1]))};
   }
 
   // One pass over the samples usable at day t0 (ready <= t0), the newest `limit` of them, in minibatches.
@@ -73,27 +103,32 @@ class DiffNet {
         h = mcMix(h);
         std::swap(idx[j - 1], idx[h % j]);
       }
+      // The fused epoch: one gang of threads for the whole epoch instead of a dispatch a minibatch (hundreds an epoch,
+      // each only kBatch / kBlock blocks of work, so the dispatches cost more than the work).
+      const std::size_t W = b ? std::min<std::size_t>(b->gangSize(), kBatch / kBlock) : 1;
+      if (W >= 2 && gangEpoch(all, idx, horizon, *b, W)) continue;
       for (std::size_t a = 0; a < idx.size(); a += kBatch) {
         Grad g;
         zero(g);
         const std::size_t end = std::min(idx.size(), a + kBatch);
-        if (b) {  // each sample's gradient on its own (in parallel), then summed in the samples' order
-          per_.resize(kBatch);
-          b->parallelFor(end - a, [&](std::size_t x, std::size_t y) {
-            for (std::size_t q = x; q < y; ++q) zero(per_[q]), accumulate(all[idx[a + q]], horizon, per_[q]);
+        if (b) {  // the fused kernel: one pass, each block of kBlock samples' gradient summed in the samples' order
+          // (in parallel over the blocks), then the blocks summed in their order: a fixed order whatever the back end
+          // or the number of threads, so the same numbers everywhere, with one dispatch a batch and no per-sample copies.
+          const std::size_t nS = end - a, nB = (nS + kBlock - 1) / kBlock;
+          per_.resize(nB);
+          b->parallelFor(nB, [&](std::size_t x, std::size_t y) {
+            for (std::size_t q = x; q < y; ++q) {
+              zero(per_[q]);
+              for (std::size_t r = q * kBlock; r < std::min(nS, (q + 1) * kBlock); ++r) accumulate(all[idx[a + r]], horizon, per_[q]);
+            }
           });
-          // then each parameter's sum over the samples, in their order (in parallel over the parameters)
           constexpr std::size_t nP = sizeof(Grad) / sizeof(double);
           static_assert(sizeof(Grad) == nP * sizeof(double), "a gradient is its parameters' doubles, nothing else");
           double* gp = reinterpret_cast<double*>(&g);
-          const std::size_t nS = end - a;
-          b->parallelFor(nP, [&](std::size_t x, std::size_t y) {
-            for (std::size_t k = x; k < y; ++k) {
-              double sum = gp[k];
-              for (std::size_t q = 0; q < nS; ++q) sum += reinterpret_cast<const double*>(&per_[q])[k];
-              gp[k] = sum;
-            }
-          });
+          for (std::size_t q = 0; q < nB; ++q) {
+            const double* pq = reinterpret_cast<const double*>(&per_[q]);
+            for (std::size_t k = 0; k < nP; ++k) gp[k] += pq[k];
+          }
         } else {
           for (std::size_t q = a; q < end; ++q) accumulate(all[idx[q]], horizon, g);
         }
@@ -101,6 +136,53 @@ class DiffNet {
       }
     }
     ++trained;
+  }
+
+  // One epoch as a single fused kernel on a gang of W threads, without locks. Each minibatch: member w computes blocks
+  // w, w + W, ... (each block's gradient summed in its samples' order, as the plain path), then arrives at the barrier
+  // (an atomic counter raised by compare-and-exchange). The last to arrive sums the blocks in their order and takes
+  // Adam's step, then publishes the next minibatch (the generation, by compare-and-exchange); the others spin-wait
+  // on it (a pause, then yielding). The same sums in the same order as the plain path, so the same numbers, bit for
+  // bit, on every back end. False when the back end could not run the gang (nothing done: the caller's plain path).
+  bool gangEpoch(const std::vector<NnSample>& all, const std::vector<std::size_t>& idx, std::size_t horizon, const Backend& b, std::size_t W) {
+    const std::size_t nb = (idx.size() + kBatch - 1) / kBatch;
+    per_.resize(kBatch / kBlock);
+    std::atomic<std::size_t> arrived{0}, gen{0};
+    const auto pause = [] {
+#if defined(__x86_64__) || defined(__i386__)
+      __builtin_ia32_pause();
+#endif
+    };
+    return b.gang(W, [&](std::size_t w, std::size_t) {
+      for (std::size_t bi = 0; bi < nb; ++bi) {
+        const std::size_t a = bi * kBatch, nS = std::min(idx.size(), a + kBatch) - a, nB = (nS + kBlock - 1) / kBlock;
+        for (std::size_t q = w; q < nB; q += W) {
+          zero(per_[q]);
+          for (std::size_t r = q * kBlock; r < std::min(nS, (q + 1) * kBlock); ++r) accumulate(all[idx[a + r]], horizon, per_[q]);
+        }
+        std::size_t cur = arrived.load(std::memory_order_relaxed);
+        while (!arrived.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        }
+        if (cur + 1 == W * (bi + 1)) {  // the last of this minibatch: the blocks summed in order, the step, the release
+          Grad g;
+          zero(g);
+          constexpr std::size_t nP = sizeof(Grad) / sizeof(double);
+          double* gp = reinterpret_cast<double*>(&g);
+          for (std::size_t q = 0; q < nB; ++q) {
+            const double* pq = reinterpret_cast<const double*>(&per_[q]);
+            for (std::size_t k = 0; k < nP; ++k) gp[k] += pq[k];
+          }
+          step(g, double(nS));
+          std::size_t expect = bi;
+          gen.compare_exchange_strong(expect, bi + 1, std::memory_order_release, std::memory_order_relaxed);
+        } else {
+          for (std::uint32_t s = 0; gen.load(std::memory_order_acquire) < bi + 1; ++s) {
+            if (s < 4096) pause();
+            else std::this_thread::yield();
+          }
+        }
+      }
+    });
   }
 
   // The mean CRPS of the samples usable at t0 that are newer than `from` (a held-out check of the network: the last
@@ -121,14 +203,15 @@ class DiffNet {
 
  private:
   static constexpr double kMu = 0.002, kS = 0.7, kLr = 0.003, kB1 = 0.9, kB2 = 0.999, kDecay = 1e-4;
-  static constexpr std::size_t kBatch = 128;
+  static constexpr std::size_t kBatch = 128, kBlock = 16;  // a minibatch; the fused kernel's block of samples
   double W1[kNH][kNF], b1[kNH] = {}, W2[2][kNH], b2[2] = {};
   struct Grad {
     double W1[kNH][kNF], b1[kNH], W2[2][kNH], b2[2];
   };
   Grad m, v;
-  std::vector<Grad> per_;  // a batch's per-sample gradients (train on a back end)
+  std::vector<Grad> per_;  // a batch's per-block gradients (train on a back end)
   std::size_t t = 0;
+  double b1t_ = 1, b2t_ = 1;  // kB1^t, kB2^t
 
 
 
@@ -144,7 +227,7 @@ class DiffNet {
     for (std::size_t j = 0; j < kNH; ++j) {
       double z = b1[j];
       for (std::size_t k = 0; k < kNF; ++k) z += W1[j][k] * f[k];
-      hid[j] = std::tanh(z);
+      hid[j] = nnTanh(z);
     }
     for (std::size_t r = 0; r < 2; ++r) {
       double z = b2[r];
@@ -164,8 +247,8 @@ class DiffNet {
     double f[kNF], hid[kNH], o[2];
     for (std::size_t k = 0; k < kNF; ++k) f[k] = s.f[k];
     forward(f, hid, o);
-    const double t0 = std::tanh(o[0]), t1 = std::tanh(o[1]);
-    const double mu = kMu * t0, sc = std::exp(kS * t1), H = double(h);
+    const double t0 = nnTanh(o[0]), t1 = nnTanh(o[1]);
+    const double mu = kMu * t0, sc = nnExp(kS * t1), H = double(h);
     double dmu = 0, ds = 0;
     for (std::size_t p = 0; p < kNP; ++p) {
       const double x = mu * H + sc * s.S[p] - s.y, sg = x > 0 ? 1.0 : x < 0 ? -1.0 : 0.0;
@@ -187,7 +270,8 @@ class DiffNet {
 
   void step(const Grad& g, double n) {
     ++t;
-    const double c1 = 1 - std::pow(kB1, double(t)), c2 = 1 - std::pow(kB2, double(t));
+    b1t_ *= kB1, b2t_ *= kB2;  // kB1^t and kB2^t as running products (portable, unlike pow)
+    const double c1 = 1 - b1t_, c2 = 1 - b2t_;
     const auto upd = [&](double& w, double gr, double& mm, double& vv, bool decay) {
       gr = gr / n + (decay ? kDecay * w : 0.0);
       mm = kB1 * mm + (1 - kB1) * gr, vv = kB2 * vv + (1 - kB2) * gr * gr;

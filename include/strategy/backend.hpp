@@ -27,6 +27,11 @@ class Backend {
   virtual std::string about() const = 0;
   // Runs f(begin, end) over chunks covering [0, n); returns when all are done.
   virtual void parallelFor(std::size_t n, const std::function<void(std::size_t, std::size_t)>& f) const = 0;
+  // A gang: f(w, w + 1) for every w in [0, n), all running at once on their own threads, so a kernel may wait inside
+  // for the others (a barrier). False, having run nothing, when the back end cannot promise that (one thread, more
+  // members than threads, or busy): the caller then takes its plain path. gangSize(): the most members it can run.
+  virtual std::size_t gangSize() const { return 1; }
+  virtual bool gang(std::size_t, const std::function<void(std::size_t, std::size_t)>&) const { return false; }
 };
 
 using BackendFactory = std::function<std::unique_ptr<Backend>()>;

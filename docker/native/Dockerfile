@@ -5,7 +5,9 @@
 #              rebuilt unless this list changes
 #   build      the sources only (CMakeLists.txt, apps, include, strategies, backends): the layer a change rebuilds
 #   check      every strategy's checks on a generated market (tools/check/strategy_check.sh) and the scan's (ofm_scan test)
-#   tools      the runtime image the scan runs: the three programs and their runtime libraries (only once the checks pass)
+#   tools      the runtime image the scan runs: the three programs and their runtime libraries. It does not wait for
+#              the checks (CI runs the check stage on every pull request; main only takes code that passed it), so the
+#              scans' image builds in minutes
 #   out        just the programs, exported with --output
 #
 #   docker buildx build -f docker/native/Dockerfile --target tools -t ofm-tools --load .
@@ -35,8 +37,6 @@ FROM alpine:${ALPINE} AS tools
 RUN --mount=type=secret,id=ca,required=false \
     if [ -f /run/secrets/ca ]; then cat /run/secrets/ca >> /etc/ssl/certs/ca-certificates.crt; fi \
  && apk add --no-cache libgit2 libcurl zlib libstdc++ ca-certificates
-# Made only when the checks passed (the check stage's mark).
-COPY --from=check /checked /etc/ofm-checked
 COPY --from=build /src/build/ofm_strategy /src/build/ofm_eod /src/build/ofm_scan /usr/local/bin/
 WORKDIR /work
 

@@ -18,7 +18,7 @@ check() {  # NAME DUMPDIR ARGS...
   name=$1 dir=$2
   shift 2
   [ -n "$dir" ] && mkdir -p "$dir"
-  line=$(X_MCGPU_CHECK=1 X_MCGPU_DUMP="$dir" "$BIN" --csv "$W/syn.csv" --costs US --strategy momentum --min-value 0 "$@" | grep '^mcgpu:')
+  line=$(X_MCGPU_CHECK=1 X_MCGPU_DUMP="$dir" "$BIN" --csv "$W/syn.csv" --costs US --strategy rsi2 --min-value 0 "$@" | grep '^mcgpu:')
   echo "$name: $line"
   echo "$line" | awk -v name="$name" '{
     for (i = 1; i <= NF; i++) { if ($i == "slots;") slots = $(i-1); if ($i == "apart" && $(i+1) == "over" && $(i+2) == "1e-4") over = $(i-1) }
@@ -27,8 +27,8 @@ check() {  # NAME DUMPDIR ARGS...
     if (over / slots > 0.0005) { print name ": " over " of " slots " slots more than 1e-4 apart in single precision"; exit 1 }
     if (stops / slots > 0.0001) { print name ": " stops " stop decisions differ"; exit 1 }
   }'
-  "$BIN" --csv "$W/syn.csv" --costs US --strategy momentum --min-value 0 "$@" --json "$W/a.json" --orders "$W/a-o.json" > /dev/null
-  X_MCGPU_EMULATE=1 "$BIN" --csv "$W/syn.csv" --costs US --strategy momentum --min-value 0 "$@" --json "$W/b.json" --orders "$W/b-o.json" > /dev/null
+  "$BIN" --csv "$W/syn.csv" --costs US --strategy rsi2 --min-value 0 "$@" --json "$W/a.json" --orders "$W/a-o.json" > /dev/null
+  X_MCGPU_EMULATE=1 "$BIN" --csv "$W/syn.csv" --costs US --strategy rsi2 --min-value 0 "$@" --json "$W/b.json" --orders "$W/b-o.json" > /dev/null
   [ "$(jq -c '[.orders[].ticker]' "$W/a-o.json")" = "$(jq -c '[.orders[].ticker]' "$W/b-o.json")" ] || { echo "FAIL: $name: the GPU's precision changes the orders"; exit 1; }
   [ "$(jq '.backtest.trades' "$W/a.json")" = "$(jq '.backtest.trades' "$W/b.json")" ] || { echo "FAIL: $name: the GPU's precision changes the backtest's trades"; exit 1; }
   echo "$name: the same orders and $(jq '.backtest.trades' "$W/a.json") backtest trades in the GPU's precision (Sharpe $(jq '.backtest.sharpe' "$W/a.json") / $(jq '.backtest.sharpe' "$W/b.json"))"
