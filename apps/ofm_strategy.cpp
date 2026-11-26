@@ -693,7 +693,7 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -926,7 +926,7 @@ int main(int argc, char** argv) {
   // over the close, at least the buy's limit; the stop stopsd under it.
   // bracketadapt: each trade's own multiples, learnt at its reset on its simulated futures (any value; 0: none), in
   // place of takesd and stopsd.
-  const bool bracketAdapt = flatDaily && P["bracketadapt"] > 0;
+  const bool bracketAdapt = flatDaily && P["bracketadapt"] > 0, sortino = P["bracketobj"] > 0;
   std::map<std::size_t, double> takeMult, stopMult;
   std::map<std::size_t, std::array<double, 4>> bracketStat;  // the learnt bracket's mean, 5%, 95% and chance of a loss
   std::vector<double> bracketTakes, bracketStops;            // every multiple learnt (the report's spread)
@@ -1027,8 +1027,8 @@ int main(int argc, char** argv) {
   };
   if (!(P["stopmultlo"] > 0 && P["stopmultlo"] < P["stopmulthi"])) usage("stopmultlo must be above 0 and under stopmulthi");
   const std::vector<double> vFine = logGrid(P["stopmultlo"], P["stopmulthi"], 13), rbFine = logGrid(0.0025, 0.10, 13);
-  // bracketadapt's grids, in daily volatilities: the take-profit 0.5 to 5, the stop 1 to 8 (each also none)
-  const std::vector<double> bGridA = logGrid(0.5, 5.0, 13), bGridB = logGrid(1.0, 8.0, 11);
+  // bracketadapt's grids, in daily volatilities: the take-profit 0.25 to 5, the stop 0.25 to 8 (each also none)
+  const std::vector<double> bGridA = logGrid(0.25, 5.0, 15), bGridB = logGrid(0.25, 8.0, 16);
   std::vector<double> vPicks, rbPicks;  // adaptfine: every value learnt (the report's spread)
   const std::vector<std::pair<double, double>> sarGrid{{0.005, 0.1}, {0.01, 0.1}, {0.02, 0.1}, {0.03, 0.1}, {0.005, 0.2}, {0.01, 0.2}, {0.02, 0.2}, {0.03, 0.2}};
   std::map<std::pair<double, double>, std::size_t> sarChosen;
@@ -1696,11 +1696,18 @@ int main(int argc, char** argv) {
             }
           }
         });
+        // The objective (bracketobj): 1, each pair's Sortino ratio on the trade's futures (its mean over its downside
+        // deviation: a loss counts against a bracket, a gain does not), so the stop is learnt to avoid losses, with no
+        // constant to choose; 0, the expected log growth (which a few large losses barely move).
         std::vector<double> mean(A * B, 0.0);
         for (std::size_t x = 0; x < A * B; ++x) {
-          double m = 0;
-          for (std::size_t q = 0; q < Pn; ++q) m += g[x * Pn + q];
-          mean[x] = m / double(Pn);
+          double m = 0, dn = 0;
+          for (std::size_t q = 0; q < Pn; ++q) {
+            const double y = g[x * Pn + q];
+            m += y, dn += y < 0 ? y * y : 0.0;
+          }
+          m /= double(Pn), dn = std::sqrt(dn / double(Pn));
+          mean[x] = sortino ? (dn > 0 ? m / dn : (m > 0 ? 1e6 * m : m)) : m;
         }
         std::size_t best = 0;
         for (std::size_t x = 1; x < A * B; ++x)
