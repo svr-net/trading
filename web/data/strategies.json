@@ -24,9 +24,10 @@
      "mc": 1,
      "mcnn": 1,
      "mcnnstep": 5,
-     "bracketadapt": 1,
      "stopslip": 0.1,
-     "mcreuse": 0.1
+     "mcreuse": 0.1,
+     "combobracket": 2,
+     "staleopen": 1
     }
    }
   ],
