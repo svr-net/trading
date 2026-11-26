@@ -183,6 +183,9 @@ jobs:
           # Day trades only (apps/ofm_day, research): bought at the open, sold at the close, before and after the costs.
           SF=(); if [ "$MARKET" = UK ]; then SF=(--stamp-free tools/eoddata/aim.txt); fi
           case "$MARKET" in UK|EU|US|APAC) ofm ofm_day --csv data/stocks.csv --market "$MARKET" --k 5,10 "${SF[@]}" | tee -a "$GITHUB_STEP_SUMMARY" || true;; esac
+          # the same on IBKR's own bars where the store has them (their open the opening auction's price: EODData's
+          # open for a thin share is not, 26 Nov: the UK's gaps in EODData's bars an artefact, +131 bp a day)
+          if [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ]; then case "$MARKET" in UK|EU|US|APAC) echo "day: on IBKR's bars"; ofm ofm_day --csv "$IB" --market "$MARKET" --k 5,10 "${SF[@]}" | tee -a "$GITHUB_STEP_SUMMARY" || true;; esac; fi
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: The day's fundamentals (started above)
         if: ${{ always() }}
