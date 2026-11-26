@@ -71,8 +71,6 @@
     "US": {
       "live": {
         "args": [
-          "--resample-runs",
-          "5",
           "--account",
           "config/account.json",
           "--pricing",
@@ -107,8 +105,6 @@
     "APAC": {
       "live": {
         "args": [
-          "--resample-runs",
-          "5",
           "--account",
           "config/account.json",
           "--order-model",
@@ -141,8 +137,6 @@
     "INDEX": {
       "live": {
         "args": [
-          "--resample-runs",
-          "5",
           "--account",
           "config/account.json",
           "--pricing",
