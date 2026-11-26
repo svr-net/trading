@@ -28,7 +28,8 @@
      "stopslip": 0.1,
      "mcreuse": 0.1,
      "combobracket": 2,
-     "staleopen": 1
+     "staleopen": 1,
+     "rebuyday": 1
     }
    }
   ],
