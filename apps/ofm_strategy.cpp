@@ -699,6 +699,11 @@ int main(int argc, char** argv) {
   // record places the next day's orders): in a rising SAR the stop at its next level, the take-profit as far over
   // the close; in a falling SAR the take-profit at its next level, the stop as far under the close.
   P.emplace("psarbracket", 0.0), P.emplace("combobracket", 0.0), P.emplace("bracketopen", 0.0);
+  // volfilter: 1 drops the shares too volatile for the bracket (intraday): a share is bought only when its daily
+  // volatility is within the lowest fraction of the volatilities seen at the strategy's earlier picks; the fraction
+  // learnt walk-forward (the one whose trades' mean log return less its standard error is best so far: 10% to all),
+  // every day's top picks scored, the ones dropped too (their day as it went, under the bracket they would have had).
+  P.emplace("volfilter", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -954,6 +959,7 @@ int main(int argc, char** argv) {
   // their values at the earlier trades; the regime's own pick only where its record beats every trade's.
   const bool comboBracket = flatDaily && !psarBracket && P["combobracket"] > 0;
   const bool sarOn = psarBracket || comboBracket;
+  struct Rec { double n = 0, s = 0, s2 = 0; };
   struct SarSt { double sar = 0, ep = 0, af = 0, ph = 0, pl = 0; bool up = true, on = false; };
   std::vector<std::pair<double, double>> pbGrid;
   for (double st : {0.005, 0.01, 0.02, 0.03, 0.05, 0.08})
@@ -1079,7 +1085,6 @@ int main(int argc, char** argv) {
     f.adx = adxAt(t, i), f.rsi = rsiAt(t, i);
     return f;
   };
-  struct Rec { double n = 0, s = 0, s2 = 0; };
   std::vector<std::vector<Rec>> comboRec(comboBracket ? 10 : 0, std::vector<Rec>(nCombo));  // the 9 regimes, then every trade
   std::vector<double> adxSeen, rsiSeen;
   std::array<double, 2> adxCut{kNaN, kNaN}, rsiCut{kNaN, kNaN};
@@ -1116,6 +1121,28 @@ int main(int argc, char** argv) {
     if (z < 9 && !(comboScore[z] > comboScore[9])) z = 9;
     const std::size_t q = comboPick[z];
     return {f.take[q / nStop], f.stop[q % nStop]};
+  };
+  const bool volFilter = flatDaily && P["volfilter"] > 0;
+  std::vector<double> volSeen;  // the volatilities of the scored picks, sorted
+  std::vector<std::size_t> volCand;
+  const std::array<double, 10> volGrid{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0};
+  std::array<Rec, 10> volRec{};
+  std::array<std::size_t, 10> volUsed{};
+  double volQ = 1.0;
+  std::vector<double> volKept;
+  const auto volRank = [&](std::size_t t, std::size_t i) {  // the share's volatility's rank among those seen (0 to 1)
+    const double sg = d.sigma[t * N + i];
+    if (volSeen.empty() || !std::isfinite(sg)) return 0.0;
+    return double(std::upper_bound(volSeen.begin(), volSeen.end(), sg) - volSeen.begin()) / double(volSeen.size());
+  };
+  const auto volChoose = [&]() {  // the fraction with the best record so far (all until one has a record)
+    double best = -1e300;
+    for (std::size_t g = 0; g < volGrid.size(); ++g) {
+      const Rec& r = volRec[g];
+      if (r.n < 2) continue;
+      const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
+      if (sc > best) best = sc, volQ = volGrid[g];
+    }
   };
   const auto takeOf = [&](std::size_t t, std::size_t i) {
     if (psarBracket) return sarLevels(sarBest, t, i).first;
@@ -1421,6 +1448,11 @@ int main(int argc, char** argv) {
     if ((t - start) % reb != 0 && t != start) return;
     std::vector<std::pair<double, std::size_t>> c;
     ranked(*strategy, P, t, c);
+    if (volFilter) {  // the day's top picks before the filter (scored the next day), then the too volatile dropped
+      volCand.clear();
+      for (std::size_t r = 0; r < c.size() && volCand.size() < k; ++r) volCand.push_back(c[r].second);
+      if (volQ < 1.0) c.erase(std::remove_if(c.begin(), c.end(), [&](const auto& x) { return volRank(t, x.second) > volQ; }), c.end());
+    }
     of = c.size(), decided = t;
     target.clear();
     if (P["scorepos"] > 0) c.erase(std::remove_if(c.begin(), c.end(), [](const auto& x) { return !(x.first > 0); }), c.end());
@@ -2001,8 +2033,20 @@ int main(int argc, char** argv) {
       }
       ++sarUsed[sarBest];
     }
+    if (volFilter) volChoose(), ++volUsed[std::size_t(std::lround(volQ * 10)) - 1];
     decide(t);
     const std::size_t u = t + 1;
+    if (volFilter)  // the day's top picks before the filter, each on day u as it went under its bracket
+      for (std::size_t i : volCand) {
+        const double c0 = d.Cf[t * N + i], O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i], Hi = d.H[u * N + i], sg = d.sigma[t * N + i];
+        if (!(c0 > 0 && O > 0 && C > 0 && std::isfinite(sg)) || O > c0 * (1 + capOf(t, i))) continue;  // not bought under its limit
+        const double sh = P["bracketopen"] > 0 ? O / c0 : 1.0, tk = takeOf(t, i) * sh, sl = stopOf(t, i) * sh;
+        const double X = sl > 0 && Lo > 0 && Lo <= sl ? std::min(sl, O) * slipAt(u, i) : tk > 0 && Hi >= tk ? std::max(tk, O) : C;
+        const double y = std::log(std::max(1e-6, X / O)), rk = volRank(t, i);
+        for (std::size_t g = 0; g < volGrid.size(); ++g)
+          if (rk <= volGrid[g] || volSeen.empty()) volRec[g].n += 1, volRec[g].s += y, volRec[g].s2 += y * y;
+        volSeen.insert(std::upper_bound(volSeen.begin(), volSeen.end(), sg), sg);
+      }
     double day = 0, dayCost = 0;  // dayCost: the day's buy-backs' round trips (the record after them)
     std::vector<std::size_t> done, sameDayBack;
     // rebuystop: share i bought back at px on day u by its buy-back order, its stop placed at once. sameDay: the stop's own
@@ -2203,6 +2247,7 @@ int main(int argc, char** argv) {
   }
   sarRoll(T - 1);
   if (comboBracket) comboRefresh();
+  if (volFilter) volChoose();
   if (psarBracket) {
     double bestS = -1e300;
     for (std::size_t g = 0; g < pbGrid.size(); ++g) {
@@ -2497,6 +2542,14 @@ int main(int argc, char** argv) {
   if (bracketAdapt && !bracketTakes.empty())
     std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
+  if (volFilter) {
+    std::string used;
+    for (std::size_t g = 0; g < volGrid.size(); ++g)
+      if (volUsed[g]) used += (used.empty() ? "" : ", ") + std::to_string(int(std::lround(100 * volGrid[g]))) + "% " + std::to_string(volUsed[g]) + " days";
+    const double cutAt = volSeen.empty() ? 0.0 : volSeen[std::min(volSeen.size() - 1, std::size_t(volQ * double(volSeen.size())))];
+    std::printf("strategy:   the too volatile dropped: only shares in the lowest fraction of the picks' daily volatilities, the fraction learnt walk-forward (%s): now %.0f%% (daily volatility up to %.2f%%)\n",
+                used.c_str(), 100 * volQ, 100 * cutAt);
+  }
   if (comboBracket) {
     const auto takeName = [&](std::size_t a) -> std::string {
       if (a == 0) return "none";
