@@ -62,7 +62,7 @@ using strat::kNaN;
 namespace {
 
 struct Options {
-  std::string csv, market = "UK", strategy, backend, stampFree, venues, overrideCsv, jsonOut, ordersOut, traceOut, synthetic, account;
+  std::string csv, market = "UK", strategy, backend, stampFree, venues, overrideCsv, jsonOut, ordersOut, traceOut, synthetic, account, orderModel;
   std::map<std::string, double> params;
   double capital = 5000, minValue = -1, minPrice = -1, advShare = 0.01, minOrder = 500;
   long top = -1;
@@ -103,6 +103,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--stamp-free") o.stampFree = next();
     else if (a == "--venues") o.venues = next();
     else if (a == "--override") o.overrideCsv = next();
+    else if (a == "--order-model") o.orderModel = next();
     else if (a == "--account") o.account = next();
     else if (a == "--pricing") o.tiered = next() == "tiered";
     else if (a == "--min-value") o.minValue = std::atof(next().c_str());
@@ -693,7 +694,22 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0), P.emplace("maxloss", 0.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0);
+  // psarbracket: 1 takes the intraday bracket from the share's Parabolic SAR on its daily bars (Wilder 1978), the step
+  // and largest step learnt walk-forward for the market (each pair scored on every real trade day so far; the best
+  // record places the next day's orders): in a rising SAR the stop at its next level, the take-profit as far over
+  // the close; in a falling SAR the take-profit at its next level, the stop as far under the close.
+  P.emplace("psarbracket", 0.0), P.emplace("combobracket", 0.0), P.emplace("bracketopen", 0.0);
+  // volfilter: 1 drops the shares too volatile for the bracket (intraday): a share is bought only when its daily
+  // volatility is within the lowest fraction of the volatilities seen at the strategy's earlier picks; the fraction
+  // learnt walk-forward (the one whose trades' mean log return less its standard error is best so far: 10% to all),
+  // every day's top picks scored, the ones dropped too (their day as it went, under the bracket they would have had).
+  P.emplace("volfilter", 0.0);
+  // sizeadapt: 1 sizes each intraday trade by its stop: the slot's money at risk to the stop (to the worst fall from
+  // the open in the share's last `riskwindow` sessions without one) a fraction R of the slot, the trade at most the
+  // slot; R learnt walk-forward (the one whose trades grew a slot most so far: 0.25% to 8% or the whole slot), and the
+  // bracket learnt on the trades so sized (a wide stop: a small trade).
+  P.emplace("sizeadapt", 0.0), P.emplace("riskwindow", 60.0), P.emplace("rebuyday", 0.0), P.emplace("staleopen", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -935,23 +951,369 @@ int main(int argc, char** argv) {
   std::array<ObjRec, 3> objRec;
   std::array<std::size_t, 3> objUsed{};
   std::map<std::size_t, std::array<std::pair<double, double>, 3>> objCand;  // each share's three brackets at its last reset  // the learnt bracket's mean, 5%, 95% and chance of a loss
-  std::vector<double> bracketTakes, bracketStops;            // every multiple learnt (the report's spread)
+  std::vector<double> bracketTakes, bracketStops, psarStops;            // every multiple learnt (the report's spread)
   const auto takeMultOf = [&](std::size_t i) { const auto it = takeMult.find(i); return it != takeMult.end() ? it->second : takeSd; };
   const auto stopMultOf = [&](std::size_t i) { const auto it = stopMult.find(i); return it != stopMult.end() ? it->second : stopSd; };
+  // psarbracket: every (step, largest step) pair's SAR for each share, rolled over the daily bars to the latest close
+  // (sarRoll); the pair placed is the one with the best real record so far (sarBest).
+  const bool psarBracket = flatDaily && P["psarbracket"] > 0;
+  // combobracket: 1 learns each trade's bracket from the Parabolic SAR, Bollinger bands, the ADX and the RSI together:
+  // the take-profit none, the SAR's (any step pair), a Bollinger band's middle or upper band (10, 20 or 50 sessions, 1
+  // to 3 deviations); the stop none, the SAR's, a lower Bollinger band, or the tighter of the SAR's and the band's; the
+  // pair placed the one with the best real record so far (its mean log return less its standard error, walk-forward)
+  // among the trades in the same regime: the share's ADX(14) and RSI(14) each in the lower, middle or upper third of
+  // their values at the earlier trades; the regime's own pick only where its record beats every trade's.
+  const bool comboBracket = flatDaily && !psarBracket && P["combobracket"] > 0;
+  const bool sarOn = psarBracket || comboBracket;
+  struct Rec { double n = 0, s = 0, s2 = 0; };
+  struct SarSt { double sar = 0, ep = 0, af = 0, ph = 0, pl = 0; bool up = true, on = false; };
+  std::vector<std::pair<double, double>> pbGrid;
+  for (double st : {0.005, 0.01, 0.02, 0.03, 0.05, 0.08})
+    for (double mx : {0.05, 0.1, 0.2, 0.3, 0.5})
+      if (mx > st) pbGrid.emplace_back(st, mx);
+  std::vector<std::vector<SarSt>> sarSt(sarOn ? pbGrid.size() : 0, std::vector<SarSt>(N));
+  std::vector<ObjRec> sarRec(pbGrid.size());
+  std::vector<std::size_t> sarUsed(pbGrid.size());
+  std::size_t sarNext = 0, sarBest = 0;
+  {
+    for (std::size_t g = 0; g < pbGrid.size(); ++g)  // no record yet: Wilder's own pair
+      if (pbGrid[g] == std::make_pair(0.02, 0.2)) sarBest = g;
+  }
+  const auto sarRoll = [&](std::size_t t) {  // every pair's SAR through t's bar: its level for the session after t
+    for (; sarOn && sarNext <= t; ++sarNext) {
+      const std::size_t q = sarNext;
+      for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+        const auto [st, mx] = pbGrid[g];
+        for (std::size_t i = 0; i < N; ++i) {
+          const double h = d.H[q * N + i], l = d.L[q * N + i];
+          if (!(h > 0 && l > 0)) continue;  // no bar: the SAR waits
+          SarSt& x = sarSt[g][i];
+          if (!x.on) {
+            x = SarSt{l, h, st, h, l, true, true};
+            continue;
+          }
+          if (x.up ? l <= x.sar : h >= x.sar) {  // through the SAR: turned, from the trend's extreme
+            x.up = !x.up, x.sar = x.ep, x.ep = x.up ? h : l, x.af = st;
+          } else if (x.up ? h > x.ep : l < x.ep) {
+            x.ep = x.up ? h : l, x.af = std::min(mx, x.af + st);
+          }
+          x.sar += x.af * (x.ep - x.sar);
+          x.sar = x.up ? std::min({x.sar, l, x.pl}) : std::max({x.sar, h, x.ph});
+          x.ph = h, x.pl = l;
+        }
+      }
+    }
+  };
+  // pair g's take-profit and stop for a buy decided at t's close (t: the SAR's latest roll), the take at least the limit
+  const auto sarLevels = [&](std::size_t g, std::size_t t, std::size_t i) -> std::pair<double, double> {
+    const SarSt& x = sarSt[g][i];
+    const double c = d.Cf[t * N + i];
+    if (!x.on || !(c > 0) || !(x.sar > 0)) return {0.0, 0.0};
+    const double dist = std::abs(c - x.sar);
+    const bool mirror = P["psarbracket"] < 2;  // 2: only the SAR's own side (a rising SAR the stop, a falling one the take-profit)
+    const double tk = x.up ? (mirror ? c + dist : 0.0) : x.sar, sl = x.up ? x.sar : mirror ? c - dist : 0.0;
+    if (!(tk > 0)) return {0.0, sl > 0 && sl < c ? sl : 0.0};
+    return {std::max(c * (1 + capOf(t, i)), tk), sl > 0 && sl < c ? sl : 0.0};
+  };
+  // combobracket: the candidate levels of a buy decided at t's close, and its regime
+  const std::size_t nG = pbGrid.size();
+  const std::array<std::size_t, 3> bbN{10, 20, 50};
+  const std::array<double, 5> bbK{1.0, 1.5, 2.0, 2.5, 3.0};
+  // the volatility levels: that many daily volatilities from the close, by three measures (the engine's daily
+  // volatility, the ATR(14) over the close, the 20-day high-low range volatility)
+  const std::array<double, 9> volA{0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0};
+  const std::array<const char*, 3> volM{"vol", "ATR", "range vol"};
+  const std::size_t nVol = volA.size() * volM.size();
+  const std::size_t nTake = 1 + nG + bbN.size() + bbN.size() * bbK.size() + nVol;
+  const std::size_t nBand = bbN.size() * bbK.size(), nStop = 1 + nG + nBand + nG * nBand + nVol;
+  // combobracket 2: the volatility levels only, a take-profit and a stop on every trade (adaptive volatility)
+  const bool volOnly = P["combobracket"] >= 2;
+  const std::size_t ta0 = volOnly ? nTake - nVol : 0, sb0 = volOnly ? nStop - nVol : 0;
+  const std::size_t nCombo = comboBracket ? nTake * nStop : 0;
+  struct Feat { std::vector<double> take, stop; double adx = kNaN, rsi = kNaN; };
+  const auto adxAt = [&](std::size_t t, std::size_t i) {  // Wilder's ADX(14) at t over the 80 sessions to it (NaN: a bar missing)
+    const std::size_t n = 14, W = 80;
+    if (t < W) return kNaN;
+    double tr = 0, pd = 0, md = 0, adx = 0;
+    std::size_t m = 0;
+    for (std::size_t q = t + 1 - W; q <= t; ++q) {
+      const double h = d.H[q * N + i], l = d.L[q * N + i], ph = d.H[(q - 1) * N + i], pl = d.L[(q - 1) * N + i], pc = d.Cf[(q - 1) * N + i];
+      if (!(h > 0 && l > 0 && ph > 0 && pl > 0 && pc > 0)) return kNaN;
+      const double up = h - ph, dn = pl - l;
+      const double T1 = std::max({h - l, std::abs(h - pc), std::abs(l - pc)});
+      const double P1 = up > dn && up > 0 ? up : 0.0, M1 = dn > up && dn > 0 ? dn : 0.0;
+      const double a = 1.0 / double(n);
+      tr = (1 - a) * tr + a * T1, pd = (1 - a) * pd + a * P1, md = (1 - a) * md + a * M1;
+      if (++m < n) continue;
+      const double dx = pd + md > 0 ? 100 * std::abs(pd - md) / (pd + md) : 0.0;
+      adx = m == n ? dx : (1 - a) * adx + a * dx;
+    }
+    return tr > 0 ? adx : kNaN;
+  };
+  const auto rsiAt = [&](std::size_t t, std::size_t i) {  // Wilder's RSI(14), seeded 60 sessions before
+    const std::size_t n = 14, W = 60;
+    if (t < W + 1) return kNaN;
+    double up = 0, dn = 0;
+    const double a = 1.0 / double(n);
+    for (std::size_t q = t + 1 - W; q <= t; ++q) {
+      const double x = d.Cf[(q - 1) * N + i], y = d.Cf[q * N + i];
+      if (!(x > 0 && y > 0)) return kNaN;
+      up = (1 - a) * up + a * std::max(y - x, 0.0), dn = (1 - a) * dn + a * std::max(x - y, 0.0);
+    }
+    return up + dn > 0 ? 100 * up / (up + dn) : 50.0;
+  };
+  const auto featOf = [&](std::size_t t, std::size_t i) {
+    Feat f;
+    f.take.assign(nTake, 0.0), f.stop.assign(nStop, 0.0);
+    const double c = d.Cf[t * N + i];
+    if (!(c > 0)) return f;
+    const double lim = c * (1 + capOf(t, i));
+    std::vector<double> sarT(nG), sarS(nG), low(nBand, 0.0);
+    for (std::size_t g = 0; g < nG; ++g) std::tie(sarT[g], sarS[g]) = sarLevels(g, t, i);
+    std::size_t kk = 1;
+    for (std::size_t g = 0; g < nG; ++g) f.take[kk++] = sarT[g];
+    std::array<double, 3> mid{}, sd{};
+    for (std::size_t b = 0; b < bbN.size(); ++b) {
+      const std::size_t n = bbN[b];
+      double s1 = 0, s2 = 0;
+      bool ok = t + 1 >= n;
+      for (std::size_t q = t + 1 - std::min(n, t + 1); ok && q <= t; ++q) {
+        const double x = d.Cf[q * N + i];
+        if (!(x > 0)) ok = false;
+        s1 += x, s2 += x * x;
+      }
+      if (ok) mid[b] = s1 / double(n), sd[b] = std::sqrt(std::max(0.0, s2 / double(n) - mid[b] * mid[b]));
+      f.take[kk++] = ok && mid[b] > lim ? mid[b] : 0.0;
+    }
+    for (std::size_t b = 0; b < bbN.size(); ++b)
+      for (std::size_t j = 0; j < bbK.size(); ++j) {
+        const double up = mid[b] + bbK[j] * sd[b], lo = mid[b] - bbK[j] * sd[b];
+        f.take[kk++] = mid[b] > 0 && up > lim ? up : 0.0;
+        low[b * bbK.size() + j] = mid[b] > 0 && lo > 0 && lo < c ? lo : 0.0;
+      }
+    kk = 1;
+    for (std::size_t g = 0; g < nG; ++g) f.stop[kk++] = sarS[g];
+    for (std::size_t j = 0; j < nBand; ++j) f.stop[kk++] = low[j];
+    for (std::size_t g = 0; g < nG; ++g)
+      for (std::size_t j = 0; j < nBand; ++j) f.stop[kk++] = std::max(sarS[g], low[j]);  // the tighter (0: neither)
+    {
+      std::array<double, 3> sv{d.sigma[t * N + i], kNaN, kNaN};
+      if (t >= 60) {  // Wilder's ATR(14) over the 60 sessions to t, over the close; the 20-day range volatility (Parkinson)
+        double atr = 0, pk = 0;
+        std::size_t m = 0, mp = 0;
+        bool ok = true;
+        for (std::size_t q = t - 59; q <= t && ok; ++q) {
+          const double h = d.H[q * N + i], l = d.L[q * N + i], pc = d.Cf[(q - 1) * N + i];
+          if (!(h > 0 && l > 0 && pc > 0)) { ok = false; break; }
+          const double tr = std::max({h - l, std::abs(h - pc), std::abs(l - pc)});
+          atr = m++ == 0 ? tr : atr + (tr - atr) / 14.0;
+          if (q + 20 > t) pk += std::log(h / l) * std::log(h / l), ++mp;
+        }
+        if (ok) sv[1] = atr / c, sv[2] = std::sqrt(pk / double(mp) / (4 * std::log(2.0)));
+      }
+      std::size_t kt = 1 + nG + bbN.size() + bbN.size() * bbK.size();
+      for (double sg : sv)
+        for (double a : volA) {
+          f.take[kt++] = std::isfinite(sg) && sg > 0 ? c * (1 + a * sg) : 0.0;  // under the fill: sold at the open
+          f.stop[kk++] = std::isfinite(sg) && sg > 0 && a * sg < 1 ? c * (1 - a * sg) : 0.0;
+        }
+    }
+    f.adx = adxAt(t, i), f.rsi = rsiAt(t, i);
+    return f;
+  };
+  std::vector<std::vector<Rec>> comboRec(comboBracket ? 10 : 0, std::vector<Rec>(nCombo));  // the 9 regimes, then every trade
+  std::vector<double> adxSeen, rsiSeen;
+  std::array<double, 2> adxCut{kNaN, kNaN}, rsiCut{kNaN, kNaN};
+  std::array<std::size_t, 10> comboPick{};
+  std::array<double, 10> comboScore{};
+  std::vector<std::size_t> comboUsedCell(10);
+  const auto cellOf = [&](const Feat& f) -> std::size_t {
+    if (!std::isfinite(adxCut[0]) || !std::isfinite(f.adx) || !std::isfinite(f.rsi)) return 9;
+    const std::size_t a = f.adx < adxCut[0] ? 0 : f.adx < adxCut[1] ? 1 : 2, r = f.rsi < rsiCut[0] ? 0 : f.rsi < rsiCut[1] ? 1 : 2;
+    return 3 * a + r;
+  };
+  const auto comboRefresh = [&]() {  // the regimes' thirds and each regime's best pair, from the trades so far
+    const auto cuts = [](std::vector<double> v, std::array<double, 2>& c) {
+      if (v.size() < 3) return;
+      std::sort(v.begin(), v.end());
+      c[0] = v[v.size() / 3], c[1] = v[2 * v.size() / 3];
+    };
+    cuts(adxSeen, adxCut), cuts(rsiSeen, rsiCut);
+    for (std::size_t z = 0; z < 10; ++z) {
+      double best = -1e300;
+      std::size_t bi = 0;
+      for (std::size_t q = 0; q < nCombo; ++q) {
+        if (q / nStop < ta0 || q % nStop < sb0) continue;  // combobracket 2: the volatility levels only
+        const Rec& r = comboRec[z][q];
+        if (r.n < 2) continue;
+        const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
+        if (sc > best) best = sc, bi = q;
+      }
+      comboPick[z] = bi, comboScore[z] = best;
+    }
+  };
+  const auto comboLevels = [&](std::size_t t, std::size_t i) -> std::pair<double, double> {
+    const Feat f = featOf(t, i);
+    std::size_t z = cellOf(f);
+    if (z < 9 && !(comboScore[z] > comboScore[9])) z = 9;
+    const std::size_t q = comboPick[z];
+    return {f.take[q / nStop], f.stop[q % nStop]};
+  };
+  const bool volFilter = flatDaily && P["volfilter"] > 0;
+  std::vector<double> volSeen;  // the volatilities of the scored picks, sorted
+  std::vector<std::size_t> volCand;
+  const std::array<double, 10> volGrid{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0};
+  std::array<Rec, 10> volRec{};
+  std::array<std::size_t, 10> volUsed{};
+  double volQ = 1.0;
+  std::vector<double> volKept;
+  const auto volRank = [&](std::size_t t, std::size_t i) {  // the share's volatility's rank among those seen (0 to 1)
+    const double sg = d.sigma[t * N + i];
+    if (volSeen.empty() || !std::isfinite(sg)) return 0.0;
+    return double(std::upper_bound(volSeen.begin(), volSeen.end(), sg) - volSeen.begin()) / double(volSeen.size());
+  };
+  const auto volChoose = [&]() {  // the fraction with the best record so far (all until one has a record)
+    double best = -1e300;
+    for (std::size_t g = 0; g < volGrid.size(); ++g) {
+      const Rec& r = volRec[g];
+      if (r.n < 2) continue;
+      const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
+      if (sc > best) best = sc, volQ = volGrid[g];
+    }
+  };
   const auto takeOf = [&](std::size_t t, std::size_t i) {
+    if (psarBracket) return sarLevels(sarBest, t, i).first;
+    if (comboBracket) return comboLevels(t, i).first;
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], a = takeMultOf(i);
     return a > 0 && s > 0 && c > 0 ? std::max(c * (1 + capOf(t, i)), c * (1 + a * s)) : 0.0;
   };
-  // maxloss: the most a trade may lose, a fraction of the buy's limit (the highest price it can buy at): its stop is
-  // never further under it (the account's own limit; only a gap through the stop, sold at the open, loses more).
-  // A learnt multiple under 0 means the stop at that limit.
-  const double maxLoss = P["maxloss"];
   const auto stopOf = [&](std::size_t t, std::size_t i) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], b = stopMultOf(i);
     if (!(c > 0)) return 0.0;
-    const double floorAt = maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0;
-    const double vol = b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
-    return std::max(vol, floorAt);
+    if (comboBracket) return comboLevels(t, i).second;
+    if (psarBracket) return sarLevels(sarBest, t, i).second;
+    return b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
+  };
+  // --order-model (tools/fit_order.py, from 5-minute bars): on a day that reached both the stop and the take-profit, the
+  // chance the stop came first, by year (each fitted on the years before; a year before the first fit uses the first,
+  // counted in the report); without it the stop is taken as first.
+  std::map<int, std::array<double, 5>> orderW;
+  if (!o.orderModel.empty()) {
+    std::ifstream f(o.orderModel);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string js = ss.str();
+    for (std::size_t at = js.find("\"years\""); at != std::string::npos;) {
+      const std::size_t q = js.find("\"w\"", at);
+      if (q == std::string::npos) break;
+      const std::size_t y0 = js.rfind('"', js.rfind(':', js.rfind('{', q)) - 1);  // "YYYY": {"w": [...
+      const int yr = std::atoi(js.c_str() + js.rfind('"', y0 - 1) + 1);
+      std::array<double, 5> w{};
+      const char* c = js.c_str() + js.find('[', q) + 1;
+      for (double& x : w) {
+        char* e = nullptr;
+        x = std::strtod(c, &e);
+        c = e + 1;
+      }
+      if (yr > 1900) orderW[yr] = w;
+      at = q + 3;
+    }
+    if (orderW.empty()) usage(("no model in " + o.orderModel).c_str());
+  }
+  std::size_t nBoth = 0, nBothEarly = 0, nTakeThin = 0;
+  const auto pStopFirst = [&](std::size_t u, std::size_t i, double sl, double tk, bool count) {
+    if (orderW.empty()) return 1.0;
+    const int yr = std::atoi(d.days[u].c_str());
+    auto it = orderW.upper_bound(yr);
+    if (it == orderW.begin()) { if (count) ++nBothEarly; } else --it;
+    if (count) ++nBoth;
+    const double O = d.O[u * N + i], H = d.H[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i], rg = H - Lw;
+    if (!(rg > 0 && O > Lw && H > O)) return 0.5;
+    const auto& w = it->second;
+    const double z = w[0] + w[1] * (O - Lw) / rg + w[2] * (C - Lw) / rg + w[3] * (O - sl) / (O - Lw) + w[4] * (tk - O) / (H - O);
+    return 1 / (1 + std::exp(-z));
+  };
+  // The value traded at or over a take-profit at tk on day u (the day's volume spread evenly over its range): its
+  // limit fills only when that covers the order (a high made by a single small trade does not); no volumes: any.
+  const auto valueOver = [&](std::size_t u, std::size_t i, double tk) {
+    const double H = d.H[u * N + i], Lw = d.L[u * N + i], V = d.V[u * N + i];
+    if (!(H >= tk)) return 0.0;
+    if (!(V > 0)) return 1e300;
+    return H > Lw ? V * (H - tk) / (H - Lw) * tk / unit : 0.0;
+  };
+  // Day u's result of a trade bought at E under the bracket (tk, sl), its order worth `value`: the return (the expected
+  // one on a day that reached both, by the order model) and its log.
+  // rebuyday: after a stop the same day, a buy-stop m daily volatilities (of the decision's day t) over the stop's
+  // level, the buy-back sold at the take-profit or in the closing auction (m < 0: none). Taken as filled whenever the day's high reached it
+  // (a daily bar does not say whether that was after the stop: the cautious reading), over its level by the stop's
+  // slip; its return on the money the stop freed, and whether it filled (its round trip's cost).
+  const bool rebuyDay = flatDaily && P["rebuyday"] > 0;
+  // The buy-back keeps the trade's take-profit (tk, 0: none): sold there when the day closed at or over it (it rose
+  // through it after the buy-back), else at the close (a high over it but a close under it: not counted, the
+  // cautious reading).
+  const auto rebuyRet = [&](std::size_t t, std::size_t u, std::size_t i, double sl, double m, double tk = 0.0) -> std::pair<double, double> {
+    const double sg = d.sigma[t * N + i], H = d.H[u * N + i], C = d.Cf[u * N + i];
+    if (m < 0 || !(sl > 0 && C > 0 && std::isfinite(sg))) return {0.0, 0.0};
+    const double trig = sl * (1 + m * sg), fill = trig * (2 - slipAt(u, i));  // a buy-stop: over its level by the stop's slip
+    if (!(H >= trig)) return {0.0, 0.0};  // never reached after the stop
+    const double X = tk > fill && C >= tk ? tk : C;
+    return {X / fill - 1, 1.0};           // reached: taken as filled (when the close is under it too: a loss)
+  };
+  const std::array<double, 7> rbdGrid{-1.0, 0.0, 0.25, 0.5, 1.0, 1.5, 2.0};
+  std::array<double, 7> rbdRec{};
+  std::array<std::size_t, 7> rbdUsed{};
+  std::size_t rbdG = 0, nRebuyDay = 0;
+  double rebuyFills = 0;
+  const auto rbdM = [&]() { return rebuyDay ? rbdGrid[rbdG] : -1.0; };
+  const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
+    const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
+    const bool sH = sl > 0 && Lw > 0 && Lw <= sl;
+    bool tH = tk > 0 && d.H[u * N + i] >= tk;
+    if (tH && valueOver(u, i, tk) < value && !(O >= tk)) { tH = false; if (count) ++nTakeThin; }
+    const double Xt = std::max(tk, E);
+    double Xs = std::min(sl, E) * slipAt(u, i), pf = 0;
+    if (sH) {  // the stop's sale, then its buy-back (on the money it freed)
+      const auto [rb, f] = rebuyRet(t, u, i, sl, m, tk);
+      Xs *= 1 + rb, pf = f;
+    }
+    if (sH && tH && O > sl && O < tk) {
+      const double pS = pStopFirst(u, i, sl, tk, count);
+      if (pFill) *pFill = pS * pf;
+      return {pS * (Xs / E - 1) + (1 - pS) * (Xt / E - 1), pS * std::log(std::max(1e-6, Xs / E)) + (1 - pS) * std::log(Xt / E)};
+    }
+    const bool stopped = sH && !(tH && O >= tk);
+    if (pFill) *pFill = stopped ? pf : 0.0;
+    const double X = stopped ? Xs : tH ? Xt : C;
+    return {X / E - 1, std::log(std::max(1e-6, X / E))};
+  };
+  // sizeadapt: the trade's risk to its stop (a fraction of the decision's close) and its size (a fraction of the slot)
+  const bool sizeAdapt = flatDaily && P["sizeadapt"] > 0;
+  const bool staleOpen = P["staleopen"] > 0;
+  std::size_t nStale = 0;
+  const std::size_t riskW = std::max<std::size_t>(1, std::size_t(P["riskwindow"]));
+  const auto riskOf = [&](std::size_t t, std::size_t i, double sl) {
+    const double c = d.Cf[t * N + i];
+    if (!(c > 0)) return 1.0;
+    if (sl > 0) return std::max(1e-4, 1 - sl / c);
+    double worst = 0;
+    for (std::size_t q = t + 1 - std::min(riskW, t + 1); q <= t; ++q) {
+      const double O = d.O[q * N + i], Lw = d.L[q * N + i];
+      if (O > 0 && Lw > 0) worst = std::max(worst, 1 - Lw / O);
+    }
+    return std::max(1e-4, worst);
+  };
+  const std::array<double, 9> sizeGrid{0.0025, 0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.0};  // 0: the whole slot
+  std::array<double, 9> sizeRec{};
+  std::array<std::size_t, 9> sizeUsed{};
+  std::size_t sizeG = 8, sizeN = 0;
+  std::vector<double> sizeW;
+  const auto wOf = [&](double R, double risk) { return R > 0 ? std::min(1.0, R / risk) : 1.0; };
+  const auto sizeR = [&]() { return sizeAdapt ? sizeGrid[sizeG] : 0.0; };
+  const auto sizeChoose = [&]() {
+    if (!sizeAdapt || !sizeN) return;
+    std::size_t b = sizeG;
+    for (std::size_t g = 0; g < sizeGrid.size(); ++g) if (sizeRec[g] > sizeRec[b]) b = g;
+    sizeG = b;
   };
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
@@ -1244,6 +1606,11 @@ int main(int argc, char** argv) {
     if ((t - start) % reb != 0 && t != start) return;
     std::vector<std::pair<double, std::size_t>> c;
     ranked(*strategy, P, t, c);
+    if (volFilter) {  // the day's top picks before the filter (scored the next day), then the too volatile dropped
+      volCand.clear();
+      for (std::size_t r = 0; r < c.size() && volCand.size() < k; ++r) volCand.push_back(c[r].second);
+      if (volQ < 1.0) c.erase(std::remove_if(c.begin(), c.end(), [&](const auto& x) { return volRank(t, x.second) > volQ; }), c.end());
+    }
     of = c.size(), decided = t;
     target.clear();
     if (P["scorepos"] > 0) c.erase(std::remove_if(c.begin(), c.end(), [](const auto& x) { return !(x.first > 0); }), c.end());
@@ -1702,12 +2069,7 @@ int main(int argc, char** argv) {
             for (std::size_t a = 0; a < A; ++a) {
               const double tk = a + 1 < A ? std::max(lim, c0 * (1 + bGridA[a] * sg)) : 1e300;
               for (std::size_t b = 0; b < B; ++b) {
-                double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
-                if (maxLoss > 0) {  // the account's limit: a stop further than it is not allowed; "none" is the stop at it
-                  const double edge = lim * (1 - maxLoss);
-                  if (b + 1 < B && sl < edge) { g[(a * B + b) * Pn + q] = kNaN; continue; }
-                  if (b + 1 == B) sl = edge;
-                }
+                const double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
                 const double X = sl > 0 && Lw <= sl ? std::min(sl, O) * slip : H >= tk ? std::max(tk, O) : C;
                 g[(a * B + b) * Pn + q] = std::log(std::max(1e-6, X / O));
               }
@@ -1762,8 +2124,6 @@ int main(int argc, char** argv) {
             std::vector<double> grid(bGridB.begin() + long(lo), bGridB.begin() + long(hi) + 1), curve;
             for (std::size_t b = lo; b <= hi; ++b) curve.push_back(mean[ba * B + b]);
             tb = grid.size() >= 3 ? fineArgmax(grid, curve) : bGridB[bb];
-          } else if (maxLoss > 0) {
-            tb = -1;
           }
           return std::pair<double, double>(ta, tb);
         };
@@ -1819,8 +2179,39 @@ int main(int argc, char** argv) {
 
   for (std::size_t t = start; t + 1 < T; ++t) {
     if (nnStep && (t - start) % nnStep == 0 && (t - start) % reb != 0) learn(t, 1);  // between the resets: the day's bars
+    if (comboBracket) sarRoll(t), comboRefresh();
+    if (psarBracket) {  // the SAR through t's close; the pair with the best real record (trades to day t) places u's orders
+      sarRoll(t);
+      double bestS = -1e300;
+      for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+        const ObjRec& r = sarRec[g];
+        if (r.n < 1) continue;
+        const double m = r.m / r.n, sc = bracketObj == 1 ? m / std::sqrt(r.dn / r.n + 1e-12) : m;
+        if (sc > bestS) bestS = sc, sarBest = g;
+      }
+      ++sarUsed[sarBest];
+    }
+    if (sizeAdapt) sizeChoose(), ++sizeUsed[sizeG];
+    if (rebuyDay) {  // the buy-back distance with the best record on the stopped trades so far
+      if (nRebuyDay) for (std::size_t g = 0; g < rbdGrid.size(); ++g) if (rbdRec[g] > rbdRec[rbdG]) rbdG = g;
+      ++rbdUsed[rbdG];
+    }
+    if (volFilter) volChoose(), ++volUsed[std::size_t(std::lround(volQ * 10)) - 1];
     decide(t);
     const std::size_t u = t + 1;
+    if (volFilter)  // the day's top picks before the filter, each on day u as it went under its bracket
+      for (std::size_t i : volCand) {
+        const double c0 = d.Cf[t * N + i], O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i], Hi = d.H[u * N + i], sg = d.sigma[t * N + i];
+        if (!(c0 > 0 && O > 0 && C > 0 && std::isfinite(sg)) || O > c0 * (1 + capOf(t, i))) continue;  // not bought under its limit
+        if (staleOpen && O == d.C[t * N + i]) continue;  // no known open
+        const double sh = P["bracketopen"] > 0 ? O / c0 : 1.0, tk = takeOf(t, i) * sh, sl = stopOf(t, i) * sh;
+        (void)Lo, (void)Hi, (void)C;
+        const double w = wOf(sizeR(), riskOf(t, i, sl / sh));
+        const double y = std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, O, tk, sl, o.capital * w, false, rbdM()).first)), rk = volRank(t, i);
+        for (std::size_t g = 0; g < volGrid.size(); ++g)
+          if (rk <= volGrid[g] || volSeen.empty()) volRec[g].n += 1, volRec[g].s += y, volRec[g].s2 += y * y;
+        volSeen.insert(std::upper_bound(volSeen.begin(), volSeen.end(), sg), sg);
+      }
     double day = 0, dayCost = 0;  // dayCost: the day's buy-backs' round trips (the record after them)
     std::vector<std::size_t> done, sameDayBack;
     // rebuystop: share i bought back at px on day u by its buy-back order, its stop placed at once. sameDay: the stop's own
@@ -1926,7 +2317,11 @@ int main(int argc, char** argv) {
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
       // bought at the open under the limit; entryday: else at the limit once the day's low reaches it
-      const double E = O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
+      // staleopen: a day whose open is exactly the previous close (the data's open missing, the close carried) has no
+      // known opening price: not bought (nor learnt from)
+      const bool noOpen = staleOpen && flatDaily && O > 0 && O == d.C[t * N + i];
+      if (noOpen) ++nStale;
+      const double E = noOpen ? 0.0 : O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
       if (E > 0) {
         r.filled = true, r.entry = E, r.since = u;
         if (again) stoppedAt.erase(i), ++nRebuys, dayCost += tripOf(t, i);
@@ -1949,23 +2344,89 @@ int main(int argc, char** argv) {
           // touched, else in the closing auction. A day that touched both counts the stop (a daily bar does not say
           // which came first). A stop the open is already through sells at the open (with the stop's slip).
           const double Hi = d.H[u * N + i];
-          const double tk = takeOf(t, i), sl = stopOf(t, i);
+          // bracketopen: the levels moved with the open (each the same fraction from the price paid as from the
+          // decision's close): the bridge re-prices the bracket once the buy fills
+          const double sh = P["bracketopen"] > 0 && d.Cf[t * N + i] > 0 ? E / d.Cf[t * N + i] : 1.0;
+          const double tk = takeOf(t, i) * sh;
+          const double sl = stopOf(t, i) * sh;
           if (bracketObj == 3 && objCand.count(i) && C > 0) {  // every objective's bracket on this real day (known at its close)
             const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i], lim = c0 * (1 + capOf(t, i));
             for (int ob = 0; ob < 3; ++ob) {
               const auto [ta, tb] = objCand[i][ob];
               const double tko = ta > 0 ? std::max(lim, c0 * (1 + ta * s0)) : 0.0;
-              const double slo = tb > 0 ? c0 * std::max(0.0, 1 - tb * s0) : tb < 0 && maxLoss > 0 ? lim * (1 - maxLoss) : 0.0;
+              const double slo = tb > 0 ? c0 * std::max(0.0, 1 - tb * s0) : 0.0;
               const double Xo = slo > 0 && Lo > 0 && Lo <= slo ? std::min(slo, E) * slipAt(u, i) : tko > 0 && Hi >= tko ? std::max(tko, E) : C;
               const double y = std::log(std::max(1e-6, Xo / E));
               objRec[ob].m += y, objRec[ob].dn += y < 0 ? y * y : 0.0, objRec[ob].n += 1;
             }
           }
-          double X = C > 0 ? C : E;
-          if (sl > 0 && Lo > 0 && Lo <= sl) X = std::min(sl, E) * slipAt(u, i), ++nStopsDay;
-          else if (tk > 0 && Hi >= tk) X = std::max(tk, E), ++nTakes;
-          day += X / E - 1;
-          r.exit = X, r.ret = X / E - 1, r.closed = true, r.days = 0;
+          if (psarBracket && C > 0)  // every pair's bracket on this real day (its levels known at t's close)
+            for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+              const auto [tko, slo] = sarLevels(g, t, i);
+              const double Xo = slo > 0 && Lo > 0 && Lo <= slo ? std::min(slo, E) * slipAt(u, i) : tko > 0 && Hi >= tko ? std::max(tko, E) : C;
+              const double y = std::log(std::max(1e-6, Xo / E));
+              sarRec[g].m += y, sarRec[g].dn += y < 0 ? y * y : 0.0, sarRec[g].n += 1;
+            }
+          if (comboBracket && C > 0) {  // every candidate pair on this real day, in its regime and in all
+            const Feat f = featOf(t, i);
+            const std::size_t z = cellOf(f);
+            {
+              std::size_t zz = z < 9 && comboScore[z] > comboScore[9] ? z : 9;
+              ++comboUsedCell[zz];
+            }
+            // each pair's sized result on the day: the stop's size from its risk, the take's fill from the value over it,
+            // a day that reached both by the order model
+            const double Od = d.O[u * N + i], slot = o.capital, R = sizeR();
+            std::vector<double> xs(nStop), ws(nStop), lvS(nStop), xt(nTake), vo(nTake), lvT(nTake);
+            std::vector<char> hs(nStop);
+            for (std::size_t a = 0; a < nStop; ++a) {
+              const double lv = f.stop[a] * sh;
+              lvS[a] = lv, hs[a] = lv > 0 && Lo > 0 && Lo <= lv, xs[a] = std::min(lv, E) * slipAt(u, i), ws[a] = wOf(R, riskOf(t, i, f.stop[a]));
+
+            }
+            for (std::size_t a = 0; a < nTake; ++a) lvT[a] = f.take[a] * sh, vo[a] = lvT[a] > 0 ? valueOver(u, i, lvT[a]) : 0.0, xt[a] = std::max(lvT[a], E);
+            const double Cr = C / E - 1;
+            for (std::size_t a = ta0; a < nTake; ++a)
+              for (std::size_t b = sb0; b < nStop; ++b) {
+                const double w = ws[b];
+                const double xsb = hs[b] ? xs[b] * (1 + rebuyRet(t, u, i, lvS[b], rbdM(), lvT[a]).first) : xs[b];  // with its buy-back
+                const bool tH = lvT[a] > 0 && (Od >= lvT[a] || vo[a] >= slot * w);
+                double rr;
+                if (hs[b] && tH && Od > lvS[b] && Od < lvT[a]) {
+                  const double pS = pStopFirst(u, i, lvS[b], lvT[a], false);
+                  rr = pS * (xsb / E - 1) + (1 - pS) * (xt[a] / E - 1);
+                } else rr = hs[b] && !(tH && Od >= lvT[a]) ? xsb / E - 1 : tH ? xt[a] / E - 1 : Cr;
+                const double y = std::log(std::max(1e-6, 1 + w * rr));
+                const std::size_t q = a * nStop + b;
+                Rec& g = comboRec[9][q];
+                g.n += 1, g.s += y, g.s2 += y * y;
+                if (z < 9) { Rec& rz = comboRec[z][q]; rz.n += 1, rz.s += y, rz.s2 += y * y; }
+              }
+            if (std::isfinite(f.adx) && std::isfinite(f.rsi)) adxSeen.push_back(f.adx), rsiSeen.push_back(f.rsi);
+          }
+          if ((psarBracket || comboBracket) && sl > 0) psarStops.push_back(100 * (1 - sl / E));
+          const double wT = wOf(sizeR(), riskOf(t, i, sl > 0 ? sl / sh : 0.0));
+          if (sizeAdapt) sizeW.push_back(wT);
+          double pFill = 0;
+          const auto [ret, lr] = dayOutcome(t, u, i, E, tk, sl, o.capital * wT, true, rbdM(), &pFill);
+          (void)lr;
+          if (pFill > 0) rebuyFills += pFill, dayCost += wT * pFill * tripOf(t, i);  // the buy-back's round trip (the record after costs)
+          if (rebuyDay && sl > 0 && Lo > 0 && Lo <= sl) {  // every buy-back distance's record on this stopped trade
+            for (std::size_t g = 0; g < rbdGrid.size(); ++g)
+              rbdRec[g] += std::log(std::max(1e-6, 1 + wT * dayOutcome(t, u, i, E, tk, sl, o.capital * wT, false, rbdGrid[g]).first));
+            ++nRebuyDay;
+          }
+          if (sl > 0 && Lo > 0 && Lo <= sl) ++nStopsDay;
+          else if (tk > 0 && Hi >= tk) ++nTakes;
+          if (sizeAdapt) {  // every size's record on this trade (unsized ret: its own result under the bracket placed)
+            for (std::size_t g = 0; g < sizeGrid.size(); ++g) {
+              const double w = wOf(sizeGrid[g], riskOf(t, i, sl > 0 ? sl / sh : 0.0));
+              sizeRec[g] += std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, E, tk, sl, o.capital * w, false, rbdM()).first));
+            }
+            ++sizeN;
+          }
+          day += wT * ret;
+          r.exit = E * (1 + ret), r.ret = ret, r.closed = true, r.days = 0;
           done.push_back(rows.size());
         } else {
           day += p.mark / E - 1;
@@ -1982,6 +2443,19 @@ int main(int argc, char** argv) {
     dailyNet.push_back((day - dayCost) / double(k));
     dailyDays.push_back(d.days[u]);
     for (std::size_t x : done) learnt.add(rows[x]);
+  }
+  sarRoll(T - 1);
+  if (comboBracket) comboRefresh();
+  if (volFilter) volChoose();
+  sizeChoose();
+  if (psarBracket) {
+    double bestS = -1e300;
+    for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+      const ObjRec& r = sarRec[g];
+      if (r.n < 1) continue;
+      const double m = r.m / r.n, sc = bracketObj == 1 ? m / std::sqrt(r.dn / r.n + 1e-12) : m;
+      if (sc > bestS) bestS = sc, sarBest = g;
+    }
   }
   decide(T - 1);  // the next session's target
   if (trace) std::fclose(trace);
@@ -2085,6 +2559,7 @@ int main(int argc, char** argv) {
     Order x{i, rank, d.Cf[L * N + i], 0, 0, learnt.expected(rank), 0, 0, 0, inAccount(i)};
     x.limit = x.close * (1 + capOf(L, i));
     x.value = noVolume ? o.capital : std::min(o.capital, o.advShare * d.value[L * N + i]);
+    if (sizeAdapt) x.value *= wOf(sizeR(), riskOf(L, i, stopOf(L, i)));  // sized by its stop
     if (!(x.value >= o.minOrder)) continue;
     double n = 0, f = 0;
     for (std::size_t q = L > 251 ? L - 251 : 0; q < L; ++q) {
@@ -2268,9 +2743,78 @@ int main(int argc, char** argv) {
   if (bracketAdapt && !bracketTakes.empty())
     std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
+  if (staleOpen)
+    std::printf("strategy:   orders not bought for want of a known open (the day's open exactly the previous close): %zu\n", nStale);
+  if (rebuyDay) {
+    std::string used;
+    for (std::size_t g = 0; g < rbdGrid.size(); ++g)
+      if (rbdUsed[g]) used += (used.empty() ? "" : ", ") + (rbdGrid[g] < 0 ? std::string("none") : jnum(rbdGrid[g])) + " " + std::to_string(rbdUsed[g]) + " days";
+    std::printf("strategy:   buy-back after a stop the same day (a buy-stop that many daily volatilities over the stop, sold at the take-profit or the close), the distance learnt walk-forward (%s): now %s; %.0f buy-backs filled (expected)\n",
+                used.c_str(), rbdGrid[rbdG] < 0 ? "none" : jnum(rbdGrid[rbdG]).c_str(), rebuyFills);
+  }
+  if (!orderW.empty())
+    std::printf("strategy:   days that reached both the stop and the take-profit: %zu, each the stop first with the chance the 5-minute order model gives (%zu of them before its first fit's year, with that fit)\n", nBoth, nBothEarly);
+  if (flatDaily)
+    std::printf("strategy:   take-profits not counted for want of volume over them (the value traded over the level under the order's): %zu\n", nTakeThin);
+  if (sizeAdapt) {
+    std::string used;
+    for (std::size_t g = 0; g < sizeGrid.size(); ++g)
+      if (sizeUsed[g]) used += (used.empty() ? "" : ", ") + (sizeGrid[g] > 0 ? jnum(100 * sizeGrid[g]) + "%" : std::string("whole slot")) + " " + std::to_string(sizeUsed[g]) + " days";
+    std::vector<double> ww(sizeW);
+    for (double& x : ww) x *= 100;
+    std::printf("strategy:   each trade sized by its stop: the slot's money at risk learnt walk-forward (%s): now %s; trade size (%% of the slot) %s\n",
+                used.c_str(), sizeGrid[sizeG] > 0 ? (jnum(100 * sizeGrid[sizeG]) + "%").c_str() : "whole slot", ww.empty() ? "none" : bracketSpread(ww).c_str());
+  }
+  if (volFilter) {
+    std::string used;
+    for (std::size_t g = 0; g < volGrid.size(); ++g)
+      if (volUsed[g]) used += (used.empty() ? "" : ", ") + std::to_string(int(std::lround(100 * volGrid[g]))) + "% " + std::to_string(volUsed[g]) + " days";
+    const double cutAt = volSeen.empty() ? 0.0 : volSeen[std::min(volSeen.size() - 1, std::size_t(volQ * double(volSeen.size())))];
+    std::printf("strategy:   the too volatile dropped: only shares in the lowest fraction of the picks' daily volatilities, the fraction learnt walk-forward (%s): now %.0f%% (daily volatility up to %.2f%%)\n",
+                used.c_str(), 100 * volQ, 100 * cutAt);
+  }
+  if (comboBracket) {
+    const auto takeName = [&](std::size_t a) -> std::string {
+      if (a == 0) return "none";
+      if (a <= nG) return "SAR " + jnum(pbGrid[a - 1].first) + "/" + jnum(pbGrid[a - 1].second);
+      a -= 1 + nG;
+      if (a < bbN.size()) return "Bollinger middle " + std::to_string(bbN[a]);
+      a -= bbN.size();
+      if (a < bbN.size() * bbK.size()) return "Bollinger upper " + std::to_string(bbN[a / bbK.size()]) + "x" + jnum(bbK[a % bbK.size()]);
+      a -= bbN.size() * bbK.size();
+      return jnum(volA[a % volA.size()]) + " " + volM[a / volA.size()] + " over";
+    };
+    const auto stopName = [&](std::size_t b) -> std::string {
+      if (b == 0) return "none";
+      if (b <= nG) return "SAR " + jnum(pbGrid[b - 1].first) + "/" + jnum(pbGrid[b - 1].second);
+      b -= 1 + nG;
+      const auto band = [&](std::size_t j) { return "Bollinger lower " + std::to_string(bbN[j / bbK.size()]) + "x" + jnum(bbK[j % bbK.size()]); };
+      if (b < nBand) return band(b);
+      b -= nBand;
+      if (b >= nG * nBand) return jnum(volA[(b - nG * nBand) % volA.size()]) + " " + volM[(b - nG * nBand) / volA.size()] + " under";
+      return "tighter of SAR " + jnum(pbGrid[b / nBand].first) + "/" + jnum(pbGrid[b / nBand].second) + " and " + band(b % nBand);
+    };
+    std::printf("strategy:   the bracket learnt from the Parabolic SAR, Bollinger bands, ADX and RSI (walk-forward; ADX thirds at %.1f/%.1f, RSI thirds at %.1f/%.1f); the stop under the price paid (%%) %s\n",
+                adxCut[0], adxCut[1], rsiCut[0], rsiCut[1], psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
+    static const char* aN[] = {"low ADX", "mid ADX", "high ADX"};
+    static const char* rN[] = {"low RSI", "mid RSI", "high RSI"};
+    for (std::size_t z = 0; z < 10; ++z) {
+      const Rec& r = comboRec[z][comboPick[z]];
+      std::printf("strategy:     %-18s now: take %s, stop %s (%.0f trades, mean %+.3f%%; placed on %zu trades)%s\n",
+                  z < 9 ? (std::string(aN[z / 3]) + ", " + rN[z % 3]).c_str() : "every trade", takeName(comboPick[z] / nStop).c_str(), stopName(comboPick[z] % nStop).c_str(),
+                  r.n, r.n > 0 ? 100 * std::expm1(r.s / r.n) : 0.0, comboUsedCell[z], z < 9 && !(comboScore[z] > comboScore[9]) ? " [uses every trade's]" : "");
+    }
+  }
+  if (psarBracket) {
+    std::string used;
+    for (std::size_t g = 0; g < pbGrid.size(); ++g)
+      if (sarUsed[g]) used += (used.empty() ? "" : ", ") + jnum(pbGrid[g].first) + "/" + jnum(pbGrid[g].second) + " " + std::to_string(sarUsed[g]) + " days";
+    std::printf("strategy:   the bracket from the Parabolic SAR, its step/largest step learnt walk-forward (%s): now %s/%s; the stop under the price paid (%%) %s\n",
+                used.c_str(), jnum(pbGrid[sarBest].first).c_str(), jnum(pbGrid[sarBest].second).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
+  }
   if (flatDaily)
     std::printf("strategy:   intraday: every share bought in the opening auction and sold the same day (%s); nothing held overnight\n",
-                (takeSd > 0 || stopSd > 0 || bracketAdapt) ? (std::to_string(nTakes) + " at the take-profit, " + std::to_string(nStopsDay) + " at the stop-loss, the rest in the closing auction").c_str() : "in the closing auction");
+                (takeSd > 0 || stopSd > 0 || bracketAdapt || psarBracket || comboBracket) ? (std::to_string(nTakes) + " at the take-profit, " + std::to_string(nStopsDay) + " at the stop-loss, the rest in the closing auction").c_str() : "in the closing auction");
   if (mcOn) {
     std::printf("strategy: nested Monte Carlo: %.0f resets on the real market, %zu futures of %zu sessions each (blocks of %zu real days from the %zu before); "
                 "the real book fell in the simulated 5-95%% band %.0f%% of the time (90%% if honest), at percentile %.0f on average (50 if honest); "
