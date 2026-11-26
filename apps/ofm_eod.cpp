@@ -15,6 +15,7 @@
 //   ofm_eod aim      [tools/eoddata/aim.txt] [--cache data/eoddata/lists/aim.txt] [--refresh]
 //                    the AIM shares (no stamp duty) from stockanalysis.com, once a day (kept in the store)
 //   ofm_eod symbols  [--exchanges] [--find EX:PRE,PRE;EX:...]
+//   ofm_eod latest   --exchanges A,B                     the newest day EODData has quotes for (the scan cache's check)
 //   ofm_eod snapshot --symbols EX:CODE,... [--from 2019-01]  5-minute bars by month into the store
 #include <zlib.h>
 
@@ -753,6 +754,28 @@ int cmdAim(const std::vector<std::string>& a) {
 
 // ------------------------------------------------------------------ symbols, snapshot (were symbols.mjs, snapshot.mjs)
 
+// latest: the newest day EODData has quotes for, over the given exchanges (one /Quote/List call each): the scan's
+// cached bars (markets/<MARKET>/, the workflow) are reused only when they already reach it. Prints the day (empty
+// when no exchange answered).
+int cmdLatest(const std::vector<std::string>& a) {
+  if (!std::getenv("EODDATA_API_KEY")) die("Set EODDATA_API_KEY in the environment.");
+  std::string newest;
+  for (const auto& ex : split(opt(a, "exchanges"), ',')) {
+    if (ex.empty()) continue;
+    try {
+      for (const auto& q : asList(api("/Quote/List/" + ex))) {
+        const std::string d = str(field(q, {"dateStamp", "date"})).substr(0, 10);
+        if (d.size() == 10 && d > newest) newest = d;
+      }
+    } catch (const std::exception& e) {
+      std::cerr << ex << ": " << e.what() << "\n";
+      return 1;  // unknown: the caller rebuilds
+    }
+  }
+  std::cout << newest << "\n";
+  return newest.empty() ? 1 : 0;
+}
+
 int cmdSymbols(const std::vector<std::string>& a) {
   if (!std::getenv("EODDATA_API_KEY")) die("Set EODDATA_API_KEY in the environment.");
   if (flag(a, "exchanges")) {
@@ -873,6 +896,7 @@ int main(int argc, char** argv) {
     if (cmd == "profiles") return cmdProfiles(a);
     if (cmd == "aim") return cmdAim(a);
     if (cmd == "symbols") return cmdSymbols(a);
+    if (cmd == "latest") return cmdLatest(a);
     if (cmd == "snapshot") return cmdSnapshot(a);
   } catch (const std::exception& e) {
     die(cmd + ": " + e.what(), 1);
