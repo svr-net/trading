@@ -693,7 +693,7 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0), P.emplace("maxloss", 0.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0);
   // psarbracket: 1 takes the intraday bracket from the share's Parabolic SAR on its daily bars (Wilder 1978), the step
   // and largest step learnt walk-forward for the market (each pair scored on every real trade day so far; the best
   // record places the next day's orders): in a rising SAR the stop at its next level, the take-profit as far over
@@ -1123,18 +1123,12 @@ int main(int argc, char** argv) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], a = takeMultOf(i);
     return a > 0 && s > 0 && c > 0 ? std::max(c * (1 + capOf(t, i)), c * (1 + a * s)) : 0.0;
   };
-  // maxloss: the most a trade may lose, a fraction of the buy's limit (the highest price it can buy at): its stop is
-  // never further under it (the account's own limit; only a gap through the stop, sold at the open, loses more).
-  // A learnt multiple under 0 means the stop at that limit.
-  const double maxLoss = P["maxloss"];
   const auto stopOf = [&](std::size_t t, std::size_t i) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], b = stopMultOf(i);
     if (!(c > 0)) return 0.0;
-    if (comboBracket) return comboLevels(t, i).second;  // maxloss: from the price paid (the bridge moves the stop to it once filled)
-    if (psarBracket) return std::max(sarLevels(sarBest, t, i).second, maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0);
-    const double floorAt = maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0;
-    const double vol = b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
-    return std::max(vol, floorAt);
+    if (comboBracket) return comboLevels(t, i).second;
+    if (psarBracket) return sarLevels(sarBest, t, i).second;
+    return b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
   };
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
@@ -1885,12 +1879,7 @@ int main(int argc, char** argv) {
             for (std::size_t a = 0; a < A; ++a) {
               const double tk = a + 1 < A ? std::max(lim, c0 * (1 + bGridA[a] * sg)) : 1e300;
               for (std::size_t b = 0; b < B; ++b) {
-                double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
-                if (maxLoss > 0) {  // the account's limit: a stop further than it is not allowed; "none" is the stop at it
-                  const double edge = lim * (1 - maxLoss);
-                  if (b + 1 < B && sl < edge) { g[(a * B + b) * Pn + q] = kNaN; continue; }
-                  if (b + 1 == B) sl = edge;
-                }
+                const double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
                 const double X = sl > 0 && Lw <= sl ? std::min(sl, O) * slip : H >= tk ? std::max(tk, O) : C;
                 g[(a * B + b) * Pn + q] = std::log(std::max(1e-6, X / O));
               }
@@ -1945,8 +1934,6 @@ int main(int argc, char** argv) {
             std::vector<double> grid(bGridB.begin() + long(lo), bGridB.begin() + long(hi) + 1), curve;
             for (std::size_t b = lo; b <= hi; ++b) curve.push_back(mean[ba * B + b]);
             tb = grid.size() >= 3 ? fineArgmax(grid, curve) : bGridB[bb];
-          } else if (maxLoss > 0) {
-            tb = -1;
           }
           return std::pair<double, double>(ta, tb);
         };
@@ -2145,13 +2132,13 @@ int main(int argc, char** argv) {
           // which came first). A stop the open is already through sells at the open (with the stop's slip).
           const double Hi = d.H[u * N + i];
           const double tk = takeOf(t, i);
-          double sl = stopOf(t, i);
+          const double sl = stopOf(t, i);
           if (bracketObj == 3 && objCand.count(i) && C > 0) {  // every objective's bracket on this real day (known at its close)
             const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i], lim = c0 * (1 + capOf(t, i));
             for (int ob = 0; ob < 3; ++ob) {
               const auto [ta, tb] = objCand[i][ob];
               const double tko = ta > 0 ? std::max(lim, c0 * (1 + ta * s0)) : 0.0;
-              const double slo = tb > 0 ? c0 * std::max(0.0, 1 - tb * s0) : tb < 0 && maxLoss > 0 ? lim * (1 - maxLoss) : 0.0;
+              const double slo = tb > 0 ? c0 * std::max(0.0, 1 - tb * s0) : 0.0;
               const double Xo = slo > 0 && Lo > 0 && Lo <= slo ? std::min(slo, E) * slipAt(u, i) : tko > 0 && Hi >= tko ? std::max(tko, E) : C;
               const double y = std::log(std::max(1e-6, Xo / E));
               objRec[ob].m += y, objRec[ob].dn += y < 0 ? y * y : 0.0, objRec[ob].n += 1;
@@ -2174,7 +2161,7 @@ int main(int argc, char** argv) {
             std::vector<double> xs(nStop), xt(nTake);
             std::vector<char> hs(nStop);
             for (std::size_t a = 0; a < nStop; ++a) {
-              const double lv = maxLoss > 0 ? std::max(f.stop[a], E * (1 - maxLoss)) : f.stop[a];  // the account's limit, from the price paid
+              const double lv = f.stop[a];
               hs[a] = lv > 0 && Lo > 0 && Lo <= lv, xs[a] = std::min(lv, E) * slipAt(u, i);
             }
             for (std::size_t a = 0; a < nTake; ++a) xt[a] = f.take[a] > 0 && Hi >= f.take[a] ? std::max(f.take[a], E) : C;
@@ -2190,7 +2177,6 @@ int main(int argc, char** argv) {
           }
           if ((psarBracket || comboBracket) && sl > 0) psarStops.push_back(100 * (1 - sl / E));
           double X = C > 0 ? C : E;
-          if (comboBracket && maxLoss > 0) sl = std::max(sl, E * (1 - maxLoss));
           if (sl > 0 && Lo > 0 && Lo <= sl) X = std::min(sl, E) * slipAt(u, i), ++nStopsDay;
           else if (tk > 0 && Hi >= tk) X = std::max(tk, E), ++nTakes;
           day += X / E - 1;
@@ -2526,10 +2512,8 @@ int main(int argc, char** argv) {
       b -= nBand;
       return "tighter of SAR " + jnum(pbGrid[b / nBand].first) + "/" + jnum(pbGrid[b / nBand].second) + " and " + band(b % nBand);
     };
-    std::size_t over5 = 0;
-    for (double x : psarStops) over5 += x > 5;
-    std::printf("strategy:   the bracket learnt from the Parabolic SAR, Bollinger bands, ADX and RSI (walk-forward; ADX thirds at %.1f/%.1f, RSI thirds at %.1f/%.1f); the stop under the price paid (%%) %s, %.1f%% of trades over 5%%\n",
-                adxCut[0], adxCut[1], rsiCut[0], rsiCut[1], psarStops.empty() ? "none" : bracketSpread(psarStops).c_str(), psarStops.empty() ? 0.0 : 100.0 * double(over5) / double(psarStops.size()));
+    std::printf("strategy:   the bracket learnt from the Parabolic SAR, Bollinger bands, ADX and RSI (walk-forward; ADX thirds at %.1f/%.1f, RSI thirds at %.1f/%.1f); the stop under the price paid (%%) %s\n",
+                adxCut[0], adxCut[1], rsiCut[0], rsiCut[1], psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
     static const char* aN[] = {"low ADX", "mid ADX", "high ADX"};
     static const char* rN[] = {"low RSI", "mid RSI", "high RSI"};
     for (std::size_t z = 0; z < 10; ++z) {
@@ -2543,11 +2527,8 @@ int main(int argc, char** argv) {
     std::string used;
     for (std::size_t g = 0; g < pbGrid.size(); ++g)
       if (sarUsed[g]) used += (used.empty() ? "" : ", ") + jnum(pbGrid[g].first) + "/" + jnum(pbGrid[g].second) + " " + std::to_string(sarUsed[g]) + " days";
-    std::size_t over5 = 0;
-    for (double x : psarStops) over5 += x > 5;
-    std::printf("strategy:   the bracket from the Parabolic SAR, its step/largest step learnt walk-forward (%s): now %s/%s; the stop under the price paid (%%) %s, %.1f%% of trades over 5%%\n",
-                used.c_str(), jnum(pbGrid[sarBest].first).c_str(), jnum(pbGrid[sarBest].second).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str(),
-                psarStops.empty() ? 0.0 : 100.0 * double(over5) / double(psarStops.size()));
+    std::printf("strategy:   the bracket from the Parabolic SAR, its step/largest step learnt walk-forward (%s): now %s/%s; the stop under the price paid (%%) %s\n",
+                used.c_str(), jnum(pbGrid[sarBest].first).c_str(), jnum(pbGrid[sarBest].second).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
   }
   if (flatDaily)
     std::printf("strategy:   intraday: every share bought in the opening auction and sold the same day (%s); nothing held overnight\n",
