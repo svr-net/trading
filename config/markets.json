@@ -24,7 +24,8 @@
           "stopslip": 0.1,
           "mcreuse": 0.1,
           "combobracket": 2,
-          "staleopen": 1
+          "staleopen": 1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -54,7 +55,8 @@
           "intraday": 1,
           "takesd": 1.5,
           "stopsd": 4,
-          "stopslip": 0.1
+          "stopslip": 0.1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -84,7 +86,8 @@
           "intraday": 1,
           "takesd": 1.5,
           "stopsd": 4,
-          "stopslip": 0.1
+          "stopslip": 0.1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -112,7 +115,8 @@
           "intraday": 1,
           "takesd": 1.5,
           "stopsd": 4,
-          "stopslip": 0.1
+          "stopslip": 0.1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -142,7 +146,8 @@
           "intraday": 1,
           "takesd": 1.5,
           "stopsd": 4,
-          "stopslip": 0.1
+          "stopslip": 0.1,
+          "rebuyday": 1
         }
       },
       "shadows": [],

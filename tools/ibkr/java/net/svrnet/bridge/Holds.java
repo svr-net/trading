@@ -365,8 +365,61 @@ final class Holds {
         st.put("pending", new LinkedHashMap<>());  // the day's buys not filled ended with the session (day orders)
     }
 
+    /**
+     * The same-day buy-back (the plan's bracketRebuy): once the day's bracket stop has sold (all of its order), a
+     * buy-stop at that level for the shares it sold, a day order, with the trade's take-profit (bracketTake) as its
+     * child; what it buys is sold with the rest in the closing auction (close), and a buy-back not triggered by then is
+     * cancelled first. Placed once a day per share (rebuyDay), by the session's protect runs (every few minutes).
+     */
+    private void rebuyDay() {
+        Map<String, Object> done = asMap(st.get("rebuyDay"));
+        st.put("rebuyDay", done);
+        String lref = stopRef + "L-" + today;
+        Map<String, double[]> sold = new LinkedHashMap<>();
+        Map<String, Broker.Share> soldShare = new HashMap<>();
+        for (Broker.Fill f : ib.fills()) {
+            if (lref.equals(f.ref()) && f.side().equals("SLD")) {
+                sold.computeIfAbsent(f.share().symbol(), k -> new double[1])[0] += f.shares();
+                soldShare.putIfAbsent(f.share().symbol(), f.share());
+            }
+        }
+        for (Map.Entry<String, double[]> e : sold.entrySet()) {
+            String sym = e.getKey();
+            if (today.equals(done.get(sym))) continue;
+            Map<String, Object> plan = asMap(map("plans").get(sym));
+            if (!today.equals(plan.get("placed")) || !has(plan, "bracketRebuy") || num(plan.get("bracketRebuy")) <= 0) continue;
+            boolean partly = false;
+            for (Broker.Ord t : stopsOf(sym)) if (lref.equals(t.ref()) && t.remaining() > 0) partly = true;
+            if (partly) {
+                lines.add(sym + ": its stop partly sold (" + g(e.getValue()[0]) + " so far): bought back once it has all sold");
+                continue;
+            }
+            Broker.Share c = ib.exitShare(soldShare.get(sym));
+            if (c == null) {
+                lines.add(sym + ": not found at IBKR, NO BUY-BACK");
+                done.put(sym, today);
+                continue;
+            }
+            Broker.Ticks tt = ib.ticks(c);
+            double q = e.getValue()[0], at = num(plan.get("bracketRebuy"));
+            double trig = roundTo(at, tt.at(at), "up");
+            boolean take = has(plan, "bracketTake") && num(plan.get("bracketTake")) > 0;
+            int id = ib.place(c, Broker.NewOrder.of("BUY", "STP", q, 0, trig, stopRef + "R-" + today, "DAY").child(0, !take));
+            String how = "its stop sold: a buy-back of " + g(q) + " at " + g(trig);
+            if (take) {
+                double tk = num(plan.get("bracketTake"));
+                ib.place(c, Broker.NewOrder.of("SELL", "LMT", q, roundTo(tk, tt.at(tk), "up"), 0, stopRef + "T-" + today, "DAY").child(id, true));
+                how += " with its take-profit at " + g(roundTo(tk, tt.at(tk), "up"));
+            }
+            Broker.Fate f = ib.fate(id, 20);
+            done.put(sym, today);
+            lines.add(sym + ": " + how + " (the rest in the closing auction): " + f.fate() + said(f.messages()));
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void protect() {
+        rebuyDay();
         List<Object> execs = st.get("rebuyExecs") instanceof List ? (List<Object>) st.get("rebuyExecs") : new ArrayList<>();
         st.put("rebuyExecs", execs);
         Set<Object> seen = new LinkedHashSet<>(execs);
@@ -601,6 +654,7 @@ final class Holds {
             // (a bracket's children are one-cancels-other). Their reference starts with the stops' (cancelStops), so the
             // close cancels what is left before the market-on-close sale.
             boolean bracket = has(o, "bracketTake") || has(o, "bracketStop");
+            Double rebuyAt = null, takeAt = null;  // the same-day buy-back's level and its take-profit (protect places them once the stop sold)
             int id;
             if (bracket) {
                 Broker.Share cx = ib.exitShare(c);
@@ -609,11 +663,13 @@ final class Holds {
                 boolean hasStop = has(o, "bracketStop") && num(o.get("bracketStop")) > 0;
                 if (has(o, "bracketTake") && num(o.get("bracketTake")) > 0) {
                     double tk = num(o.get("bracketTake")) * scale;
+                    takeAt = tk;
                     ib.place(c, Broker.NewOrder.of("SELL", "LMT", qty, roundTo(tk, tt.at(tk), "up"), 0, stopRef + "T-" + today, "DAY").child(id, !hasStop));
                     how += "; a take-profit at " + g(roundTo(tk, tt.at(tk), "up"));
                 }
                 if (hasStop) {
                     double sl = num(o.get("bracketStop")) * scale;
+                    if (has(o, "bracketRebuy") && num(o.get("bracketRebuy")) > 0) rebuyAt = num(o.get("bracketRebuy")) * scale;
                     ib.place(c, Broker.NewOrder.of("SELL", "STP", qty, 0, roundTo(sl, tt.at(sl), "down"), stopRef + "L-" + today, "DAY").child(id, true));
                     how += "; a stop-loss at " + g(roundTo(sl, tt.at(sl), "down"));
                 }
@@ -628,6 +684,11 @@ final class Holds {
             }
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("conId", (long) c.conId());
+            if (rebuyAt != null) {
+                plan.put("bracketRebuy", rebuyAt);
+                plan.put("bracketTake", takeAt);
+                how += "; bought back at " + g(rebuyAt) + " if the stop sells and the price comes back";
+            }
             plan.put("qty", qty);
             plan.put("exit", o.getOrDefault("exit", "up"));
             plan.put("exitAbove", o.get("exitAbove") == null ? null : num(o.get("exitAbove")));
@@ -652,6 +713,12 @@ final class Holds {
 
     private void close() {
         protect();
+        // the same-day buy-backs not triggered: cancelled before the closing auction (their take-profits go with them)
+        for (Broker.Ord t : ib.openOrders())
+            if (t.ref() != null && t.ref().equals(stopRef + "R-" + today) && t.action().equals("BUY") && !t.dead()) {
+                ib.cancel(t.orderId());
+                lines.add(t.share().symbol() + ": its buy-back not triggered: cancelled");
+            }
         Map<String, double[]> got = new LinkedHashMap<>();
         Map<String, Broker.Share> gotShare = new HashMap<>();
         for (Broker.Fill f : ib.fills()) {
