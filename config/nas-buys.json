@@ -1,7 +1,8 @@
 {
   "buys": true,
   "markets": {
-    "EU": true
+    "EU": true,
+    "UK": false
   },
-  "note": "The NAS bridge's automatic buying (the day's placing and the multi-day book's). false: it places no new buys; selling leftovers, the closes and the flat checks keep running. Read by the bridge every 5 minutes. \"markets\": a market set to false places no new buys while its book is still updated (stops moved, the shares the strategy drops sold); 25 Nov: EU off (no edge in any variant of the review); 26 Nov: EU on again (intraday breakout on Amsterdam and Xetra, no transaction tax)."
+  "note": "The NAS bridge's automatic buying (the day's placing and the multi-day book's). false: it places no new buys; selling leftovers, the closes and the flat checks keep running. Read by the bridge every 5 minutes. \"markets\": a market set to false places no new buys while its book is still updated (stops moved, the shares the strategy drops sold); 25 Nov: EU off (no edge in any variant of the review); 26 Nov: EU on again (intraday breakout on Amsterdam and Xetra, no transaction tax); 26 Nov: UK off until its stops are fixed (the learnt stops sat 7.7-8.5% under the close, more than the account accepts a trade to lose)."
 }
