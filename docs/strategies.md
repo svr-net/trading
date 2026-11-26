@@ -191,6 +191,41 @@ The effect of the pilots and the reuse together, before costs (live settings, 10
 makes Sharpe 0.18. The plain backtest makes 1.54. Those settings were tuned for monthly momentum and don't suit
 a breakout held for days.
 
+## EU on simpler settings, the UK on AIM, orders sized to their costs (26 Nov 2026)
+
+**EU**, `breakout`, 10 positions, before costs:
+
+| Settings | Annual | Sharpe | Max drawdown | Average trade | Trades |
+|---|---|---|---|---|---|
+| Plain | +25.5% | 1.54 | 17.5% | +0.34% | 6,962 |
+| The Monte Carlo for expected returns only (live) | +25.5% | 1.54 | 17.5% | +0.34% | 6,962 |
+| With the learnt stops | +15.7% | 1.05 | 17.6% | +0.33% | 4,769 |
+| With the Monte Carlo choosing the book | +10.7% | 0.72 | 33.2% | +0.07% | 16,845 |
+| The settings tuned for monthly momentum | +1.4% | 0.18 | 41.4% | +0.01% | 13,978 |
+
+When the simulation chooses the book from every strategy's candidates, it trades 2.4 times as often for a fifth of
+the edge a trade. The EU keeps the nested Monte Carlo only for each order's expected return and range.
+
+**Costs against the order's size** (IBKR tiered, the median order's round trip):
+
+| Order size | 500 | 1,000 | 2,500 | 5,000 | 10,000 |
+|---|---|---|---|---|---|
+| UK (GBP) | 0.96% | 0.73% | 0.61% | 0.61% | 0.61% |
+| EU (EUR) | 0.92% | 0.67% | 0.52% | 0.52% | 0.52% |
+| US (USD) | 0.14% | 0.07% | 0.03% | 0.02% | 0.01% |
+| APAC (AUD) | 2.40% | 1.20% | 0.48% | 0.24% | 0.16% |
+
+The fixed minimums weigh on small orders; the UK's stamp duty and France's tax stay whatever the size.
+- **Sizing:** `ofm_scan` now tries the final orders over fewer, larger trades from the same money (k, k/2, ... 1).
+  It keeps the number whose final orders expect the most profit after costs (`budget.fit_costs`, default on).
+  Nothing before the final order list sees a cost.
+- **UK:** with stamp duty, no order covered its costs at any size, so the UK now trades AIM shares only
+  (`"only": "aim"`, no stamp duty, a round trip of about 0.11%).
+  - The plain `hvp` makes +32.9% a year, Sharpe 1.27, on AIM, against +21.9%, 1.18 on the 300 most traded shares.
+  - In the 26 Nov scan, the budget made +24.0% a year, Sharpe 1.22, and 2 of the 3 next orders expect to gain after
+    costs (2 trades of GBP 3,974).
+  - The AIM list is today's (survivorship), and these are thin shares, bought in the opening auction.
+
 ## The removed monthly and weekly strategies
 
 The sections below record the strategies replaced on 26 Nov 2026.
