@@ -709,7 +709,7 @@ int main(int argc, char** argv) {
   // the open in the share's last `riskwindow` sessions without one) a fraction R of the slot, the trade at most the
   // slot; R learnt walk-forward (the one whose trades grew a slot most so far: 0.25% to 8% or the whole slot), and the
   // bracket learnt on the trades so sized (a wide stop: a small trade).
-  P.emplace("sizeadapt", 0.0), P.emplace("riskwindow", 60.0), P.emplace("rebuyday", 0.0);
+  P.emplace("sizeadapt", 0.0), P.emplace("riskwindow", 60.0), P.emplace("rebuyday", 0.0), P.emplace("staleopen", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -1019,9 +1019,16 @@ int main(int argc, char** argv) {
   const std::size_t nG = pbGrid.size();
   const std::array<std::size_t, 3> bbN{10, 20, 50};
   const std::array<double, 5> bbK{1.0, 1.5, 2.0, 2.5, 3.0};
-  const std::array<double, 6> volA{0.5, 1.0, 1.5, 2.0, 3.0, 4.0};  // the volatility levels: that many daily volatilities from the close
-  const std::size_t nTake = 1 + nG + bbN.size() + bbN.size() * bbK.size() + volA.size();
-  const std::size_t nBand = bbN.size() * bbK.size(), nStop = 1 + nG + nBand + nG * nBand + volA.size();
+  // the volatility levels: that many daily volatilities from the close, by three measures (the engine's daily
+  // volatility, the ATR(14) over the close, the 20-day high-low range volatility)
+  const std::array<double, 9> volA{0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0};
+  const std::array<const char*, 3> volM{"vol", "ATR", "range vol"};
+  const std::size_t nVol = volA.size() * volM.size();
+  const std::size_t nTake = 1 + nG + bbN.size() + bbN.size() * bbK.size() + nVol;
+  const std::size_t nBand = bbN.size() * bbK.size(), nStop = 1 + nG + nBand + nG * nBand + nVol;
+  // combobracket 2: the volatility levels only, a take-profit and a stop on every trade (adaptive volatility)
+  const bool volOnly = P["combobracket"] >= 2;
+  const std::size_t ta0 = volOnly ? nTake - nVol : 0, sb0 = volOnly ? nStop - nVol : 0;
   const std::size_t nCombo = comboBracket ? nTake * nStop : 0;
   struct Feat { std::vector<double> take, stop; double adx = kNaN, rsi = kNaN; };
   const auto adxAt = [&](std::size_t t, std::size_t i) {  // Wilder's ADX(14) at t over the 80 sessions to it (NaN: a bar missing)
@@ -1090,12 +1097,26 @@ int main(int argc, char** argv) {
     for (std::size_t g = 0; g < nG; ++g)
       for (std::size_t j = 0; j < nBand; ++j) f.stop[kk++] = std::max(sarS[g], low[j]);  // the tighter (0: neither)
     {
-      const double sg = d.sigma[t * N + i];
-      std::size_t kt = 1 + nG + bbN.size() + bbN.size() * bbK.size();
-      for (double a : volA) {
-        f.take[kt++] = std::isfinite(sg) && c * (1 + a * sg) > lim ? c * (1 + a * sg) : 0.0;
-        f.stop[kk++] = std::isfinite(sg) && a * sg < 1 ? c * (1 - a * sg) : 0.0;
+      std::array<double, 3> sv{d.sigma[t * N + i], kNaN, kNaN};
+      if (t >= 60) {  // Wilder's ATR(14) over the 60 sessions to t, over the close; the 20-day range volatility (Parkinson)
+        double atr = 0, pk = 0;
+        std::size_t m = 0, mp = 0;
+        bool ok = true;
+        for (std::size_t q = t - 59; q <= t && ok; ++q) {
+          const double h = d.H[q * N + i], l = d.L[q * N + i], pc = d.Cf[(q - 1) * N + i];
+          if (!(h > 0 && l > 0 && pc > 0)) { ok = false; break; }
+          const double tr = std::max({h - l, std::abs(h - pc), std::abs(l - pc)});
+          atr = m++ == 0 ? tr : atr + (tr - atr) / 14.0;
+          if (q + 20 > t) pk += std::log(h / l) * std::log(h / l), ++mp;
+        }
+        if (ok) sv[1] = atr / c, sv[2] = std::sqrt(pk / double(mp) / (4 * std::log(2.0)));
       }
+      std::size_t kt = 1 + nG + bbN.size() + bbN.size() * bbK.size();
+      for (double sg : sv)
+        for (double a : volA) {
+          f.take[kt++] = std::isfinite(sg) && sg > 0 ? c * (1 + a * sg) : 0.0;  // under the fill: sold at the open
+          f.stop[kk++] = std::isfinite(sg) && sg > 0 && a * sg < 1 ? c * (1 - a * sg) : 0.0;
+        }
     }
     f.adx = adxAt(t, i), f.rsi = rsiAt(t, i);
     return f;
@@ -1122,6 +1143,7 @@ int main(int argc, char** argv) {
       double best = -1e300;
       std::size_t bi = 0;
       for (std::size_t q = 0; q < nCombo; ++q) {
+        if (q / nStop < ta0 || q % nStop < sb0) continue;  // combobracket 2: the volatility levels only
         const Rec& r = comboRec[z][q];
         if (r.n < 2) continue;
         const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
@@ -1266,6 +1288,8 @@ int main(int argc, char** argv) {
   };
   // sizeadapt: the trade's risk to its stop (a fraction of the decision's close) and its size (a fraction of the slot)
   const bool sizeAdapt = flatDaily && P["sizeadapt"] > 0;
+  const bool staleOpen = P["staleopen"] > 0;
+  std::size_t nStale = 0;
   const std::size_t riskW = std::max<std::size_t>(1, std::size_t(P["riskwindow"]));
   const auto riskOf = [&](std::size_t t, std::size_t i, double sl) {
     const double c = d.Cf[t * N + i];
@@ -2179,6 +2203,7 @@ int main(int argc, char** argv) {
       for (std::size_t i : volCand) {
         const double c0 = d.Cf[t * N + i], O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i], Hi = d.H[u * N + i], sg = d.sigma[t * N + i];
         if (!(c0 > 0 && O > 0 && C > 0 && std::isfinite(sg)) || O > c0 * (1 + capOf(t, i))) continue;  // not bought under its limit
+        if (staleOpen && O == d.C[t * N + i]) continue;  // no known open
         const double sh = P["bracketopen"] > 0 ? O / c0 : 1.0, tk = takeOf(t, i) * sh, sl = stopOf(t, i) * sh;
         (void)Lo, (void)Hi, (void)C;
         const double w = wOf(sizeR(), riskOf(t, i, sl / sh));
@@ -2292,7 +2317,11 @@ int main(int argc, char** argv) {
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
       // bought at the open under the limit; entryday: else at the limit once the day's low reaches it
-      const double E = O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
+      // staleopen: a day whose open is exactly the previous close (the data's open missing, the close carried) has no
+      // known opening price: not bought (nor learnt from)
+      const bool noOpen = staleOpen && flatDaily && O > 0 && O == d.C[t * N + i];
+      if (noOpen) ++nStale;
+      const double E = noOpen ? 0.0 : O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
       if (E > 0) {
         r.filled = true, r.entry = E, r.since = u;
         if (again) stoppedAt.erase(i), ++nRebuys, dayCost += tripOf(t, i);
@@ -2357,8 +2386,8 @@ int main(int argc, char** argv) {
             }
             for (std::size_t a = 0; a < nTake; ++a) lvT[a] = f.take[a] * sh, vo[a] = lvT[a] > 0 ? valueOver(u, i, lvT[a]) : 0.0, xt[a] = std::max(lvT[a], E);
             const double Cr = C / E - 1;
-            for (std::size_t a = 0; a < nTake; ++a)
-              for (std::size_t b = 0; b < nStop; ++b) {
+            for (std::size_t a = ta0; a < nTake; ++a)
+              for (std::size_t b = sb0; b < nStop; ++b) {
                 const double w = ws[b];
                 const double xsb = hs[b] ? xs[b] * (1 + rebuyRet(t, u, i, lvS[b], rbdM(), lvT[a]).first) : xs[b];  // with its buy-back
                 const bool tH = lvT[a] > 0 && (Od >= lvT[a] || vo[a] >= slot * w);
@@ -2714,6 +2743,8 @@ int main(int argc, char** argv) {
   if (bracketAdapt && !bracketTakes.empty())
     std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
+  if (staleOpen)
+    std::printf("strategy:   orders not bought for want of a known open (the day's open exactly the previous close): %zu\n", nStale);
   if (rebuyDay) {
     std::string used;
     for (std::size_t g = 0; g < rbdGrid.size(); ++g)
@@ -2751,7 +2782,7 @@ int main(int argc, char** argv) {
       a -= bbN.size();
       if (a < bbN.size() * bbK.size()) return "Bollinger upper " + std::to_string(bbN[a / bbK.size()]) + "x" + jnum(bbK[a % bbK.size()]);
       a -= bbN.size() * bbK.size();
-      return jnum(volA[a]) + " volatilities over";
+      return jnum(volA[a % volA.size()]) + " " + volM[a / volA.size()] + " over";
     };
     const auto stopName = [&](std::size_t b) -> std::string {
       if (b == 0) return "none";
@@ -2760,7 +2791,7 @@ int main(int argc, char** argv) {
       const auto band = [&](std::size_t j) { return "Bollinger lower " + std::to_string(bbN[j / bbK.size()]) + "x" + jnum(bbK[j % bbK.size()]); };
       if (b < nBand) return band(b);
       b -= nBand;
-      if (b >= nG * nBand) return jnum(volA[b - nG * nBand]) + " volatilities under";
+      if (b >= nG * nBand) return jnum(volA[(b - nG * nBand) % volA.size()]) + " " + volM[(b - nG * nBand) / volA.size()] + " under";
       return "tighter of SAR " + jnum(pbGrid[b / nBand].first) + "/" + jnum(pbGrid[b / nBand].second) + " and " + band(b % nBand);
     };
     std::printf("strategy:   the bracket learnt from the Parabolic SAR, Bollinger bands, ADX and RSI (walk-forward; ADX thirds at %.1f/%.1f, RSI thirds at %.1f/%.1f); the stop under the price paid (%%) %s\n",
