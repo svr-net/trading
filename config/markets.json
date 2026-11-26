@@ -9,7 +9,9 @@
           "--account",
           "config/account.json",
           "--pricing",
-          "tiered"
+          "tiered",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "only": "aim",
         "name": "hvp",
@@ -19,9 +21,10 @@
           "mc": 1,
           "mcnn": 1,
           "mcnnstep": 5,
-          "bracketadapt": 1,
           "stopslip": 0.1,
-          "mcreuse": 0.1
+          "mcreuse": 0.1,
+          "combobracket": 2,
+          "staleopen": 1
         }
       },
       "shadows": [],
@@ -41,7 +44,9 @@
           "--account",
           "config/account.json",
           "--pricing",
-          "tiered"
+          "tiered",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "name": "breakout",
         "strategy": "breakout",
@@ -69,7 +74,9 @@
           "--account",
           "config/account.json",
           "--pricing",
-          "tiered"
+          "tiered",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "name": "tom",
         "strategy": "tom",
@@ -95,7 +102,9 @@
           "--resample-runs",
           "5",
           "--account",
-          "config/account.json"
+          "config/account.json",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "name": "rsi2",
         "strategy": "rsi2",
@@ -123,7 +132,9 @@
           "--account",
           "config/account.json",
           "--pricing",
-          "tiered"
+          "tiered",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "name": "tom",
         "strategy": "tom",
@@ -151,7 +162,9 @@
           "--capital",
           "25000",
           "--resample-runs",
-          "5"
+          "5",
+          "--order-model",
+          "tools/order-model.json"
         ],
         "params": {
           "intraday": 1,
