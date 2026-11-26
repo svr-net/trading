@@ -1,7 +1,7 @@
 // ofm_strategy: the daily scan's engine for injectable strategies (strategies/*.cpp) on injectable compute
 // back ends (backends/*.cpp), with fused kernels (include/strategy/kernels.hpp).
 //
-//   ofm_strategy --csv stocks.csv --costs UK --strategy momentum [--param name=value ...] [--backend threads]
+//   ofm_strategy --csv stocks.csv --costs UK --strategy rsi2 [--param name=value ...] [--backend threads]
 //                [--capital 5000] [--slots 5] [--stamp-free aim.txt] [--venues tools/venues.txt] [--override ibkr.csv]
 //                [--pricing fixed|tiered] [--min-value V] [--min-price P] [--json page.json] [--orders orders.json]
 //                [--trace orders.trace]
@@ -364,7 +364,7 @@ void writeSynthetic(const std::string& path, unsigned seed) {
   std::uniform_real_distribution<double> u(0, 1);
   std::ofstream f(path);
   f << "date,ticker,open,high,low,close,volume\n";
-  const int N = 80, T = 1400;  // long enough for the longest warm-up (ltrev: 3 years)
+  const int N = 80, T = 1400;  // long enough for the longest warm-up (a year and the 200-day averages)
   std::vector<double> c(N, 100), mu(N, 0);
   for (int t = 0; t < T; ++t) {
     const int y = 2019 + t / 252, m = 1 + (t % 252) / 21, dd = 1 + (t % 21);
