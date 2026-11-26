@@ -31,6 +31,28 @@ namespace strat {
 constexpr std::size_t kNS = 8;            // the strategies' scores a sample can carry (mcpool: every strategy's rank)
 constexpr std::size_t kNF = 9 + kNS, kNH = 16, kNP = 32;  // features, hidden units, the paths a training sample keeps
 
+// The network's math is portable: exp from IEEE operations alone (+, -, *, / and an exact power of two), tanh from it.
+// The C libraries' exp, log, pow and tanh differ in the last bit between platforms (glibc natively, the WebAssembly
+// Lab's), and a network trained at every daily reset makes millions of calls, so one differing bit grew and the native
+// engine and the Lab drifted apart (26 Nov). These give the same bits everywhere (no fused multiply-add: the build
+// turns contraction off, and WebAssembly has none).
+inline double nnExp(double x) {
+  if (!(x > -745)) return x != x ? x : 0.0;
+  if (x > 700) x = 700;
+  constexpr double kLn2Hi = 6.93147180369123816490e-01, kLn2Lo = 1.90821492927058770002e-10, kInvLn2 = 1.44269504088896338700e+00;
+  const double k = std::floor(x * kInvLn2 + 0.5);
+  const double r = (x - k * kLn2Hi) - k * kLn2Lo;  // |r| <= ln2 / 2
+  double p = 1.0;  // exp(r) = 1 + r (1 + r/2 (1 + r/3 (...))), to r^14 (the rest under 1e-17 of it)
+  for (int n = 14; n >= 1; --n) p = 1.0 + r * p / double(n);
+  return std::ldexp(p, int(k));
+}
+inline double nnTanh(double x) {
+  const double a = std::fabs(x);
+  if (a > 20) return x > 0 ? 1.0 : -1.0;
+  const double e = nnExp(-2 * a), t = (1 - e) / (1 + e);
+  return x < 0 ? -t : t;
+}
+
 struct NnShape {
   double mu = 0, scale = 1;
 };
@@ -55,7 +77,7 @@ class DiffNet {
   NnShape shape(const double* f) const {
     double hid[kNH], o[2];
     forward(f, hid, o);
-    return {kMu * std::tanh(o[0]), std::exp(kS * std::tanh(o[1]))};
+    return {kMu * nnTanh(o[0]), nnExp(kS * nnTanh(o[1]))};
   }
 
   // One pass over the samples usable at day t0 (ready <= t0), the newest `limit` of them, in minibatches.
@@ -130,6 +152,7 @@ class DiffNet {
   Grad m, v;
   std::vector<Grad> per_;  // a batch's per-block gradients (train on a back end)
   std::size_t t = 0;
+  double b1t_ = 1, b2t_ = 1;  // kB1^t, kB2^t
 
 
 
@@ -145,7 +168,7 @@ class DiffNet {
     for (std::size_t j = 0; j < kNH; ++j) {
       double z = b1[j];
       for (std::size_t k = 0; k < kNF; ++k) z += W1[j][k] * f[k];
-      hid[j] = std::tanh(z);
+      hid[j] = nnTanh(z);
     }
     for (std::size_t r = 0; r < 2; ++r) {
       double z = b2[r];
@@ -165,8 +188,8 @@ class DiffNet {
     double f[kNF], hid[kNH], o[2];
     for (std::size_t k = 0; k < kNF; ++k) f[k] = s.f[k];
     forward(f, hid, o);
-    const double t0 = std::tanh(o[0]), t1 = std::tanh(o[1]);
-    const double mu = kMu * t0, sc = std::exp(kS * t1), H = double(h);
+    const double t0 = nnTanh(o[0]), t1 = nnTanh(o[1]);
+    const double mu = kMu * t0, sc = nnExp(kS * t1), H = double(h);
     double dmu = 0, ds = 0;
     for (std::size_t p = 0; p < kNP; ++p) {
       const double x = mu * H + sc * s.S[p] - s.y, sg = x > 0 ? 1.0 : x < 0 ? -1.0 : 0.0;
@@ -188,7 +211,8 @@ class DiffNet {
 
   void step(const Grad& g, double n) {
     ++t;
-    const double c1 = 1 - std::pow(kB1, double(t)), c2 = 1 - std::pow(kB2, double(t));
+    b1t_ *= kB1, b2t_ *= kB2;  // kB1^t and kB2^t as running products (portable, unlike pow)
+    const double c1 = 1 - b1t_, c2 = 1 - b2t_;
     const auto upd = [&](double& w, double gr, double& mm, double& vv, bool decay) {
       gr = gr / n + (decay ? kDecay * w : 0.0);
       mm = kB1 * mm + (1 - kB1) * gr, vv = kB2 * vv + (1 - kB2) * gr * gr;
