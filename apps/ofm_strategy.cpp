@@ -694,6 +694,11 @@ int main(int argc, char** argv) {
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
   P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0), P.emplace("maxloss", 0.0);
+  // psarbracket: 1 takes the intraday bracket from the share's Parabolic SAR on its daily bars (Wilder 1978), the step
+  // and largest step learnt walk-forward for the market (each pair scored on every real trade day so far; the best
+  // record places the next day's orders): in a rising SAR the stop at its next level, the take-profit as far over
+  // the close; in a falling SAR the take-profit at its next level, the stop as far under the close.
+  P.emplace("psarbracket", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -935,10 +940,63 @@ int main(int argc, char** argv) {
   std::array<ObjRec, 3> objRec;
   std::array<std::size_t, 3> objUsed{};
   std::map<std::size_t, std::array<std::pair<double, double>, 3>> objCand;  // each share's three brackets at its last reset  // the learnt bracket's mean, 5%, 95% and chance of a loss
-  std::vector<double> bracketTakes, bracketStops;            // every multiple learnt (the report's spread)
+  std::vector<double> bracketTakes, bracketStops, psarStops;            // every multiple learnt (the report's spread)
   const auto takeMultOf = [&](std::size_t i) { const auto it = takeMult.find(i); return it != takeMult.end() ? it->second : takeSd; };
   const auto stopMultOf = [&](std::size_t i) { const auto it = stopMult.find(i); return it != stopMult.end() ? it->second : stopSd; };
+  // psarbracket: every (step, largest step) pair's SAR for each share, rolled over the daily bars to the latest close
+  // (sarRoll); the pair placed is the one with the best real record so far (sarBest).
+  const bool psarBracket = flatDaily && P["psarbracket"] > 0;
+  struct SarSt { double sar = 0, ep = 0, af = 0, ph = 0, pl = 0; bool up = true, on = false; };
+  std::vector<std::pair<double, double>> pbGrid;
+  for (double st : {0.005, 0.01, 0.02, 0.03, 0.05, 0.08})
+    for (double mx : {0.05, 0.1, 0.2, 0.3, 0.5})
+      if (mx > st) pbGrid.emplace_back(st, mx);
+  std::vector<std::vector<SarSt>> sarSt(psarBracket ? pbGrid.size() : 0, std::vector<SarSt>(N));
+  std::vector<ObjRec> sarRec(pbGrid.size());
+  std::vector<std::size_t> sarUsed(pbGrid.size());
+  std::size_t sarNext = 0, sarBest = 0;
+  {
+    for (std::size_t g = 0; g < pbGrid.size(); ++g)  // no record yet: Wilder's own pair
+      if (pbGrid[g] == std::make_pair(0.02, 0.2)) sarBest = g;
+  }
+  const auto sarRoll = [&](std::size_t t) {  // every pair's SAR through t's bar: its level for the session after t
+    for (; psarBracket && sarNext <= t; ++sarNext) {
+      const std::size_t q = sarNext;
+      for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+        const auto [st, mx] = pbGrid[g];
+        for (std::size_t i = 0; i < N; ++i) {
+          const double h = d.H[q * N + i], l = d.L[q * N + i];
+          if (!(h > 0 && l > 0)) continue;  // no bar: the SAR waits
+          SarSt& x = sarSt[g][i];
+          if (!x.on) {
+            x = SarSt{l, h, st, h, l, true, true};
+            continue;
+          }
+          if (x.up ? l <= x.sar : h >= x.sar) {  // through the SAR: turned, from the trend's extreme
+            x.up = !x.up, x.sar = x.ep, x.ep = x.up ? h : l, x.af = st;
+          } else if (x.up ? h > x.ep : l < x.ep) {
+            x.ep = x.up ? h : l, x.af = std::min(mx, x.af + st);
+          }
+          x.sar += x.af * (x.ep - x.sar);
+          x.sar = x.up ? std::min({x.sar, l, x.pl}) : std::max({x.sar, h, x.ph});
+          x.ph = h, x.pl = l;
+        }
+      }
+    }
+  };
+  // pair g's take-profit and stop for a buy decided at t's close (t: the SAR's latest roll), the take at least the limit
+  const auto sarLevels = [&](std::size_t g, std::size_t t, std::size_t i) -> std::pair<double, double> {
+    const SarSt& x = sarSt[g][i];
+    const double c = d.Cf[t * N + i];
+    if (!x.on || !(c > 0) || !(x.sar > 0)) return {0.0, 0.0};
+    const double dist = std::abs(c - x.sar);
+    const bool mirror = P["psarbracket"] < 2;  // 2: only the SAR's own side (a rising SAR the stop, a falling one the take-profit)
+    const double tk = x.up ? (mirror ? c + dist : 0.0) : x.sar, sl = x.up ? x.sar : mirror ? c - dist : 0.0;
+    if (!(tk > 0)) return {0.0, sl > 0 && sl < c ? sl : 0.0};
+    return {std::max(c * (1 + capOf(t, i)), tk), sl > 0 && sl < c ? sl : 0.0};
+  };
   const auto takeOf = [&](std::size_t t, std::size_t i) {
+    if (psarBracket) return sarLevels(sarBest, t, i).first;
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], a = takeMultOf(i);
     return a > 0 && s > 0 && c > 0 ? std::max(c * (1 + capOf(t, i)), c * (1 + a * s)) : 0.0;
   };
@@ -949,6 +1007,7 @@ int main(int argc, char** argv) {
   const auto stopOf = [&](std::size_t t, std::size_t i) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], b = stopMultOf(i);
     if (!(c > 0)) return 0.0;
+    if (psarBracket) return std::max(sarLevels(sarBest, t, i).second, maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0);
     const double floorAt = maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0;
     const double vol = b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
     return std::max(vol, floorAt);
@@ -1819,6 +1878,17 @@ int main(int argc, char** argv) {
 
   for (std::size_t t = start; t + 1 < T; ++t) {
     if (nnStep && (t - start) % nnStep == 0 && (t - start) % reb != 0) learn(t, 1);  // between the resets: the day's bars
+    if (psarBracket) {  // the SAR through t's close; the pair with the best real record (trades to day t) places u's orders
+      sarRoll(t);
+      double bestS = -1e300;
+      for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+        const ObjRec& r = sarRec[g];
+        if (r.n < 1) continue;
+        const double m = r.m / r.n, sc = bracketObj == 1 ? m / std::sqrt(r.dn / r.n + 1e-12) : m;
+        if (sc > bestS) bestS = sc, sarBest = g;
+      }
+      ++sarUsed[sarBest];
+    }
     decide(t);
     const std::size_t u = t + 1;
     double day = 0, dayCost = 0;  // dayCost: the day's buy-backs' round trips (the record after them)
@@ -1961,6 +2031,14 @@ int main(int argc, char** argv) {
               objRec[ob].m += y, objRec[ob].dn += y < 0 ? y * y : 0.0, objRec[ob].n += 1;
             }
           }
+          if (psarBracket && C > 0)  // every pair's bracket on this real day (its levels known at t's close)
+            for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+              const auto [tko, slo] = sarLevels(g, t, i);
+              const double Xo = slo > 0 && Lo > 0 && Lo <= slo ? std::min(slo, E) * slipAt(u, i) : tko > 0 && Hi >= tko ? std::max(tko, E) : C;
+              const double y = std::log(std::max(1e-6, Xo / E));
+              sarRec[g].m += y, sarRec[g].dn += y < 0 ? y * y : 0.0, sarRec[g].n += 1;
+            }
+          if (psarBracket && sl > 0) psarStops.push_back(100 * (1 - sl / E));
           double X = C > 0 ? C : E;
           if (sl > 0 && Lo > 0 && Lo <= sl) X = std::min(sl, E) * slipAt(u, i), ++nStopsDay;
           else if (tk > 0 && Hi >= tk) X = std::max(tk, E), ++nTakes;
@@ -1982,6 +2060,16 @@ int main(int argc, char** argv) {
     dailyNet.push_back((day - dayCost) / double(k));
     dailyDays.push_back(d.days[u]);
     for (std::size_t x : done) learnt.add(rows[x]);
+  }
+  sarRoll(T - 1);
+  if (psarBracket) {
+    double bestS = -1e300;
+    for (std::size_t g = 0; g < pbGrid.size(); ++g) {
+      const ObjRec& r = sarRec[g];
+      if (r.n < 1) continue;
+      const double m = r.m / r.n, sc = bracketObj == 1 ? m / std::sqrt(r.dn / r.n + 1e-12) : m;
+      if (sc > bestS) bestS = sc, sarBest = g;
+    }
   }
   decide(T - 1);  // the next session's target
   if (trace) std::fclose(trace);
@@ -2268,9 +2356,19 @@ int main(int argc, char** argv) {
   if (bracketAdapt && !bracketTakes.empty())
     std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
+  if (psarBracket) {
+    std::string used;
+    for (std::size_t g = 0; g < pbGrid.size(); ++g)
+      if (sarUsed[g]) used += (used.empty() ? "" : ", ") + jnum(pbGrid[g].first) + "/" + jnum(pbGrid[g].second) + " " + std::to_string(sarUsed[g]) + " days";
+    std::size_t over5 = 0;
+    for (double x : psarStops) over5 += x > 5;
+    std::printf("strategy:   the bracket from the Parabolic SAR, its step/largest step learnt walk-forward (%s): now %s/%s; the stop under the price paid (%%) %s, %.1f%% of trades over 5%%\n",
+                used.c_str(), jnum(pbGrid[sarBest].first).c_str(), jnum(pbGrid[sarBest].second).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str(),
+                psarStops.empty() ? 0.0 : 100.0 * double(over5) / double(psarStops.size()));
+  }
   if (flatDaily)
     std::printf("strategy:   intraday: every share bought in the opening auction and sold the same day (%s); nothing held overnight\n",
-                (takeSd > 0 || stopSd > 0 || bracketAdapt) ? (std::to_string(nTakes) + " at the take-profit, " + std::to_string(nStopsDay) + " at the stop-loss, the rest in the closing auction").c_str() : "in the closing auction");
+                (takeSd > 0 || stopSd > 0 || bracketAdapt || psarBracket) ? (std::to_string(nTakes) + " at the take-profit, " + std::to_string(nStopsDay) + " at the stop-loss, the rest in the closing auction").c_str() : "in the closing auction");
   if (mcOn) {
     std::printf("strategy: nested Monte Carlo: %.0f resets on the real market, %zu futures of %zu sessions each (blocks of %zu real days from the %zu before); "
                 "the real book fell in the simulated 5-95%% band %.0f%% of the time (90%% if honest), at percentile %.0f on average (50 if honest); "
