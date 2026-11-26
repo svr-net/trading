@@ -94,7 +94,35 @@ jobs:
           set -o pipefail
           mkdir -p data
           ofm ofm_eod sync --dir data/eoddata | tee -a "$GITHUB_STEP_SUMMARY" || { rm -rf data/eoddata; ofm ofm_eod sync --dir data/eoddata | tee -a "$GITHUB_STEP_SUMMARY"; }
+      # The scan-ready bars, cached in the store (markets/<MARKET>/, by month, with meta.json: the exchanges, years and
+      # pool they were made with, and their last day): reused as they are when EODData has no newer day for the market's
+      # exchanges (ofm_eod latest) and they were made the same way; otherwise rebuilt below and cached again. Not for
+      # INDEX or FOREX (named series), nor a refresh.
+      - name: The scan-ready bars from the store (when EODData has no newer day)
+        id: cached
+        env:
+          EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
+        run: |
+          set -o pipefail
+          case "$MARKET" in INDEX|FOREX) exit 0;; esac
+          [ "${{ inputs.refresh }}" = "true" ] && exit 0
+          D="data/eoddata/markets/$MARKET"; M="$D/meta.json"
+          [ -f "$M" ] || { echo "scan cache: none yet for $MARKET"; exit 0; }
+          WANT="$EXCHANGES|${{ inputs.years || '9' }}|${{ inputs.pool || '100000' }}"
+          HAVE="$(jq -r '"\(.exchanges)|\(.years)|\(.pool)"' "$M")"
+          [ "$HAVE" = "$WANT" ] || { echo "scan cache: made for $HAVE, not $WANT: rebuilt"; exit 0; }
+          NEWEST="$(ofm ofm_eod latest --exchanges "$EXCHANGES" || true)"
+          LAST="$(jq -r .last "$M")"
+          if [ -n "$NEWEST" ] && ! [ "$NEWEST" \> "$LAST" ]; then
+            echo 'date,ticker,open,high,low,close,volume' > data/stocks.csv
+            for f in "$D"/????-??.csv; do tail -n +2 "$f"; done >> data/stocks.csv
+            echo "scan cache: reused markets/$MARKET to $LAST (EODData's newest day: $NEWEST), $(($(wc -l < data/stocks.csv) - 1)) rows" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scan cache: to $LAST, EODData has ${NEWEST:-?}: rebuilt" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Update the share bars (only the days missing from the store)
+        if: steps.cached.outputs.hit != 'true'
         env:
           EODDATA_API_KEY: ${{ secrets.EODDATA_API_KEY }}
         run: |
@@ -119,6 +147,7 @@ jobs:
       # month: markets/<MARKET>/<yyyy-mm>.csv, so that a backtest elsewhere reads them as they are instead of building
       # them again. Only the months that changed are pushed (the current one; all after a split read from the prices).
       - name: Keep the market's share bars in the store (markets/<MARKET>/, by month)
+        if: steps.cached.outputs.hit != 'true'
         continue-on-error: true
         run: |
           set -o pipefail
@@ -127,7 +156,10 @@ jobs:
           rm -rf "$D" && mkdir -p "$D"
           tail -n +2 data/stocks.csv | sort -t, -k1,1 -s | awk -F, -v d="$D" '
             { m = substr($1, 1, 7); if (m != cur) { if (f) close(f); cur = m; f = d "/" m ".csv"; print "date,ticker,open,high,low,close,volume" > f } print > f }'
-          echo "share bars kept in the store: $(ls "$D" | wc -l) months in markets/$MARKET ($(du -sh "$D" | cut -f1))" | tee -a "$GITHUB_STEP_SUMMARY"
+          # the cache's key: how they were made and their last day (the scan-ready bars step reuses them on it)
+          jq -n --arg ex "$EXCHANGES" --arg y "${{ inputs.years || '9' }}" --arg p "${{ inputs.pool || '100000' }}" \
+            --arg last "$(tail -n +2 data/stocks.csv | cut -d, -f1 | sort | tail -1)" '{exchanges: $ex, years: $y, pool: $p, last: $last}' > "$D/meta.json"
+          echo "share bars kept in the store: $(ls "$D" | wc -l) months in markets/$MARKET ($(du -sh "$D" | cut -f1)), to $(jq -r .last "$D/meta.json")" | tee -a "$GITHUB_STEP_SUMMARY"
       # EODData serves only today's fundamentals: each day's, for the model's shares, are kept in the
       # store (fundamentals/<EXCHANGE>/<date>.csv.gz) so that a history builds up; with the latest
       # profiles (sectors, industries). A failure here does not stop the scan.
