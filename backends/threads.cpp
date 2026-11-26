@@ -39,7 +39,9 @@ class Pool {
 
   // Runs f over [0, n) on every thread; returns when all of it is done. False when it cannot (nested, or another
   // thread's job running): the caller then runs it in place.
-  bool run(std::size_t n, const Fn& f) {
+  // chunk1: every index its own chunk (a gang: each member claimed by a different thread, as a member that waits
+  // inside for the others never returns to claim another).
+  bool run(std::size_t n, const Fn& f, bool chunk1 = false) {
     if (tInside || workers_.empty() || n > 0xFFFFFFFFull) return false;
     bool idle = false;
     if (!busy_.compare_exchange_strong(idle, true, std::memory_order_acquire)) return false;
@@ -52,7 +54,7 @@ class Pool {
     spinUntil([&] { return active_.load(std::memory_order_seq_cst) == 0; });
     fn_.store(&f, std::memory_order_relaxed);
     n_.store(n, std::memory_order_relaxed);
-    chunk_.store(std::max<std::size_t>(1, n / (size() * 8)), std::memory_order_relaxed);
+    chunk_.store(chunk1 ? 1 : std::max<std::size_t>(1, n / (size() * 8)), std::memory_order_relaxed);
     done_.store(0, std::memory_order_relaxed);
     next_.store(g << 32, std::memory_order_relaxed);
     gen_.store(g, std::memory_order_seq_cst);  // published: the workers wake
@@ -141,6 +143,8 @@ class Threads : public strat::Backend {
     if (n == 0) return;
     if (n == 1 || !Pool::get().run(n, f)) f(0, n);
   }
+  std::size_t gangSize() const override { return Pool::get().size(); }
+  bool gang(std::size_t n, const Fn& f) const override { return n >= 2 && n <= Pool::get().size() && Pool::get().run(n, f, true); }
 };
 
 }  // namespace

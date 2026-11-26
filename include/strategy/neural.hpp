@@ -23,6 +23,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <atomic>
+#include <thread>
+
 #include "strategy/montecarlo.hpp"
 #include "strategy/strategy.hpp"
 
@@ -42,8 +45,13 @@ inline double nnExp(double x) {
   constexpr double kLn2Hi = 6.93147180369123816490e-01, kLn2Lo = 1.90821492927058770002e-10, kInvLn2 = 1.44269504088896338700e+00;
   const double k = std::floor(x * kInvLn2 + 0.5);
   const double r = (x - k * kLn2Hi) - k * kLn2Lo;  // |r| <= ln2 / 2
-  double p = 1.0;  // exp(r) = 1 + r (1 + r/2 (1 + r/3 (...))), to r^14 (the rest under 1e-17 of it)
-  for (int n = 14; n >= 1; --n) p = 1.0 + r * p / double(n);
+  // exp(r) by Horner on 1/n! to r^13 (the rest under 1e-17 of it): multiplies and adds only, no division (fast); the
+  // coefficients are literals, read the same everywhere.
+  constexpr double c[14] = {1.0, 1.0, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008333333333333333, 0.001388888888888889,
+                            0.0001984126984126984, 2.48015873015873e-05, 2.7557319223985893e-06, 2.755731922398589e-07,
+                            2.505210838544172e-08, 2.08767569878681e-09, 1.6059043836821613e-10};
+  double p = c[13];
+  for (int n = 12; n >= 0; --n) p = p * r + c[n];
   return std::ldexp(p, int(k));
 }
 inline double nnTanh(double x) {
@@ -95,6 +103,10 @@ class DiffNet {
         h = mcMix(h);
         std::swap(idx[j - 1], idx[h % j]);
       }
+      // The fused epoch: one gang of threads for the whole epoch instead of a dispatch a minibatch (hundreds an epoch,
+      // each only kBatch / kBlock blocks of work, so the dispatches cost more than the work).
+      const std::size_t W = b ? std::min<std::size_t>(b->gangSize(), kBatch / kBlock) : 1;
+      if (W >= 2 && gangEpoch(all, idx, horizon, *b, W)) continue;
       for (std::size_t a = 0; a < idx.size(); a += kBatch) {
         Grad g;
         zero(g);
@@ -124,6 +136,53 @@ class DiffNet {
       }
     }
     ++trained;
+  }
+
+  // One epoch as a single fused kernel on a gang of W threads, without locks. Each minibatch: member w computes blocks
+  // w, w + W, ... (each block's gradient summed in its samples' order, as the plain path), then arrives at the barrier
+  // (an atomic counter raised by compare-and-exchange). The last to arrive sums the blocks in their order and takes
+  // Adam's step, then publishes the next minibatch (the generation, by compare-and-exchange); the others spin-wait
+  // on it (a pause, then yielding). The same sums in the same order as the plain path, so the same numbers, bit for
+  // bit, on every back end. False when the back end could not run the gang (nothing done: the caller's plain path).
+  bool gangEpoch(const std::vector<NnSample>& all, const std::vector<std::size_t>& idx, std::size_t horizon, const Backend& b, std::size_t W) {
+    const std::size_t nb = (idx.size() + kBatch - 1) / kBatch;
+    per_.resize(kBatch / kBlock);
+    std::atomic<std::size_t> arrived{0}, gen{0};
+    const auto pause = [] {
+#if defined(__x86_64__) || defined(__i386__)
+      __builtin_ia32_pause();
+#endif
+    };
+    return b.gang(W, [&](std::size_t w, std::size_t) {
+      for (std::size_t bi = 0; bi < nb; ++bi) {
+        const std::size_t a = bi * kBatch, nS = std::min(idx.size(), a + kBatch) - a, nB = (nS + kBlock - 1) / kBlock;
+        for (std::size_t q = w; q < nB; q += W) {
+          zero(per_[q]);
+          for (std::size_t r = q * kBlock; r < std::min(nS, (q + 1) * kBlock); ++r) accumulate(all[idx[a + r]], horizon, per_[q]);
+        }
+        std::size_t cur = arrived.load(std::memory_order_relaxed);
+        while (!arrived.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        }
+        if (cur + 1 == W * (bi + 1)) {  // the last of this minibatch: the blocks summed in order, the step, the release
+          Grad g;
+          zero(g);
+          constexpr std::size_t nP = sizeof(Grad) / sizeof(double);
+          double* gp = reinterpret_cast<double*>(&g);
+          for (std::size_t q = 0; q < nB; ++q) {
+            const double* pq = reinterpret_cast<const double*>(&per_[q]);
+            for (std::size_t k = 0; k < nP; ++k) gp[k] += pq[k];
+          }
+          step(g, double(nS));
+          std::size_t expect = bi;
+          gen.compare_exchange_strong(expect, bi + 1, std::memory_order_release, std::memory_order_relaxed);
+        } else {
+          for (std::uint32_t s = 0; gen.load(std::memory_order_acquire) < bi + 1; ++s) {
+            if (s < 4096) pause();
+            else std::this_thread::yield();
+          }
+        }
+      }
+    });
   }
 
   // The mean CRPS of the samples usable at t0 that are newer than `from` (a held-out check of the network: the last
