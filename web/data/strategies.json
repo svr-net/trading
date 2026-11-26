@@ -10,7 +10,8 @@
      "intraday": 1,
      "takesd": 1.5,
      "stopsd": 4,
-     "stopslip": 0.1
+     "stopslip": 0.1,
+     "rebuyday": 1
     }
    }
   ],
