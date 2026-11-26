@@ -190,6 +190,58 @@ public final class HoldsCheck {
         return placed;
     }
 
+    static String bracketRebuy() throws Exception {
+        at("America/New_York", 9, 20);
+        FakeBroker b = new FakeBroker();
+        Path st = dir.resolve("holds-US-rebuy.json");
+        Map<String, Object> o = order("BRK.B", 480, 484, null, 1, 10000, 20000);
+        o.put("bracketTake", 489.6);
+        o.put("bracketStop", 460.8);
+        o.put("bracketRebuy", 460.8);
+        String placed = run(b, "US", "place", st, book("uk", 1, 5, List.of(o)));
+        FakeBroker.T buy = b.find("BRK B", "BUY");
+        List<FakeBroker.T> sells = b.where(t -> t.share.symbol().equals("BRK B") && t.order.action().equals("SELL"));
+        check(sells.size() == 2 && placed.contains("bought back at"), placed);
+        at("America/New_York", 10, 0);
+        String quiet = run(b, "US", "protect", st, null);
+        check(b.where(t -> t.order.ref().startsWith("ofm-USSR-")).isEmpty(), "no buy-back before the stop sold: " + quiet);
+        b.fill(buy, buy.order.qty(), 482);
+        FakeBroker.T stop = sells.get(1);
+        b.fill(stop, stop.order.qty(), 460.5);
+        String prot = run(b, "US", "protect", st, null);
+        List<FakeBroker.T> rb = b.where(t -> t.order.ref().startsWith("ofm-USSR-"));
+        check(rb.size() == 1, prot);
+        FakeBroker.T back = rb.get(0);
+        check(back.order.action().equals("BUY") && back.order.type().equals("STP") && back.order.aux() >= 460.8 && back.order.qty() == stop.order.qty()
+                && back.order.tif().equals("DAY") && !back.order.transmit(), "buy-back: " + prot);
+        List<FakeBroker.T> tk = b.where(t -> t.order.parentId() == back.id);
+        check(tk.size() == 1 && tk.get(0).order.type().equals("LMT") && tk.get(0).order.limit() >= 489.6 && tk.get(0).order.transmit(), "its take-profit: " + prot);
+        String again = run(b, "US", "protect", st, null);
+        check(b.where(t -> t.order.ref().startsWith("ofm-USSR-")).size() == 1, "placed once: " + again);
+        at("America/New_York", 15, 52);
+        String closed = run(b, "US", "close", st, null);
+        check("Cancelled".equals(back.status) && closed.contains("not triggered"), "an untriggered buy-back cancelled at the close: " + closed);
+        // filled: what it bought sold in the closing auction with its take-profit cancelled
+        FakeBroker b2 = new FakeBroker();
+        Path st2 = dir.resolve("holds-US-rebuy2.json");
+        at("America/New_York", 9, 20);
+        run(b2, "US", "place", st2, book("uk", 1, 5, List.of(o)));
+        FakeBroker.T buy2 = b2.find("BRK B", "BUY");
+        b2.fill(buy2, buy2.order.qty(), 482);
+        FakeBroker.T stop2 = b2.where(t -> t.share.symbol().equals("BRK B") && t.order.type().equals("STP")).get(0);
+        b2.fill(stop2, stop2.order.qty(), 460.5);
+        at("America/New_York", 10, 5);
+        run(b2, "US", "protect", st2, null);
+        FakeBroker.T back2 = b2.where(t -> t.order.ref().startsWith("ofm-USSR-")).get(0);
+        b2.fill(back2, back2.order.qty(), 461);
+        at("America/New_York", 15, 52);
+        String closed2 = run(b2, "US", "close", st2, null);
+        List<FakeBroker.T> moc = b2.where(t -> t.order.type().equals("MOC") && t.order.action().equals("SELL"));
+        check(moc.size() == 1 && moc.get(0).order.qty() == back2.order.qty(), "the bought-back shares sold at the close: " + closed2);
+        check(b2.where(t -> t.order.parentId() == back2.id).stream().allMatch(t -> t.status.equals("Cancelled")), "its take-profit cancelled before the close: " + closed2);
+        return placed + prot + closed + closed2;
+    }
+
     static String usBook() throws Exception {
         at("America/New_York", 9, 20);
         FakeBroker b = new FakeBroker();
@@ -469,6 +521,8 @@ public final class HoldsCheck {
         System.out.println("Europe: an EXCHANGE:CODE order in euros, good only through Paris's opening auction; OK");
         System.out.print(bracketBook());
         System.out.println("intraday bracket: the buy the parent, a take-profit limit and a stop its day-order children, the last transmitting all; OK");
+        System.out.print(bracketRebuy());
+        System.out.println("intraday buy-back: once the bracket stop sold, a buy-stop at its level with the take-profit as its child, placed once, cancelled at the close when not triggered; OK");
         System.out.print(usBook());
         System.out.println("US: BRK.B as BRK B, routed SMART, good only through New York's opening auction; OK");
         System.out.print(apacBook());

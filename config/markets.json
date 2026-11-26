@@ -24,7 +24,8 @@
           "stopslip": 0.1,
           "mcreuse": 0.1,
           "combobracket": 2,
-          "staleopen": 1
+          "staleopen": 1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -54,7 +55,8 @@
           "intraday": 1,
           "takesd": 1.5,
           "stopsd": 4,
-          "stopslip": 0.1
+          "stopslip": 0.1,
+          "rebuyday": 1
         }
       },
       "shadows": [],
@@ -78,12 +80,18 @@
           "--order-model",
           "tools/order-model.json"
         ],
-        "name": "tom",
-        "strategy": "tom",
+        "name": "rsi2",
+        "strategy": "rsi2",
         "params": {
           "intraday": 1,
-          "takesd": 1.5,
-          "stopsd": 4,
+          "mc": 1,
+          "mcnn": 1,
+          "mcnnstep": 5,
+          "mcselect": 1,
+          "mcreuse": 0.1,
+          "combobracket": 2,
+          "staleopen": 1,
+          "rebuyday": 1,
           "stopslip": 0.1
         }
       },
@@ -110,8 +118,14 @@
         "strategy": "rsi2",
         "params": {
           "intraday": 1,
-          "takesd": 1.5,
-          "stopsd": 4,
+          "mc": 1,
+          "mcnn": 1,
+          "mcnnstep": 5,
+          "mcselect": 1,
+          "mcreuse": 0.1,
+          "combobracket": 2,
+          "staleopen": 1,
+          "rebuyday": 1,
           "stopslip": 0.1
         }
       },
@@ -136,12 +150,18 @@
           "--order-model",
           "tools/order-model.json"
         ],
-        "name": "tom",
-        "strategy": "tom",
+        "name": "rsi2",
+        "strategy": "rsi2",
         "params": {
           "intraday": 1,
-          "takesd": 1.5,
-          "stopsd": 4,
+          "mc": 1,
+          "mcnn": 1,
+          "mcnnstep": 5,
+          "mcselect": 1,
+          "mcreuse": 0.1,
+          "combobracket": 2,
+          "staleopen": 1,
+          "rebuyday": 1,
           "stopslip": 0.1
         }
       },

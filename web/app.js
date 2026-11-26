@@ -309,11 +309,13 @@ const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // The pop-up's top: the order's facts, why the strategy holds it (apps/ofm_strategy: the strategy's own reason,
 // from the rebalance that made the list), and its expected return: before costs, what the strategy's past trades
 // at the same place on the list made; its costs, applied at the end; and that times its chance to buy.
-// An intraday order's sale (intraday: 1): its take-profit and stop-loss from the last close, else the closing auction.
+// An intraday order's sale (intraday: 1): its take-profit and stop-loss from the last close, its same-day buy-back
+// after the stop (BB), else the closing auction.
 function sameDaySale(o) {
   const parts = [];
   if (o.takeRel != null) parts.push(`TP ${pct(o.takeRel, 1)}`);
   if (o.stopRel != null) parts.push(`SL ${pct(o.stopRel, 1)}`);
+  if (o.rebuyRel != null) parts.push(`BB ${pct(o.rebuyRel, 1)}`);
   return (parts.length ? parts.join(' · ') + ' · ' : '') + 'close';
 }
 function chartWhy(o) {
@@ -890,7 +892,7 @@ $('lab-run').addEventListener('click', async () => {
       n ? data.orders.orders.map((o) => {
         const last = o.close, cap = o.limit / last - 1;
         const sale = o.bracketTake != null || o.bracketStop != null || o.days === 1
-          ? [sameDaySale({ takeRel: o.bracketTake != null ? o.bracketTake / last - 1 : null, stopRel: o.bracketStop != null ? o.bracketStop / last - 1 : null }), 'num']
+          ? [sameDaySale({ takeRel: o.bracketTake != null ? o.bracketTake / last - 1 : null, stopRel: o.bracketStop != null ? o.bracketStop / last - 1 : null, rebuyRel: o.bracketRebuy != null ? o.bracketRebuy / last - 1 : null }), 'num']
           : o.exitAbove == null ? ['when dropped', 'num'] : [`${pct(o.exitAbove, 2)}, ≤ ${o.days} d`, 'num pos'];
         return [[o.ticker.split(':').pop()], [`≤ ${pct(cap, 1)}`, 'num'], sale, signed(o.expected, 2)];
       }) : [{ gap: 'No orders: none expected to gain after its costs.' }]);
