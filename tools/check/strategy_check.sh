@@ -80,6 +80,19 @@ for s in $names; do
   head -n "$nr" "$W/$s-rg-$first.tr" | cmp -s - "$W/$s-rg-cut.tr" || { echo "FAIL: $s with the market's states: an order changed with later data (look-ahead)"; exit 1; }
   grep -q "hidden states, refitted" "$W/$s-rg-$first.out" && jq -e '.backtest.mc.regime.states == 3 and (.backtest.mc.regime.now | add | . > 0.999 and . < 1.001)' "$W/$s-rg-$first.json" > /dev/null \
     || { cat "$W/$s-rg-$first.out"; echo "FAIL: $s: the market's states did not run"; exit 1; }
+  # adaptive: the stops learnt again only where the observed moved, the positions not viable stopped early, the network
+  # and the market's states learning adaptively between full fits: no look-ahead, the same on every back end
+  AD="$RG --param mcnnstep=5 --param psarvoladapt=1 --param rebuystop=0.01 --param rebuystopadapt=1 --param mcreuse=0.1 --param mcprune=2 --param mcprunepaths=64 --param rebalance=1"
+  for b in $backs; do
+    "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 $AD --json "$W/$s-ad-$b.json" --trace "$W/$s-ad-$b.tr" > "$W/$s-ad-$b.out"
+    sed 's/"backend":"[a-z]*"//' "$W/$s-ad-$b.json" > "$W/$s-ad-$b.cmp"
+    cmp -s "$W/$s-ad-$first.cmp" "$W/$s-ad-$b.cmp" || { echo "FAIL: $s: the adaptive Monte Carlo differs between the back ends $first and $b"; exit 1; }
+  done
+  "$BIN" --csv "$W/cut.csv" --costs US --strategy "$s" --min-value 0 $AD --trace "$W/$s-ad-cut.tr" > /dev/null
+  na=$(wc -l < "$W/$s-ad-cut.tr")
+  head -n "$na" "$W/$s-ad-$first.tr" | cmp -s - "$W/$s-ad-cut.tr" || { echo "FAIL: $s with the adaptive Monte Carlo: an order changed with later data (look-ahead)"; exit 1; }
+  grep -q "viability pilots" "$W/$s-ad-$first.out" && grep -q "learnt again only where" "$W/$s-ad-$first.out" && grep -q "adaptive refits" "$W/$s-ad-$first.out" \
+    || { cat "$W/$s-ad-$first.out"; echo "FAIL: $s: the adaptive Monte Carlo did not run"; exit 1; }
   # a synthetic market drawn from the real one (--resample): the same for a seed and on every back end, another for another seed
   for b in $backs; do
     "$BIN" --csv "$W/full.csv" --costs US --strategy "$s" --backend "$b" --min-value 0 --param psar=1 --param rebuy=0 --resample 3 --json "$W/$s-rs-$b.json" > /dev/null

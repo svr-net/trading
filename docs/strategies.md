@@ -134,6 +134,63 @@ one, McConnell and Xu's 31 of 35 countries). FOREX takes `rsi2` (research only; 
 `hvp` and `volrev` cannot run). Picking the best of seven on the same data overstates what to expect: the
 research figures and the opposite-picks gap are the better guide.
 
+## The adaptive Monte Carlo for daily strategies (26 Nov 2026)
+
+With daily strategies, the nested Monte Carlo resets every session: 2,072 resets in the UK backtest instead of
+about 98. One UK run (live settings, 10 positions) took 203 s. The profile (`X_PROFILE=1`) showed that the futures
+themselves were not the cost:
+
+| Stage | Before | After |
+|---|---|---|
+| Network training | 153 s | 20 s |
+| Learnt stops | 27 s | 7 s |
+| The market's hidden states | 16 s | 8 s |
+| Viability pilots (new) | | 8 s |
+| The whole run | 203 s | 48 s |
+
+What changed:
+- **Fused training kernel** (`neural.hpp`): a minibatch's gradient is now one pass over fixed blocks of 16
+  samples, in parallel over the blocks, with the blocks summed in their order. Before, it took two passes: every
+  sample's gradient copied out, then a separate reduction. The order is fixed whatever the back end or the number of
+  threads, so every back end still gives the same numbers.
+- **Adaptive learning from what is observable.** These rules apply when the resets come more often than `mcnnstep`:
+  - The network trains every `mcnnstep` sessions, or sooner when its CRPS on the outcomes realised since it last
+    trained is worse than the plain Monte Carlo's (`mcnndrift`).
+  - The hidden-state model runs a full fit (afresh and warm) every `mcnnstep` sessions, or sooner when the market's
+    days fit it worse by more than `mcregimedrift` (0.02) a day. In between, it starts from the last fit and stops
+    once it converges.
+  - Configurations whose resets are no more frequent than `mcnnstep` behave as before.
+- **`mcreuse` (0.1):** a share's stop and buy-back are learnt again only when one of these has moved:
+  - its daily volatility, by 10%;
+  - the network's scale for it, by 10%;
+  - its drift, by 0.1 daily volatilities;
+  - or the setting is `mcnnstep` sessions old.
+  Otherwise the last setting stands. In the UK, 69% of the settings were kept.
+- **`mcprune` (2): early stops for positions that aren't viable.** Every target share and reserve gets a
+  sequential pilot on its simulated futures: rounds of 32, 64 and then 128 futures (`mcprunepaths`).
+  - A share is stopped as soon as its expected log growth is below 0 by more than 2 standard errors. No more futures
+    are spent on it. A candidate is not bought, and a held position is sold at the next open, its slot going to the
+    next viable reserve.
+  - It is viable once it is above 0 by as much, and an undecided share stays.
+  - The pilots took 23% of the futures a full simulation would.
+- **`mcrace`**, the adaptive race between stop settings, made no difference here (UK Sharpe 1.24 either way) and
+  costs time, since it spends extra futures on close contenders. It stays off.
+
+The effect of the pilots and the reuse together, before costs (live settings, 10 positions):
+
+| Market | Without | With |
+|---|---|---|
+| UK `hvp` | Sharpe 1.08 | 1.24 (+22.6% a year, drawdown 37%) |
+| US `rsi2` | +14.4%, 0.78, drawdown 31% | +19.3%, 1.05, drawdown 23% |
+| APAC `ibs` | +17.1%, 1.34, drawdown 21% | +14.3%, 1.28, drawdown 19% |
+| EU `breakout` | +1.4%, 0.18 | +1.0%, 0.14 |
+
+`mcprune` is live in the UK and the US only. `mcreuse` and the adaptive learning are live everywhere.
+
+**EU:** under the EU's live settings (the Monte Carlo choosing the book, `mccash`, the learnt stops), `breakout`
+makes Sharpe 0.18. The plain backtest makes 1.54. Those settings were tuned for monthly momentum and don't suit
+a breakout held for days.
+
 ## The removed monthly and weekly strategies
 
 The sections below record the strategies replaced on 26 Nov 2026.

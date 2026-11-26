@@ -77,23 +77,24 @@ class DiffNet {
         Grad g;
         zero(g);
         const std::size_t end = std::min(idx.size(), a + kBatch);
-        if (b) {  // each sample's gradient on its own (in parallel), then summed in the samples' order
-          per_.resize(kBatch);
-          b->parallelFor(end - a, [&](std::size_t x, std::size_t y) {
-            for (std::size_t q = x; q < y; ++q) zero(per_[q]), accumulate(all[idx[a + q]], horizon, per_[q]);
+        if (b) {  // the fused kernel: one pass, each block of kBlock samples' gradient summed in the samples' order
+          // (in parallel over the blocks), then the blocks summed in their order: a fixed order whatever the back end
+          // or the number of threads, so the same numbers everywhere, with one dispatch a batch and no per-sample copies.
+          const std::size_t nS = end - a, nB = (nS + kBlock - 1) / kBlock;
+          per_.resize(nB);
+          b->parallelFor(nB, [&](std::size_t x, std::size_t y) {
+            for (std::size_t q = x; q < y; ++q) {
+              zero(per_[q]);
+              for (std::size_t r = q * kBlock; r < std::min(nS, (q + 1) * kBlock); ++r) accumulate(all[idx[a + r]], horizon, per_[q]);
+            }
           });
-          // then each parameter's sum over the samples, in their order (in parallel over the parameters)
           constexpr std::size_t nP = sizeof(Grad) / sizeof(double);
           static_assert(sizeof(Grad) == nP * sizeof(double), "a gradient is its parameters' doubles, nothing else");
           double* gp = reinterpret_cast<double*>(&g);
-          const std::size_t nS = end - a;
-          b->parallelFor(nP, [&](std::size_t x, std::size_t y) {
-            for (std::size_t k = x; k < y; ++k) {
-              double sum = gp[k];
-              for (std::size_t q = 0; q < nS; ++q) sum += reinterpret_cast<const double*>(&per_[q])[k];
-              gp[k] = sum;
-            }
-          });
+          for (std::size_t q = 0; q < nB; ++q) {
+            const double* pq = reinterpret_cast<const double*>(&per_[q]);
+            for (std::size_t k = 0; k < nP; ++k) gp[k] += pq[k];
+          }
         } else {
           for (std::size_t q = a; q < end; ++q) accumulate(all[idx[q]], horizon, g);
         }
@@ -121,13 +122,13 @@ class DiffNet {
 
  private:
   static constexpr double kMu = 0.002, kS = 0.7, kLr = 0.003, kB1 = 0.9, kB2 = 0.999, kDecay = 1e-4;
-  static constexpr std::size_t kBatch = 128;
+  static constexpr std::size_t kBatch = 128, kBlock = 16;  // a minibatch; the fused kernel's block of samples
   double W1[kNH][kNF], b1[kNH] = {}, W2[2][kNH], b2[2] = {};
   struct Grad {
     double W1[kNH][kNF], b1[kNH], W2[2][kNH], b2[2];
   };
   Grad m, v;
-  std::vector<Grad> per_;  // a batch's per-sample gradients (train on a back end)
+  std::vector<Grad> per_;  // a batch's per-block gradients (train on a back end)
   std::size_t t = 0;
 
 

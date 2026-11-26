@@ -45,8 +45,10 @@ using RegimeFits = std::map<std::size_t, RegimeFit>;
 // Fits the K-state model to the market's days [lo, t0] (lo: the drawable window's start, as mcDays draws from:
 // [t0 - skip - window, t0 - skip]); warm: the last cycle's fit (null: afresh only). horizon, block: the futures'
 // length and block (the chances over the horizon, the block starts).
+// adaptive: from the warm fit alone (no fresh start), its rounds stopped once a round adds less than 1e-7 per day to the
+// log-likelihood (converged); a fresh start is then the caller's choice (fitRegime again without adaptive).
 inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::size_t skip, std::size_t horizon, std::size_t block, std::size_t K,
-                      const RegimeFit* warm, RegimeFit& f) {
+                      const RegimeFit* warm, RegimeFit& f, bool adaptive = false) {
   const std::size_t hiD = t0 > skip + 1 ? t0 - skip : 1, loD = hiD > window ? hiD - window : 1;
   f = RegimeFit{};
   f.K = K, f.lo = loD, f.hi = t0;
@@ -107,9 +109,12 @@ inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::si
     }
     return ll;
   };
-  const auto baumWelch = [&] {  // 50 rounds from the start set; the fit's log-likelihood
+  const auto baumWelch = [&](bool early = false) {  // 50 rounds from the start set (early: until converged); the fit's log-likelihood
+    double prev = -1e300;
     for (int it = 0; it < 50; ++it) {
-      forwardBackward();
+      const double ll = forwardBackward();
+      if (early && ll - prev < 1e-7 * double(n)) break;
+      prev = ll;
       std::vector<double> xi(K * K, 0.0);
       for (std::size_t q = 0; q + 1 < n; ++q)
         for (std::size_t a = 0; a < K; ++a)
@@ -130,12 +135,17 @@ inline void fitRegime(const Data& d, std::size_t t0, std::size_t window, std::si
     }
     return forwardBackward();
   };
+  if (adaptive && warm && warm->K == K) {
+    init(true);
+    baumWelch(true);
+  } else {
   init(false);
   const double fresh = baumWelch();
   if (warm && warm->K == K) {
     const std::vector<double> A0 = A, mu0 = mu, v0 = v, pi0 = pi;
     init(true);
     if (!(baumWelch() > fresh + 1e-9)) A = A0, mu = mu0, v = v0, pi = pi0;
+  }
   }
   // the states ordered calm first (by their variance), so the labels mean the same from one cycle to the next
   std::vector<std::size_t> ord(K);

@@ -379,7 +379,7 @@ void writeSynthetic(const std::string& path, unsigned seed) {
         continue;
       }
       char b[160];
-      std::snprintf(b, sizeof b, "%s,S%02d,%.4f,%.4f,%.4f,%.4f,%d\n", day, i, o, std::max(o, cl) * 1.005, std::min(o, cl) * 0.995, cl, 20000 + int(80000 * u(g)));
+      std::snprintf(b, sizeof b, "%s,S%02d,%.4f,%.4f,%.4f,%.4f,%d\n", day, i, o, std::max(o, cl) * 1.005, std::min(o, cl) * 0.995, cl, int(50000 * std::exp(0.6 * z(g))));  // lognormal volumes: heavy-tailed, as traded volumes are (the volume strategies need their shocks)
       f << b;
       c[i] = cl;
     }
@@ -637,7 +637,7 @@ int main(int argc, char** argv) {
   // mcnnstep: the network learns every that many sessions (0: at the resets only): each day's realised bars become
   // known after its close, and with 1 the network takes them in the same evening (new samples every session, a pass
   // over the newest), not up to a month later at the next reset.
-  P.emplace("mcnnstep", 0.0), P.emplace("mcnnsample", 0.0);
+  P.emplace("mcnnstep", 0.0), P.emplace("mcnnsample", 0.0), P.emplace("mcnndrift", 0.0);
   // mcregime: K > 0 reverse-engineers the market's K hidden states at every reset (include/strategy/regime.hpp): a
   // hidden Markov model of the market's daily move refitted to the window up to the reset (warm from the last), the
   // futures drawn in states (each block from the past days in its state, the states moving by the fitted chances),
@@ -645,7 +645,7 @@ int main(int argc, char** argv) {
   // mcregime -1: the number of states learnt at every reset, 1 to 4, the fit with the lowest BIC (1: one state, the
   // plain Monte Carlo's draws). mcregimestop: 1 sizes the volatility stops by the states expected; 0 leaves them on the
   // last 60 sessions (the states shape the futures only).
-  P.emplace("mcregime", 0.0), P.emplace("mcregimestop", 1.0);
+  P.emplace("mcregime", 0.0), P.emplace("mcregimestop", 1.0), P.emplace("mcregimedrift", 0.02);
   // mccost: 1 charges every buy-back after a stop its round trip at the broker (the share's own costs at the reset:
   // commissions, taxes, fees for the order's amount) in the nested Monte Carlo, so the stop's band and the buy-back's
   // distance are learnt net of the whipsaws they cause. 0: the futures without costs.
@@ -659,6 +659,17 @@ int main(int argc, char** argv) {
   // had had several times the futures, at a fraction of the cost. 0: every setting on the same `paths` futures.
   // With mcprob (the most probable best, by votes) the race is off: votes need every setting on every future.
   P.emplace("mcrace", 0.0), P.emplace("mcraceextra", 3.0);
+  // mcprune: z > 0 stops a position that is not viable as early as possible. At each reset every share of the target and
+  // its reserves gets a sequential pilot on its simulated futures (its stop as set, rounds of 32, 64, 128 ... futures up
+  // to mcpaths): it is not viable once its expected log growth over the horizon is below 0 by more than z standard
+  // errors, viable once above 0 by as much; undecided at mcprunepaths futures (0: mcpaths) it stays. A share not viable is dropped from the target
+  // and the reserves before its stop is learnt (no more futures spent on it): a candidate is not bought, and a held
+  // position is sold at the next open (its slot taken by the next viable reserve). 0: none.
+  // mcreuse: tol > 0 learns a share's stop and buy-back again only when what the simulation observes of it has moved:
+  // its daily volatility by more than tol (relative), its network scale by more than tol (in log), its daily drift by
+  // more than tol daily volatilities, or the setting is mcnnstep sessions old (else mcreuseage); otherwise the last
+  // learnt setting stands. 0: learnt afresh at every reset.
+  P.emplace("mcprune", 0.0), P.emplace("mcprunepaths", 0.0), P.emplace("mcreuse", 0.0), P.emplace("mcreuseage", 5.0);
   // stopmin, stopmax: a volatility stop (psarvol, vstop) at least and at most that far under the price (fractions;
   // the multiple learnt or set, times the share's daily volatility, is clamped to them), in the backtest, the live
   // orders and the nested Monte Carlo alike. stopslip: a stop sells that many daily volatilities under its level (or
@@ -764,6 +775,8 @@ int main(int argc, char** argv) {
   bool regStop = false;
   std::map<std::size_t, std::size_t> regKChosen;  // mcregime -1: the states chosen, and how often
   std::map<std::size_t, strat::RegimeFit> regLast;  // each number of states' last fit (the next cycle's warm start)
+  std::map<std::size_t, std::pair<std::size_t, double>> regFull;  // each number of states' last full fit: its day and log-likelihood a day
+  std::size_t regWarm = 0, regDrifted = 0;
   // A share's volatility for its stop at day t: in the states expected (the last fit by t) with mcregime, else its
   // last 60 sessions'.
   const auto sigmaAt = [&](std::size_t t, std::size_t i) {
@@ -948,6 +961,36 @@ int main(int argc, char** argv) {
   // the distance 0.25% to 10%), and the peak between the best point and its neighbours (fineArgmax).
   const bool fine = P["adaptfine"] > 0;
   const double raceZ = P["mcrace"], raceExtra = P["mcraceextra"];
+  const double pruneZ = P["mcprune"], reuseTol = P["mcreuse"];
+  std::size_t pruneTested = 0, prunePaths = 0, pruneFull = 0, pruneHeld = 0, pruneNew = 0, pruneReserve = 0;
+  std::size_t reuseKept = 0, reuseLearnt = 0;
+  // mcreuse: what the simulation observed of each share when its stop was last learnt (the day, its daily volatility,
+  // the network's scale, the log of its daily drift multiplier).
+  struct Observed { std::size_t t; double sig, scale, ladj; };
+  std::map<std::size_t, Observed> observed;
+  std::map<std::size_t, bool> staleNow;  // the reset's verdicts (once a share a reset)
+  std::size_t staleDay = SIZE_MAX;
+  const std::size_t reuseAge = std::size_t(std::max(1.0, P["mcnnstep"] > 0 ? P["mcnnstep"] : P["mcreuseage"]));
+  // Whether share i's stop must be learnt again at t: no setting yet, or what is observed of it has moved enough to
+  // change the setting (the tolerances above), or the setting is reuseAge sessions old. A share found stale is recorded
+  // as observed now.
+  const auto stale = [&](std::size_t t, std::size_t i, double adj, double scale) {
+    if (!(reuseTol > 0)) return true;
+    if (staleDay != t) staleNow.clear(), staleDay = t;
+    const auto memo = staleNow.find(i);
+    if (memo != staleNow.end()) return memo->second;
+    const double sig = d.sigma[t * N + i], la = std::log(adj > 0 ? adj : 1.0);
+    const auto it = observed.find(i);
+    bool st = it == observed.end() || t >= it->second.t + reuseAge || !(sig > 0) || !(it->second.sig > 0);
+    if (!st) {
+      const Observed& o2 = it->second;
+      st = std::fabs(sig / o2.sig - 1) > reuseTol || std::fabs(std::log(scale / o2.scale)) > reuseTol || std::fabs(la - o2.ladj) > reuseTol * sig;
+    }
+    if (st) observed[i] = {t, sig, scale, la}, ++reuseLearnt;
+    else ++reuseKept;
+    staleNow[i] = st;
+    return st;
+  };
   const std::size_t raceRef = std::getenv("X_MCRACE_REF") ? std::size_t(std::atol(std::getenv("X_MCRACE_REF"))) : 0;
   std::size_t raceFutures = 0, raceRuns = 0, raceSettingsTotal = 0, raceChoices = 0, raceLeft = 0, refChoices = 0, refAgree = 0;
   double refRegret = 0;
@@ -1028,7 +1071,7 @@ int main(int argc, char** argv) {
   std::vector<std::vector<std::pair<double, std::size_t>>> poolRanked;
   // X_PROFILE: each stage's wall time, to stderr (the work's own clock; never in the results)
   struct Prof {
-    double feat = 0, rank = 0, train = 0, sample = 0, select = 0, adapt = 0, check = 0, regime = 0;
+    double feat = 0, rank = 0, train = 0, sample = 0, select = 0, adapt = 0, check = 0, regime = 0, prune = 0;
   } prof;
   const auto clock = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
   // The network's inputs at day t: the share's own and the market's, and with mcpool each strategy's rank of it.
@@ -1080,16 +1123,37 @@ int main(int argc, char** argv) {
   // The network learns at t (once a day at most): from every sample whose outcome is known by t's close, then the
   // day's own samples kept (their outcome known only later).
   std::size_t learntAt = SIZE_MAX;
+  // Resets more often than mcnnstep (a daily strategy): the network learns adaptively, from what is observable at the
+  // reset. It trains when mcnnstep sessions have passed since it last did, or sooner when its error on the outcomes
+  // realised since then (their CRPS, known by t's close) is worse than the plain Monte Carlo's by more than mcnndrift
+  // (it has drifted); otherwise the last training stands. New samples are taken every mcnnstep sessions. Resets no
+  // more often than mcnnstep: every reset trains, as before.
+  const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
+  const bool nnAdaptive = nnStep > reb;
+  const std::size_t nnEvery = nnAdaptive ? nnStep : reb;
+  std::size_t lastTrain = SIZE_MAX, nnTrainings = 0, nnDrifted = 0, nnSkipped = 0;
+  const auto trainNow = [&](std::size_t t) {
+    if (!nnAdaptive || lastTrain == SIZE_MAX || !net.trained || t >= lastTrain + nnStep) return true;
+    double a = 0, b = 0, n = 0;
+    const auto [na, nb] = net.score(nnSamples, lastTrain + 1, t, mc.horizon);
+    for (const auto& x : nnSamples) n += x.ready > lastTrain && x.ready <= t;
+    a = na, b = nb;
+    if (n >= 200 && a > b * (1 + P["mcnndrift"])) return ++nnDrifted, true;
+    return ++nnSkipped, false;
+  };
   const auto learn = [&](std::size_t t, int epochs) {
     if (!nnOn || learntAt == t) return;
     learntAt = t;
     const double c0 = clock();
-    net.train(nnSamples, t, mc.horizon, 40000, epochs, backend.get());
+    if (trainNow(t)) {
+      net.train(nnSamples, t, mc.horizon, 40000, epochs, backend.get());
+      lastTrain = t, ++nnTrainings;
+    }
     prof.train += clock() - c0;
     if (net.trained && !nnFirstTrained) nnFirstTrained = t;
     // New samples only at the resets (P["mcnnsample"] 1: every learning day): a day's samples overlap the last
     // day's almost wholly, and taken daily they crowd the window with the last months (UK: CRPS +2.8%, 17 Nov).
-    if (P["mcnnsample"] <= 0 && (t - start) % reb != 0) return;
+    if (P["mcnnsample"] <= 0 && (t - start) % nnEvery != 0) return;
     features(t);
     const double c1 = clock();
     {  // each share's sample in parallel, then kept in the shares' order
@@ -1103,7 +1167,6 @@ int main(int argc, char** argv) {
     }
     prof.sample += clock() - c1;
   };
-  const std::size_t nnStep = std::size_t(std::max(0.0, P["mcnnstep"]));
   // mkttrend: the market's level (its mean daily return compounded) against its average over the last mktN days, at t
   const std::size_t mktN = std::size_t(std::max(0.0, P["mkttrend"]));
   std::vector<double> mktLevel;
@@ -1142,7 +1205,17 @@ int main(int argc, char** argv) {
       for (std::size_t kk = k0; kk <= k1; ++kk) {  // each number of states (one with mcregime K), warm from its own last fit
         const auto w = regLast.find(kk);
         strat::RegimeFit f;
-        strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, kk, w != regLast.end() ? &w->second : nullptr, f);
+        // Resets more often than mcnnstep: adaptive. From the last fit alone, until converged, unless mcnnstep sessions
+        // have passed since the last full fit or the market's days now fit it worse than then (log-likelihood a day
+        // lower by more than mcregimedrift): then the full fit (afresh and warm, the better kept).
+        const bool adapt = nnAdaptive && w != regLast.end() && regFull.count(kk) && t < regFull[kk].first + nnStep;
+        strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, kk, w != regLast.end() ? &w->second : nullptr, f, adapt);
+        bool full = !adapt;
+        if (adapt && f.loglik / double(f.hi + 1 - f.lo) < regFull[kk].second - P["mcregimedrift"])
+          strat::fitRegime(d, t, mc.window, mc.skip, mc.horizon, mc.block, kk, &w->second, f), ++regDrifted, full = true;
+        else if (adapt)
+          ++regWarm;
+        if (full) regFull[kk] = {t, f.loglik / double(f.hi + 1 - f.lo)};
         regLast[kk] = std::move(f);
         if (!best || regLast[kk].bic < regLast[best].bic) best = kk;
       }
@@ -1213,6 +1286,55 @@ int main(int argc, char** argv) {
     if (refill)
       for (std::size_t i : simReserve)
         if (std::find(target.begin(), target.end(), i) == target.end()) reserve.push_back(i);
+    if (pruneZ > 0 && mcOn && !target.empty()) {  // mcprune: the shares not viable dropped, as early as their futures show it
+      const double cp = clock();
+      std::vector<std::size_t> all(target);
+      all.insert(all.end(), reserve.begin(), reserve.end());
+      std::vector<double> mu2, sc2;
+      shapesFor(t, all, mu2, sc2);
+      std::vector<char> ok(all.size(), 1);
+      for (std::size_t j = 0; j < all.size(); ++j) {
+        const std::size_t i = all[j];
+        const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i), scale = sc2[j];
+        strat::McSpec sv = mc;
+        if (psarVol) sv.psarVol = vOf(i);
+        if (rbStop) sv.rebuyStop = rbOf(i);
+        strat::McTable tab;
+        strat::mcTable(d, t, i, scale, mc, tab);
+        const std::size_t pMax = P["mcprunepaths"] > 0 ? std::min(mc.paths, std::size_t(P["mcprunepaths"])) : mc.paths;
+        std::vector<double> g(pMax, 0.0);
+        std::size_t used = 0, n = std::min<std::size_t>(32, pMax);
+        for (;;) {
+          backend->parallelFor(n - used, [&](std::size_t a, std::size_t e) {
+            std::vector<std::size_t> days;
+            std::vector<double> pre;
+            strat::McPath path;
+            for (std::size_t q = used + a; q < used + e; ++q) {
+              strat::mcDays(t, d.T, mc, strat::mcMix(mc.seed ^ strat::mcMix(t * 1000003ULL + q)), false, days);
+              strat::mcRatios(d, i, days, scale, pre, &tab);
+              strat::mcPath(d, t, i, days, mc, adj, scale, pre.data(), path);
+              g[q] = std::log(std::max(1e-6, 1 + strat::mcSlotPath(path, i, cap, sv, strat::McHeld{}).ret));
+            }
+          });
+          prunePaths += n - used, used = n;
+          double m = 0, m2 = 0;
+          for (std::size_t q = 0; q < used; ++q) m += g[q], m2 += g[q] * g[q];
+          m /= double(used);
+          const double se = std::sqrt(std::max(0.0, m2 / double(used) - m * m) / double(used > 1 ? used - 1 : 1));
+          if (m + pruneZ * se < 0) { ok[j] = 0; break; }      // not viable: stopped here
+          if (m - pruneZ * se > 0 || used >= pMax) break;  // viable, or undecided at the pilot's most: kept
+          n = std::min(pMax, 2 * used);
+        }
+        ++pruneTested, pruneFull += mc.paths;
+      }
+      std::vector<std::size_t> keepT, keepR;
+      for (std::size_t j = 0; j < all.size(); ++j)
+        if (ok[j]) (j < target.size() ? keepT : keepR).push_back(all[j]);
+        else (j < target.size() ? (book.count(all[j]) ? pruneHeld : pruneNew) : pruneReserve) += 1;
+      while (keepT.size() < target.size() && !keepR.empty()) keepT.push_back(keepR.front()), keepR.erase(keepR.begin());
+      target = keepT, reserve = keepR;
+      prof.prune += clock() - cp;
+    }
     resets.emplace_back(t, target);
     shapesFor(t, target, mu, sc);
     const double ca = clock();
@@ -1451,6 +1573,7 @@ int main(int argc, char** argv) {
       for (std::size_t j = 0; j < all.size(); ++j) {
         const std::size_t i = all[j];
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
+        if (vPick.count(i) && !stale(t, i, adj, sc2[j])) continue;  // mcreuse: nothing observed has moved, the last setting stands
         double pick = maeBand(i, adj, sc2[j], vg);
         if (!(pick > 0)) {
           std::vector<double> means, votes;
@@ -1480,6 +1603,7 @@ int main(int argc, char** argv) {
             specs.push_back(sv), pairs.emplace_back(v, m);
           }
         const double adj = strat::mcAdjust(d, t, i, mc) * std::exp(mu2[j]), cap = capOf(t, i);
+        if (rbPick.count(i) && !stale(t, i, adj, sc2[j])) continue;  // mcreuse: the last setting stands
         std::vector<double> means;
         const auto pick = pairs[bestSetting(i, adj, cap, sc2[j], specs, probable, &means)];
         if (joint) vPick[i] = pick.first, ++vChosen[pick.first];
@@ -1822,8 +1946,8 @@ int main(int argc, char** argv) {
   // sessions; a fixed stop: from the price paid, so the bridge sets it from the fill: stopLoss).
   prof.check = clock() - cCheck;
   if (std::getenv("X_PROFILE"))
-    std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs, the market's states %.2fs\n",
-                 prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check, prof.regime);
+    std::fprintf(stderr, "profile: features %.2fs, strategies' ranks %.2fs, network training %.2fs, samples %.2fs, selection %.2fs, learnt stops %.2fs, the check and orders %.2fs, the market's states %.2fs, the viability pilots %.2fs\n",
+                 prof.feat, prof.rank, prof.train, prof.sample, prof.select, prof.adapt, prof.check, prof.regime, prof.prune);
   // fresh: a new buy's stop (the account does not hold the share), never the backtest position's trailed one.
   const auto stopPrice = [&](std::size_t i, bool fresh = false) {
     if (!stops) return kNaN;
@@ -1940,6 +2064,9 @@ int main(int argc, char** argv) {
                   "%.4f against the plain Monte Carlo's %.4f (lower is better: %+.1f%%)\n",
                   net.trained, nnStep ? (" (every " + std::to_string(nnStep) + " session" + (nnStep > 1 ? "s" : "") + ", the day's bars taken in)").c_str() : " (the resets)",
                   nnSamples.size(), a, b, b > 0 ? 100 * (a / b - 1) : 0.0);
+      if (nnAdaptive)
+        std::printf("strategy:   adaptive learning (resets every %zu session(s), mcnnstep %zu): trained at %zu resets (%zu early, its error on the outcomes realised since had drifted), the last training kept at %zu\n",
+                    reb, nnStep, nnTrainings, nnDrifted, nnSkipped);
     }
     if (regK && !turbThird.empty()) {
       std::string by;
@@ -1963,6 +2090,9 @@ int main(int argc, char** argv) {
       std::printf("strategy: the market's %zu hidden states, refitted at each of %zu resets (walk-forward) and the futures drawn in them%s%s; the last fit (%s): %s\n", f.K,
                   fits.size(), kLearnt.empty() ? "" : (" (the number learnt at each reset by BIC: " + kLearnt + ")").c_str(),
                   regStop ? ", the stops sized by the states expected" : ", the stops on the last 60 sessions", d.days[f.hi].c_str(), st.c_str());
+      if (regWarm + regDrifted)
+        std::printf("strategy:   adaptive refits: %zu warm until converged, %zu full (every %zu sessions, %zu sooner: the days fitted worse)\n",
+                    regWarm, fits.size() - regWarm, nnStep, regDrifted);
     }
     if (gate) {
       std::string used;
@@ -1988,6 +2118,13 @@ int main(int argc, char** argv) {
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n" : "strategy: the volatility stop learnt for each share at each reset (the multiple with the most expected log growth on its simulated "
                   "futures, the stop and the buy-back included): chosen (multiple, times): %s\n", used.c_str());
     }
+    if (pruneTested)
+      std::printf("strategy: the viability pilots (mcprune %g): %zu shares tested, %.0f%% of the futures a full simulation would take; not viable: "
+                  "%zu held positions sold early, %zu candidates not bought, %zu reserves dropped\n",
+                  pruneZ, pruneTested, 100.0 * double(prunePaths) / double(std::max<std::size_t>(1, pruneFull)), pruneHeld, pruneNew, pruneReserve);
+    if (reuseTol > 0)
+      std::printf("strategy: the stops learnt again only where the observed moved (mcreuse %g, at most %zu sessions old): learnt %zu times, kept %zu times (%.0f%%)\n",
+                  reuseTol, reuseAge, reuseLearnt, reuseKept, 100.0 * double(reuseKept) / double(std::max<std::size_t>(1, reuseKept + reuseLearnt)));
     if (raceChoices)
       std::printf("strategy: the settings learnt by a race (mcrace %g, at most %g x the futures more): %zu choices, %.1f settings left at the end on "
                   "average, %.2f futures and %.2f setting runs per choice in units of `paths` x settings (1.00: the plain choice's)\n",
