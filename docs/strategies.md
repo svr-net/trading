@@ -61,7 +61,84 @@ expected return before costs, highest first. Then each order's own IBKR costs co
 An order its costs would make a loss is dropped. No other order takes its place, and the order of the list
 does not change.
 
-## The first backtests (store data to 13 Nov 2026)
+## The daily strategies (26 Nov 2026)
+
+The monthly and weekly strategies (momentum, trend, low volatility, weekly reversal, residual momentum, 52-week
+high, no lottery shares and long-term reversal) were removed and replaced by seven daily ones from the published
+research on short-horizon returns. Each strategy decides after every close (`rebalance: 1`). A share stops being
+wanted when its signal ends, and the engine then sells it at the next open. `maxdays` is the time stop.
+
+| Strategy | Rule | Evidence |
+|---|---|---|
+| `rsi2` | close over its 200-day average and RSI(2) under 10; held until a close over the 5-day average | Connors and Alvarez 2009 |
+| `ibs` | close in the bottom 20% of the day's range (internal bar strength); held a day | Pagonidis 2013; Pandey and Joshi 2023 (arXiv 2306.12434) |
+| `revday` | the day's largest falls net of beta times the market, at least 1.5 volatilities; held a day | Lehmann 1990; Lo and MacKinlay 1990; Nagel 2012 |
+| `volrev` | 3-day falls against the market on at least 1.5 times the usual volume | Conrad, Hameed and Niden 1994; Avramov, Chordia and Goyal 2006 |
+| `hvp` | a day of at least 2.5 times the median volume of the 49 sessions before, that did not close lower; held up to 5 sessions | Gervais, Kaniel and Mingelgrin 2001; Kaniel, Ozoguz and Starks 2012 |
+| `tom` | from the month's last session to its third, the highest betas over their 200-day average; read from the calendar, never a later day | Lakonishok and Smidt 1988; McConnell and Xu 2008 |
+| `breakout` | a new 20-day closing high within 5 sessions, over the 200-day average and the 10-day low | Donchian; Faith 2007; George and Hwang 2004 |
+
+The View gained `high`, `low` and `volume`, and the shared helpers live in `include/strategy/daily.hpp`.
+
+**Backtests on the store's bars** (`markets/<MARKET>/`, Nov 2017 to 25 Nov 2026, a year of warm-up), 10 equal
+positions, no Monte Carlo and no stop, **before any cost**. IBKR's tiered costs come off only the final order list
+(the last column). "Opposite picks" holds the lowest scores of the same list. For a filter strategy, that means the
+weakest signals among the shares that qualify, so "own edge" there measures the ranking, not the filter.
+
+| Market | Strategy | Annual | Sharpe | Max DD | Opposite picks | Own edge | Trades/yr | Avg trade | Win | Held | Next orders: list -> after costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| UK | breakout | +10.7% | 0.69 | 32% | +7.8% | +2.9% | 662 | +0.18% | 45% | 4.0 | 10 -> 0 |
+| UK | hvp | +21.9% | 1.18 | 42% | +11.6% | +10.3% | 746 | +0.31% | 51% | 3.6 | 10 -> 0 |
+| UK | ibs | -3.9% | -0.13 | 55% | +26.3% | -30.2% | 2415 | -0.01% | 48% | 1.1 | 10 -> 0 |
+| UK | revday | +11.0% | 0.65 | 42% | +12.8% | -1.8% | 1948 | +0.07% | 50% | 1.1 | 9 -> 0 |
+| UK | rsi2 | +8.3% | 0.57 | 34% | +6.3% | +2.0% | 916 | +0.11% | 54% | 2.6 | 10 -> 0 |
+| UK | tom | +6.0% | 0.57 | 14% | +2.6% | +3.4% | 176 | +0.39% | 51% | 2.9 | 0 -> 0 |
+| UK | volrev | +9.7% | 0.59 | 44% | +9.1% | +0.6% | 1197 | +0.10% | 52% | 1.7 | 10 -> 1 |
+| EU | breakout | +25.5% | 1.54 | 18% | +9.2% | +16.3% | 870 | +0.34% | 42% | 3.6 | 8 -> 1 |
+| EU | hvp | +11.9% | 0.69 | 37% | +12.8% | -0.9% | 960 | +0.16% | 44% | 3.4 | 8 -> 0 |
+| EU | ibs | -6.0% | -0.27 | 49% | -12.8% | +6.8% | 2775 | -0.03% | 40% | 1.1 | 10 -> 0 |
+| EU | revday | -6.0% | -0.31 | 52% | -7.4% | +1.4% | 2251 | -0.04% | 41% | 1.1 | 4 -> 0 |
+| EU | rsi2 | +0.7% | 0.12 | 34% | +0.8% | -0.1% | 1111 | +0.01% | 50% | 2.5 | 10 -> 0 |
+| EU | tom | +7.8% | 0.76 | 23% | +0.1% | +7.7% | 177 | +0.57% | 53% | 3.1 | 0 -> 0 |
+| EU | volrev | -1.5% | -0.01 | 39% | +2.6% | -4.1% | 1218 | -0.01% | 46% | 1.9 | 5 -> 0 |
+| US | breakout | -1.8% | 0.05 | 44% | -3.5% | +1.7% | 753 | +0.01% | 43% | 3.5 | 10 -> 2 |
+| US | hvp | +0.1% | 0.16 | 57% | +9.7% | -9.6% | 747 | +0.07% | 51% | 3.6 | 10 -> 6 |
+| US | ibs | +6.5% | 0.36 | 48% | +2.3% | +4.2% | 2452 | +0.04% | 51% | 1.0 | 10 -> 6 |
+| US | revday | +7.9% | 0.41 | 40% | +20.9% | -13.0% | 2350 | +0.05% | 51% | 1.0 | 10 -> 8 |
+| US | rsi2 | +12.2% | 0.62 | 33% | +10.0% | +2.2% | 1062 | +0.14% | 57% | 2.4 | 10 -> 8 |
+| US | tom | +4.2% | 0.30 | 34% | +0.8% | +3.4% | 182 | +0.41% | 50% | 2.9 | 0 -> 0 |
+| US | volrev | +14.1% | 0.58 | 54% | +15.0% | -0.9% | 1308 | +0.14% | 53% | 1.8 | 10 -> 8 |
+| APAC | breakout | +0.9% | 0.14 | 49% | +10.6% | -9.7% | 719 | +0.02% | 39% | 3.7 | 10 -> 2 |
+| APAC | hvp | +18.0% | 0.87 | 37% | -3.1% | +21.1% | 750 | +0.27% | 48% | 3.6 | 10 -> 6 |
+| APAC | ibs | +21.8% | 1.18 | 36% | +8.8% | +13.0% | 2495 | +0.09% | 46% | 1.0 | 10 -> 0 |
+| APAC | revday | +5.3% | 0.36 | 40% | +12.5% | -7.2% | 2209 | +0.03% | 47% | 1.1 | 10 -> 0 |
+| APAC | rsi2 | +14.8% | 0.80 | 39% | +11.9% | +2.9% | 980 | +0.17% | 54% | 2.5 | 10 -> 2 |
+| APAC | tom | +5.8% | 0.41 | 25% | +0.3% | +5.5% | 178 | +0.43% | 47% | 3.0 | 0 -> 0 |
+| APAC | volrev | +5.1% | 0.34 | 52% | +4.3% | +0.8% | 1280 | +0.06% | 49% | 1.7 | 10 -> 0 |
+
+**What it shows:**
+- **No strategy works everywhere.** The best per market: UK `hvp` (Sharpe 1.18), EU `breakout` (1.54), US `rsi2`
+  (0.62) and APAC `ibs` (1.18). Each one is weak or negative somewhere else. For example, `ibs` returns −4% in the UK
+  and −6% in the EU, and `breakout` returns −2% in the US.
+- **Small trades.** A trade earns +0.01% to +0.57% before costs. That is less than a UK round trip (stamp duty: about
+  0.6%) and less than most EU ones (France's tax). So the final cost step drops nearly every UK and EU order. In the
+  US and APAC, where costs are a few basis points, most orders survive.
+- **Turn of the month.** It is the only strategy whose average trade beats every market's costs (+0.4% to +0.6%).
+  It is invested only about 4 sessions a month, which explains its low drawdowns.
+- **Weaker than the old strategies before costs.** The removed monthly momentum made +34% a year in the UK and US
+  (5 positions, store data to 13 Nov 2026, below), against +22% and +12% here for the best daily strategy.
+
+**The live choice:** one rule for every market, the highest Sharpe among the strategies whose picks beat their own
+opposite picks: UK `hvp`, EU `breakout`, US `rsi2`, APAC `ibs`. INDEX takes `tom` (the effect is a market-index
+one, McConnell and Xu's 31 of 35 countries). FOREX takes `rsi2` (research only; currency bars carry no volume, so
+`hvp` and `volrev` cannot run). Picking the best of seven on the same data overstates what to expect: the
+research figures and the opposite-picks gap are the better guide.
+
+## The removed monthly and weekly strategies
+
+The sections below record the strategies replaced on 26 Nov 2026.
+
+### The first backtests (store data to 13 Nov 2026)
 
 Each strategy on each market, with 5 equal positions, before costs: annual return, Sharpe ratio and the worst
 drawdown, from Nov 2018 (a year of warm-up) to 13 Nov 2026. The US figures are for NYSE only, because NASDAQ
