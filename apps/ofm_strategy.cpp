@@ -693,7 +693,7 @@ int main(int argc, char** argv) {
   // invert: 1 holds the opposite picks (the lowest scores): the same list, the same book, the strategy's choice
   // reversed. The scan runs it beside the live one: the gap between the two is the strategy's own edge; what the
   // opposite picks also make is the share list's (shares that survived to today, chosen with hindsight).
-  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0);
+  P.emplace("invert", 0.0), P.emplace("intraday", 0.0), P.emplace("takesd", 0.0), P.emplace("stopsd", 0.0), P.emplace("bracketadapt", 0.0), P.emplace("bracketobj", 1.0), P.emplace("maxloss", 0.0);
   for (const auto& [k, v] : o.params) {
     if (!P.count(k)) usage(("the strategy has no parameter " + k).c_str());
     P[k] = v;
@@ -926,9 +926,15 @@ int main(int argc, char** argv) {
   // over the close, at least the buy's limit; the stop stopsd under it.
   // bracketadapt: each trade's own multiples, learnt at its reset on its simulated futures (any value; 0: none), in
   // place of takesd and stopsd.
-  const bool bracketAdapt = flatDaily && P["bracketadapt"] > 0, sortino = P["bracketobj"] > 0;
+  // bracketobj: 0 the expected log growth, 1 the Sortino ratio, 2 the mean over the expected shortfall (the worst 5%)
+  const bool bracketAdapt = flatDaily && P["bracketadapt"] > 0;
+  const int bracketObj = int(P["bracketobj"]);
   std::map<std::size_t, double> takeMult, stopMult;
-  std::map<std::size_t, std::array<double, 4>> bracketStat;  // the learnt bracket's mean, 5%, 95% and chance of a loss
+  std::map<std::size_t, std::array<double, 4>> bracketStat;
+  struct ObjRec { double m = 0, dn = 0, n = 0; };           // an objective's real record: its brackets' returns on the real days
+  std::array<ObjRec, 3> objRec;
+  std::array<std::size_t, 3> objUsed{};
+  std::map<std::size_t, std::array<std::pair<double, double>, 3>> objCand;  // each share's three brackets at its last reset  // the learnt bracket's mean, 5%, 95% and chance of a loss
   std::vector<double> bracketTakes, bracketStops;            // every multiple learnt (the report's spread)
   const auto takeMultOf = [&](std::size_t i) { const auto it = takeMult.find(i); return it != takeMult.end() ? it->second : takeSd; };
   const auto stopMultOf = [&](std::size_t i) { const auto it = stopMult.find(i); return it != stopMult.end() ? it->second : stopSd; };
@@ -936,9 +942,16 @@ int main(int argc, char** argv) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], a = takeMultOf(i);
     return a > 0 && s > 0 && c > 0 ? std::max(c * (1 + capOf(t, i)), c * (1 + a * s)) : 0.0;
   };
+  // maxloss: the most a trade may lose, a fraction of the buy's limit (the highest price it can buy at): its stop is
+  // never further under it (the account's own limit; only a gap through the stop, sold at the open, loses more).
+  // A learnt multiple under 0 means the stop at that limit.
+  const double maxLoss = P["maxloss"];
   const auto stopOf = [&](std::size_t t, std::size_t i) {
     const double s = d.sigma[t * N + i], c = d.Cf[t * N + i], b = stopMultOf(i);
-    return b > 0 && s > 0 && c > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
+    if (!(c > 0)) return 0.0;
+    const double floorAt = maxLoss > 0 ? c * (1 + capOf(t, i)) * (1 - maxLoss) : 0.0;
+    const double vol = b > 0 && s > 0 ? c * std::max(0.0, 1 - b * s) : 0.0;
+    return std::max(vol, floorAt);
   };
   const bool mcOn = P["mc"] > 0 || P["mcselect"] > 0, mcSelect = P["mcselect"] > 0;
   strat::McSpec mc;
@@ -1689,41 +1702,88 @@ int main(int argc, char** argv) {
             for (std::size_t a = 0; a < A; ++a) {
               const double tk = a + 1 < A ? std::max(lim, c0 * (1 + bGridA[a] * sg)) : 1e300;
               for (std::size_t b = 0; b < B; ++b) {
-                const double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
+                double sl = b + 1 < B ? c0 * std::max(0.0, 1 - bGridB[b] * sg) : 0.0;
+                if (maxLoss > 0) {  // the account's limit: a stop further than it is not allowed; "none" is the stop at it
+                  const double edge = lim * (1 - maxLoss);
+                  if (b + 1 < B && sl < edge) { g[(a * B + b) * Pn + q] = kNaN; continue; }
+                  if (b + 1 == B) sl = edge;
+                }
                 const double X = sl > 0 && Lw <= sl ? std::min(sl, O) * slip : H >= tk ? std::max(tk, O) : C;
                 g[(a * B + b) * Pn + q] = std::log(std::max(1e-6, X / O));
               }
             }
           }
         });
-        // The objective (bracketobj): 1, each pair's Sortino ratio on the trade's futures (its mean over its downside
-        // deviation: a loss counts against a bracket, a gain does not), so the stop is learnt to avoid losses, with no
-        // constant to choose; 0, the expected log growth (which a few large losses barely move).
-        std::vector<double> mean(A * B, 0.0);
-        for (std::size_t x = 0; x < A * B; ++x) {
-          double m = 0, dn = 0;
-          for (std::size_t q = 0; q < Pn; ++q) {
-            const double y = g[x * Pn + q];
-            m += y, dn += y < 0 ? y * y : 0.0;
+        // Three objectives scored on the trade's futures: 0 the expected log growth; 1 the Sortino ratio (the mean over
+        // the downside deviation); 2 the mean over the expected shortfall (the mean loss of the worst twentieth). Each
+        // gives its own bracket; with bracketobj 3 the one placed is the objective whose brackets did best on the real
+        // days so far (all three scored on every trade's real day, walk-forward), else bracketobj's own.
+        std::array<std::vector<double>, 3> objScore;
+        for (auto& v : objScore) v.assign(A * B, -1e300);
+        {
+          const std::size_t nT = std::max<std::size_t>(1, Pn / 20);
+          std::vector<double> v(Pn);
+          for (std::size_t x = 0; x < A * B; ++x) {
+            double m = 0, dn = 0;
+            bool barred = false;
+            for (std::size_t q = 0; q < Pn && !barred; ++q) barred = std::isnan(g[x * Pn + q]);
+            if (barred) continue;
+            for (std::size_t q = 0; q < Pn; ++q) {
+              const double y = g[x * Pn + q];
+              m += y, dn += y < 0 ? y * y : 0.0, v[q] = y;
+            }
+            m /= double(Pn), dn = std::sqrt(dn / double(Pn));
+            std::partial_sort(v.begin(), v.begin() + long(nT), v.end());
+            double es = 0;
+            for (std::size_t q = 0; q < nT; ++q) es -= v[q];
+            es /= double(nT);
+            objScore[0][x] = m;
+            objScore[1][x] = dn > 0 ? m / dn : (m > 0 ? 1e6 * m : m);
+            objScore[2][x] = es > 0 ? m / es : (m > 0 ? 1e6 * m : m);
           }
-          m /= double(Pn), dn = std::sqrt(dn / double(Pn));
-          mean[x] = sortino ? (dn > 0 ? m / dn : (m > 0 ? 1e6 * m : m)) : m;
         }
-        std::size_t best = 0;
-        for (std::size_t x = 1; x < A * B; ++x)
-          if (mean[x] > mean[best] + 1e-15) best = x;
-        const std::size_t ba = best / B, bb = best % B;
-        double ta = 0, tb = 0;  // the fractional multiples (0: none), each refined along its own axis at the other's best
-        if (ba + 1 < A) {
-          std::vector<double> curve(A - 1);
-          for (std::size_t a = 0; a + 1 < A; ++a) curve[a] = mean[a * B + bb];
-          ta = fineArgmax(bGridA, curve);
+        // Each objective's best pair, refined along each axis (fractional) at the other's best.
+        const auto pickBracket = [&](const std::vector<double>& mean, std::size_t& best) {
+          best = 0;
+          for (std::size_t x = 1; x < A * B; ++x)
+            if (mean[x] > mean[best] + 1e-15) best = x;
+          const std::size_t ba = best / B, bb = best % B;
+          double ta = 0, tb = 0;
+          if (ba + 1 < A) {
+            std::vector<double> curve(A - 1);
+            for (std::size_t a = 0; a + 1 < A; ++a) curve[a] = mean[a * B + bb];
+            ta = fineArgmax(bGridA, curve);
+          }
+          if (bb + 1 < B) {
+            std::size_t lo = 0;
+            while (lo < bb && mean[ba * B + lo] <= -1e299) ++lo;
+            std::size_t hi = bb;
+            while (hi + 2 < B && mean[ba * B + hi + 1] > -1e299) ++hi;
+            std::vector<double> grid(bGridB.begin() + long(lo), bGridB.begin() + long(hi) + 1), curve;
+            for (std::size_t b = lo; b <= hi; ++b) curve.push_back(mean[ba * B + b]);
+            tb = grid.size() >= 3 ? fineArgmax(grid, curve) : bGridB[bb];
+          } else if (maxLoss > 0) {
+            tb = -1;
+          }
+          return std::pair<double, double>(ta, tb);
+        };
+        std::array<std::pair<double, double>, 3> cands;
+        std::array<std::size_t, 3> bests{};
+        for (int ob = 0; ob < 3; ++ob) cands[ob] = pickBracket(objScore[ob], bests[ob]);
+        int use = std::clamp(bracketObj, 0, 2);
+        if (bracketObj == 3) {  // the objective with the best real record so far (the Sortino of its real trades)
+          double topRec = -1e300;
+          for (int ob = 0; ob < 3; ++ob) {
+            const auto& rc = objRec[ob];
+            const double rec = rc.n > 0 ? (rc.dn > 0 ? (rc.m / rc.n) / std::sqrt(rc.dn / rc.n) : rc.m / rc.n * 1e6) : -1e299;
+            if (rec > topRec) topRec = rec, use = ob;
+          }
+          if (objRec[0].n == 0) use = 1;
+          ++objUsed[use];
         }
-        if (bb + 1 < B) {
-          std::vector<double> curve(B - 1);
-          for (std::size_t b = 0; b + 1 < B; ++b) curve[b] = mean[ba * B + b];
-          tb = fineArgmax(bGridB, curve);
-        }
+        objCand[i] = cands;
+        const double ta = cands[use].first, tb = cands[use].second;
+        const std::size_t best = bests[use];
         takeMult[i] = ta, stopMult[i] = tb;
         bracketTakes.push_back(ta), bracketStops.push_back(tb);
         std::vector<double> r(Pn);
@@ -1890,6 +1950,17 @@ int main(int argc, char** argv) {
           // which came first). A stop the open is already through sells at the open (with the stop's slip).
           const double Hi = d.H[u * N + i];
           const double tk = takeOf(t, i), sl = stopOf(t, i);
+          if (bracketObj == 3 && objCand.count(i) && C > 0) {  // every objective's bracket on this real day (known at its close)
+            const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i], lim = c0 * (1 + capOf(t, i));
+            for (int ob = 0; ob < 3; ++ob) {
+              const auto [ta, tb] = objCand[i][ob];
+              const double tko = ta > 0 ? std::max(lim, c0 * (1 + ta * s0)) : 0.0;
+              const double slo = tb > 0 ? c0 * std::max(0.0, 1 - tb * s0) : tb < 0 && maxLoss > 0 ? lim * (1 - maxLoss) : 0.0;
+              const double Xo = slo > 0 && Lo > 0 && Lo <= slo ? std::min(slo, E) * slipAt(u, i) : tko > 0 && Hi >= tko ? std::max(tko, E) : C;
+              const double y = std::log(std::max(1e-6, Xo / E));
+              objRec[ob].m += y, objRec[ob].dn += y < 0 ? y * y : 0.0, objRec[ob].n += 1;
+            }
+          }
           double X = C > 0 ? C : E;
           if (sl > 0 && Lo > 0 && Lo <= sl) X = std::min(sl, E) * slipAt(u, i), ++nStopsDay;
           else if (tk > 0 && Hi >= tk) X = std::max(tk, E), ++nTakes;
@@ -2191,6 +2262,9 @@ int main(int argc, char** argv) {
     const auto at = [&](double q) { return jnum(v[std::size_t(q * double(v.size() - 1))], "%.2f"); };
     return "median " + at(0.5) + " (10-90%: " + at(0.1) + " to " + at(0.9) + ")";
   };
+  if (bracketAdapt && bracketObj == 3)
+    std::printf("strategy:   the bracket's objective learnt walk-forward from the real days (the best real record so far): expected growth %zu times, Sortino %zu, mean over the expected shortfall %zu\n",
+                objUsed[0], objUsed[1], objUsed[2]);
   if (bracketAdapt && !bracketTakes.empty())
     std::printf("strategy:   the bracket learnt for each trade on its simulated futures (any value, in daily volatilities over/under the decision's close; 0: none): take-profit %s, stop-loss %s\n",
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
