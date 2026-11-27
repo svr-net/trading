@@ -84,6 +84,11 @@ interface Broker {
     /** The account's portfolio (IBKR's prices and unrealised profit). */
     List<Holding> portfolio();
 
+    /** The account's values from its last portfolio() read (IBKR's keys, e.g. "NetLiquidation:GBP"); none by default. */
+    default java.util.Map<String, String> accountValues() {
+        return java.util.Map.of();
+    }
+
     /** The open orders of every client of the account. */
     List<Ord> openOrders();
 

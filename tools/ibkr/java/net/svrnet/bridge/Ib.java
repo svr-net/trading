@@ -786,6 +786,18 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         }
     }
 
+    private final java.util.Map<String, String> acct = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Override
+    public void updateAccountValue(String key, String value, String currency, String accountName) {
+        if (portfolioReq != null && key != null && value != null) acct.put(key + (currency == null || currency.isEmpty() ? "" : ":" + currency), value);
+    }
+
+    @Override
+    public java.util.Map<String, String> accountValues() {
+        return new java.util.TreeMap<>(acct);
+    }
+
     @Override
     public void accountDownloadEnd(String accountName) {
         Req r = portfolioReq;

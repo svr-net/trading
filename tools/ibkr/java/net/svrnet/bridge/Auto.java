@@ -820,6 +820,43 @@ final class Auto {
         TRADES_NOTE.remove(m);
     }
 
+    static volatile Object[] PORTFOLIO;  // {when (nanos), the account's positions and values}
+    static volatile String PORTFOLIO_NOTE = "";
+
+    /** The whole account at IBKR: every position (any market, the book's or not) and the account's values. */
+    static void readPortfolio() {
+        Map<String, Object>[] got = new Map[1];
+        Steps.Result r = step(() -> {
+            try (Ib ib = Ib.connect(Bridge.env("IB_HOST", "127.0.0.1"), IB_PORT, Recordings.clientId("UK") + 8, 2)) {
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (Broker.Holding h : ib.portfolio()) {
+                    if (h.qty() == 0) continue;
+                    Map<String, Object> p = new LinkedHashMap<>();
+                    p.put("symbol", h.share().symbol());
+                    p.put("exchange", h.share().primaryExchange() == null || h.share().primaryExchange().isEmpty() ? h.share().exchange() : h.share().primaryExchange());
+                    p.put("currency", h.share().currency());
+                    p.put("qty", h.qty());
+                    p.put("price", h.marketPrice());
+                    p.put("avgCost", h.avgCost());
+                    p.put("value", h.qty() * h.marketPrice());
+                    p.put("unrealized", h.unrealizedPnl());
+                    rows.add(p);
+                }
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("positions", rows);
+                out.put("account", ib.accountValues());
+                got[0] = out;
+                return new Steps.Result(0, List.of(), "");
+            }
+        });
+        if (r.code() != 0 || got[0] == null) {
+            PORTFOLIO_NOTE = r.last().isEmpty() ? "no answer from IBKR" : r.last();
+            return;
+        }
+        PORTFOLIO = new Object[] {System.nanoTime(), got[0]};
+        PORTFOLIO_NOTE = "";
+    }
+
     static void readIbdiag() {
         String m = AUTO.isEmpty() ? "UK" : AUTO.get(0);
         Map<String, Object> d;
