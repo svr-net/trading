@@ -11,7 +11,7 @@ on:
       place: { description: "Then place these markets' orders again, e.g. UK,EU (already placed shares are skipped)", default: '' }
       test_order: { description: "Then ask IBKR whether it accepts orders now: a 1-share limit buy far from the market, cancelled at once (UK, EU, US, APAC or INDEX)", default: '' }
   schedule:
-    - cron: '7,37 7-17 * * 1-5'   # UTC: the UK and EU sessions, their closes and reports
+    - cron: '7,37 * * * 0-5'   # UTC, every half hour Sunday night to Friday: every market's session (APAC's from Sunday 22:00), the closes and reports
 permissions:
   contents: write  # web/data/broker.json (results only) to main when the broker's state changes
   actions: write   # the previous run's result (a failure pushed once a day, not every half hour); the page redeployed

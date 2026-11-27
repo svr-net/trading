@@ -84,6 +84,12 @@ if (key) {
       if (!c || !c.check) continue;
       const detail = mask(c.detail);
       console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : 'warn'} ${c.check}: ${detail}`);
+      // the account watch: an unexpected position, a leftover, a foreign or refused order; a new finding fails the run once
+      if (c.check === 'Account watch') {
+        // only a fingerprint is kept (the monitor's state is published with the page: never the account's tickers)
+        broker.watch = c.ok === false ? String([...String(c.detail || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7)) : null;
+        if (c.ok === false && broker.watch !== prev.watch) problems.push(`account watch: ${mask(c.detail)}`);
+      }
       if (c.check === 'IBKR accepts orders' && c.ok === true) broker.accepts = true, broker.refusal = null, broker.accepted = String(c.detail || '').slice(0, 120);
       if (c.check === 'IBKR accepts orders' && c.ok === false) {
         problems.push('IBKR refuses the orders (paper trading not acknowledged)');

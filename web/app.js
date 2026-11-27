@@ -843,6 +843,13 @@ function brokerHistory() {
 let portfolioTimer = null;
 function brokerPortfolio() {
   if (!bridgeKey()) return;
+  // the account watch (every 5 minutes at the bridge): what at IBKR it did not expect
+  bridge('/watch').then((w) => {
+    const box = $('account-watch');
+    const items = w && Array.isArray(w.items) ? w.items : [];
+    box.hidden = !(w && w.ok === false && items.length);
+    box.replaceChildren(cell('b', 'Unexpected at Interactive Brokers'), ...items.map((x) => cell('div', x)));
+  }).catch(() => { $('account-watch').hidden = true; });
   $('portfolio-summary').textContent = 'Asking Interactive Brokers…';
   bridge('/portfolio').then((p) => {
     if (!p.positions || (p.error && !p.positions.length && !p.account)) {

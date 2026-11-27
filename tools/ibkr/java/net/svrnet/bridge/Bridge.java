@@ -182,6 +182,15 @@ public final class Bridge {
             case "/java" -> reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
             case "/diag" -> reply(x, 200, Json.obj("checks", Auto.diag()));
             case "/history" -> reply(x, 200, Json.obj("days", Book.history()));
+            case "/watch" -> {  // the account watch's latest result (every 5 minutes)
+                Object[] w = Auto.WATCH;
+                if (w == null) {
+                    reply(x, 202, Json.obj("ok", null, "items", List.of(), "note", "not checked yet: in a few minutes"));
+                    return;
+                }
+                Object[] r = (Object[]) w[1];
+                reply(x, 200, Json.obj("ok", r[0], "items", r[1], "age", Auto.ago((long) w[0])));
+            }
             case "/portfolio" -> {  // the whole account at IBKR, from the background's latest read (keyed: positions and money)
                 Object[] hit = Auto.PORTFOLIO;
                 if (hit == null || Auto.ago((long) hit[0]) >= 55) Auto.readOnce("portfolio", Auto::readPortfolio);
