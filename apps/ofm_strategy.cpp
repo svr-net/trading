@@ -1210,7 +1210,7 @@ int main(int argc, char** argv) {
   // whose replayed days have the best mean log return less its standard error are the trade's (re-learnt at every
   // decision, for every trade). Costs play no part (they come off the orders at the end).
   const bool tradeBr = flatDaily && P["tradebracket"] > 0;
-  std::function<std::array<double, 6>(std::size_t, std::size_t)> tradeLv;  // take, stop, buy-back multiple, expected, buy limit, works all day
+  std::function<std::array<double, 9>(std::size_t, std::size_t)> tradeLv;  // take, stop, buy-back multiple, expected, buy limit, works all day
   const auto takeOf = [&](std::size_t t, std::size_t i) {
     if (tradeBr) return tradeLv(t, i)[0];
     if (psarBracket) return sarLevels(sarBest, t, i).first;
@@ -1316,13 +1316,13 @@ int main(int argc, char** argv) {
   const std::array<double, 8> tB{0.0, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
   const std::array<double, 6> tR{kNoRb, -1.0, -0.5, 0.0, 0.5, 1.0};
   const std::size_t nTR = rebuyDay ? tR.size() : 1, tradeW = std::max<std::size_t>(20, std::size_t(P["tradewindow"]));
-  std::unordered_map<std::size_t, std::array<double, 6>> tradeMemo;
+  std::unordered_map<std::size_t, std::array<double, 9>> tradeMemo;
   std::vector<double> tradeAs, tradeBs, tradeEs;  // the multiples learnt for the trades placed (the report)
   std::size_t tradeDayEntries = 0;
-  tradeLv = [&](std::size_t t, std::size_t i) -> std::array<double, 6> {
+  tradeLv = [&](std::size_t t, std::size_t i) -> std::array<double, 9> {
     const std::size_t key = t * N + i;
     if (auto it = tradeMemo.find(key); it != tradeMemo.end()) return it->second;
-    std::array<double, 6> out{0.0, 0.0, kNoRb, 0.0, 0.0, 0.0};  // take, stop, buy-back, expected, buy limit, works all day
+    std::array<double, 9> out{0.0, 0.0, kNoRb, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0};  // take, stop, buy-back, expected, buy limit, works all day; the choice (mode, limit, bracket; -1: none)
     const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i];
     out[4] = c0 * (1 + capOf(t, i));
     if (!(c0 > 0 && std::isfinite(s0) && s0 > 0) || t < tradeW + 1) return tradeMemo[key] = out;
@@ -1409,7 +1409,55 @@ int main(int argc, char** argv) {
     out[3] = std::expm1(sm[bk] / n);
     out[4] = c0 * (1 + tE[e] * s0);
     out[5] = md == 1 ? 1.0 : 0.0;
+    out[6] = double(md), out[7] = double(e), out[8] = double(kx);
     return tradeMemo[key] = out;
+  };
+  // tradebracket: the chosen buy and bracket's probabilities on the same replayed days (cost: the order's round trip,
+  // applied only here, at the end): {days, filled, in the auction, take-profit, stop, buy-back, gain, gain over the
+  // cost, the summed return of the filled days}. Each event weighed by its chance (a day that reached both levels:
+  // the order model's).
+  const auto tradeProbs = [&](std::size_t t, std::size_t i, double cost) {
+    std::array<double, 9> r{};
+    const auto lv = tradeLv(t, i);
+    if (!(lv[6] >= 0)) return r;
+    const std::size_t md = std::size_t(lv[6]), e = std::size_t(lv[7]), kx = std::size_t(lv[8]);
+    const std::size_t nB = tB.size(), a = kx / nTR / nB, b = kx / nTR % nB, rq = kx % nTR;
+    for (std::size_t q = t + 1 - tradeW; q <= t; ++q) {
+      const double c = d.Cf[(q - 1) * N + i], s = d.sigma[(q - 1) * N + i];
+      const double O = d.O[q * N + i], H = d.H[q * N + i], Lw = d.L[q * N + i], C = d.Cf[q * N + i];
+      if (!(c > 0 && std::isfinite(s) && s > 0 && O > 0 && H > 0 && Lw > 0 && C > 0)) continue;
+      if (P["staleopen"] > 0 && O == d.C[(q - 1) * N + i]) continue;
+      r[0] += 1;
+      const double lim = c * (1 + tE[e] * s);
+      double E;
+      bool late;
+      if (O <= lim) E = O, late = false;
+      else if (md == 1 && Lw <= lim) E = lim, late = true;
+      else continue;  // not bought that day
+      const double tk = tA[a] > 0 ? c * (1 + tA[a] * s) : 0.0, sl = tB[b] > 0 && tB[b] * s < 1 ? c * (1 - tB[b] * s) : 0.0;
+      const double m = rebuyDay ? tR[rq] : kNoRb, sl0 = slipAt(q, i);
+      const bool tH = tk > 0 && (late ? tk > E && C >= tk : O >= tk || (H >= tk && valueOver(q, i, tk) >= o.capital));
+      const bool hs = sl > 0 && Lw <= sl;
+      const bool both = !late && hs && tH && O > sl && O < tk;
+      const double pS = both ? pStopFirst(q, i, sl, tk, false) : 0.0;
+      const bool stopped = hs && !(tH && !late && O >= tk);
+      double f = 0;
+      if (hs && m > kNoRb + 1) {
+        const double lvl = sl * (1 + m * s);
+        f = m < 0 ? (lvl > 0 && Lw <= lvl ? lvl : 0.0) : (H >= lvl && (!late || C >= lvl) ? lvl * (2 - sl0) : 0.0);
+      }
+      const double xs = std::min(sl, E) * sl0, xsb = f > 0 ? xs * ((tk > f && C >= tk ? tk : C) / f) : xs;
+      r[1] += 1, r[2] += late ? 0.0 : 1.0;
+      const auto add = [&](double w, double ret, bool isTake, bool isStop) {
+        r[3] += isTake ? w : 0.0, r[4] += isStop ? w : 0.0, r[5] += isStop && f > 0 ? w : 0.0;
+        r[6] += ret > 0 ? w : 0.0, r[7] += ret > cost ? w : 0.0, r[8] += w * ret;
+      };
+      if (both) add(pS, xsb / E - 1, false, true), add(1 - pS, std::max(tk, E) / E - 1, true, false);
+      else if (stopped) add(1, xsb / E - 1, false, true);
+      else if (tH) add(1, std::max(tk, E) / E - 1, true, false);
+      else add(1, C / E - 1, false, false);
+    }
+    return r;
   };
   const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
     const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
@@ -2724,7 +2772,7 @@ int main(int argc, char** argv) {
                                  : kNaN;
 
   // ------------------------------------------------------------------ the next session's orders
-  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; double p5 = kNaN, p95 = kNaN, pLoss = kNaN, pStop = kNaN; };
+  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; double p5 = kNaN, p95 = kNaN, pLoss = kNaN, pStop = kNaN; std::array<double, 9> pr{}; };
   const std::size_t L = T - 1;
   std::vector<Order> orders;
   std::vector<std::size_t> targetAll(target);  // the book's shares, then (refill) the reserves for slots stops free
@@ -2794,8 +2842,17 @@ int main(int argc, char** argv) {
   for (auto x : orders) {
     x.cost = costs.roundTrip(x.value, d.tickers[x.i], x.close / unit);
     x.net = x.gross - x.cost;
+    if (tradeBr) x.pr = tradeProbs(L, x.i, x.cost);
     if (x.net > 0) final.push_back(x);
   }
+  // tradebracket: the orders ranked by their final probability, the chance of a gain over the costs (the buy filling
+  // times a gain over the costs once filled), the book's shares before the reserves
+  const auto finalP = [](const Order& x) { return x.pr[0] > 0 ? x.pr[7] / x.pr[0] : 0.0; };
+  if (tradeBr)
+    std::stable_sort(final.begin(), final.end(), [&](const Order& a, const Order& b) {
+      const bool ra = a.rank >= nBook, rb = b.rank >= nBook;
+      return ra != rb ? rb : finalP(a) > finalP(b);
+    });
 
   // Each share's stop for the next session (absolute, the store's price unit): a position held, its stop as it
   // stands after the last close; one to be bought, the stop it starts with (psar: the lowest low of the last 5
@@ -3112,6 +3169,16 @@ int main(int argc, char** argv) {
                 std::size_t(std::count_if(book.begin(), book.end(), [&](const auto& b) { return inAccount(b.first); })), book.size(), o.account.c_str());
   std::printf("strategy: next session (after the close of %s; the list from the rebalance after the close of %s): %zu on the list, %zu after costs\n", d.days[L].c_str(),
               d.days[decided].c_str(), orders.size(), final.size());
+  if (tradeBr) {
+    std::printf("strategy: the orders ranked by the chance of a gain over their costs, P(net gain) = P(fill) x P(gain over the costs | fill), each from the order's own replayed days:\n");
+    for (const auto& x : final) {
+      const auto& r = x.pr;
+      const double fl = r[1] > 0 ? r[1] : 1;
+      std::printf("strategy:   %-12s P(net gain) %4.1f%% = P(fill) %5.1f%% (in the auction %5.1f%%) x P(net gain | fill) %5.1f%%; | fill: take-profit %5.1f%%, stop %5.1f%% (buy-back after it %5.1f%%), gain %5.1f%%, mean %+.2f%%; %0.f days\n",
+                  d.tickers[x.i].c_str(), 100 * finalP(x), r[0] > 0 ? 100 * r[1] / r[0] : 0.0, 100 * r[2] / fl, 100 * r[7] / fl, 100 * r[3] / fl, 100 * r[4] / fl,
+                  r[4] > 0 ? 100 * r[5] / r[4] : 0.0, 100 * r[6] / fl, 100 * r[8] / fl, r[0]);
+    }
+  }
   for (const auto& x : orders)
     std::printf("strategy:   %-12s rank %zu: expected %+.2f%% before costs, costs %.2f%%: %+.2f%% after%s%s\n", d.tickers[x.i].c_str(), x.rank + 1, 100 * x.gross,
                 100 * costs.roundTrip(x.value, d.tickers[x.i], x.close / unit), 100 * (x.gross - costs.roundTrip(x.value, d.tickers[x.i], x.close / unit)),
@@ -3192,6 +3259,7 @@ int main(int argc, char** argv) {
         << ",\"intraday\":" << (flatDaily ? "true" : "false")
         << ",\"takeRel\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"stopRel\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
+        << ",\"probs\":" << (tradeBr && x.pr[1] > 0 ? "{\"days\":" + jnum(x.pr[0]) + ",\"fill\":" + jnum(x.pr[1] / x.pr[0]) + ",\"auction\":" + jnum(x.pr[2] / x.pr[1]) + ",\"take\":" + jnum(x.pr[3] / x.pr[1]) + ",\"stop\":" + jnum(x.pr[4] / x.pr[1]) + ",\"buyback\":" + (x.pr[4] > 0 ? jnum(x.pr[5] / x.pr[4]) : std::string("null")) + ",\"gain\":" + jnum(x.pr[6] / x.pr[1]) + ",\"netGain\":" + jnum(x.pr[7] / x.pr[1]) + ",\"meanIfFilled\":" + jnum(x.pr[8] / x.pr[1]) + ",\"final\":" + jnum(x.pr[7] / x.pr[0]) + "}" : std::string("null"))
         << ",\"rebuyRel\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i]) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
