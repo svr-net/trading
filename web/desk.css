@@ -81,3 +81,33 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
 .days summary .cnt { color: var(--muted); font-size: 13px; }
 .days summary .money { margin-left: auto; font: 600 13px var(--mono); }
 .days .table-scroll { padding: 0 8px 8px; }
+/* never wider than the screen: every block may shrink below its content (its tables and the market row scroll instead) */
+.desk-wrap { grid-template-columns: minmax(0, 1fr); }
+.desk-wrap > *, #v-today, #v-today > * { min-width: 0; max-width: 100%; }
+#v-today { display: grid; gap: 16px; }
+.desk-brand { min-width: 0; }
+.watch-alert, .watch-alert div { overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .desk-wrap { padding: 14px 12px 40px; gap: 12px; }
+  .desk-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-tiles .tile .v { font-size: 20px; }
+  .card { padding: 12px; }
+  .pill { font-size: 11px; }
+  .desk .actions button { flex: 1 1 calc(50% - 8px); }
+}
+@media (max-width: 520px) {
+  .desk-top { flex-wrap: nowrap; align-items: flex-start; }
+  .desk-top .menu { flex: none; }
+}
+/* the Lab's choices: a strategy (one) and its options (any), each with a line under it */
+.choices { display: grid; gap: 6px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--bg); }
+.choice input { margin-top: 3px; }
+.choice span { display: grid; gap: 1px; }
+.choice b { font: 600 14px var(--body); }
+.choice small { font-size: 12px; color: var(--muted); }
+.choice:has(input:disabled) { opacity: .55; cursor: default; }
+.lab-intro { margin: -4px 0 0; max-width: 90ch; }
+h2.inline { display: inline; }
+details > summary { cursor: pointer; }
