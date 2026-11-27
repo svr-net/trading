@@ -68,3 +68,16 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
   .markets { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(170px, 72%); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 4px; }
   .mkt { scroll-snap-align: start; }
 }
+
+/* the menu (as on the research page) and the history's market buttons */
+.desk-top .menu { position: relative; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; margin: 4px 0 8px; }
+.seg button { font: 600 13px var(--body); padding: 6px 14px; border: 0; border-right: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+.days details { border: 1px solid var(--rule); border-radius: 8px; margin: 6px 0; background: var(--surface); }
+.days summary { display: flex; gap: 14px; align-items: baseline; padding: 8px 12px; cursor: pointer; flex-wrap: wrap; }
+.days summary .when { font-weight: 600; }
+.days summary .cnt { color: var(--muted); font-size: 13px; }
+.days summary .money { margin-left: auto; font: 600 13px var(--mono); }
+.days .table-scroll { padding: 0 8px 8px; }
