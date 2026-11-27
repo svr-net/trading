@@ -1,5 +1,5 @@
 {
- "checked": "2026-11-27T19:39Z",
+ "checked": "2026-11-27T19:44Z",
  "reachable": true,
  "accepts": true,
  "refusal": null,
@@ -17,7 +17,7 @@
   "US": {
    "auto": true,
    "held": 1,
-   "at": "2026-11-27T19:38:51Z"
+   "at": "2026-11-27T19:44:31Z"
   },
   "APAC": {
    "auto": true,
@@ -30,7 +30,6 @@
    "at": "2026-11-27T19:37:25Z"
   }
  },
- "gateway": true,
- "watch": "1739779411",
+ "gateway": false,
  "accepted": "2026-11-22 18:34 GMT UK: test order accepted by IBKR (VOD, cancelled: true)"
 }
