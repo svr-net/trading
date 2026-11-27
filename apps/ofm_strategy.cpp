@@ -1210,7 +1210,7 @@ int main(int argc, char** argv) {
   // whose replayed days have the best mean log return less its standard error are the trade's (re-learnt at every
   // decision, for every trade). Costs play no part (they come off the orders at the end).
   const bool tradeBr = flatDaily && P["tradebracket"] > 0;
-  std::function<std::array<double, 4>(std::size_t, std::size_t)> tradeLv;  // take, stop, buy-back multiple, expected
+  std::function<std::array<double, 6>(std::size_t, std::size_t)> tradeLv;  // take, stop, buy-back multiple, expected, buy limit, works all day
   const auto takeOf = [&](std::size_t t, std::size_t i) {
     if (tradeBr) return tradeLv(t, i)[0];
     if (psarBracket) return sarLevels(sarBest, t, i).first;
@@ -1285,7 +1285,9 @@ int main(int argc, char** argv) {
   // cautious reading).
   // m < 0 (over kNoRb): a buy limit m daily volatilities under the stop, filled once the day's low reached it (the price
   // came down through the stop first: after it), at its level, sold at the take-profit or the close the same way.
-  const auto rebuyRet = [&](std::size_t t, std::size_t u, std::size_t i, double sl, double m, double tk = 0.0) -> std::pair<double, double> {
+  // late: the trade was bought during the day (under the open): a buy-stop buy-back counted only when the day closed at
+  // or over its level (its high may have come before the buy)
+  const auto rebuyRet = [&](std::size_t t, std::size_t u, std::size_t i, double sl, double m, double tk = 0.0, bool late = false) -> std::pair<double, double> {
     const double sg = d.sigma[t * N + i], H = d.H[u * N + i], C = d.Cf[u * N + i];
     if (m <= kNoRb + 1 || !(sl > 0 && C > 0 && std::isfinite(sg))) return {0.0, 0.0};
     if (m < 0) {
@@ -1295,7 +1297,7 @@ int main(int argc, char** argv) {
       return {X / lvl - 1, 1.0};
     }
     const double trig = sl * (1 + m * sg), fill = trig * (2 - slipAt(u, i));  // a buy-stop: over its level by the stop's slip
-    if (!(H >= trig)) return {0.0, 0.0};  // never reached after the stop
+    if (!(H >= trig) || (late && !(C >= trig))) return {0.0, 0.0};  // never reached after the stop
     const double X = tk > fill && C >= tk ? tk : C;
     return {X / fill - 1, 1.0};           // reached: taken as filled (when the close is under it too: a loss)
   };
@@ -1306,35 +1308,37 @@ int main(int argc, char** argv) {
   double rebuyFills = 0;
   const auto rbdM = [&]() { return rebuyDay ? rbdGrid[rbdG] : kNoRb; };
   const auto mOf = [&](std::size_t t, std::size_t i) { return tradeBr ? (rebuyDay ? tradeLv(t, i)[2] : kNoRb) : jointRb ? comboRb(t, i) : rbdM(); };  // the trade's buy-back
-  // tradebracket's grids, in the trade's daily volatilities: the take-profit over the close, the stop under it (0:
-  // none) and the buy-back from the stop (kNoRb: none; under 0: a limit under it; 0 and over: a buy-stop)
+  // tradebracket's grids, in the trade's daily volatilities: the buy's limit from the close (and whether it works
+  // through the day after the auction), the take-profit over the close, the stop under it (0: none) and the buy-back
+  // from the stop (kNoRb: none; under 0: a limit under it; 0 and over: a buy-stop)
+  const std::array<double, 10> tE{-1.5, -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0, 3.0};
   const std::array<double, 8> tA{0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0};
   const std::array<double, 8> tB{0.0, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0};
   const std::array<double, 6> tR{kNoRb, -1.0, -0.5, 0.0, 0.5, 1.0};
   const std::size_t nTR = rebuyDay ? tR.size() : 1, tradeW = std::max<std::size_t>(20, std::size_t(P["tradewindow"]));
-  std::unordered_map<std::size_t, std::array<double, 4>> tradeMemo;
-  std::vector<double> tradeAs, tradeBs;  // the multiples learnt for the trades placed (the report)
-  tradeLv = [&](std::size_t t, std::size_t i) -> std::array<double, 4> {
+  std::unordered_map<std::size_t, std::array<double, 6>> tradeMemo;
+  std::vector<double> tradeAs, tradeBs, tradeEs;  // the multiples learnt for the trades placed (the report)
+  std::size_t tradeDayEntries = 0;
+  tradeLv = [&](std::size_t t, std::size_t i) -> std::array<double, 6> {
     const std::size_t key = t * N + i;
     if (auto it = tradeMemo.find(key); it != tradeMemo.end()) return it->second;
-    std::array<double, 4> out{0.0, 0.0, kNoRb, 0.0};
+    std::array<double, 6> out{0.0, 0.0, kNoRb, 0.0, 0.0, 0.0};  // take, stop, buy-back, expected, buy limit, works all day
     const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i];
+    out[4] = c0 * (1 + capOf(t, i));
     if (!(c0 > 0 && std::isfinite(s0) && s0 > 0) || t < tradeW + 1) return tradeMemo[key] = out;
-    const std::size_t nA = tA.size(), nB = tB.size(), nAll = nA * nB * nTR;
-    std::vector<double> sm(nAll, 0.0), s2(nAll, 0.0);
+    const std::size_t nA = tA.size(), nB = tB.size(), nX = nA * nB * nTR, nEn = tE.size();
+    std::vector<double> sm(2 * nEn * nX, 0.0), s2(2 * nEn * nX, 0.0), yB(nX), yL(nX);
     double n = 0;
-    std::array<double, 8> lvT{}, xt{}, lvS{}, xs{};
-    std::array<char, 8> tH{}, hs{};
-    std::array<double, 8 * 6> fill{};
-    for (std::size_t q = t + 1 - tradeW; q <= t; ++q) {
-      const double c = d.Cf[(q - 1) * N + i], s = d.sigma[(q - 1) * N + i];
-      const double O = d.O[q * N + i], H = d.H[q * N + i], Lw = d.L[q * N + i], C = d.Cf[q * N + i];
-      if (!(c > 0 && std::isfinite(s) && s > 0 && O > 0 && H > 0 && Lw > 0 && C > 0)) continue;
-      if (P["staleopen"] > 0 && O == d.C[(q - 1) * N + i]) continue;  // no known open that day
-      const double E = O, sl0 = slipAt(q, i);
+    std::array<double, 8> lvT{}, lvS{};
+    // one day's result for every (take, stop, buy-back) bought at E (late: during the day, under the open)
+    const auto dayVec = [&](std::size_t q, double c, double s, double E, bool late, std::vector<double>& y) {
+      const double O = d.O[q * N + i], H = d.H[q * N + i], Lw = d.L[q * N + i], C = d.Cf[q * N + i], sl0 = slipAt(q, i);
+      std::array<char, 8> tH{}, hs{};
+      std::array<double, 8> xt{}, xs{};
+      std::array<double, 8 * 6> fill{};
       for (std::size_t a = 0; a < nA; ++a) {
         lvT[a] = tA[a] > 0 ? c * (1 + tA[a] * s) : 0.0;
-        tH[a] = lvT[a] > 0 && (O >= lvT[a] || (H >= lvT[a] && valueOver(q, i, lvT[a]) >= o.capital));
+        tH[a] = lvT[a] > 0 && (late ? lvT[a] > E && C >= lvT[a] : O >= lvT[a] || (H >= lvT[a] && valueOver(q, i, lvT[a]) >= o.capital));
         xt[a] = std::max(lvT[a], E);
       }
       for (std::size_t b = 0; b < nB; ++b) {
@@ -1346,53 +1350,83 @@ int main(int argc, char** argv) {
           const double m = rebuyDay ? tR[r] : kNoRb;
           if (hs[b] && m > kNoRb + 1) {
             const double lvl = lvS[b] * (1 + m * s);
-            f = m < 0 ? (lvl > 0 && Lw <= lvl ? lvl : 0.0) : (H >= lvl ? lvl * (2 - sl0) : 0.0);
+            f = m < 0 ? (lvl > 0 && Lw <= lvl ? lvl : 0.0) : (H >= lvl && (!late || C >= lvl) ? lvl * (2 - sl0) : 0.0);
           }
           fill[b * 6 + r] = f;
         }
       }
       for (std::size_t a = 0; a < nA; ++a)
         for (std::size_t b = 0; b < nB; ++b) {
-          const bool both = hs[b] && tH[a] && O > lvS[b] && O < lvT[a];
+          const bool both = !late && hs[b] && tH[a] && O > lvS[b] && O < lvT[a];
           const double pS = both ? pStopFirst(q, i, lvS[b], lvT[a], false) : 0.0;
-          const bool stopped = hs[b] && !(tH[a] && O >= lvT[a]);
+          const bool stopped = hs[b] && !(tH[a] && !late && O >= lvT[a]);
           for (std::size_t r = 0; r < nTR; ++r) {
             const double f = fill[b * 6 + r];
             const double xsb = f > 0 ? xs[b] * ((lvT[a] > f && C >= lvT[a] ? lvT[a] : C) / f) : xs[b];
             const double rr = both ? pS * (xsb / E - 1) + (1 - pS) * (xt[a] / E - 1) : stopped ? xsb / E - 1 : tH[a] ? xt[a] / E - 1 : C / E - 1;
-            const double y = std::log(std::max(1e-6, 1 + rr));
-            const std::size_t kq = (a * nB + b) * nTR + r;
-            sm[kq] += y, s2[kq] += y * y;
+            y[(a * nB + b) * nTR + r] = std::log(std::max(1e-6, 1 + rr));
           }
         }
+    };
+    for (std::size_t q = t + 1 - tradeW; q <= t; ++q) {
+      const double c = d.Cf[(q - 1) * N + i], s = d.sigma[(q - 1) * N + i];
+      const double O = d.O[q * N + i], H = d.H[q * N + i], Lw = d.L[q * N + i], C = d.Cf[q * N + i];
+      if (!(c > 0 && std::isfinite(s) && s > 0 && O > 0 && H > 0 && Lw > 0 && C > 0)) continue;
+      if (P["staleopen"] > 0 && O == d.C[(q - 1) * N + i]) continue;  // no known open that day
+      bool base = false;
+      for (std::size_t e = 0; e < nEn; ++e) {
+        const double lim = c * (1 + tE[e] * s);
+        for (std::size_t md = 0; md < 2; ++md) {
+          const std::size_t off = (md * nEn + e) * nX;
+          if (O <= lim) {  // bought in the auction
+            if (!base) dayVec(q, c, s, O, false, yB), base = true;
+            for (std::size_t kx = 0; kx < nX; ++kx) sm[off + kx] += yB[kx], s2[off + kx] += yB[kx] * yB[kx];
+          } else if (md == 1 && Lw <= lim) {  // works through the day: bought at its limit once the price came down to it
+            dayVec(q, c, s, lim, true, yL);
+            for (std::size_t kx = 0; kx < nX; ++kx) sm[off + kx] += yL[kx], s2[off + kx] += yL[kx] * yL[kx];
+          }  // else not bought: the day counts as nothing (0)
+        }
+      }
       n += 1;
     }
     if (n < 20) return tradeMemo[key] = out;
     double best = -1e300;
     std::size_t bk = 0;
-    for (std::size_t kq = 0; kq < nAll; ++kq) {
+    for (std::size_t kq = 0; kq < sm.size(); ++kq) {
+      // a stop at or over the buy's limit, or (bought during the day) a take-profit at or under it, would sell at once:
+      // not a choice
+      const std::size_t mq = kq / nX / nEn, eq = kq / nX % nEn, xq = kq % nX, aq = xq / nTR / nB, bq = xq / nTR % nB;
+      if (tB[bq] > 0 && -tB[bq] >= tE[eq]) continue;
+      if (mq == 1 && tA[aq] > 0 && tA[aq] <= tE[eq]) continue;
       const double m = sm[kq] / n, v = std::max(0.0, s2[kq] / n - m * m), sc = m - std::sqrt(v / n);
       if (sc > best) best = sc, bk = kq;
     }
-    const std::size_t a = bk / nTR / nB, b = bk / nTR % nB, r = bk % nTR;
+    const std::size_t md = bk / nX / nEn, e = bk / nX % nEn, kx = bk % nX;
+    const std::size_t a = kx / nTR / nB, b = kx / nTR % nB, r = kx % nTR;
     out[0] = tA[a] > 0 ? c0 * (1 + tA[a] * s0) : 0.0;
     out[1] = tB[b] > 0 && tB[b] * s0 < 1 ? c0 * (1 - tB[b] * s0) : 0.0;
     out[2] = rebuyDay ? tR[r] : kNoRb;
     out[3] = std::expm1(sm[bk] / n);
+    out[4] = c0 * (1 + tE[e] * s0);
+    out[5] = md == 1 ? 1.0 : 0.0;
     return tradeMemo[key] = out;
   };
   const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
     const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
+    // a buy during the day (at a limit under the open): its take-profit counted only when the day closed at or over it
+    // (the day's high may have come before the buy); a stop under the buy reached after it (the price came down
+    // through the buy first)
+    const bool late = O > 0 && E < O - 1e-12;
     const bool sH = sl > 0 && Lw > 0 && Lw <= sl;
-    bool tH = tk > 0 && d.H[u * N + i] >= tk;
+    bool tH = tk > 0 && (late ? tk > E && C >= tk : d.H[u * N + i] >= tk);
     if (tH && valueOver(u, i, tk) < value && !(O >= tk)) { tH = false; if (count) ++nTakeThin; }
     const double Xt = std::max(tk, E);
     double Xs = std::min(sl, E) * slipAt(u, i), pf = 0;
     if (sH) {  // the stop's sale, then its buy-back (on the money it freed)
-      const auto [rb, f] = rebuyRet(t, u, i, sl, m, tk);
+      const auto [rb, f] = rebuyRet(t, u, i, sl, m, tk, late);
       Xs *= 1 + rb, pf = f;
     }
-    if (sH && tH && O > sl && O < tk) {
+    if (!late && sH && tH && O > sl && O < tk) {
       const double pS = pStopFirst(u, i, sl, tk, count);
       if (pFill) *pFill = pS * pf;
       return {pS * (Xs / E - 1) + (1 - pS) * (Xt / E - 1), pS * std::log(std::max(1e-6, Xs / E)) + (1 - pS) * std::log(Xt / E)};
@@ -2428,7 +2462,8 @@ int main(int argc, char** argv) {
       const bool again = stoppedAt.count(i) > 0;
       Row r;
       r.t = t, r.i = i, r.rank = rank, r.expected = learnt.expected(rank);
-      r.limit = d.Cf[t * N + i] * (1 + capOf(t, i));
+      r.limit = tradeBr ? tradeLv(t, i)[4] : d.Cf[t * N + i] * (1 + capOf(t, i));
+      const bool dayEntry = tradeBr ? tradeLv(t, i)[5] > 0 : entryDay;
       stamp(r);
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
@@ -2437,7 +2472,8 @@ int main(int argc, char** argv) {
       // known opening price: not bought (nor learnt from)
       const bool noOpen = staleOpen && flatDaily && O > 0 && O == d.C[t * N + i];
       if (noOpen) ++nStale;
-      const double E = noOpen ? 0.0 : O > 0 && O <= r.limit ? O : entryDay && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
+      const double E = noOpen ? 0.0 : O > 0 && O <= r.limit ? O : dayEntry && O > 0 && Lo > 0 && Lo <= r.limit ? r.limit : 0.0;
+      if (tradeBr && E > 0 && E < O) ++tradeDayEntries;
       if (E > 0) {
         r.filled = true, r.entry = E, r.since = u;
         if (again) stoppedAt.erase(i), ++nRebuys, dayCost += tripOf(t, i);
@@ -2543,6 +2579,7 @@ int main(int argc, char** argv) {
           if (tradeBr && d.sigma[t * N + i] > 0) {
             const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i];
             tradeAs.push_back(tk > 0 ? (tk / sh / c0 - 1) / s0 : 0.0), tradeBs.push_back(sl > 0 ? (1 - sl / sh / c0) / s0 : 0.0);
+            tradeEs.push_back((r.limit / c0 - 1) / s0);
           }
           const double wT = wOf(sizeR(), riskOf(t, i, sl > 0 ? sl / sh : 0.0));
           if (sizeAdapt) sizeW.push_back(wT);
@@ -2696,7 +2733,7 @@ int main(int argc, char** argv) {
     const std::size_t i = targetAll[rank];
     if (!book.count(i) && !mayBuy(L, i)) continue;  // stopped and not recovered: not bought back yet
     Order x{i, rank, d.Cf[L * N + i], 0, 0, learnt.expected(rank), 0, 0, 0, inAccount(i)};
-    x.limit = x.close * (1 + capOf(L, i));
+    x.limit = tradeBr ? tradeLv(L, i)[4] : x.close * (1 + capOf(L, i));
     x.value = noVolume ? o.capital : std::min(o.capital, o.advShare * d.value[L * N + i]);
     if (sizeAdapt) x.value *= wOf(sizeR(), riskOf(L, i, stopOf(L, i)));  // sized by its stop
     if (!(x.value >= o.minOrder)) continue;
@@ -2913,8 +2950,8 @@ int main(int argc, char** argv) {
                 used.c_str(), 100 * volQ, 100 * cutAt);
   }
   if (tradeBr)
-    std::printf("strategy:   each trade's own bracket, learnt from its share's last %zu sessions in its own daily volatility (take-profit, stop, buy-back as one choice): take-profit %s vol over the close, stop %s vol under (0: none); the stop under the price paid (%%) %s\n",
-                tradeW, tradeAs.empty() ? "none" : bracketSpread(tradeAs).c_str(), tradeBs.empty() ? "none" : bracketSpread(tradeBs).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
+    std::printf("strategy:   each trade's own buy and bracket, learnt from its share's last %zu sessions in its own daily volatility (buy limit, auction or all day, take-profit, stop, buy-back as one choice): buy limit %s vol from the close, %zu bought during the day at it; take-profit %s vol over the close, stop %s vol under (0: none); the stop under the price paid (%%) %s\n",
+                tradeW, tradeEs.empty() ? "none" : bracketSpread(tradeEs).c_str(), tradeDayEntries, tradeAs.empty() ? "none" : bracketSpread(tradeAs).c_str(), tradeBs.empty() ? "none" : bracketSpread(tradeBs).c_str(), psarStops.empty() ? "none" : bracketSpread(psarStops).c_str());
   if (comboBracket) {
     const auto takeName = [&](std::size_t a) -> std::string {
       if (a == 0) return "none";
@@ -3146,7 +3183,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
-      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"limit\":" << jnum(x.limit / x.close - 1)
+      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"rank\":" << x.rank + 1 << ",\"of\":" << of << ",\"entry\":\"open\",\"entryDay\":" << ((tradeBr ? tradeLv(L, x.i)[5] > 0 : entryDay) ? "true" : "false") << ",\"limit\":" << jnum(x.limit / x.close - 1)
         << ",\"stop\":" << (stops ? jnum(stopPrice(x.i, !x.held) / x.close - 1) : "null") << ",\"stopKind\":" << jstr(stopKind) << ",\"rebuy\":" << (stops && (rebuy >= 0 || rbStop) ? "true" : "false")
         << ",\"rebuyAt\":" << (stops && (rebuy >= 0 || rbStop) ? jnum(rebuyPrice(x.i) / x.close - 1) : "null")
         << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false")
@@ -3200,7 +3237,7 @@ int main(int argc, char** argv) {
     for (std::size_t q = 0; q < final.size(); ++q) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
-      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"open\":true,\"limit\":" << jnum(x.limit)
+      f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"entryDay\":" << ((tradeBr ? tradeLv(L, x.i)[5] > 0 : entryDay) ? "true" : "false") << ",\"open\":true,\"limit\":" << jnum(x.limit)
         << ",\"bracketTake\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i)) : "null") << ",\"bracketStop\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i)) : "null") << ",\"bracketRebuy\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i])) : "null")
         << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i, !x.held)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
