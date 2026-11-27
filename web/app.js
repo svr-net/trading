@@ -778,8 +778,9 @@ function brokerHistory() {
     }
     const box = $('broker-history');
     box.replaceChildren();
-    const dates = Object.keys(perDay).sort().reverse();
-    if (!dates.length) box.append(cell('p', 'Nothing yet: each trading day appears here once it is over.', 'muted'));
+    // days with no order placed and nothing bought are left out (weekends' and quiet days' empty folds)
+    const dates = Object.keys(perDay).filter((x) => perDay[x].orders > 0 || perDay[x].bought > 0).sort().reverse();
+    if (!dates.length) box.append(cell('p', 'Nothing yet: each trading day with an order appears here once it is over.', 'muted'));
     for (const date of dates) {
       const day = perDay[date];
       const money = Object.entries(day.pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
