@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Strategy Lab</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css?v=84">
+<link rel="stylesheet" href="desk.css?v=3">
+</head>
+<body class="desk">
+<div class="desk-wrap">
+  <header class="desk-top">
+    <div class="desk-brand">
+      <h1>Lab</h1>
+      <span class="pill" id="conn" data-state="unknown">Connecting…</span>
+    </div>
+    <div class="menu">
+      <button type="button" id="menu-toggle" aria-expanded="false" aria-controls="menu-list"><span class="burger" aria-hidden="true">☰</span> <span id="menu-current">Lab</span></button>
+      <nav class="views" id="menu-list" aria-label="Sections" hidden>
+        <a class="menu-link" href="desk.html#today"><b>Today</b><small>The account, every market's day and the next session's trades</small></a>
+        <a class="menu-link" href="desk.html#history"><b>History</b><small>What was bought and sold, day by day, against the model</small></a>
+        <a class="menu-link" href="lab.html" aria-current="page"><b>Lab</b><small>Run the strategies on this device, on your bridge's bars</small></a>
+        <a class="menu-link" href="index.html"><b>Research</b><small>The model's picks, why, and the backtests</small></a>
+      </nav>
+    </div>
+  </header>
+
+  <p class="muted small lab-intro">The same strategy engine as the evening scan, compiled to WebAssembly and run in this browser on the market's daily bars from your Interactive Brokers account (through your bridge; the prices never leave this device). The backtest is before costs; the orders have their costs applied at the end. IBKR's bars go back about two years, so the backtest is shorter than the scan's.</p>
+
+  <section class="markets" id="markets" aria-label="Markets"></section>
+
+  <main class="desk-grid">
+    <section class="card" aria-labelledby="st-title">
+      <div class="card-head"><h2 id="st-title">Strategy</h2><span class="muted small" id="st-note"></span></div>
+      <div class="choices" id="strategies"></div>
+      <h3>Options</h3>
+      <div class="choices" id="options"></div>
+      <div class="actions"><button type="button" id="run" class="primary">Run the strategy</button></div>
+    </section>
+
+    <section class="card" aria-labelledby="res-title">
+      <div class="card-head"><h2 id="res-title">Result</h2><span class="muted small" id="status">Choose a market and a strategy, then run it.</span></div>
+      <div class="tiles desk-tiles" id="result"></div>
+    </section>
+
+    <section class="card wide" aria-labelledby="ord-title">
+      <div class="card-head"><h2 id="ord-title">Orders it would place</h2><span class="muted small" id="ord-note"></span></div>
+      <div class="table-scroll"><table id="orders"></table></div>
+    </section>
+
+    <section class="card wide" aria-labelledby="log-title">
+      <details>
+        <summary><h2 id="log-title" class="inline">Engine log</h2></summary>
+        <pre class="broker-log" id="log"></pre>
+      </details>
+    </section>
+  </main>
+</div>
+<script src="lab.js?v=1" type="module"></script>
+</body>
+</html>

@@ -529,11 +529,12 @@ function drawOHLC(bars, o, n) {
     + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['orders', 'backtest', 'lab', 'about'];
+const VIEWS = ['orders', 'backtest', 'about'];
 let bridgeOk = false;
 function showView(v) {
   // the account, its trading and its history are the trading desk's (desk.html)
   if (['portfolio', 'broker', 'results'].includes(v)) { location.href = `desk.html#${v === 'results' ? 'history' : 'today'}`; return; }
+  if (v === 'lab') { location.href = `lab.html?market=${market}`; return; }  // the Lab is its own page
   if (!VIEWS.includes(v)) v = 'orders';
   // The market buttons only where a section shows one market: in the header for the market's sections, beside the
   // account's orders (its positions are every market's), none for About.
