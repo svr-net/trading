@@ -1,0 +1,70 @@
+/* The trading desk (desk.html): the account, every market's day and the next session's trades on one screen. */
+body.desk { background: var(--bg); }
+.desk-wrap { max-width: 1320px; margin: 0 auto; padding: 20px 18px 48px; display: grid; gap: 16px; }
+.desk-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.desk-brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.desk-brand h1 { font-size: clamp(24px, 3.4vw, 32px); }
+.desk-nav { display: flex; align-items: center; gap: 10px; }
+.desk-nav a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.small { font-size: 12.5px; }
+
+.pill { font: 500 12px var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--muted); }
+.pill[data-state="ok"] { color: var(--good); border-color: var(--good); background: var(--good-bg); }
+.pill[data-state="bad"] { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
+
+button.ghost, .desk .actions button { font: 600 13px var(--body); padding: 7px 12px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; }
+.desk .actions button.primary, dialog .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.desk .actions button.danger { color: var(--bad); border-color: var(--bad); }
+.desk .actions button:disabled { opacity: .5; cursor: progress; }
+.desk .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.desk-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.desk-tiles .v.pos { color: var(--good); }
+.desk-tiles .v.neg { color: var(--bad); }
+
+/* the markets: one card each, its clock, session and day */
+.markets { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.mkt { text-align: left; display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); color: var(--ink); cursor: pointer; font: 14px var(--body); }
+.mkt[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.mkt .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mkt .name { font: 700 16px var(--display); }
+.mkt .clock { font: 12px var(--mono); color: var(--muted); }
+.mkt .sess { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.mkt .sess.open { color: var(--good); }
+.mkt .sess.closed { color: var(--muted); }
+.mkt .day { font-size: 13px; color: var(--muted); }
+.mkt .pnl { font: 600 13px var(--mono); }
+
+.desk-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+.card h2 { margin: 0; font-size: 18px; }
+.card h3 { margin: 16px 0 6px; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.card table td.link { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+.card table .pos { color: var(--good); }
+.card table .neg { color: var(--bad); }
+.badge { font: 500 11px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--rule); color: var(--muted); }
+.badge.open { color: var(--good); border-color: var(--good); }
+.badge.warn { color: var(--bad); border-color: var(--bad); }
+.prob { display: inline-grid; grid-template-columns: 46px 36px; align-items: center; gap: 6px; }
+.prob .bar { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+.prob .bar i { display: block; height: 100%; background: var(--accent); }
+
+#chart { width: 100%; display: block; }
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow: auto; font: 12.5px var(--mono); }
+.log li { padding: 6px 8px; border-left: 3px solid var(--rule); background: var(--bg); border-radius: 4px; white-space: pre-wrap; }
+.log li.ok { border-left-color: var(--good); }
+.log li.bad { border-left-color: var(--bad); }
+
+dialog { border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); color: var(--ink); max-width: 460px; width: calc(100% - 32px); }
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.settings-form { display: grid; gap: 12px; }
+.settings-form label { display: grid; gap: 4px; font: 600 13px var(--body); }
+.settings-form input { font: 14px var(--mono); padding: 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); color: var(--ink); }
+
+@media (max-width: 860px) {
+  .desk-grid { grid-template-columns: minmax(0, 1fr); }
+  .markets { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(170px, 72%); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 4px; }
+  .mkt { scroll-snap-align: start; }
+}
