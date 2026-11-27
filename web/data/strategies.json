@@ -27,9 +27,9 @@
      "mcnnstep": 5,
      "stopslip": 0.1,
      "mcreuse": 0.1,
-     "combobracket": 2,
      "staleopen": 1,
-     "rebuyday": 1
+     "rebuyday": 1,
+     "tradebracket": 1
     }
    }
   ],
