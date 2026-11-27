@@ -8,10 +8,10 @@
     "strategy": "breakout",
     "params": {
      "intraday": 1,
-     "takesd": 1.5,
-     "stopsd": 4,
      "stopslip": 0.1,
-     "rebuyday": 1
+     "rebuyday": 1,
+     "tradebracket": 1,
+     "staleopen": 1
     }
    }
   ],
