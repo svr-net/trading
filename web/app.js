@@ -529,10 +529,14 @@ function drawOHLC(bars, o, n) {
     + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['portfolio', 'orders', 'results', 'backtest', 'broker', 'lab', 'about'];
+const VIEWS = ['broker', 'orders', 'results', 'backtest', 'lab', 'about'];
 let bridgeOk = false;
 function showView(v) {
+  if (v === 'portfolio') v = 'broker';  // the portfolio is part of the account section
   if (!VIEWS.includes(v)) v = 'orders';
+  const item = document.querySelector(`.views button[data-view="${v}"] b`);
+  if (item) $('menu-current').textContent = item.textContent;
+  menuOpen(false);
   for (const w of VIEWS) $(`view-${w}`).hidden = w !== v;
   for (const b of document.querySelectorAll('.views button')) b.toggleAttribute('aria-current', b.dataset.view === v);
   try { localStorage.setItem('view', v); } catch { /* no storage */ }
@@ -540,9 +544,17 @@ function showView(v) {
   if (v === 'backtest' && shown) drawChart(shown);  // a hidden canvas has no width
   if ((v === 'results' || v === 'broker') && !bridgeOk) brokerProbe(true);
   if (typeof todayLoop === 'function') todayLoop(v === 'results' && bridgeOk);
-  if (typeof portfolioLoop === 'function') portfolioLoop(v === 'portfolio');
+  if (typeof portfolioLoop === 'function') portfolioLoop(v === 'broker');
 }
 for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => showView(b.dataset.view));
+// The section menu: opened by its button, closed by a choice, a click elsewhere or Escape.
+function menuOpen(on) {
+  $('menu-list').hidden = !on;
+  $('menu-toggle').setAttribute('aria-expanded', on ? 'true' : 'false');
+}
+$('menu-toggle').addEventListener('click', (e) => { e.stopPropagation(); menuOpen($('menu-list').hidden); });
+document.addEventListener('click', (e) => { if (!e.target.closest('.menu')) menuOpen(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menuOpen(false); });
 document.addEventListener('click', (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); showView(a.dataset.go); } });
 
 const MARKETS = { uk: 'UK', eu: 'EU', us: 'US', apac: 'APAC', index: 'INDEX', forex: 'FOREX' };
@@ -827,7 +839,7 @@ function brokerPortfolio() {
   bridge('/portfolio').then((p) => {
     if (!p.positions || (p.error && !p.positions.length && !p.account)) {
       $('portfolio-summary').textContent = p.error || 'Being read from Interactive Brokers: in a minute.';
-      setTimeout(() => { if (!$('view-portfolio').hidden) brokerPortfolio(); }, 20000);
+      setTimeout(() => { if (!$('view-broker').hidden) brokerPortfolio(); }, 20000);
       return;
     }
     const num = (x, d = 2) => (x == null || Number.isNaN(+x) ? '' : (+x).toLocaleString('en-GB', { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -867,9 +879,10 @@ $('broker-report').addEventListener('click', () => brokerAct('/report', { market
 $('broker-liquidate').addEventListener('click', () => brokerAct('/liquidate', { market: brokerMarket() }, `Sell now every ${brokerMarket()} position the bridge's book holds from an earlier day (its stops cancelled first)? Today's trades are left alone.`));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) { brokerOrders(); if (!$('view-results').hidden) brokerToday(); } });
+try { if (!bridgeKey()) $('bridge-settings').open = true; } catch { /* no storage */ }  // no bridge yet: its settings shown
 brokerProbe();
 let firstView = location.hash.slice(1);
-try { firstView = firstView || localStorage.getItem('view') || (bridgeKey() ? 'portfolio' : 'orders'); } catch { /* no storage */ }
+try { firstView = firstView || localStorage.getItem('view') || (bridgeKey() ? 'broker' : 'orders'); } catch { /* no storage */ }
 showView(firstView);
 
 

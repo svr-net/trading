@@ -7,13 +7,26 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=82">
+<link rel="stylesheet" href="style.css?v=83">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Automatic trades with Interactive Brokers: research-backed strategies, held until dropped</div>
-    <h1>Daily Trades</h1>
+    <div class="eyebrow">Automatic same-day trades with Interactive Brokers</div>
+    <div class="topbar">
+      <h1>Daily Trades</h1>
+      <div class="menu">
+        <button type="button" id="menu-toggle" aria-expanded="false" aria-controls="menu-list"><span class="burger" aria-hidden="true">☰</span> <span id="menu-current">Orders</span></button>
+        <nav class="views" id="menu-list" aria-label="Sections" hidden>
+          <button type="button" data-view="broker"><b>Account</b><small>Positions at Interactive Brokers, today's orders, the bridge</small></button>
+          <button type="button" data-view="orders"><b>Orders</b><small>The next session's trades and their chances</small></button>
+          <button type="button" data-view="results"><b>Results</b><small>What was bought and sold, day by day</small></button>
+          <button type="button" data-view="backtest"><b>Backtest</b><small>How the strategy did in the past</small></button>
+          <button type="button" data-view="lab"><b>Lab</b><small>Run the strategies on this device</small></button>
+          <button type="button" data-view="about"><b>About</b><small>How it works</small></button>
+        </nav>
+      </div>
+    </div>
     <div class="market-switch" role="tablist" aria-label="Market">
       <button type="button" role="tab" id="mk-uk" data-market="uk" aria-selected="true">UK</button>
       <button type="button" role="tab" id="mk-eu" data-market="eu" aria-selected="false" title="Paris, Brussels, Lisbon, Madrid, Frankfurt">EU</button>
@@ -22,15 +35,6 @@
       <button type="button" role="tab" id="mk-index" data-market="index" aria-selected="false" title="UCITS index ETFs on Xetra, in euros: world, regional, country and sector indices">INDEX</button>
       <button type="button" role="tab" id="mk-forex" data-market="forex" aria-selected="false" title="Currency pairs: research only, never traded">FOREX</button>
     </div>
-    <nav class="views" aria-label="Sections">
-      <button type="button" data-view="portfolio" aria-current="page">Portfolio</button>
-      <button type="button" data-view="orders">Orders</button>
-      <button type="button" data-view="results">Results</button>
-      <button type="button" data-view="backtest">Backtest</button>
-      <button type="button" data-view="broker">Broker</button>
-      <button type="button" data-view="lab">Lab</button>
-      <button type="button" data-view="about">About</button>
-    </nav>
   </header>
 
   <section class="view" id="view-orders" aria-labelledby="trades-title">
@@ -57,14 +61,6 @@
     <p class="hint"><b>Return (model)</b>: your trade's return after costs, and what the model expected for it. <b>Paid vs model</b>: how much more (red) or less (green) you paid than the price the model assumed. <b>Profit (fees)</b>: Interactive Brokers' realised profit and the commissions.</p>
   </section>
 
-  <section class="view" id="view-portfolio" hidden aria-labelledby="portfolio-title">
-    <h2 id="portfolio-title">Portfolio at Interactive Brokers <button type="button" id="portfolio-refresh" class="small">Refresh</button></h2>
-    <p class="muted" id="portfolio-summary">Connect your bridge under <a href="#broker" data-go="broker">Broker</a> to see your whole account here.</p>
-    <div class="tiles" id="portfolio-account"></div>
-    <div class="table-scroll"><table id="portfolio"></table></div>
-    <p class="hint">Every position in the account, in any market, whether the strategy bought it or not, live from IBKR through the bridge (refreshed every minute while this tab is open). <b>Value</b>: shares times IBKR's current price, in the share's currency. <b>Open profit</b>: against the average cost. UK prices are in pence.</p>
-  </section>
-
   <section class="view" id="view-backtest" hidden aria-labelledby="past-title">
     <h2 id="past-title">How the strategy did in the past</h2>
     <div class="verdict" id="verdict"></div>
@@ -78,7 +74,13 @@
   </section>
 
   <section class="view" id="view-broker" hidden aria-labelledby="broker-title">
-    <h2 id="broker-title">Broker</h2>
+    <h2 id="broker-title">Account at Interactive Brokers <button type="button" id="portfolio-refresh" class="small">Refresh</button></h2>
+    <p class="muted" id="portfolio-summary">Connect your bridge below to see your whole account here.</p>
+    <div class="tiles" id="portfolio-account"></div>
+    <div class="table-scroll"><table id="portfolio"></table></div>
+    <p class="hint">Every position in the account, in any market, whether the strategy bought it or not, live from IBKR through the bridge (refreshed every minute while this section is open). <b>Value</b>: shares times IBKR's current price, in the share's currency. <b>Open profit</b>: against the average cost. UK prices are in pence.</p>
+
+    <h3>Today's orders</h3>
     <p class="muted" id="broker-status">Looking for your bridge…</p>
     <div class="table-scroll"><table id="broker-orders"></table></div>
     <div class="broker-actions">
@@ -91,9 +93,12 @@
     </div>
     <pre id="broker-log" class="broker-log"></pre>
     <div class="table-scroll"><table id="broker-checks"></table></div>
-    <h3>Bridge</h3>
-    <div class="broker-key"><label for="broker-url">Address</label> <input id="broker-url" type="url" autocomplete="off" placeholder="https://your-bridge:8765"></div>
-    <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
+
+    <details class="fold" id="bridge-settings">
+      <summary>Bridge settings</summary>
+      <div class="broker-key"><label for="broker-url">Address</label> <input id="broker-url" type="url" autocomplete="off" placeholder="https://your-bridge:8765"></div>
+      <div class="broker-key"><label for="broker-key">Key</label> <input id="broker-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"> <button type="button" id="broker-save">Save</button></div>
+    </details>
   </section>
 
   <section class="view" id="view-lab" hidden aria-labelledby="lab-title">
