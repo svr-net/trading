@@ -864,6 +864,7 @@ function portfolioLoop(on) {
 }
 $('portfolio-refresh').addEventListener('click', brokerPortfolio);
 $('broker-report').addEventListener('click', () => brokerAct('/report', { market: brokerMarket() }));
+$('broker-liquidate').addEventListener('click', () => brokerAct('/liquidate', { market: brokerMarket() }, `Sell now every ${brokerMarket()} position the bridge's book holds from an earlier day (its stops cancelled first)? Today's trades are left alone.`));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) { brokerOrders(); if (!$('view-results').hidden) brokerToday(); } });
 brokerProbe();

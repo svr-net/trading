@@ -420,6 +420,34 @@ final class Holds {
         }
     }
 
+    /**
+     * The leftovers of the book (liquidate): every position it holds at IBKR from an earlier day (a multi-day strategy's,
+     * before the market turned to same-day trading) sold now, at the next price, its stops (and any buy-back) cancelled
+     * first; today's trades are left to their own bracket and the close.
+     */
+    private void liquidate() {
+        for (Map.Entry<String, Object> e : map("positions").entrySet()) {
+            String sym = e.getKey();
+            Map<String, Object> pos = asMap(e.getValue());
+            if (!held.containsKey(sym) || today.equals(pos.get("since"))) continue;
+            if (today.equals(pos.get("exiting"))) {
+                lines.add(sym + ": already being sold today");
+                continue;
+            }
+            Broker.Position h = held.get(sym);
+            double qty = Math.min(pos.get("qty") != null ? num(pos.get("qty")) : h.qty(), h.qty());
+            cancelStops(sym);
+            String[] r = sellOut(ib, h.share(), qty, ref + "-exit", false);
+            if (r[0].equals("true")) pos.put("exiting", today);
+            lines.add(sym + ": held since " + pos.get("since") + " (an earlier strategy's), sold now: " + r[1]);
+        }
+        for (String sym : new ArrayList<>(map("stopped").keySet())) {  // an earlier strategy's buy-backs: cancelled
+            for (Broker.Ord t : rebuysOf(sym)) ib.cancel(t.orderId());
+            map("stopped").remove(sym);
+            lines.add(sym + ": an earlier strategy's buy-back order cancelled");
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void protect() {
         rebuyDay();
@@ -466,6 +494,9 @@ final class Holds {
         adopt(action.equals("record"));
         if (action.equals("protect")) protect();
         if (action.equals("record")) record();
+        if (action.equals("liquidate")) liquidate();
+        // a same-day book (its orders held one day): what the book still holds from an earlier day is sold at the open
+        if (action.equals("place") && book != null && book.get("days") != null && num(book.get("days")) == 1) liquidate();
         if (action.equals("place")) place(book == null ? new LinkedHashMap<>() : book);
         else if (action.equals("close")) close();
         ib.sleep(2);
