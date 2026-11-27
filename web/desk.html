@@ -23,7 +23,8 @@
         <button type="button" data-view="today"><b>Today</b><small>The account, every market's day and the next session's trades</small></button>
         <button type="button" data-view="history"><b>History</b><small>What was bought and sold, day by day, against the model</small></button>
         <button type="button" id="settings-open"><b>Bridge</b><small>The address and key of your bridge</small></button>
-        <a class="menu-link" href="index.html"><b>Research</b><small>The strategies, their backtests and the Lab</small></a>
+        <a class="menu-link" id="lab-link" href="index.html#lab"><b>Lab</b><small>Run the strategies on this device, on your bridge's bars</small></a>
+        <a class="menu-link" href="index.html"><b>Research</b><small>The model's picks, why, and the backtests</small></a>
       </nav>
     </div>
   </header>
@@ -44,6 +45,7 @@
 
     <section class="card" aria-labelledby="mkt-title">
       <div class="card-head"><h2 id="mkt-title">Market</h2><span class="muted small" id="mkt-note"></span></div>
+      <p class="small"><a id="mkt-lab" href="index.html#lab">Explore in the Lab</a> · <a id="mkt-research" href="index.html#orders">Why these picks</a></p>
       <h3>Today</h3>
       <div class="table-scroll"><table id="today"></table></div>
       <h3>Next session</h3>

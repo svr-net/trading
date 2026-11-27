@@ -148,6 +148,11 @@ function renderConn() {
 function renderMarket() {
   const m = state.market;
   $('mkt-title').textContent = `${m} · ${SESSIONS[m][3]}`;
+  // the research page opens on this market: its Lab (the strategies run here, on the bridge's bars) and its picks
+  $('mkt-lab').href = `index.html?market=${m.toLowerCase()}#lab`;
+  $('mkt-lab').textContent = `Explore ${m} in the Lab`;
+  $('mkt-research').href = `index.html?market=${m.toLowerCase()}#orders`;
+  $('lab-link').href = `index.html?market=${m.toLowerCase()}#lab`;
   const a = state.status?.auto?.[m];
   $('mkt-note').textContent = a ? `orders placed ${a.place}, sold ${a.close} (${a.zone})` : '';
   const t = state.trades[m];
