@@ -3313,6 +3313,17 @@ int main(int argc, char** argv) {
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
         << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
     }
+    // The day's top-ranked shares (the bridge's 5-minute bars and recordings follow them): the orders' rivals by score.
+    f << "],\"candidates\":[";
+    {
+      std::vector<std::pair<double, std::size_t>> cand;
+      ranked(*strategy, P, L, cand);
+      const std::size_t nc = std::min<std::size_t>(cand.size(), std::max<std::size_t>(40, final.size()));
+      for (std::size_t r = 0; r < nc; ++r) {
+        const std::size_t i = cand[r].second;
+        f << (r ? "," : "") << "{\"ticker\":" << jstr(d.tickers[i]) << ",\"rank\":" << r + 1 << ",\"score\":" << jnum(cand[r].first) << ",\"close\":" << jnum(d.Cf[L * N + i]) << "}";
+      }
+    }
     // The daily update: each share the book held lately, kept while it is in the target, else sold at the open.
     f << "],\"updates\":[";
     std::size_t q = 0;
