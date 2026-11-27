@@ -137,6 +137,9 @@ function render(r, source) {
   const states = r.orders.some((o) => o.state?.ahead != null);
   if (states) head.push(['Market', 'num opt']);
   head.push(['Expected', 'num']);
+  // tradebracket: each order's probabilities from its own replayed days; P(net gain) = P(fill) x P(gain over costs | fill)
+  const probs = r.orders.some((o) => o.probs);
+  if (probs) head.push(['P(net gain)', 'num'], ['P(fill)', 'num opt'], ['P(TP · SL | fill)', 'num opt']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
       const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? (atOpen ? `≤ ${pct(o.limit, 1)}` : `open, ≤ ${pct(o.limit, 1)}`) : pct(o.limit, 1), 'num']];
@@ -152,6 +155,11 @@ function render(r, source) {
       if (ifs) row.push(o.ifFilled == null ? ['–', 'num opt'] : [signed(o.ifFilled, 2)[0], `${signed(o.ifFilled, 2)[1]} opt`]);
       if (states) row.push(o.state?.ahead == null ? ['–', 'num opt'] : [`${Math.round(100 * o.state.ahead)}% turbulent`, 'num opt']);
       row.push(signed(o.expected, Math.abs(o.expected) < 0.0005 ? 3 : 2));  // the order's: the chance to buy times the gain if it buys
+      if (probs) {
+        const pr = o.probs, p0 = (x) => (x == null ? '–' : `${Math.round(100 * x)}%`);
+        row.push(pr ? [p0(pr.final), 'num'] : ['–', 'num'], pr ? [`${p0(pr.fill)}${pr.auction != null && pr.auction < 1 ? ` (${p0(pr.auction)} auction)` : ''}`, 'num opt'] : ['–', 'num opt'],
+          pr ? [`${p0(pr.take)} · ${p0(pr.stop)}`, 'num opt'] : ['–', 'num opt']);
+      }
       return row;
     }) : [{ gap: full ? `No new orders: every one of the model's ${r.slots} slots is held, and no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}.`
       : r.model === 'strategy' && r.held > 0 ? `No new orders: the model holds ${r.held} of its ${r.slots} slots; no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}, so the rest stays in cash.`
