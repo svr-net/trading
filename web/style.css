@@ -127,14 +127,22 @@ footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule)
 #broker-history td { white-space: normal; }
 #broker-history td:first-child, #broker-history td:nth-child(2) { white-space: nowrap; }
 tr.gap td { white-space: normal; }
-/* The section menu: one section at a time. */
-.views { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--rule); }
-.views button { font: 600 14px var(--sans, inherit); padding: 8px 10px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
-.views button[aria-current] { color: var(--ink); border-bottom-color: var(--accent); }
+/* The section menu: a button in the header opening the list of sections (one section at a time). */
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.menu { position: relative; }
+#menu-toggle { font: 600 14px var(--body); display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); color: var(--ink); cursor: pointer; }
+#menu-toggle[aria-expanded="true"] { border-color: var(--accent); }
+#menu-toggle .burger { font-size: 16px; line-height: 1; }
+.views { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; display: grid; min-width: 290px; padding: 6px; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .14); }
+.views[hidden] { display: none; }
+.views button { display: grid; gap: 1px; text-align: left; padding: 9px 12px; border: 0; border-left: 3px solid transparent; border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
+.views button b { font: 600 14px var(--body); }
+.views button small { font-size: 12px; color: var(--muted); }
+.views button:hover { background: var(--bg); }
+.views button[aria-current] { border-left-color: var(--accent); background: var(--bg); }
 .views button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .view footer { margin-top: 18px; }
-.views { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
-.views button { padding: 8px 7px; white-space: nowrap; flex: 0 0 auto; }
+#bridge-settings { margin-top: 18px; }
 /* Today at Interactive Brokers: the live state of the day's trades. */
 #today-box h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 button.small { font-size: 12px; padding: 3px 10px; }
@@ -195,3 +203,10 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #chart-dialog .chart-range button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
 #chart-dialog .chart-range button:disabled { opacity: 0.35; cursor: not-allowed; }
 #chart-dialog .chart-range .hint { align-self: center; margin: 0 0 0 6px; }
+/* The account section: no empty boxes before the bridge answers; space between its parts. */
+#view-broker .broker-log:empty, #view-broker table:empty { display: none; }
+#view-broker h3 { margin-top: 22px; }
+#view-broker h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.market-switch[hidden] { display: none; }
+#account-market-slot .market-switch { margin: 4px 0 8px; }
+#account-market-slot .market-switch [data-market="forex"] { display: none; }  /* research only: never traded */

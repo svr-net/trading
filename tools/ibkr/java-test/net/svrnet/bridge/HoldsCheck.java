@@ -257,6 +257,28 @@ public final class HoldsCheck {
         return placed + prot + closed + closed2 + prot3;
     }
 
+    static String liquidateBook() throws Exception {
+        // an earlier strategy's position (held days), then the liquidation: sold at the next price, its stop cancelled
+        FakeBroker b = new FakeBroker();
+        Path st = dir.resolve("holds-US-liq.json");
+        java.time.LocalDate d1 = TODAY.minusDays(3);
+        at("America/New_York", 9, 20);
+        Map<String, Object> o = order("BRK.B", 480, 484, null, 260, 10000, 20000);
+        run(b, "US", "place", st, book("uk", 260, 5, List.of(o)), d1);
+        FakeBroker.T buy = b.find("BRK B", "BUY");
+        b.fill(buy, buy.order.qty(), 482);
+        at("America/New_York", 15, 52);
+        run(b, "US", "close", st, null, d1);
+        at("America/New_York", 10, 0);
+        String liq = run(b, "US", "liquidate", st, null);
+        List<FakeBroker.T> sells = b.where(t -> t.share.symbol().equals("BRK B") && t.order.action().equals("SELL") && t.order.ref().endsWith("-exit"));
+        check(sells.size() == 1 && sells.get(0).order.qty() == buy.order.qty() && !sells.get(0).order.type().equals("MOC"), "sold now: " + liq);
+        check(b.where(t -> t.order.ref().startsWith("ofm-USS") && !t.status.equals("Cancelled") && !t.status.equals("Filled")).isEmpty(), "its stops cancelled: " + liq);
+        String again = run(b, "US", "liquidate", st, null);
+        check(b.where(t -> t.share.symbol().equals("BRK B") && t.order.ref().endsWith("-exit")).size() == 1, "sold once: " + again);
+        return liq;
+    }
+
     static String usBook() throws Exception {
         at("America/New_York", 9, 20);
         FakeBroker b = new FakeBroker();
@@ -538,6 +560,8 @@ public final class HoldsCheck {
         System.out.println("intraday bracket: the buy the parent, a take-profit limit and a stop its day-order children, the last transmitting all; OK");
         System.out.print(bracketRebuy());
         System.out.println("intraday buy-back: once the bracket stop sold, a buy-stop at or over its level (a limit under it) with the take-profit as its child, placed once, cancelled at the close when not triggered; OK");
+        System.out.print(liquidateBook());
+        System.out.println("leftovers: an earlier day's position sold at the next price, its stops cancelled, once; OK");
         System.out.print(usBook());
         System.out.println("US: BRK.B as BRK B, routed SMART, good only through New York's opening auction; OK");
         System.out.print(apacBook());

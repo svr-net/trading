@@ -32,6 +32,7 @@ for (const m of ['uk', 'us']) {
     await page.waitForFunction(() => /close of/.test(document.getElementById('asof').textContent), null, { timeout: 30000 });
     const summary = await page.$eval('#summary', (e) => e.textContent.trim());
     if (!summary) throw new Error('no summary');
+    await page.click('#menu-toggle');
     await page.click('.views button[data-view="backtest"]');  // the backtest is its own section; open it to draw the chart
     await page.waitForTimeout(200);
     const trades = await page.$$eval('#plan tbody tr:not(.gap)', (rows) => rows.length);

@@ -331,6 +331,10 @@ public final class Bridge {
                 Auto.Done d = Auto.report(m);
                 reply(x, d.ok() ? 200 : 500, Json.obj("ok", d.ok(), "log", d.summary()));
             }
+            case "/liquidate" -> {  // the book's positions from earlier days sold now (their stops cancelled first)
+                Auto.Done d = Auto.liquidateHolds(m);
+                reply(x, d.ok() ? 200 : 500, Json.obj("ok", d.ok(), "log", d.summary()));
+            }
             case "/close" -> {
                 Auto.Done d = Auto.closeMarket(m);
                 reply(x, d.ok() ? 200 : 500, Json.obj("ok", d.ok(), "log", d.summary()));

@@ -545,6 +545,11 @@ final class Auto {
         t.start();
     }
 
+    /** The book's positions from earlier days sold now (POST /liquidate, the page's "Sell leftovers now"). */
+    static Done liquidateHolds(String m) {
+        return done(step(() -> holds(m, "liquidate", null)));
+    }
+
     static Done closeHolds(String m) {
         return done(step(() -> holds(m, "close", null)));
     }
