@@ -335,6 +335,11 @@ public final class Bridge {
                 Auto.inBackground(m, "paths", Auto::recordPaths);
                 reply(x, 202, Json.obj("ok", true, "log", m + ": recording the candidates' prices until 20 minutes after the close"));
             }
+            case "/intraday" -> {  // a backfill of the market's 5-minute bars from IBKR, in the background (days: 1 to 180)
+                int days = body.get("days") instanceof Number ? Math.max(1, Math.min(180, ((Number) body.get("days")).intValue())) : 60;
+                Auto.inBackground(m, "intraday", mk -> Auto.fetchIntraday(mk, days));
+                reply(x, 202, Json.obj("ok", true, "log", m + ": fetching " + days + " sessions of 5-minute bars from IBKR in the background (about " + (days / 20 + 1) * 11 * Auto.INTRADAY_LINES / 60 + " minutes)"));
+            }
             case "/test-order" -> testOrder(x, m);
             case "/report" -> {
                 Auto.Done d = Auto.report(m);

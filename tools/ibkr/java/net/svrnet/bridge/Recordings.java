@@ -187,6 +187,85 @@ final class Recordings {
         }
     }
 
+    /**
+     * The shares' 5-minute bars from IBKR (TRADES, regular hours) for the last `days` sessions, kept in the store as
+     * intraday/<EXCHANGE>/<SYMBOL>/<yyyy-MM>.json, the layout the store's other 5-minute bars have: {"days": {date:
+     * [[HH:MM, high, low, close, open, volume], ...]}} (open and volume after the first four, so readers of the
+     * older [time, high, low, close] bars read these unchanged). Requested in chunks of 20 days, 11 seconds apart
+     * (IBKR's pacing: 60 historical requests in 10 minutes); each month file merged with what the store has.
+     */
+    @SuppressWarnings("unchecked")
+    static Steps.Result intraday(String market, List<String> tickers, int days, Pause pause, Consumer<String> progress) {
+        while (pause.on()) {
+            pause.ack(true);
+            sleep(2);
+        }
+        pause.ack(false);
+        int got = 0, none = 0, files = 0;
+        Map<String, Integer> why = new LinkedHashMap<>();
+        try (Ib ib = Ib.connect(clientId(market) + 9)) {
+            for (String t : tickers) {
+                while (pause.on()) {
+                    pause.ack(true);
+                    ib.sleep(2);
+                }
+                pause.ack(false);
+                Broker.Share s = Holds.shareOf(t, market);
+                Broker.Share q = s == null ? null : ib.qualify(s);
+                if (q == null) {
+                    none++;
+                    why.merge("not found at IBKR", 1, Integer::sum);
+                    continue;
+                }
+                Map<String, List<Object>> byDay = new java.util.TreeMap<>();
+                for (int c = 0; c * 20 < days; c++) {
+                    long start = System.nanoTime();
+                    String end = c == 0 ? "" : ZonedDateTime.now(ZoneOffset.UTC).minusDays(28L * c).format(DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss"));
+                    int span = Math.min(20, days - c * 20);
+                    List<Bar> bars = ib.intradayBars(q, end, span + " D", 90);
+                    if (bars.isEmpty() && !ib.barsError.isEmpty()) why.merge(ib.barsError.length() > 60 ? ib.barsError.substring(0, 60) : ib.barsError, 1, Integer::sum);
+                    for (Bar b : bars) {
+                        String[] p = b.time().trim().split("\\s+");
+                        if (p.length < 2 || p[0].length() != 8 || p[1].length() < 5) continue;
+                        String day = p[0].substring(0, 4) + "-" + p[0].substring(4, 6) + "-" + p[0].substring(6, 8);
+                        byDay.computeIfAbsent(day, k -> new ArrayList<>()).add(List.of(p[1].substring(0, 5), b.high(), b.low(), b.close(), b.open(), b.volume() == null ? 0.0 : b.volume().value().doubleValue()));
+                    }
+                    sleep(Math.max(0, 11 - (System.nanoTime() - start) / 1e9));
+                }
+                if (byDay.isEmpty()) {
+                    none++;
+                    continue;
+                }
+                got++;
+                String ex = t.contains(":") ? t.substring(0, t.indexOf(':')) : market.equals("UK") ? "LSE" : (q.primaryExchange() == null || q.primaryExchange().isEmpty() ? q.exchange() : q.primaryExchange());
+                String sym = (t.contains(":") ? t.substring(t.indexOf(':') + 1) : t).replace(' ', '.');
+                Map<String, Map<String, List<Object>>> byMonth = new java.util.TreeMap<>();
+                for (Map.Entry<String, List<Object>> e : byDay.entrySet()) byMonth.computeIfAbsent(e.getKey().substring(0, 7), k -> new java.util.TreeMap<>()).put(e.getKey(), e.getValue());
+                for (Map.Entry<String, Map<String, List<Object>>> e : byMonth.entrySet()) {
+                    String path = "intraday/" + ex + "/" + sym + "/" + e.getKey() + ".json";
+                    try {
+                        byte[] old = Store.get(path);
+                        Map<String, Object> doc = old == null || old.length == 0 ? new LinkedHashMap<>() : JsonParse.object(new String(old, StandardCharsets.UTF_8));
+                        Map<String, Object> d = doc.get("days") instanceof Map ? new java.util.TreeMap<>((Map<String, Object>) doc.get("days")) : new java.util.TreeMap<>();
+                        d.putAll(e.getValue());
+                        doc.put("complete", Boolean.TRUE.equals(doc.get("complete")));
+                        doc.put("days", d);
+                        doc.put("source", "IBKR 5-minute TRADES bars, regular hours: [time, high, low, close, open, volume]");
+                        Store.put(path, Json.write(doc).getBytes(StandardCharsets.UTF_8), market + " 5-minute bars " + sym + " " + e.getKey());
+                        files++;
+                    } catch (IOException | RuntimeException ex2) {
+                        why.merge("store: " + ex2.getMessage(), 1, Integer::sum);
+                    }
+                }
+                if (progress != null && got % 10 == 0) progress.accept(market + " 5-minute bars: " + got + " of " + tickers.size() + " shares");
+            }
+        } catch (RuntimeException e) {
+            return new Steps.Result(1, List.of(), market + " 5-minute bars: " + e.getMessage());
+        }
+        String summary = market + " 5-minute bars: " + got + " of " + tickers.size() + " shares (" + days + " sessions), " + files + " month files kept" + (none > 0 ? "; none for " + none + (why.isEmpty() ? "" : " " + why) : "");
+        return new Steps.Result(got > 0 || tickers.isEmpty() ? 0 : 1, List.of(), summary);
+    }
+
     /** A number as Python's csv module writes a float ('' for none). */
     static String py(Double x) {
         if (x == null) return "";

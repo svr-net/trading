@@ -736,6 +736,35 @@ final class Auto {
      * latest month. Every fetch is merged in (a share-day IBKR answers again replaces the kept one), so a fetch IBKR answered badly never
      * loses bars (7 Nov); without a kept file the store's is the start; a fetch with no bars changes nothing.
      */
+    static final boolean INTRADAY = !env("INTRADAY", "1", false).equals("0");
+    static final int INTRADAY_LINES = Integer.parseInt(env("INTRADAY_LINES", "40", false));
+
+    /**
+     * The market's 5-minute bars from IBKR, kept in the store (Recordings.intraday): the day's orders and candidates
+     * (at most INTRADAY_LINES), the last `days` sessions; after each report the day's (1), on demand a backfill.
+     */
+    @SuppressWarnings("unchecked")
+    static Done fetchIntraday(String m, int days) {
+        synchronized (START_LOCK) {
+            if (!BARS_RUNNING.isEmpty()) return new Done(false, "waiting: " + String.join(", ", new TreeSet<>(BARS_RUNNING)) + " bars fetching");
+            BARS_RUNNING.add(m);
+        }
+        try {
+            Map<String, Object> book = orders(m);
+            Set<String> tickers = new LinkedHashSet<>();
+            for (String k : List.of("orders", "candidates"))
+                if (book.get(k) instanceof List) for (Object o : (List<Object>) book.get(k)) if (o instanceof Map && ((Map<String, Object>) o).get("ticker") != null) tickers.add(String.valueOf(((Map<String, Object>) o).get("ticker")));
+            List<String> list = new ArrayList<>(tickers).subList(0, Math.min(tickers.size(), INTRADAY_LINES));
+            PAUSE.clearIfFree();
+            Steps.Result r = Recordings.intraday(m, list, days, PAUSE, Auto::err);
+            return new Done(r.code() == 0, r.last());
+        } catch (IOException | RuntimeException e) {
+            return new Done(false, "5-minute bars: " + e.getMessage());
+        } finally {
+            BARS_RUNNING.remove(m);
+        }
+    }
+
     static Done fetchBars(String m, boolean daily) {
         synchronized (START_LOCK) {
             if (!BARS_RUNNING.isEmpty()) return new Done(false, "waiting: " + String.join(", ", new TreeSet<>(BARS_RUNNING)) + " bars fetching");
@@ -1125,6 +1154,9 @@ final class Auto {
                 if (!d.ok() && d.summary().contains("162:")) markDone(mk, "bars");
                 return d;
             }, true);
+        // the day's 5-minute bars from IBKR, after the report and the daily bars (the historical-data requests one at a time)
+        if (INTRADAY && up && within(now, REPORT.get(m), 30, 360) && !isDone(m, "intraday") && BARS_RUNNING.isEmpty() && !stepsPending() && mayTry(m, "intraday", 30, 3))
+            job(m, "intraday", mk -> fetchIntraday(mk, 1), true);
         boolean session = between(now, at(now, place, -30), at(now, close, -15));
         if (up && session && !isDone(m, "leftovers") && mayTry(m, "leftovers", 5, 3)) job(m, "leftovers", Auto::sellLeftovers, true);
         long[] lt = ATTEMPTS.get(m + " leftovers " + day);

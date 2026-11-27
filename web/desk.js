@@ -238,12 +238,13 @@ for (const b of document.querySelectorAll('[data-act]')) {
   b.addEventListener('click', async () => {
     const m = state.market, path = b.dataset.act, dry = Boolean(b.dataset.dry);
     const ask = { '/place': dry ? null : `Place the ${m} orders with Interactive Brokers now?`, '/close': `Cancel today's unfilled ${m} orders and sell what is left at the close?`,
-      '/liquidate': `Sell now every ${m} position the bridge holds from an earlier day (its stops cancelled first)? Today's trades are left alone.`, '/report': null }[path];
+      '/liquidate': `Sell now every ${m} position the bridge holds from an earlier day (its stops cancelled first)? Today's trades are left alone.`, '/report': null,
+      '/intraday': `Fetch the last 120 sessions of 5-minute bars for ${m}'s candidates from IBKR into the store? It runs in the background for about an hour and pauses for the bridge's own steps.` }[path];
     if (ask && !window.confirm(ask)) return;
     b.disabled = true;
     log(`${m} ${b.textContent}…`);
     try {
-      const r = await bridge(path, dry ? { market: m, dryRun: true } : { market: m });
+      const r = await bridge(path, dry ? { market: m, dryRun: true } : path === '/intraday' ? { market: m, days: 120 } : { market: m });
       log(`${m} ${b.textContent}: ${r.log || (r.ok ? 'done' : JSON.stringify(r))}`, r.ok !== false);
       refreshTrades(m);
       refreshAccount();

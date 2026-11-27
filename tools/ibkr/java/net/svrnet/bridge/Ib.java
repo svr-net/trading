@@ -305,6 +305,25 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
         }
     }
 
+    /** The share's 5-minute bars (TRADES, regular hours) over `duration` to `end` ("" now; "yyyyMMdd-HH:mm:ss" UTC). */
+    List<Bar> intradayBars(Share s, String end, String duration, int seconds) {
+        int id = reqIds.incrementAndGet();
+        Req r = req(id);
+        client.reqHistoricalData(id, contract(s), end, duration, "5 mins", "TRADES", 1, 1, false, null);
+        try {
+            List<Bar> out = new ArrayList<>();
+            for (Object o : answer(id, r, seconds, "5-minute bars")) out.add((Bar) o);
+            synchronized (r) {
+                barsError = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+            }
+            return out;
+        } catch (RuntimeException e) {
+            client.cancelHistoricalData(id);
+            barsError = "exception: " + e.getMessage();
+            return List.of();
+        }
+    }
+
     /** The free delayed quote (frozen when the market is shut): its fields by name, after up to `seconds`, once any of `want` has come. */
     Map<String, Double> quote(Share s, double seconds, String... want) {
         int id = stream(s, "", 4);
