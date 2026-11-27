@@ -529,10 +529,11 @@ function drawOHLC(bars, o, n) {
     + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['broker', 'orders', 'results', 'backtest', 'lab', 'about'];
+const VIEWS = ['orders', 'backtest', 'lab', 'about'];
 let bridgeOk = false;
 function showView(v) {
-  if (v === 'portfolio') v = 'broker';  // the portfolio is part of the account section
+  // the account, its trading and its history are the trading desk's (desk.html)
+  if (['portfolio', 'broker', 'results'].includes(v)) { location.href = `desk.html#${v === 'results' ? 'history' : 'today'}`; return; }
   if (!VIEWS.includes(v)) v = 'orders';
   // The market buttons only where a section shows one market: in the header for the market's sections, beside the
   // account's orders (its positions are every market's), none for About.
@@ -897,7 +898,8 @@ for (const b of document.querySelectorAll('.market-switch button')) b.addEventLi
 try { if (!bridgeKey()) $('bridge-settings').open = true; } catch { /* no storage */ }  // no bridge yet: its settings shown
 brokerProbe();
 let firstView = location.hash.slice(1);
-try { firstView = firstView || localStorage.getItem('view') || (bridgeKey() ? 'broker' : 'orders'); } catch { /* no storage */ }
+try { firstView = firstView || localStorage.getItem('view') || 'orders'; } catch { /* no storage */ }
+if (['portfolio', 'broker', 'results'].includes(firstView) && !location.hash) firstView = 'orders';  // a remembered old section
 showView(firstView);
 
 

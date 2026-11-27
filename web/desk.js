@@ -252,8 +252,85 @@ for (const b of document.querySelectorAll('[data-act]')) {
   });
 }
 
+// ---- the sections: Today and History (the menu, as on the research page)
+function menuOpen(on) { $('menu-list').hidden = !on; $('menu-toggle').setAttribute('aria-expanded', on ? 'true' : 'false'); }
+function showView(v) {
+  if (!['today', 'history'].includes(v)) v = 'today';
+  $('v-today').hidden = v !== 'today';
+  $('v-history').hidden = v !== 'history';
+  $('menu-current').textContent = v === 'today' ? 'Today' : 'History';
+  for (const b of document.querySelectorAll('.views button[data-view]')) b.toggleAttribute('aria-current', b.dataset.view === v);
+  store('deskView', v);
+  if (location.hash !== `#${v}`) history.replaceState(null, '', `#${v}`);
+  menuOpen(false);
+  if (v === 'history') refreshHistory();
+}
+for (const b of document.querySelectorAll('.views button[data-view]')) b.addEventListener('click', () => showView(b.dataset.view));
+$('menu-toggle').addEventListener('click', (e) => { e.stopPropagation(); menuOpen($('menu-list').hidden); });
+document.addEventListener('click', (e) => { if (!e.target.closest('.menu')) menuOpen(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menuOpen(false); });
+
+// ---- history: each day's orders and trades in the selected market, against the model (GET /history)
+let histData = null;
+function renderHistoryMarkets() {
+  const box = $('hist-markets');
+  box.replaceChildren(...MARKETS.map((m) => {
+    const b = el('button', m); b.type = 'button'; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(m === state.market));
+    b.addEventListener('click', () => { state.market = m; store('deskMarket', m); renderHistoryMarkets(); renderHistory(); renderMarkets(); renderMarket(); });
+    return b;
+  }));
+}
+async function refreshHistory() {
+  renderHistoryMarkets();
+  if (!bridgeKey()) { $('hist-summary').textContent = 'Set your bridge to see your history.'; return; }
+  try { histData = await bridge('/history'); } catch (e) { $('hist-summary').textContent = `History not available: ${e.message}`; return; }
+  renderHistory();
+}
+function renderHistory() {
+  const box = $('hist-days');
+  box.replaceChildren();
+  if (!histData) return;
+  const m = state.market;
+  const code = (x) => x.split(':').pop().replace(' ', '.');
+  const ratio = (a, b) => { const r = a / b; const s = [1, 0.01, 100].reduce((p, x) => (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / p)) ? x : p), 1); return r / s; };
+  const perDay = {};
+  let n = 0, wins = 0, placed = 0;
+  const total = {};
+  for (const d of (histData.days || []).filter((x) => x.market === m && x.date)) {
+    const day = (perDay[d.date] = perDay[d.date] || { rows: [], orders: 0, bought: 0, pnl: {} });
+    day.orders += d.orders.length; placed += d.orders.length;
+    const traded = Object.fromEntries(d.trades.map((t) => [code(t.ticker), t]));
+    const model = Object.fromEntries((d.model || []).map((t) => [code(t.ticker), t]));
+    const reported = d.trades.length > 0 || (d.model || []).length > 0;
+    for (const name of new Set([...d.orders.map((o) => code(o.ticker)), ...Object.keys(traded)])) {
+      const t = traded[name], mo = model[name], filled = t && t.bought > 0;
+      if (filled) { n += 1; if (t.ret > 0) wins += 1; day.bought += 1; day.pnl[t.currency] = (day.pnl[t.currency] || 0) + t.pnl; total[t.currency] = (total[t.currency] || 0) + t.pnl; }
+      const gap = filled && mo && mo.filled > 0 ? ratio(t.buy, mo.entry) - 1 : null;
+      const modelSays = mo ? (mo.filled > 0 ? pct(mo.ret, 2) : 'no buy') : '';
+      const yours = filled && t.ret != null ? pct(t.ret, 2) : filled ? 'open' : reported ? 'no buy' : 'waiting';
+      day.rows.push([[name], [`${yours}${modelSays ? ` (model ${modelSays})` : ''}`, `num ${filled && t.ret != null ? tone(t.ret) : ''}`],
+        [gap == null ? '' : pct(gap, 2), `num ${gap == null ? '' : gap <= 0 ? 'pos' : 'neg'}`],
+        [filled ? `${signed(t.pnl)} (fees ${num(t.commission)})` : '', `num ${filled ? tone(t.pnl) : ''}`]]);
+    }
+  }
+  const dates = Object.keys(perDay).filter((x) => perDay[x].orders > 0 || perDay[x].bought > 0).sort().reverse();
+  const money = (o) => Object.entries(o).map(([c, v]) => `${signed(v)} ${c}`).join(', ');
+  $('hist-summary').textContent = dates.length ? `${dates.length} trading days · ${placed} orders · ${n} bought · ${n ? Math.round(100 * wins / n) : 0}% of them gained · total ${money(total) || '0'}` : 'Nothing yet: each trading day with an order appears here once it is over.';
+  for (const date of dates) {
+    const day = perDay[date], tot = Object.values(day.pnl).reduce((a, b) => a + b, 0);
+    const f = el('details'), s = el('summary');
+    s.append(el('span', new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }), 'when'),
+      el('span', `${day.orders} order${day.orders === 1 ? '' : 's'} · ${day.bought} bought`, 'cnt'), el('span', money(day.pnl) || '–', `money ${tone(tot)}`));
+    const wrap = el('div', null, 'table-scroll'), t = el('table');
+    wrap.append(t);
+    table(t, [['Share'], ['Return (model)', 'num'], ['Paid vs model', 'num'], ['Profit (fees)', 'num']], day.rows, '');
+    f.append(s, wrap);
+    box.append(f);
+  }
+}
+
 // ---- settings
-$('settings-open').addEventListener('click', () => { $('set-url').value = bridgeUrl(); $('set-key').value = bridgeKey(); $('settings').showModal(); });
+$('settings-open').addEventListener('click', () => { menuOpen(false); $('set-url').value = bridgeUrl(); $('set-key').value = bridgeKey(); $('settings').showModal(); });
 $('settings').addEventListener('close', () => {
   if ($('settings').returnValue !== 'save') return;
   store('bridgeUrl', $('set-url').value.trim()); store('bridgeKey', $('set-key').value.trim());
@@ -292,6 +369,7 @@ function refreshAll() {
 }
 
 renderMarkets(); renderMarket(); renderAccount(); renderPositions();
+showView(location.hash.slice(1) || stored('deskView', 'today'));
 if (!bridgeKey()) { log('Set your bridge (top right) to see the account and trade.'); $('settings-open').click(); }
 refreshAll();
 setInterval(() => { if (!document.hidden) renderMarkets(); }, 15000);
