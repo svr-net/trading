@@ -1062,7 +1062,9 @@ int main(int argc, char** argv) {
     }
     return up + dn > 0 ? 100 * up / (up + dn) : 50.0;
   };
-  const auto featOf = [&](std::size_t t, std::size_t i) {
+  std::unordered_map<std::size_t, Feat> featMemo;  // the day's candidates' levels (a day's SAR roll changes them: cleared then)
+  std::size_t featDay = SIZE_MAX, featRoll = SIZE_MAX;
+  const auto featCalc = [&](std::size_t t, std::size_t i) {
     Feat f;
     f.take.assign(nTake, 0.0), f.stop.assign(nStop, 0.0);
     const double c = d.Cf[t * N + i];
@@ -1121,7 +1123,20 @@ int main(int argc, char** argv) {
     f.adx = adxAt(t, i), f.rsi = rsiAt(t, i);
     return f;
   };
-  std::vector<std::vector<Rec>> comboRec(comboBracket ? 10 : 0, std::vector<Rec>(nCombo));  // the 9 regimes, then every trade
+  const auto featOf = [&](std::size_t t, std::size_t i) -> const Feat& {
+    if (t != featDay || sarNext != featRoll) featMemo.clear(), featDay = t, featRoll = sarNext;
+    auto it = featMemo.find(i);
+    if (it == featMemo.end()) it = featMemo.emplace(i, featCalc(t, i)).first;
+    return it->second;
+  };
+  // combobracket 2 with rebuyday: the buy-back learnt with the bracket, as one choice (take-profit, stop, buy-back): the
+  // buy-back none, a limit under the stop (0.5 to 2 daily volatilities: buying a further fall) or a buy-stop at or over
+  // it (0 to 2: buying the recovery)
+  constexpr double kNoRb = -99.0;
+  const std::array<double, 10> jRb{kNoRb, -2.0, -1.5, -1.0, -0.5, 0.0, 0.25, 0.5, 1.0, 2.0};
+  const bool jointRb = comboBracket && volOnly && flatDaily && P["rebuyday"] > 0;
+  const std::size_t nRb = jointRb ? jRb.size() : 1;
+  std::vector<std::vector<Rec>> comboRec(comboBracket ? 10 : 0, std::vector<Rec>(nCombo * nRb));  // the 9 regimes, then every trade
   std::vector<double> adxSeen, rsiSeen;
   std::array<double, 2> adxCut{kNaN, kNaN}, rsiCut{kNaN, kNaN};
   std::array<std::size_t, 10> comboPick{};
@@ -1142,22 +1157,29 @@ int main(int argc, char** argv) {
     for (std::size_t z = 0; z < 10; ++z) {
       double best = -1e300;
       std::size_t bi = 0;
-      for (std::size_t q = 0; q < nCombo; ++q) {
-        if (q / nStop < ta0 || q % nStop < sb0) continue;  // combobracket 2: the volatility levels only
-        const Rec& r = comboRec[z][q];
-        if (r.n < 2) continue;
-        const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
-        if (sc > best) best = sc, bi = q;
-      }
+      for (std::size_t ta = ta0; ta < nTake; ++ta)  // combobracket 2: the volatility levels only
+        for (std::size_t sb = sb0; sb < nStop; ++sb)
+          for (std::size_t rq = 0; rq < nRb; ++rq) {
+            const std::size_t q = (ta * nStop + sb) * nRb + rq;
+            const Rec& r = comboRec[z][q];
+            if (r.n < 2) continue;
+            const double m = r.s / r.n, v = std::max(0.0, r.s2 / r.n - m * m), sc = m - std::sqrt(v / r.n);
+            if (sc > best) best = sc, bi = q;
+          }
       comboPick[z] = bi, comboScore[z] = best;
     }
   };
   const auto comboLevels = [&](std::size_t t, std::size_t i) -> std::pair<double, double> {
-    const Feat f = featOf(t, i);
+    const Feat& f = featOf(t, i);
     std::size_t z = cellOf(f);
     if (z < 9 && !(comboScore[z] > comboScore[9])) z = 9;
-    const std::size_t q = comboPick[z];
+    const std::size_t q = comboPick[z] / nRb;
     return {f.take[q / nStop], f.stop[q % nStop]};
+  };
+  const auto comboRb = [&](std::size_t t, std::size_t i) {  // jointRb: the trade's buy-back (daily volatilities from its stop; kNoRb: none)
+    std::size_t z = cellOf(featOf(t, i));
+    if (z < 9 && !(comboScore[z] > comboScore[9])) z = 9;
+    return jRb[comboPick[z] % nRb];
   };
   const bool volFilter = flatDaily && P["volfilter"] > 0;
   std::vector<double> volSeen;  // the volatilities of the scored picks, sorted
@@ -1251,20 +1273,29 @@ int main(int argc, char** argv) {
   // The buy-back keeps the trade's take-profit (tk, 0: none): sold there when the day closed at or over it (it rose
   // through it after the buy-back), else at the close (a high over it but a close under it: not counted, the
   // cautious reading).
+  // m < 0 (over kNoRb): a buy limit m daily volatilities under the stop, filled once the day's low reached it (the price
+  // came down through the stop first: after it), at its level, sold at the take-profit or the close the same way.
   const auto rebuyRet = [&](std::size_t t, std::size_t u, std::size_t i, double sl, double m, double tk = 0.0) -> std::pair<double, double> {
     const double sg = d.sigma[t * N + i], H = d.H[u * N + i], C = d.Cf[u * N + i];
-    if (m < 0 || !(sl > 0 && C > 0 && std::isfinite(sg))) return {0.0, 0.0};
+    if (m <= kNoRb + 1 || !(sl > 0 && C > 0 && std::isfinite(sg))) return {0.0, 0.0};
+    if (m < 0) {
+      const double lvl = sl * (1 + m * sg), Lw = d.L[u * N + i];
+      if (!(lvl > 0 && Lw > 0 && Lw <= lvl)) return {0.0, 0.0};
+      const double X = tk > lvl && C >= tk ? tk : C;
+      return {X / lvl - 1, 1.0};
+    }
     const double trig = sl * (1 + m * sg), fill = trig * (2 - slipAt(u, i));  // a buy-stop: over its level by the stop's slip
     if (!(H >= trig)) return {0.0, 0.0};  // never reached after the stop
     const double X = tk > fill && C >= tk ? tk : C;
     return {X / fill - 1, 1.0};           // reached: taken as filled (when the close is under it too: a loss)
   };
-  const std::array<double, 7> rbdGrid{-1.0, 0.0, 0.25, 0.5, 1.0, 1.5, 2.0};
+  const std::array<double, 7> rbdGrid{kNoRb, 0.0, 0.25, 0.5, 1.0, 1.5, 2.0};
   std::array<double, 7> rbdRec{};
   std::array<std::size_t, 7> rbdUsed{};
   std::size_t rbdG = 0, nRebuyDay = 0;
   double rebuyFills = 0;
-  const auto rbdM = [&]() { return rebuyDay ? rbdGrid[rbdG] : -1.0; };
+  const auto rbdM = [&]() { return rebuyDay ? rbdGrid[rbdG] : kNoRb; };
+  const auto mOf = [&](std::size_t t, std::size_t i) { return jointRb ? comboRb(t, i) : rbdM(); };  // the trade's buy-back
   const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
     const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
     const bool sH = sl > 0 && Lw > 0 && Lw <= sl;
@@ -2207,7 +2238,7 @@ int main(int argc, char** argv) {
         const double sh = P["bracketopen"] > 0 ? O / c0 : 1.0, tk = takeOf(t, i) * sh, sl = stopOf(t, i) * sh;
         (void)Lo, (void)Hi, (void)C;
         const double w = wOf(sizeR(), riskOf(t, i, sl / sh));
-        const double y = std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, O, tk, sl, o.capital * w, false, rbdM()).first)), rk = volRank(t, i);
+        const double y = std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, O, tk, sl, o.capital * w, false, mOf(t, i)).first)), rk = volRank(t, i);
         for (std::size_t g = 0; g < volGrid.size(); ++g)
           if (rk <= volGrid[g] || volSeen.empty()) volRec[g].n += 1, volRec[g].s += y, volRec[g].s2 += y * y;
         volSeen.insert(std::upper_bound(volSeen.begin(), volSeen.end(), sg), sg);
@@ -2368,7 +2399,7 @@ int main(int argc, char** argv) {
               sarRec[g].m += y, sarRec[g].dn += y < 0 ? y * y : 0.0, sarRec[g].n += 1;
             }
           if (comboBracket && C > 0) {  // every candidate pair on this real day, in its regime and in all
-            const Feat f = featOf(t, i);
+            const Feat& f = featOf(t, i);
             const std::size_t z = cellOf(f);
             {
               std::size_t zz = z < 9 && comboScore[z] > comboScore[9] ? z : 9;
@@ -2386,21 +2417,40 @@ int main(int argc, char** argv) {
             }
             for (std::size_t a = 0; a < nTake; ++a) lvT[a] = f.take[a] * sh, vo[a] = lvT[a] > 0 ? valueOver(u, i, lvT[a]) : 0.0, xt[a] = std::max(lvT[a], E);
             const double Cr = C / E - 1;
+            // each (stop, buy-back): the buy-back's fill price on the day (0: not filled), its take-profit cap below
+            std::vector<double> rbFill(nStop * nRb, 0.0);
+            {
+              const double sg = d.sigma[t * N + i], Hd = d.H[u * N + i], sl0 = slipAt(u, i);
+              for (std::size_t b = sb0; b < nStop; ++b)
+                if (hs[b] && std::isfinite(sg))
+                  for (std::size_t rq = 0; rq < nRb; ++rq) {
+                    const double m = jointRb ? jRb[rq] : rbdM();
+                    if (m <= kNoRb + 1) continue;
+                    const double lvl = lvS[b] * (1 + m * sg);
+                    if (m < 0) rbFill[b * nRb + rq] = lvl > 0 && Lo > 0 && Lo <= lvl ? lvl : 0.0;
+                    else rbFill[b * nRb + rq] = Hd >= lvl ? lvl * (2 - sl0) : 0.0;
+                  }
+            }
             for (std::size_t a = ta0; a < nTake; ++a)
               for (std::size_t b = sb0; b < nStop; ++b) {
                 const double w = ws[b];
-                const double xsb = hs[b] ? xs[b] * (1 + rebuyRet(t, u, i, lvS[b], rbdM(), lvT[a]).first) : xs[b];  // with its buy-back
                 const bool tH = lvT[a] > 0 && (Od >= lvT[a] || vo[a] >= slot * w);
-                double rr;
-                if (hs[b] && tH && Od > lvS[b] && Od < lvT[a]) {
-                  const double pS = pStopFirst(u, i, lvS[b], lvT[a], false);
-                  rr = pS * (xsb / E - 1) + (1 - pS) * (xt[a] / E - 1);
-                } else rr = hs[b] && !(tH && Od >= lvT[a]) ? xsb / E - 1 : tH ? xt[a] / E - 1 : Cr;
-                const double y = std::log(std::max(1e-6, 1 + w * rr));
-                const std::size_t q = a * nStop + b;
-                Rec& g = comboRec[9][q];
-                g.n += 1, g.s += y, g.s2 += y * y;
-                if (z < 9) { Rec& rz = comboRec[z][q]; rz.n += 1, rz.s += y, rz.s2 += y * y; }
+                const bool both = hs[b] && tH && Od > lvS[b] && Od < lvT[a];
+                const double pS = both ? pStopFirst(u, i, lvS[b], lvT[a], false) : 0.0;
+                for (std::size_t rq = 0; rq < nRb; ++rq) {
+                  const double m = jointRb ? jRb[rq] : rbdM();
+                  (void)m;
+                  const double fl = rbFill[b * nRb + rq];
+                  const double xsb = fl > 0 ? xs[b] * ((lvT[a] > fl && C >= lvT[a] ? lvT[a] : C) / fl) : xs[b];  // with its buy-back
+                  double rr;
+                  if (both) rr = pS * (xsb / E - 1) + (1 - pS) * (xt[a] / E - 1);
+                  else rr = hs[b] && !(tH && Od >= lvT[a]) ? xsb / E - 1 : tH ? xt[a] / E - 1 : Cr;
+                  const double y = std::log(std::max(1e-6, 1 + w * rr));
+                  const std::size_t q = (a * nStop + b) * nRb + rq;
+                  Rec& g = comboRec[9][q];
+                  g.n += 1, g.s += y, g.s2 += y * y;
+                  if (z < 9) { Rec& rz = comboRec[z][q]; rz.n += 1, rz.s += y, rz.s2 += y * y; }
+                }
               }
             if (std::isfinite(f.adx) && std::isfinite(f.rsi)) adxSeen.push_back(f.adx), rsiSeen.push_back(f.rsi);
           }
@@ -2408,10 +2458,10 @@ int main(int argc, char** argv) {
           const double wT = wOf(sizeR(), riskOf(t, i, sl > 0 ? sl / sh : 0.0));
           if (sizeAdapt) sizeW.push_back(wT);
           double pFill = 0;
-          const auto [ret, lr] = dayOutcome(t, u, i, E, tk, sl, o.capital * wT, true, rbdM(), &pFill);
+          const auto [ret, lr] = dayOutcome(t, u, i, E, tk, sl, o.capital * wT, true, mOf(t, i), &pFill);
           (void)lr;
           if (pFill > 0) rebuyFills += pFill, dayCost += wT * pFill * tripOf(t, i);  // the buy-back's round trip (the record after costs)
-          if (rebuyDay && sl > 0 && Lo > 0 && Lo <= sl) {  // every buy-back distance's record on this stopped trade
+          if (rebuyDay && !jointRb && sl > 0 && Lo > 0 && Lo <= sl) {  // every buy-back distance's record on this stopped trade
             for (std::size_t g = 0; g < rbdGrid.size(); ++g)
               rbdRec[g] += std::log(std::max(1e-6, 1 + wT * dayOutcome(t, u, i, E, tk, sl, o.capital * wT, false, rbdGrid[g]).first));
             ++nRebuyDay;
@@ -2421,7 +2471,7 @@ int main(int argc, char** argv) {
           if (sizeAdapt) {  // every size's record on this trade (unsized ret: its own result under the bracket placed)
             for (std::size_t g = 0; g < sizeGrid.size(); ++g) {
               const double w = wOf(sizeGrid[g], riskOf(t, i, sl > 0 ? sl / sh : 0.0));
-              sizeRec[g] += std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, E, tk, sl, o.capital * w, false, rbdM()).first));
+              sizeRec[g] += std::log(std::max(1e-6, 1 + w * dayOutcome(t, u, i, E, tk, sl, o.capital * w, false, mOf(t, i)).first));
             }
             ++sizeN;
           }
@@ -2745,7 +2795,7 @@ int main(int argc, char** argv) {
                 bracketSpread(bracketTakes).c_str(), bracketSpread(bracketStops).c_str());
   if (staleOpen)
     std::printf("strategy:   orders not bought for want of a known open (the day's open exactly the previous close): %zu\n", nStale);
-  if (rebuyDay) {
+  if (rebuyDay && !jointRb) {
     std::string used;
     for (std::size_t g = 0; g < rbdGrid.size(); ++g)
       if (rbdUsed[g]) used += (used.empty() ? "" : ", ") + (rbdGrid[g] < 0 ? std::string("none") : jnum(rbdGrid[g])) + " " + std::to_string(rbdUsed[g]) + " days";
@@ -2800,8 +2850,10 @@ int main(int argc, char** argv) {
     static const char* rN[] = {"low RSI", "mid RSI", "high RSI"};
     for (std::size_t z = 0; z < 10; ++z) {
       const Rec& r = comboRec[z][comboPick[z]];
-      std::printf("strategy:     %-18s now: take %s, stop %s (%.0f trades, mean %+.3f%%; placed on %zu trades)%s\n",
-                  z < 9 ? (std::string(aN[z / 3]) + ", " + rN[z % 3]).c_str() : "every trade", takeName(comboPick[z] / nStop).c_str(), stopName(comboPick[z] % nStop).c_str(),
+      const double rb = jRb[comboPick[z] % nRb];
+      const std::string rbName = !jointRb ? "" : rb <= kNoRb + 1 ? ", buy-back none" : rb < 0 ? ", buy-back a limit " + jnum(-rb) + " vol under the stop" : ", buy-back a stop " + jnum(rb) + " vol over the stop";
+      std::printf("strategy:     %-18s now: take %s, stop %s%s (%.0f trades, mean %+.3f%%; placed on %zu trades)%s\n",
+                  z < 9 ? (std::string(aN[z / 3]) + ", " + rN[z % 3]).c_str() : "every trade", takeName(comboPick[z] / nRb / nStop).c_str(), stopName(comboPick[z] / nRb % nStop).c_str(), rbName.c_str(),
                   r.n, r.n > 0 ? 100 * std::expm1(r.s / r.n) : 0.0, comboUsedCell[z], z < 9 && !(comboScore[z] > comboScore[9]) ? " [uses every trade's]" : "");
     }
   }
@@ -3011,7 +3063,7 @@ int main(int argc, char** argv) {
         << ",\"intraday\":" << (flatDaily ? "true" : "false")
         << ",\"takeRel\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"stopRel\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
-        << ",\"rebuyRel\":" << (rebuyDay && rbdM() >= 0 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + rbdM() * d.sigma[L * N + x.i]) / d.Cf[L * N + x.i] - 1) : "null")
+        << ",\"rebuyRel\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i]) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"amount\":" << jnum(x.value, "%.0f") << ",\"held\":" << (x.held ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i]);
@@ -3057,7 +3109,7 @@ int main(int argc, char** argv) {
       const auto& x = final[q];
       const double fill = std::isfinite(x.fill) ? x.fill : 1.0;
       f << (q ? "," : "") << "{\"ticker\":" << jstr(d.tickers[x.i]) << ",\"close\":" << jnum(x.close) << ",\"entry\":\"open\",\"entryDay\":" << (entryDay ? "true" : "false") << ",\"open\":true,\"limit\":" << jnum(x.limit)
-        << ",\"bracketTake\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i)) : "null") << ",\"bracketStop\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i)) : "null") << ",\"bracketRebuy\":" << (rebuyDay && rbdM() >= 0 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + rbdM() * d.sigma[L * N + x.i])) : "null")
+        << ",\"bracketTake\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i)) : "null") << ",\"bracketStop\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i)) : "null") << ",\"bracketRebuy\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i])) : "null")
         << ",\"stop\":null,\"stopKind\":" << jstr(stopKind) << ",\"stopPrice\":" << jnum(stopPrice(x.i, !x.held)) << ",\"rebuyStop\":" << (rbStop ? jnum(rbOf(x.i)) : "null") << ",\"rebuyTrail\":" << (rbTrail ? "true" : "false") << ",\"rebuyStopRel\":" << (rbStop ? jnum(rebuyStopRel(x.i)) : "null") << ",\"psarStep\":" << (psar ? jnum(sarOf(x.i).first) : "null") << ",\"psarMax\":" << (psar ? jnum(sarOf(x.i).second) : "null") << ",\"stopLoss\":" << (stopLoss > 0 && !psar ? jnum(stopLoss) : "null") << ",\"take\":null,\"exitAbove\":null,\"days\":" << maxDays << ",\"holdDays\":" << jnum(holdDays) << ",\"expected\":" << jnum(fill * x.net)
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)

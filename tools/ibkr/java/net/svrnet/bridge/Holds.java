@@ -366,8 +366,8 @@ final class Holds {
     }
 
     /**
-     * The same-day buy-back (the plan's bracketRebuy): once the day's bracket stop has sold (all of its order), a
-     * buy-stop at that level for the shares it sold, a day order, with the trade's take-profit (bracketTake) as its
+     * The same-day buy-back (the plan's bracketRebuy): once the day's bracket stop has sold (all of its order), a buy
+     * order at that level for the shares it sold (a limit when it is under the stop's level, else a buy-stop), a day order, with the trade's take-profit (bracketTake) as its
      * child; what it buys is sold with the rest in the closing auction (close), and a buy-back not triggered by then is
      * cancelled first. Placed once a day per share (rebuyDay), by the session's protect runs (every few minutes).
      */
@@ -402,10 +402,13 @@ final class Holds {
             }
             Broker.Ticks tt = ib.ticks(c);
             double q = e.getValue()[0], at = num(plan.get("bracketRebuy"));
-            double trig = roundTo(at, tt.at(at), "up");
             boolean take = has(plan, "bracketTake") && num(plan.get("bracketTake")) > 0;
-            int id = ib.place(c, Broker.NewOrder.of("BUY", "STP", q, 0, trig, stopRef + "R-" + today, "DAY").child(0, !take));
-            String how = "its stop sold: a buy-back of " + g(q) + " at " + g(trig);
+            // under the stop's level: a buy limit (bought on a further fall); at or over it: a buy-stop (bought on the recovery)
+            boolean under = has(plan, "bracketStopAt") && at < num(plan.get("bracketStopAt")) - 1e-9;
+            double px = roundTo(at, tt.at(at), under ? "down" : "up");
+            int id = ib.place(c, (under ? Broker.NewOrder.of("BUY", "LMT", q, px, 0, stopRef + "R-" + today, "DAY")
+                    : Broker.NewOrder.of("BUY", "STP", q, 0, px, stopRef + "R-" + today, "DAY")).child(0, !take));
+            String how = "its stop sold: a buy-back of " + g(q) + (under ? " by a limit at " : " by a buy-stop at ") + g(px);
             if (take) {
                 double tk = num(plan.get("bracketTake"));
                 ib.place(c, Broker.NewOrder.of("SELL", "LMT", q, roundTo(tk, tt.at(tk), "up"), 0, stopRef + "T-" + today, "DAY").child(id, true));
@@ -654,7 +657,7 @@ final class Holds {
             // (a bracket's children are one-cancels-other). Their reference starts with the stops' (cancelStops), so the
             // close cancels what is left before the market-on-close sale.
             boolean bracket = has(o, "bracketTake") || has(o, "bracketStop");
-            Double rebuyAt = null, takeAt = null;  // the same-day buy-back's level and its take-profit (protect places them once the stop sold)
+            Double rebuyAt = null, takeAt = null, stopAt = null;  // the same-day buy-back's level and its take-profit (protect places them once the stop sold)
             int id;
             if (bracket) {
                 Broker.Share cx = ib.exitShare(c);
@@ -669,6 +672,7 @@ final class Holds {
                 }
                 if (hasStop) {
                     double sl = num(o.get("bracketStop")) * scale;
+                    stopAt = sl;
                     if (has(o, "bracketRebuy") && num(o.get("bracketRebuy")) > 0) rebuyAt = num(o.get("bracketRebuy")) * scale;
                     ib.place(c, Broker.NewOrder.of("SELL", "STP", qty, 0, roundTo(sl, tt.at(sl), "down"), stopRef + "L-" + today, "DAY").child(id, true));
                     how += "; a stop-loss at " + g(roundTo(sl, tt.at(sl), "down"));
@@ -687,6 +691,7 @@ final class Holds {
             if (rebuyAt != null) {
                 plan.put("bracketRebuy", rebuyAt);
                 plan.put("bracketTake", takeAt);
+                plan.put("bracketStopAt", stopAt);
                 how += "; bought back at " + g(rebuyAt) + " if the stop sells and the price comes back";
             }
             plan.put("qty", qty);
