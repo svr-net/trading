@@ -529,7 +529,7 @@ function drawOHLC(bars, o, n) {
     + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['orders', 'results', 'portfolio', 'backtest', 'broker', 'lab', 'about'];
+const VIEWS = ['portfolio', 'orders', 'results', 'backtest', 'broker', 'lab', 'about'];
 let bridgeOk = false;
 function showView(v) {
   if (!VIEWS.includes(v)) v = 'orders';
@@ -868,7 +868,7 @@ $('broker-close').addEventListener('click', () => brokerAct('/close', { market: 
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) { brokerOrders(); if (!$('view-results').hidden) brokerToday(); } });
 brokerProbe();
 let firstView = location.hash.slice(1);
-try { firstView = firstView || localStorage.getItem('view') || 'orders'; } catch { /* no storage */ }
+try { firstView = firstView || localStorage.getItem('view') || (bridgeKey() ? 'portfolio' : 'orders'); } catch { /* no storage */ }
 showView(firstView);
 
 
