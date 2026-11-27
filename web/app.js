@@ -534,6 +534,14 @@ let bridgeOk = false;
 function showView(v) {
   if (v === 'portfolio') v = 'broker';  // the portfolio is part of the account section
   if (!VIEWS.includes(v)) v = 'orders';
+  // The market buttons only where a section shows one market: in the header for the market's sections, beside the
+  // account's orders (its positions are every market's), none for About.
+  const sw = document.querySelector('.market-switch');
+  if (sw) {
+    if (v === 'broker') $('account-market-slot').append(sw);
+    else $('header-market-slot').after(sw);
+    sw.hidden = v === 'about';
+  }
   const item = document.querySelector(`.views button[data-view="${v}"] b`);
   if (item) $('menu-current').textContent = item.textContent;
   menuOpen(false);
