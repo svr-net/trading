@@ -877,6 +877,74 @@ final class Auto {
         }
         ibdiag = d;
         ibdiagAt = System.nanoTime();
+        try {
+            WATCH = new Object[] {System.nanoTime(), watch(d)};
+        } catch (RuntimeException e) {
+            err("account watch: " + e.getMessage());
+        }
+    }
+
+    static volatile Object[] WATCH;  // {when (nanos), {ok, the items}}: the account watch, with every IBKR check (5 minutes)
+
+    /**
+     * The account watch, on every IBKR check: what at IBKR the bridge did not expect. A position in no book (bought by
+     * hand, or lost); a same-day market's position held from an earlier day (a leftover the open did not sell); an open
+     * order the bridge did not place; an order IBKR refused today. ok: true (nothing), false (each item listed).
+     */
+    @SuppressWarnings("unchecked")
+    static Object[] watch(Map<String, Object> d) {
+        List<String> items = new ArrayList<>();
+        if (!Boolean.TRUE.equals(d.get("api"))) return new Object[] {null, List.of("IBKR not reachable: not checked")};
+        Set<String> atIbkr = new LinkedHashSet<>();
+        if (d.get("positions") instanceof List)
+            for (Object o : (List<Object>) d.get("positions")) if (o instanceof Map) atIbkr.add(String.valueOf(((Map<String, Object>) o).get("symbol")));
+        Set<String> anyBook = new LinkedHashSet<>();
+        for (String m : AUTO) {
+            Map<String, Object> st;
+            try {
+                if (!Files.exists(holdState(m))) continue;
+                st = JsonParse.object(Files.readString(holdState(m), StandardCharsets.UTF_8));
+            } catch (IOException | RuntimeException e) {
+                items.add(m + ": its book unreadable (" + e.getMessage() + ")");
+                continue;
+            }
+            Map<String, Object> pos = st.get("positions") instanceof Map ? (Map<String, Object>) st.get("positions") : Map.of();
+            anyBook.addAll(pos.keySet());
+            if (st.get("plans") instanceof Map) for (String s : ((Map<String, Object>) st.get("plans")).keySet()) if (atIbkr.contains(s)) anyBook.add(s);
+            boolean sameDay;
+            try {
+                Map<String, Object> book = diagMemo("orders-" + m, () -> orders(m));
+                sameDay = book.get("days") instanceof Number && ((Number) book.get("days")).intValue() == 1;
+            } catch (IOException | RuntimeException e) {
+                sameDay = false;
+            }
+            if (sameDay) {
+                List<String> old = new ArrayList<>();
+                for (Map.Entry<String, Object> e : pos.entrySet()) {
+                    Object since = e.getValue() instanceof Map ? ((Map<String, Object>) e.getValue()).get("since") : null;
+                    if (atIbkr.contains(e.getKey()) && since != null && String.valueOf(since).compareTo(today(m)) < 0) old.add(e.getKey() + " (since " + since + ")");
+                }
+                if (!old.isEmpty()) items.add(m + ": held from an earlier day in a same-day market (a leftover): " + String.join(", ", old));
+            }
+        }
+        List<String> none = new ArrayList<>();
+        for (String s : atIbkr) if (!anyBook.contains(s)) none.add(s);
+        if (!none.isEmpty()) items.add("at IBKR, in no book (bought by hand, or lost): " + String.join(", ", none));
+        if (d.get("openOrders") instanceof List) {
+            List<String> foreign = new ArrayList<>();
+            for (Object o : (List<Object>) d.get("openOrders")) {
+                Map<String, Object> t = o instanceof Map ? (Map<String, Object>) o : Map.of();
+                String ref = t.get("ref") == null ? "" : String.valueOf(t.get("ref"));
+                if (!ref.startsWith("ofm-")) foreign.add(t.get("action") + " " + t.get("symbol") + " " + t.get("type"));
+            }
+            if (!foreign.isEmpty()) items.add("open orders the bridge did not place: " + String.join(", ", foreign));
+        }
+        if (d.get("refused") instanceof List && !((List<Object>) d.get("refused")).isEmpty()) {
+            List<String> r = new ArrayList<>();
+            for (Object o : (List<Object>) d.get("refused")) if (o instanceof Map) r.add(((Map<String, Object>) o).get("action") + " " + ((Map<String, Object>) o).get("symbol") + " (" + ((Map<String, Object>) o).get("ref") + ")");
+            items.add("orders IBKR refused today: " + String.join(", ", r));
+        }
+        return new Object[] {items.isEmpty(), items};
     }
 
     /** The IBKR check is due: every 5 minutes, every minute while it last failed (IB Gateway still logging in after a start). */
@@ -1259,6 +1327,12 @@ final class Auto {
             add.accept(m0 + " historical data", new Object[] {hb > 0, hb + " daily bars" + (d.get("historyError") != null ? " (" + d.get("historyError") + ")" : "")});
             if (!errs.isEmpty()) add.accept("IBKR messages", new Object[] {null, String.join(" | ", errs)});
             if (d.get("positions") instanceof List) add.accept("Books against IBKR", inSync((List<Object>) d.get("positions")));
+            Object[] w = WATCH;
+            if (w != null) {
+                Object[] r = (Object[]) w[1];
+                List<String> items = (List<String>) r[1];
+                add.accept("Account watch", new Object[] {r[0], items.isEmpty() ? "nothing unexpected at IBKR: every position in a book, no leftover, no order the bridge did not place, none refused today (checked " + ago((long) w[0]) + " s ago)" : String.join("; ", items)});
+            }
             else if (d.get("positionsError") != null) add.accept("Books against IBKR", new Object[] {null, "not checked: IBKR's positions did not come (" + d.get("positionsError") + "); next check in 5 minutes"});
         }
         List<String> plan = new ArrayList<>();

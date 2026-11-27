@@ -210,3 +210,10 @@ td.sym:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .market-switch[hidden] { display: none; }
 #account-market-slot .market-switch { margin: 4px 0 8px; }
 #account-market-slot .market-switch [data-market="forex"] { display: none; }  /* research only: never traded */
+/* The account watch: what at IBKR the bridge did not expect. */
+.watch-alert { display: grid; gap: 4px; margin: 8px 0; padding: 10px 14px; border: 1px solid #c0392b; border-left-width: 4px; border-radius: 8px; background: rgba(192, 57, 43, .08); font-size: 14px; }
+.watch-alert[hidden] { display: none; }
+.views a.menu-link { display: grid; gap: 1px; padding: 9px 12px; border-left: 3px solid var(--accent); border-radius: 6px; color: var(--ink); text-decoration: none; }
+.views a.menu-link b { font: 600 14px var(--body); }
+.views a.menu-link small { font-size: 12px; color: var(--muted); }
+.views a.menu-link:hover { background: var(--bg); }

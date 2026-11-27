@@ -375,6 +375,34 @@ final class Recordings {
             } catch (RuntimeException e) {
                 out.put("positionsError", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
+            // the open orders (the account watch: an order the bridge did not place) and today's refused ones
+            try {
+                List<Map<String, Object>> oo = new ArrayList<>();
+                for (Broker.Ord od : ib.openOrders()) {
+                    if (od.dead()) continue;
+                    Map<String, Object> h = new LinkedHashMap<>();
+                    h.put("symbol", od.share().symbol());
+                    h.put("ref", od.ref());
+                    h.put("action", od.action());
+                    h.put("type", od.type());
+                    oo.add(h);
+                }
+                out.put("openOrders", oo);
+                String day = java.time.LocalDate.now(ZoneOffset.UTC).toString();
+                List<Map<String, Object>> refused = new ArrayList<>();
+                for (Broker.Ord od : ib.completedOrders()) {
+                    if (!"Inactive".equals(od.status()) || od.ref() == null || !od.ref().contains(day)) continue;
+                    Map<String, Object> h = new LinkedHashMap<>();
+                    h.put("symbol", od.share().symbol());
+                    h.put("ref", od.ref());
+                    h.put("action", od.action());
+                    h.put("type", od.type());
+                    refused.add(h);
+                }
+                out.put("refused", refused);
+            } catch (RuntimeException e) {
+                out.put("ordersError", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            }
             List<String> errs = new ArrayList<>();
             for (String n : ib.notes()) if (!n.startsWith("reader")) errs.add(n);
             out.put("errors", errs.subList(Math.max(0, errs.size() - 5), errs.size()));

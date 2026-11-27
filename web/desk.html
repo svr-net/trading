@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trading Desk</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css?v=84">
+<link rel="stylesheet" href="desk.css?v=1">
+</head>
+<body class="desk">
+<div class="desk-wrap">
+  <header class="desk-top">
+    <div class="desk-brand">
+      <h1>Trading desk</h1>
+      <span class="pill" id="conn" data-state="unknown">Connecting…</span>
+    </div>
+    <nav class="desk-nav">
+      <a href="index.html">Daily Trades</a>
+      <button type="button" id="settings-open" class="ghost">Bridge</button>
+    </nav>
+  </header>
+
+  <div class="watch-alert" id="alerts" hidden></div>
+
+  <section class="tiles desk-tiles" id="account" aria-label="Account"></section>
+
+  <section class="markets" id="markets" aria-label="Markets"></section>
+
+  <main class="desk-grid">
+    <section class="card" aria-labelledby="pos-title">
+      <div class="card-head"><h2 id="pos-title">Positions</h2><span class="muted small" id="pos-note"></span></div>
+      <div class="table-scroll"><table id="positions"></table></div>
+    </section>
+
+    <section class="card" aria-labelledby="mkt-title">
+      <div class="card-head"><h2 id="mkt-title">Market</h2><span class="muted small" id="mkt-note"></span></div>
+      <h3>Today</h3>
+      <div class="table-scroll"><table id="today"></table></div>
+      <h3>Next session</h3>
+      <p class="muted small" id="next-note"></p>
+      <div class="table-scroll"><table id="next"></table></div>
+      <div class="actions">
+        <button type="button" data-act="/place" data-dry="1">Check (dry run)</button>
+        <button type="button" data-act="/place" class="primary">Place orders</button>
+        <button type="button" data-act="/close">Close at the close</button>
+        <button type="button" data-act="/liquidate" class="danger">Sell leftovers now</button>
+        <button type="button" data-act="/report">Record results</button>
+      </div>
+    </section>
+
+    <section class="card wide" id="chart-card" hidden aria-labelledby="chart-title">
+      <div class="card-head"><h2 id="chart-title">Chart</h2><button type="button" class="ghost" id="chart-close">Close</button></div>
+      <canvas id="chart" height="320"></canvas>
+      <p class="muted small" id="chart-note"></p>
+    </section>
+
+    <section class="card wide" aria-labelledby="log-title">
+      <div class="card-head"><h2 id="log-title">Activity</h2></div>
+      <ol class="log" id="log"></ol>
+    </section>
+  </main>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" class="settings-form">
+    <h2>Bridge</h2>
+    <p class="muted small">The bridge on your NAS (docker/ibkr/ibkr-nas.sh). The address and key are kept in this browser only, shared with the Daily Trades page.</p>
+    <label>Address <input id="set-url" type="url" autocomplete="off" placeholder="https://your-bridge:8765"></label>
+    <label>Key <input id="set-key" type="password" autocomplete="off" placeholder="the BRIDGE_KEY of your bridge"></label>
+    <div class="actions"><button value="cancel" class="ghost">Cancel</button><button id="set-save" value="save" class="primary">Save</button></div>
+  </form>
+</dialog>
+
+<script src="desk.js?v=1" type="module"></script>
+</body>
+</html>
