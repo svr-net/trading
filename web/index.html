@@ -25,6 +25,7 @@
     <nav class="views" aria-label="Sections">
       <button type="button" data-view="orders" aria-current="page">Orders</button>
       <button type="button" data-view="results">Results</button>
+      <button type="button" data-view="portfolio">Portfolio</button>
       <button type="button" data-view="backtest">Backtest</button>
       <button type="button" data-view="broker">Broker</button>
       <button type="button" data-view="lab">Lab</button>
@@ -54,6 +55,14 @@
     <p class="muted" id="broker-summary"></p>
     <div id="broker-history" class="days"></div>
     <p class="hint"><b>Return (model)</b>: your trade's return after costs, and what the model expected for it. <b>Paid vs model</b>: how much more (red) or less (green) you paid than the price the model assumed. <b>Profit (fees)</b>: Interactive Brokers' realised profit and the commissions.</p>
+  </section>
+
+  <section class="view" id="view-portfolio" hidden aria-labelledby="portfolio-title">
+    <h2 id="portfolio-title">Portfolio at Interactive Brokers <button type="button" id="portfolio-refresh" class="small">Refresh</button></h2>
+    <p class="muted" id="portfolio-summary">Connect your bridge under <a href="#broker" data-go="broker">Broker</a> to see your whole account here.</p>
+    <div class="tiles" id="portfolio-account"></div>
+    <div class="table-scroll"><table id="portfolio"></table></div>
+    <p class="hint">Every position in the account, in any market, whether the strategy bought it or not, live from IBKR through the bridge (refreshed every minute while this tab is open). <b>Value</b>: shares times IBKR's current price, in the share's currency. <b>Open profit</b>: against the average cost. UK prices are in pence.</p>
   </section>
 
   <section class="view" id="view-backtest" hidden aria-labelledby="past-title">

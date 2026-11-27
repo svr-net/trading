@@ -182,6 +182,18 @@ public final class Bridge {
             case "/java" -> reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
             case "/diag" -> reply(x, 200, Json.obj("checks", Auto.diag()));
             case "/history" -> reply(x, 200, Json.obj("days", Book.history()));
+            case "/portfolio" -> {  // the whole account at IBKR, from the background's latest read (keyed: positions and money)
+                Object[] hit = Auto.PORTFOLIO;
+                if (hit == null || Auto.ago((long) hit[0]) >= 55) Auto.readOnce("portfolio", Auto::readPortfolio);
+                if (hit == null) {
+                    reply(x, 202, Json.obj("error", Auto.PORTFOLIO_NOTE.isEmpty() ? "being read from IBKR: ask again in a minute" : Auto.PORTFOLIO_NOTE, "positions", List.of()));
+                    return;
+                }
+                @SuppressWarnings("unchecked") Map<String, Object> out = new java.util.LinkedHashMap<>((Map<String, Object>) hit[1]);
+                out.put("age", Auto.ago((long) hit[0]));
+                out.put("note", Auto.PORTFOLIO_NOTE);
+                reply(x, 200, Json.write(out));
+            }
             case "/orders" -> orders(x);
             case "/trades" -> {  // the live state of today's trades and the model's holdings, from the background's latest read
                 String m = market(x, q.get("market"));

@@ -521,7 +521,7 @@ function drawOHLC(bars, o, n) {
     + (exit != null ? legendKey(col('--good'), 'exit') : '') + (stopAt != null ? legendKey(col('--bad'), 'stop') : '');
 }
 // The sections, one at a time (the menu; #orders, #results, ... in the address, remembered).
-const VIEWS = ['orders', 'results', 'backtest', 'broker', 'lab', 'about'];
+const VIEWS = ['orders', 'results', 'portfolio', 'backtest', 'broker', 'lab', 'about'];
 let bridgeOk = false;
 function showView(v) {
   if (!VIEWS.includes(v)) v = 'orders';
@@ -532,6 +532,7 @@ function showView(v) {
   if (v === 'backtest' && shown) drawChart(shown);  // a hidden canvas has no width
   if ((v === 'results' || v === 'broker') && !bridgeOk) brokerProbe(true);
   if (typeof todayLoop === 'function') todayLoop(v === 'results' && bridgeOk);
+  if (typeof portfolioLoop === 'function') portfolioLoop(v === 'portfolio');
 }
 for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => showView(b.dataset.view));
 document.addEventListener('click', (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); showView(a.dataset.go); } });
@@ -778,8 +779,9 @@ function brokerHistory() {
     }
     const box = $('broker-history');
     box.replaceChildren();
-    const dates = Object.keys(perDay).sort().reverse();
-    if (!dates.length) box.append(cell('p', 'Nothing yet: each trading day appears here once it is over.', 'muted'));
+    // days with no order placed and nothing bought are left out (weekends' and quiet days' empty folds)
+    const dates = Object.keys(perDay).filter((x) => perDay[x].orders > 0 || perDay[x].bought > 0).sort().reverse();
+    if (!dates.length) box.append(cell('p', 'Nothing yet: each trading day with an order appears here once it is over.', 'muted'));
     for (const date of dates) {
       const day = perDay[date];
       const money = Object.entries(day.pnl).map(([c, v]) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} ${c}`).join(', ');
@@ -809,6 +811,50 @@ function brokerHistory() {
       : '';
   }).catch(() => { /* an older bridge without history */ });
 }
+// The whole account at IBKR (GET /portfolio): every position and the account's values, refreshed every minute.
+let portfolioTimer = null;
+function brokerPortfolio() {
+  if (!bridgeKey()) return;
+  $('portfolio-summary').textContent = 'Asking Interactive Brokers…';
+  bridge('/portfolio').then((p) => {
+    if (!p.positions || (p.error && !p.positions.length && !p.account)) {
+      $('portfolio-summary').textContent = p.error || 'Being read from Interactive Brokers: in a minute.';
+      setTimeout(() => { if (!$('view-portfolio').hidden) brokerPortfolio(); }, 20000);
+      return;
+    }
+    const num = (x, d = 2) => (x == null || Number.isNaN(+x) ? '' : (+x).toLocaleString('en-GB', { minimumFractionDigits: d, maximumFractionDigits: d }));
+    const cls = (x) => (x > 0 ? 'num pos' : x < 0 ? 'num neg' : 'num');
+    const acct = p.account || {};
+    const pick = (k) => Object.entries(acct).filter(([key]) => key === k || key.startsWith(`${k}:`)).find(([key]) => !key.endsWith(':BASE')) || Object.entries(acct).find(([key]) => key.startsWith(`${k}:`));
+    const tiles = [['NetLiquidation', 'Net liquidation'], ['TotalCashValue', 'Cash'], ['GrossPositionValue', 'Positions'], ['UnrealizedPnL', 'Open profit'], ['RealizedPnL', 'Realised profit (today)'], ['BuyingPower', 'Buying power']];
+    const box = $('portfolio-account');
+    box.replaceChildren();
+    for (const [k, label] of tiles) {
+      const hit = pick(k);
+      if (!hit) continue;
+      const cur = hit[0].includes(':') ? hit[0].split(':')[1] : '';
+      const t = document.createElement('div');
+      t.className = 'tile';
+      t.append(cell('span', label, 'k'), cell('span', `${num(hit[1])} ${cur}`.trim(), `v ${/PnL/.test(k) ? cls(+hit[1]) : ''}`));
+      box.append(t);
+    }
+    const rows = [...p.positions].sort((a, b) => (a.currency + a.symbol).localeCompare(b.currency + b.symbol));
+    table($('portfolio'), [['Share'], ['Exchange'], ['Shares', 'num'], ['Avg cost', 'num'], ['Price', 'num'], ['Value', 'num'], ['Open profit', 'num']],
+      rows.length ? rows.map((r) => [[r.symbol], [r.exchange || ''], [num(r.qty, 0), 'num'], [num(r.avgCost, 3), 'num'], [num(r.price, 3), 'num'],
+        [`${num(r.value)} ${r.currency}`, 'num'], [`${num(r.unrealized)} ${r.currency}`, cls(r.unrealized)]]) : [{ gap: 'No positions: everything is in cash.' }]);
+    const byCur = {};
+    for (const r of rows) byCur[r.currency] = (byCur[r.currency] || 0) + r.unrealized;
+    $('portfolio-summary').textContent = `${rows.length} position${rows.length === 1 ? '' : 's'}` + (Object.keys(byCur).length ? ` · open profit ${Object.entries(byCur).map(([c, v]) => `${v >= 0 ? '+' : ''}${num(v)} ${c}`).join(', ')}` : '') + (p.age != null ? ` · read ${p.age} s ago` : '') + (p.note ? ` · ${p.note}` : '');
+  }).catch(() => { $('portfolio-summary').textContent = 'The bridge did not answer (an older bridge has no portfolio: run ibkr-nas.sh to update it).'; });
+}
+function portfolioLoop(on) {
+  if (portfolioTimer) clearInterval(portfolioTimer);
+  portfolioTimer = null;
+  if (!on) return;
+  brokerPortfolio();
+  portfolioTimer = setInterval(() => { if (!document.hidden) brokerPortfolio(); }, 60000);
+}
+$('portfolio-refresh').addEventListener('click', brokerPortfolio);
 $('broker-report').addEventListener('click', () => brokerAct('/report', { market: brokerMarket() }));
 $('broker-close').addEventListener('click', () => brokerAct('/close', { market: brokerMarket() }, `Cancel today's unfilled ${brokerMarket()} orders and sell what is left at the close?`));
 for (const b of document.querySelectorAll('.market-switch button')) b.addEventListener('click', () => { if (bridgeOk) { brokerOrders(); if (!$('view-results').hidden) brokerToday(); } });

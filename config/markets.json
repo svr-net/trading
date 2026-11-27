@@ -4,8 +4,6 @@
     "UK": {
       "live": {
         "args": [
-          "--resample-runs",
-          "5",
           "--account",
           "config/account.json",
           "--pricing",
@@ -40,8 +38,6 @@
     "EU": {
       "live": {
         "args": [
-          "--resample-runs",
-          "5",
           "--account",
           "config/account.json",
           "--pricing",
