@@ -96,10 +96,10 @@
      "mcnnstep": 5,
      "mcselect": 1,
      "mcreuse": 0.1,
-     "combobracket": 2,
      "staleopen": 1,
      "rebuyday": 1,
-     "stopslip": 0.1
+     "stopslip": 0.1,
+     "tradebracket": 1
     }
    }
   ]
