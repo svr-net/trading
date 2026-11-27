@@ -1,5 +1,5 @@
 {
- "checked": "2026-11-27T12:41Z",
+ "checked": "2026-11-27T13:14Z",
  "reachable": true,
  "accepts": true,
  "refusal": null,
@@ -7,27 +7,27 @@
   "UK": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-27T12:41:45Z"
+   "at": "2026-11-27T13:13:45Z"
   },
   "EU": {
    "auto": true,
    "held": 3,
-   "at": "2026-11-27T12:41:45Z"
+   "at": "2026-11-27T13:13:46Z"
   },
   "US": {
    "auto": true,
    "held": 4,
-   "at": "2026-11-27T12:21:09Z"
+   "at": "2026-11-27T12:42:00Z"
   },
   "APAC": {
    "auto": true,
    "held": 0,
-   "at": "2026-11-27T12:21:09Z"
+   "at": "2026-11-27T12:42:01Z"
   },
   "INDEX": {
    "auto": true,
    "held": 4,
-   "at": "2026-11-27T12:41:45Z"
+   "at": "2026-11-27T13:13:46Z"
   }
  },
  "gateway": true,
