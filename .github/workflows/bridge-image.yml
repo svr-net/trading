@@ -14,6 +14,8 @@ on:
       - 'tools/ibkr/java-test/**'
       - 'docker/ibkr/Dockerfile.ibkr'
       - 'docker/ibkr/ibkr-start.sh'
+      - 'docker/ibkr/gateway-run.sh'
+      - 'docker/ibkr/slim-rootfs.sh'
       - '.github/workflows/bridge-image.yml'
 permissions:
   contents: write   # the nas-images release
