@@ -14,9 +14,6 @@ on:
       - 'tools/ibkr/java-test/**'
       - 'docker/ibkr/Dockerfile.ibkr'
       - 'docker/ibkr/ibkr-start.sh'
-      - 'docker/ibkr/gateway-run.sh'
-      - 'docker/ibkr/Dockerfile.nas'
-      - 'docker/ibkr/slim-rootfs.sh'
       - '.github/workflows/bridge-image.yml'
 permissions:
   contents: write   # the nas-images release
@@ -110,36 +107,6 @@ jobs:
               docker image rm -f "ghcr.io/svr-net/$name@$digest" "ghcr.io/svr-net/$name:latest" >/dev/null
             done
           done
-          # The same image in two parts for a NAS without the registry (ibkr-nas.sh): the base (the system and IB
-          # Gateway, named by its layers, so a NAS downloads it only when it changed) and the bridge's few files
-          # (bridge.jar, its scripts and Dockerfile.nas, from which the NAS makes the image by copying only).
-          for arch in amd64 arm64; do
-            docker buildx build --platform "linux/$arch" --target base --cache-from type=gha,scope=trading-ibkr \
-              -f docker/ibkr/Dockerfile.ibkr -t trading-ibkr-base:build --load .
-            key=$(docker image inspect -f '{{json .RootFS.Layers}}' trading-ibkr-base:build | sha256sum | cut -c1-12)
-            docker tag trading-ibkr-base:build "trading-ibkr-base:$key"
-            docker save "trading-ibkr-base:$key" | gzip -6 > "out/trading-ibkr-base-$arch.tar.gz"
-            echo "$key" > "out/trading-ibkr-base-$arch.key"
-            docker image rm -f trading-ibkr-base:build "trading-ibkr-base:$key" >/dev/null
-            echo "base $arch: $key"
-          done
-          mkdir -p bridge
-          c=$(docker create --platform linux/amd64 "ghcr.io/svr-net/trading-ibkr:${{ steps.v.outputs.sha }}")
-          docker cp "$c:/app/bridge.jar" bridge/bridge.jar && docker rm "$c" >/dev/null
-          cp docker/ibkr/ibkr-start.sh bridge/ibkr-start.sh && cp docker/ibkr/gateway-run.sh bridge/run.sh
-          cp docker/ibkr/Dockerfile.nas bridge/Dockerfile && echo "${{ steps.v.outputs.sha }}" > bridge/VERSION
-          chmod 644 bridge/bridge.jar bridge/Dockerfile bridge/VERSION && chmod 755 bridge/ibkr-start.sh bridge/run.sh
-          tar czf out/trading-ibkr-bridge.tar.gz -C bridge .
-          # The NAS's way, checked here: the amd64 base loaded, the image made from it and the bridge's files with
-          # Docker's classic builder (a Synology's), the same files and version as the registry's image
-          key=$(cat out/trading-ibkr-base-amd64.key)
-          gunzip -c out/trading-ibkr-base-amd64.tar.gz | docker load -q
-          mkdir -p nascheck && tar xzf out/trading-ibkr-bridge.tar.gz -C nascheck
-          a=(--build-arg "BASE=trading-ibkr-base:$key" --build-arg "VERSION=$(cat nascheck/VERSION)" -t nas-made nascheck)
-          DOCKER_BUILDKIT=0 docker build -q "${a[@]}" || { echo "no classic builder on this runner: BuildKit"; docker build -q "${a[@]}"; }
-          docker run --rm --entrypoint /bin/bash nas-made -c 'test -f /app/bridge.jar && test -x /app/ibkr-start.sh && test -x /app/scripts/run.sh && test -x /app/java && echo "made on the NAS: bridge $BRIDGE_VERSION"' | grep -q "bridge ${{ steps.v.outputs.sha }}"
-          [ "$(docker image inspect -f '{{json .Config.Cmd}}' nas-made)" = '["/app/ibkr-start.sh"]' ]
-          docker image rm -f nas-made "trading-ibkr-base:$key" >/dev/null
           ls -l out
       - name: The nas-images release
         if: steps.v.outputs.main
@@ -150,4 +117,4 @@ jobs:
           note="The NAS's images, built from ${{ steps.v.outputs.sha }} (docker/ibkr/ibkr-nas.sh downloads them when the registry does not answer)."
           gh release view nas-images >/dev/null 2>&1 || gh release create nas-images --title "NAS images" --notes "$note" --latest=false
           gh release edit nas-images --notes "$note"
-          gh release upload nas-images out/*.tar.gz out/*.key --clobber
+          gh release upload nas-images out/*.tar.gz --clobber
