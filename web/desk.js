@@ -21,7 +21,7 @@ const bridge = (path, body) => fetch(bridgeUrl() + path, {
   body: body ? JSON.stringify(body) : undefined,
 }).then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok && !j.log && !j.items && !j.positions) throw new Error(j.error || `HTTP ${r.status}`); return j; });
 
-const state = { market: stored('deskMarket', 'UK'), status: null, portfolio: null, watch: null, trades: {}, next: {}, chart: null };
+const state = { market: stored('deskMarket', 'UK'), status: null, portfolio: null, watch: null, trades: {}, next: {}, shadow: {}, chart: null };
 if (!MARKETS.includes(state.market)) state.market = 'UK';
 
 // ---- small helpers
@@ -80,7 +80,7 @@ function renderMarkets() {
       const b = el('button', null, 'mkt');
       b.type = 'button';
       b.dataset.m = m;
-      b.addEventListener('click', () => { state.market = m; store('deskMarket', m); renderMarkets(); renderMarket(); refreshTrades(m); });
+      b.addEventListener('click', () => { state.market = m; store('deskMarket', m); renderMarkets(); renderMarket(); refreshTrades(m); refreshShadow(m); });
       box.append(b);
     }
   }
@@ -163,13 +163,40 @@ function renderMarket() {
         [r.sold ? `${num(r.sold, 0)} @ ${num(r.sell, 3)}` : '–', 'num'], [r.held ? num(r.held, 0) : '–', 'num'], [r.bought || r.held ? `${signed(pnl)} ${r.currency || ''}` : '–', `num ${tone(pnl)}`]];
     }), t ? (t.error || 'Nothing traded today.') : 'Reading today from IBKR…');
   const nx = state.next[m];
-  $('next-note').textContent = nx ? `After the close of ${nx.asOf || '?'}, ranked by the chance of a gain after costs (from each share's own last 250 sessions).` : 'Loading…';
+  $('next-note').textContent = nx ? `After the close of ${nx.asOf || '?'}, ranked by the chance of a gain after costs (calibrated on the strategy's earlier signals).` : 'Loading…';
+  renderShadow();
   const bar = (p) => { const s = el('span', null, 'prob'); const b = el('span', null, 'bar'); const i = el('i'); i.style.width = `${Math.round(100 * (p || 0))}%`; b.append(i); s.append(b, el('span', p == null ? '–' : `${Math.round(100 * p)}%`)); return s; };
   table($('next'), [['Share'], ['Buy', 'num'], ['Take-profit', 'num'], ['Stop-loss', 'num'], ['Buy-back', 'num'], ['P(net gain)'], ['Expected', 'num']],
     (nx?.orders || []).map((o) => [[o.ticker, '', () => openChart([m], o.ticker, o)],
       [`${o.limit == null ? 'open' : pct(o.limit, 1)} ${o.entryDay ? 'all day' : 'auction'}`, 'num'], [o.takeRel == null ? 'none' : pct(o.takeRel, 1), 'num pos'],
       [o.stopRel == null ? 'none' : pct(o.stopRel, 1), 'num neg'], [o.rebuyRel == null ? 'none' : pct(o.rebuyRel, 1), 'num'], [bar(o.probs?.final)], [pct(o.expected, 2), `num ${tone(o.expected)}`]]),
     nx ? 'No trade for the next session: none expected to gain after its costs.' : 'Loading…');
+}
+
+// ---- shadow mode (GET /shadow): every 5 minutes of the session, each of the day's orders in its state and what the learnt
+// intraday policy would do there. Recorded only: no order is changed.
+const ACTIONS = { hold: 'hold', keep: 'keep the order', sell: 'sell now', even: 'stop to the buy price', trail0_5: 'trail the stop ½ σ', trail1_0: 'trail the stop 1 σ', notake: 'drop the take-profit', cancel: 'cancel the order', buy: 'buy now' };
+const actionName = (a) => ACTIONS[String(a || '').replace('.', '_')] || a || '–';
+function renderShadow() {
+  const m = state.market, sh = state.shadow[m];
+  if (!sh) { $('shadow-note').textContent = bridgeKey() ? 'Reading…' : 'Set your bridge to see the checks.'; table($('shadow'), [['Share']], [], ''); return; }
+  if (sh.error) { $('shadow-note').textContent = `Not read: ${sh.error}`; table($('shadow'), [['Share']], [], ''); return; }
+  const rows = sh.rows || [], last = new Map(), acted = new Map();
+  for (const r of rows) {
+    last.set(r.ticker, r);
+    if (r.action && !['hold', 'keep'].includes(r.action)) acted.set(r.ticker, [...(acted.get(r.ticker) || []), `${r.time} ${actionName(r.action)}`]);
+  }
+  $('shadow-note').textContent = `${sh.hasPolicy ? 'What the learnt policy would do (recorded only, nothing changed)' : `No policy for ${m} yet: the states are recorded for learning`}. ${sh.note || ''}`.trim();
+  const sig = (x) => (x == null ? '–' : `${x >= 0 ? '+' : ''}${(+x).toFixed(2)} σ`);
+  table($('shadow'), [['Share'], ['At', 'num'], ['State'], ['Move', 'num'], ['Now'], ['Earlier today']],
+    [...last.values()].map((r) => [[r.ticker], [r.time || '', 'num'], [r.status || ''], [sig(r.moveSigma ?? r.gapSigma), 'num'],
+      [actionName(r.action), ['hold', 'keep', undefined].includes(r.action) ? '' : 'neg'], [(acted.get(r.ticker) || []).slice(-3).join(' · ') || '–']]),
+    `No check today yet (every 5 minutes of the ${m} session).`);
+}
+async function refreshShadow(m) {
+  if (!bridgeKey()) return;
+  try { state.shadow[m] = await bridge(`/shadow?market=${m}`); } catch (e) { state.shadow[m] = { error: e.message }; }
+  if (m === state.market) renderShadow();
 }
 
 // ---- the chart: daily bars from IBKR (through the bridge), the order's levels on it
@@ -372,6 +399,7 @@ async function refreshNext() {
 function refreshAll() {
   refreshStatus(); refreshAccount(); refreshNext();
   for (const m of MARKETS) refreshTrades(m);
+  refreshShadow(state.market);
 }
 
 renderMarkets(); renderMarket(); renderAccount(); renderPositions();
@@ -381,4 +409,5 @@ refreshAll();
 setInterval(() => { if (!document.hidden) renderMarkets(); }, 15000);
 setInterval(() => { if (!document.hidden) { refreshStatus(); refreshAccount(); } }, 60000);
 setInterval(() => { if (!document.hidden) for (const m of MARKETS) refreshTrades(m); }, 60000);
+setInterval(() => { if (!document.hidden) refreshShadow(state.market); }, 60000);
 setInterval(() => { if (!document.hidden) refreshNext(); }, 10 * 60000);

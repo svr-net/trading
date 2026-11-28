@@ -1,0 +1,135 @@
+{
+ "about": "The intraday policy for shadow mode (tools/intraday_policy.py): for each market, at each 5-minute check, the action that beat holding (keeping) on the earlier years by more than twice its standard error; states without one hold. The bridge records what it would do; it changes no order.",
+ "markets": {
+  "US": {
+   "learnt": "2026-11-28",
+   "orders": 6630,
+   "every": 1,
+   "zBuckets": [
+    -1.5,
+    -0.75,
+    -0.25,
+    0.25,
+    0.75,
+    1.5
+   ],
+   "gapBuckets": [
+    0.25,
+    0.5,
+    1.0,
+    2.0
+   ],
+   "test": {
+    "trades": 3251,
+    "bracket": 0.0005280258599070856,
+    "adjusted": 0.0006741352970632805
+   },
+   "states": [
+    {
+     "kind": "pos",
+     "check": 2,
+     "bucket": 5,
+     "action": "notake"
+    },
+    {
+     "kind": "pos",
+     "check": 19,
+     "bucket": 0,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 21,
+     "bucket": 0,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 61,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 62,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 63,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 64,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 65,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 66,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 67,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 68,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 69,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 70,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 71,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "pos",
+     "check": 72,
+     "bucket": 4,
+     "action": "sell"
+    },
+    {
+     "kind": "wait",
+     "check": 0,
+     "bucket": 0,
+     "dayEntry": true,
+     "action": "cancel"
+    },
+    {
+     "kind": "wait",
+     "check": 35,
+     "bucket": 2,
+     "dayEntry": true,
+     "action": "cancel"
+    }
+   ]
+  }
+ }
+}

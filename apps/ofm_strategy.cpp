@@ -46,6 +46,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <filesystem>
 #ifndef __EMSCRIPTEN__
 #include <unistd.h>
 #endif
@@ -526,6 +527,13 @@ double sigmoidOf(const std::vector<double>& w, const std::vector<double>& x) {
   double z = 0;
   for (std::size_t a = 0; a < w.size() && a < x.size(); ++a) z += w[a] * x[a];
   return 1 / (1 + std::exp(-z));
+}
+
+// FNV-1a, 64 bits: the learn cache's fingerprints
+std::uint64_t fnv(std::uint64_t h, const void* p, std::size_t n) {
+  const auto* b = static_cast<const unsigned char*>(p);
+  for (std::size_t k = 0; k < n; ++k) h = (h ^ b[k]) * 1099511628211ull;
+  return h;
 }
 
 std::string jnum(double x, const char* f = "%.6g") {
@@ -1375,13 +1383,59 @@ int main(int argc, char** argv) {
   std::unordered_map<std::size_t, std::array<double, 9>> tradeMemo;
   std::vector<double> tradeAs, tradeBs, tradeEs;  // the multiples learnt for the trades placed (the report)
   std::size_t tradeDayEntries = 0;
+  // OFM_LEARN_CACHE (a folder): each trade's learnt buy and bracket kept from earlier runs, under the fingerprint of
+  // everything it is learnt from (the share's bars and volatility over its window, the days' years for the order
+  // model, every parameter, the order size, the order model): an evening's scan learns only its new day, the rest
+  // read back (the same numbers: any change in the bars or the settings is another fingerprint, learnt again). One
+  // file per configuration (the run's settings), written whole at the end (a temporary file renamed).
+  const char* lcDir = std::getenv("OFM_LEARN_CACHE");
+  const bool lcOn = tradeBr && lcDir && *lcDir && !(regK && regStop);
+  std::uint64_t lcGlobal = 1469598103934665603ull;
+  std::unordered_map<std::uint64_t, std::array<double, 9>> lcOld, lcNew;
+  std::string lcPath;
+  std::size_t lcHits = 0, lcMiss = 0;
+  if (lcOn) {
+    const std::string ver = "tradelv-1";
+    lcGlobal = fnv(lcGlobal, ver.data(), ver.size());
+    for (const auto& [pk, pv] : P) lcGlobal = fnv(fnv(lcGlobal, pk.data(), pk.size()), &pv, sizeof pv);
+    lcGlobal = fnv(fnv(lcGlobal, &o.capital, sizeof o.capital), &unit, sizeof unit);
+    for (const auto& [yr, w] : orderW) lcGlobal = fnv(fnv(lcGlobal, &yr, sizeof yr), w.data(), sizeof(double) * w.size());
+    char hx[32];
+    std::snprintf(hx, sizeof hx, "%016llx", static_cast<unsigned long long>(lcGlobal));
+    lcPath = std::string(lcDir) + "/tradelv-" + hx + ".bin";
+    if (std::FILE* f = std::fopen(lcPath.c_str(), "rb")) {
+      std::uint64_t ck;
+      std::array<double, 9> cv;
+      while (std::fread(&ck, sizeof ck, 1, f) == 1 && std::fread(cv.data(), sizeof(double), 9, f) == 9) lcOld.emplace(ck, cv);
+      std::fclose(f);
+    }
+  }
+  const auto lcKey = [&](std::size_t t, std::size_t i) {
+    std::uint64_t h = lcGlobal;
+    const std::size_t q0 = t + 1 > tradeW + 2 ? t - tradeW - 2 : 0;
+    for (std::size_t q = q0; q <= t; ++q) {
+      const std::size_t x = q * N + i;
+      const double v[7] = {d.O[x], d.H[x], d.L[x], d.C[x], d.Cf[x], d.V[x], d.sigma[x]};
+      h = fnv(h, v, sizeof v);
+    }
+    h = fnv(h, d.days[q0].data(), 4);
+    h = fnv(h, d.days[t].data(), d.days[t].size());
+    return fnv(h, &tradeW, sizeof tradeW);
+  };
   tradeLv = [&](std::size_t t, std::size_t i) -> std::array<double, 9> {
     const std::size_t key = t * N + i;
     if (auto it = tradeMemo.find(key); it != tradeMemo.end()) return it->second;
+    std::uint64_t lk = 0;
+    if (lcOn) {
+      lk = lcKey(t, i);
+      if (auto it = lcOld.find(lk); it != lcOld.end()) { ++lcHits; lcNew[lk] = it->second; return tradeMemo[key] = it->second; }
+      ++lcMiss;
+    }
+    const auto done = [&](const std::array<double, 9>& v) { if (lcOn) lcNew[lk] = v; return tradeMemo[key] = v; };
     std::array<double, 9> out{0.0, 0.0, kNoRb, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0};  // take, stop, buy-back, expected, buy limit, works all day; the choice (mode, limit, bracket; -1: none)
     const double c0 = d.Cf[t * N + i], s0 = d.sigma[t * N + i];
     out[4] = c0 * (1 + capOf(t, i));
-    if (!(c0 > 0 && std::isfinite(s0) && s0 > 0) || t < tradeW + 1) return tradeMemo[key] = out;
+    if (!(c0 > 0 && std::isfinite(s0) && s0 > 0) || t < tradeW + 1) return done(out);
     const std::size_t nA = tA.size(), nB = tB.size(), nX = nA * nB * nTR, nEn = tE.size();
     std::vector<double> sm(2 * nEn * nX, 0.0), s2(2 * nEn * nX, 0.0), yB(nX), yL(nX);
     double n = 0;
@@ -1445,7 +1499,7 @@ int main(int argc, char** argv) {
       }
       n += 1;
     }
-    if (n < 20) return tradeMemo[key] = out;
+    if (n < 20) return done(out);
     double best = -1e300;
     std::size_t bk = 0;
     for (std::size_t kq = 0; kq < sm.size(); ++kq) {
@@ -1466,7 +1520,7 @@ int main(int argc, char** argv) {
     out[4] = c0 * (1 + tE[e] * s0);
     out[5] = md == 1 ? 1.0 : 0.0;
     out[6] = double(md), out[7] = double(e), out[8] = double(kx);
-    return tradeMemo[key] = out;
+    return done(out);
   };
   // tradebracket: the chosen buy and bracket's probabilities on the same replayed days (cost: the order's round trip,
   // applied only here, at the end): {days, filled, in the auction, take-profit, stop, buy-back, gain, gain over the
@@ -3511,6 +3565,18 @@ int main(int argc, char** argv) {
     }
     f << "}\n";
   }
+  if (lcOn) {  // the learn cache: every trade learnt or read this run, for the next (a temporary file renamed: whole or not at all)
+    std::filesystem::create_directories(lcDir);
+    const std::string tmp = lcPath + ".tmp" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
+      bool ok = true;
+      for (const auto& [ck, cv] : lcNew) ok = ok && std::fwrite(&ck, sizeof ck, 1, f) == 1 && std::fwrite(cv.data(), sizeof(double), 9, f) == 9;
+      ok = std::fclose(f) == 0 && ok;
+      if (ok) std::filesystem::rename(tmp, lcPath);
+      else std::filesystem::remove(tmp);
+    }
+    std::printf("strategy: the per-trade learning: %zu read back from the learn cache, %zu learnt (%s)\n", lcHits, lcMiss, lcPath.c_str());
+  }
   if (!o.ordersOut.empty()) {  // the bridge's multi-day book (prices: the private store only)
     std::ofstream f(o.ordersOut);
     f << "{\"model\":\"strategy\",\"strategy\":" << jstr(o.strategy) << ",\"asOf\":" << jstr(d.days[L]) << ",\"slots\":" << k << ",\"book\":\"hold\",\"days\":" << maxDays << ",\"orders\":[";
@@ -3523,7 +3589,7 @@ int main(int argc, char** argv) {
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
-        << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
+        << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i]) << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
     }
     f << "],\"technical\":" << techJson;
     // The day's top-ranked shares (the bridge's 5-minute bars and recordings follow them): the orders' rivals by score.

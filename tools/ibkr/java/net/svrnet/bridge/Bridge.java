@@ -182,6 +182,15 @@ public final class Bridge {
             case "/java" -> reply(x, 200, Json.obj("java", true, "version", VERSION, "api", Api.version()));
             case "/diag" -> reply(x, 200, Json.obj("checks", Auto.diag()));
             case "/history" -> reply(x, 200, Json.obj("days", Book.history()));
+            case "/shadow" -> {  // shadow mode: the day's 5-minute checks and the learnt policy's actions (recorded only, keyed)
+                String m = q.getOrDefault("market", "US").toUpperCase(), date = q.getOrDefault("date", Auto.today(Book.MARKETS.contains(m) ? m : "US"));
+                if (!Book.MARKETS.contains(m) || !date.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                    reply(x, 400, Json.obj("error", "market one of " + Book.MARKETS + ", date yyyy-mm-dd"));
+                    return;
+                }
+                reply(x, 200, Json.obj("market", m, "date", date, "rows", Shadow.rows(m, date), "policy", Shadow.policyNote, "hasPolicy", Shadow.policies.containsKey(m),
+                        "note", Shadow.NOTE.getOrDefault(m, "")));
+            }
             case "/watch" -> {  // the account watch's latest result (every 5 minutes)
                 Object[] w = Auto.WATCH;
                 if (w == null) {

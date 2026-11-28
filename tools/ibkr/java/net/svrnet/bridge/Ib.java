@@ -80,6 +80,8 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
     private final Object idLock = new Object();  // the order ids (not the Ib monitor: openOrders() holds that while IBKR lists them)
     private final Map<Integer, Object[]> sent = new ConcurrentHashMap<>();  // a top-level order's contract and order, for a re-place on 103
     volatile String barsError = "";  // the last bars request's IBKR error (code: message), for the bars fetch's summary
+    /** The same, for the calling thread's own last bars request (the parallel bars fetch: each worker its own). */
+    final ThreadLocal<String> barsErr = ThreadLocal.withInitial(() -> "");
     private volatile String account = "";
 
     /** Connects, retrying: a client id still held (a process ending, a gateway restarting) is often free again within a minute. */
@@ -295,12 +297,16 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
             List<Bar> out = new ArrayList<>();
             for (Object o : answer(id, r, seconds, "daily bars")) out.add((Bar) o);
             synchronized (r) {
-                barsError = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+                String why = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+                barsError = why;
+                barsErr.set(why);
             }
             return out;
         } catch (RuntimeException e) {
             client.cancelHistoricalData(id);
-            barsError = "exception: " + e.getMessage();
+            String why = "exception: " + e.getMessage();
+            barsError = why;
+            barsErr.set(why);
             return List.of();
         }
     }
@@ -314,12 +320,16 @@ final class Ib extends DefaultEWrapper implements Broker, AutoCloseable {
             List<Bar> out = new ArrayList<>();
             for (Object o : answer(id, r, seconds, "5-minute bars")) out.add((Bar) o);
             synchronized (r) {
-                barsError = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+                String why = r.errors.isEmpty() ? (out.isEmpty() ? "no error: no bars" : "") : r.errors.get(r.errors.size() - 1);
+                barsError = why;
+                barsErr.set(why);
             }
             return out;
         } catch (RuntimeException e) {
             client.cancelHistoricalData(id);
-            barsError = "exception: " + e.getMessage();
+            String why = "exception: " + e.getMessage();
+            barsError = why;
+            barsErr.set(why);
             return List.of();
         }
     }
