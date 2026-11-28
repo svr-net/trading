@@ -59,13 +59,20 @@ final class Csv {
     static void write(Path p, List<String[]> rows) throws IOException {
         try (BufferedWriter w = Files.newBufferedWriter(p, StandardCharsets.UTF_8)) {
             for (String[] r : rows) {
-                for (int i = 0; i < r.length; i++) {
-                    if (i > 0) w.write(',');
-                    w.write(Recordings.csv(r[i]));
-                }
+                w.write(line(r));
                 w.write("\r\n");
             }
         }
+    }
+
+    /** One row (without its line end), quoted where needed. */
+    static String line(String[] r) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < r.length; i++) {
+            if (i > 0) b.append(',');
+            b.append(Recordings.csv(r[i]));
+        }
+        return b.toString();
     }
 
     private Csv() {

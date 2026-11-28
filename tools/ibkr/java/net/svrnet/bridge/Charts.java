@@ -32,7 +32,7 @@ final class Charts {
     static boolean ensureKept(String market) throws IOException {
         Path p = kept(market);
         if (Files.exists(p) && Files.size(p) > 100) return true;
-        byte[] k = Store.get("ibkr/" + market + "/daily.csv");
+        byte[] k = Store.getDaily(market);
         if (k == null || k.length < 100) return false;
         Files.createDirectories(p.getParent());
         Files.write(p, k);

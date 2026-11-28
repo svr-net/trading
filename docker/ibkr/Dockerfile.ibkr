@@ -37,7 +37,8 @@ RUN set -e; mkdir -p /build/check; \
     javac --release 21 -encoding UTF-8 -cp /build/classes -d /build/check $(find /src/check -name '*.java'); \
     java -cp /build/classes:/build/check net.svrnet.bridge.HoldsCheck; \
     java -cp /build/classes:/build/check net.svrnet.bridge.StepsCheck; \
-    java -cp /build/classes:/build/check net.svrnet.bridge.ParallelCheck
+    java -cp /build/classes:/build/check net.svrnet.bridge.ParallelCheck; \
+    java -cp /build/classes:/build/check net.svrnet.bridge.StoreCheck
 
 # IBKR's Java client sources alone (GPL-3), exported by bridge-image.yml for developing the bridge against them.
 FROM scratch AS javaclient-src

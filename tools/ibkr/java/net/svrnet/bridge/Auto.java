@@ -732,7 +732,7 @@ final class Auto {
     }
 
     /**
-     * IBKR's daily bars for the pool, merged into the file kept here and written to the store as ibkr/<MARKET>/daily.csv. daily: only the
+     * IBKR's daily bars for the pool, merged into the file kept here and written to the store by month (ibkr/<MARKET>/daily/<yyyy-mm>.csv). daily: only the
      * latest month. Every fetch is merged in (a share-day IBKR answers again replaces the kept one), so a fetch IBKR answered badly never
      * loses bars (7 Nov); without a kept file the store's is the start; a fetch with no bars changes nothing.
      */
@@ -780,7 +780,7 @@ final class Auto {
             Path outFile = Path.of(HISTORY, "ibkr-" + m + ".csv");
             Files.createDirectories(Path.of(HISTORY));
             if (!(Files.exists(outFile) && Files.size(outFile) > 100)) {
-                byte[] kept = Store.get("ibkr/" + m + "/daily.csv");
+                byte[] kept = Store.getDaily(m);
                 if (kept != null && kept.length > 100) Files.write(outFile, kept);
             }
             boolean have = Files.exists(outFile) && Files.size(outFile) > 100;
@@ -812,7 +812,8 @@ final class Auto {
             Set<String> shares = new java.util.HashSet<>();
             for (String[] x : rows) shares.add(x[1]);
             summary += "; " + rows.size() + " rows kept, " + shares.size() + " shares, the latest " + day(rows.get(rows.size() - 1)[0]);
-            Store.put("ibkr/" + m + "/daily.csv", Files.readAllBytes(outFile), m + " daily bars from IBKR " + LocalDate.now());
+            int months = Store.putDailyByMonth(m, all, m + " daily bars from IBKR " + LocalDate.now());
+            summary += "; " + months + " month" + (months == 1 ? "" : "s") + " written to the store";
             return new Done(true, summary);
         } catch (IOException | RuntimeException e) {
             return new Done(false, e.getMessage());
