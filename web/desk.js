@@ -163,7 +163,7 @@ function renderMarket() {
         [r.sold ? `${num(r.sold, 0)} @ ${num(r.sell, 3)}` : '–', 'num'], [r.held ? num(r.held, 0) : '–', 'num'], [r.bought || r.held ? `${signed(pnl)} ${r.currency || ''}` : '–', `num ${tone(pnl)}`]];
     }), t ? (t.error || 'Nothing traded today.') : 'Reading today from IBKR…');
   const nx = state.next[m];
-  $('next-note').textContent = nx ? `After the close of ${nx.asOf || '?'}, ranked by the chance of a gain after costs (calibrated on the strategy's earlier signals).` : 'Loading…';
+  $('next-note').textContent = nx ? `After the close of ${nx.asOf || '?'}, ranked by the expected return after costs; P(net gain) is each order's chance, calibrated on the strategy's earlier orders.` : 'Loading…';
   renderShadow();
   const bar = (p) => { const s = el('span', null, 'prob'); const b = el('span', null, 'bar'); const i = el('i'); i.style.width = `${Math.round(100 * (p || 0))}%`; b.append(i); s.append(b, el('span', p == null ? '–' : `${Math.round(100 * p)}%`)); return s; };
   table($('next'), [['Share'], ['Buy', 'num'], ['Take-profit', 'num'], ['Stop-loss', 'num'], ['Buy-back', 'num'], ['P(net gain)'], ['Expected', 'num']],

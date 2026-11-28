@@ -579,10 +579,10 @@ class Composite : public strat::Strategy {
   std::string about() const override { return "every strategy's signal and the technical signals, weighed by a ridge regression learnt walk-forward"; }
   strat::Params defaults() const override {
     return {{"rebalance", 1}, {"warmup", 260}, {"capsd", 1.5}, {"capmax", 0.03}, {"maxdays", 10}, {"comphalflife", 500}, {"compfit", 21}, {"compmin", 250}, {"compridge", 1e-3},
-            // compsel: 1 the orders by their final chance (the composite's second step), 0 by its expected move;
+            // compsel: 0 the orders by the composite's expected move (the backtests' best, Nov 2026), 1 by their final chance;
             // comptarget: 0 learns the next session's open to close, 1 the trade's own result under its bracket;
             // compbase: -1 every share, else only the shares this strategy scores (its place in --list, from 0) re-ranked
-            {"compsel", 1}, {"comptarget", 0}, {"compbase", -1}};
+            {"compsel", 0}, {"comptarget", 0}, {"compbase", -1}};
   }
   std::size_t K() const { return 1 + 2 * subs.size() + std::size_t(strat::Signals::K) + 2; }
   std::vector<std::string> featureNames() const {
@@ -3340,13 +3340,15 @@ int main(int argc, char** argv) {
     }
     if (x.net > 0) final.push_back(x);
   }
-  // tradebracket: the orders ranked by their final probability, the chance of a gain over the costs (the buy filling
-  // times a gain over the costs once filled), the book's shares before the reserves
-  const auto finalP = [](const Order& x) { return std::isfinite(x.cFill) && std::isfinite(x.cGain) ? x.cFill * x.cGain : 0.0; };
+  // tradebracket: the orders ranked by their expected return after costs (the chance the buy fills times its return
+  // over the costs once filled), the book's shares before the reserves: the backtests (Nov 2026) found the likeliest
+  // gains the smaller ones, so the chances are shown with each order but do not order them
+  const auto expectedNet = [](const Order& x) { return (std::isfinite(x.fill) ? x.fill : 1.0) * x.net; };
+  const auto finalP = [](const Order& x) { return std::isfinite(x.cFill) && std::isfinite(x.cGain) ? x.cFill * x.cGain : 0.0; };  // the report
   if (tradeBr)
     std::stable_sort(final.begin(), final.end(), [&](const Order& a, const Order& b) {
       const bool ra = a.rank >= nBook, rb = b.rank >= nBook;
-      return ra != rb ? rb : finalP(a) > finalP(b);
+      return ra != rb ? rb : expectedNet(a) > expectedNet(b);
     });
 
   // Each share's stop for the next session (absolute, the store's price unit): a position held, its stop as it
@@ -3665,7 +3667,7 @@ int main(int argc, char** argv) {
   std::printf("strategy: next session (after the close of %s; the list from the rebalance after the close of %s): %zu on the list, %zu after costs\n", d.days[L].c_str(),
               d.days[decided].c_str(), orders.size(), final.size());
   if (tradeBr) {
-    std::printf("strategy: the orders ranked by the chance of a gain over their costs, P(net gain) = P(fill) x P(gain over the costs | fill), each from the order's own replayed days:\n");
+    std::printf("strategy: the orders ranked by their expected return after costs, each with its chances, P(net gain) = P(fill) x P(gain over the costs | fill), calibrated on the strategy's earlier orders:\n");
     for (const auto& x : final) {
       const auto& r = x.pr;
       const double fl = r[1] > 0 ? r[1] : 1;
