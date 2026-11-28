@@ -446,6 +446,8 @@ struct Row {  // an order of the backtest
   std::size_t t = 0, i = 0, rank = 0;  // decided after the close of t; its place on the list
   double limit = 0, expected = 0, entry = kNaN, exit = kNaN, ret = 0;
   double turbulence = kNaN, ahead = kNaN, marketVol = kNaN, shareVol = kNaN;  // mcregime: the market's state when it was decided (regimeState)
+  double take = kNaN, stop = kNaN, rebuyM = kNaN, close = kNaN, sigma = kNaN;  // the trade's bracket as decided (X_TRADELOG: the intraday study)
+  bool dayEntry = false;
   bool filled = false, closed = false, stopped = false;
   std::size_t since = 0, days = 0;
 };
@@ -2512,6 +2514,7 @@ int main(int argc, char** argv) {
       r.t = t, r.i = i, r.rank = rank, r.expected = learnt.expected(rank);
       r.limit = tradeBr ? tradeLv(t, i)[4] : d.Cf[t * N + i] * (1 + capOf(t, i));
       const bool dayEntry = tradeBr ? tradeLv(t, i)[5] > 0 : entryDay;
+      if (flatDaily) r.take = takeOf(t, i), r.stop = stopOf(t, i), r.rebuyM = mOf(t, i), r.close = d.Cf[t * N + i], r.sigma = d.sigma[t * N + i], r.dayEntry = dayEntry;
       stamp(r);
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
@@ -2710,10 +2713,11 @@ int main(int argc, char** argv) {
 
   if (const char* tl = std::getenv("X_TRADELOG")) {
     std::ofstream f(tl);
-    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
+    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret,take,stop,rebuym,close,sigma,dayentry" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
     for (const auto& r : rows) {
       f << d.days[r.t + 1] << ',' << d.tickers[r.i] << ',' << r.rank << ',' << jnum(r.limit) << ',' << jnum(r.expected) << ',' << (r.filled ? 1 : 0) << ','
-        << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0);
+        << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0)
+        << ',' << jnum(r.take) << ',' << jnum(r.stop) << ',' << jnum(r.rebuyM) << ',' << jnum(r.close) << ',' << jnum(r.sigma) << ',' << (r.dayEntry ? 1 : 0);
       if (regK) f << ',' << jnum(r.turbulence) << ',' << jnum(r.ahead) << ',' << jnum(r.marketVol) << ',' << jnum(r.shareVol);
       f << '\n';
     }
