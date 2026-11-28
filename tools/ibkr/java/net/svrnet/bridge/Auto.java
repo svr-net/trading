@@ -1202,6 +1202,7 @@ final class Auto {
             seedDone();
             daemon("scheduler", Auto::scheduler);
             daemon("watchdog", Auto::watchdog);
+            daemon("shadow", Shadow::loop);  // shadow mode: the intraday policy's 5-minute checks, recorded only
         }
         daemon("refresher", Auto::refresher);
     }
@@ -1228,7 +1229,7 @@ final class Auto {
 
     // --- liveness: each loop's last turn; GET /live answers 503 when one is late (ibkr-start.sh then restarts the bridge)
     static final Map<String, Long> BEATS = new ConcurrentHashMap<>();
-    static final Map<String, Integer> LATE_AFTER = Map.of("scheduler", 300, "watchdog", 600, "refresher", 300);
+    static final Map<String, Integer> LATE_AFTER = Map.of("scheduler", 300, "watchdog", 600, "refresher", 300);  // not the shadow: a slow check must never restart the bridge
 
     static void beat(String loop) {
         BEATS.put(loop, System.nanoTime());
@@ -1377,6 +1378,11 @@ final class Auto {
         for (String m : AUTO) plan.add(m + ": place " + TIMES.get(m)[0] + (AUCTION.containsKey(m) ? ", auction " + AUCTION.get(m) : "") + ", hold book" + (PATHS ? ", paths" : "")
                 + ", close " + TIMES.get(m)[1] + ", report " + REPORT.get(m) + " (" + ZONE.get(m) + ")");
         add.accept("Automatic buying", new Object[] {buysOn() ? true : null, buysNote});
+        {  // shadow mode: the intraday policy's 5-minute checks (recorded only)
+            List<String> sh = new ArrayList<>();
+            for (String m : AUTO) if (Shadow.NOTE.containsKey(m)) sh.add(m + ": " + Shadow.NOTE.get(m));
+            add.accept("Shadow mode", new Object[] {true, "recorded only, no order changed; policy " + Shadow.policyNote + (sh.isEmpty() ? "" : "; " + String.join("; ", sh))});
+        }
         add.accept("Schedule", new Object[] {AUTO.isEmpty() ? null : true, (plan.isEmpty() ? "automatic trading off (AUTO_MARKETS)" : String.join("; ", plan))
                 + (BARS_AT.isEmpty() ? "" : "; IBKR bars Saturdays " + BARS_AT)});
         for (String m : AUTO) {

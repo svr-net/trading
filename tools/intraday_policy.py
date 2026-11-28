@@ -30,7 +30,8 @@ ap.add_argument('--daily', required=True, help='the daily bars (date,ticker,open
 ap.add_argument('--every', type=int, default=6, help='bars between checks (6: 30 minutes)')
 ap.add_argument('--slip', type=float, default=0.1, help='a stop sells this many daily volatilities under its level')
 ap.add_argument('--cost', type=float, default=0.0002, help='a round trip\'s cost (only for the extra buys)')
-ap.add_argument('--policy')
+ap.add_argument('--policy', help='the policy file (config/intraday-policy.json): this market\'s entry added or replaced')
+ap.add_argument('--market', default='US')
 a = ap.parse_args()
 
 rows = list(csv.DictReader(open(a.trades)))
@@ -184,8 +185,18 @@ for y in years[1:]:
 if tot['n']:
     print(f'all test years: {tot["n"]} trades; the bracket {100 * tot["b"] / tot["n"]:+.3f}% a trade, with the adjustments {100 * tot["p"] / tot["n"]:+.3f}% (before costs except the extra buys)')
 if a.policy:
+    import datetime
     pol = learn(orders)
-    json.dump({'every': a.every, 'zBuckets': ZB, 'gapBuckets': GB,
-               'states': [{'kind': k[0], 'check': k[1], 'bucket': k[2], **({'dayEntry': bool(k[3])} if k[0] == 'wait' else {}), 'action': v} for k, v in sorted(pol.items())]},
-              open(a.policy, 'w'), indent=1)
-    print(f'policy: {len(pol)} states with an action -> {a.policy}')
+    try:
+        allp = json.load(open(a.policy))
+    except (OSError, ValueError):
+        allp = {}
+    allp['about'] = ('The intraday policy for shadow mode (tools/intraday_policy.py): for each market, at each 5-minute check, '
+                     'the action that beat holding (keeping) on the earlier years by more than twice its standard error; '
+                     'states without one hold. The bridge records what it would do; it changes no order.')
+    allp.setdefault('markets', {})[a.market] = {
+        'learnt': datetime.date.today().isoformat(), 'orders': len(orders), 'every': a.every, 'zBuckets': ZB, 'gapBuckets': GB,
+        'test': {'trades': tot['n'], 'bracket': tot['b'] / tot['n'] if tot['n'] else None, 'adjusted': tot['p'] / tot['n'] if tot['n'] else None},
+        'states': [{'kind': k[0], 'check': k[1], 'bucket': k[2], **({'dayEntry': bool(k[3])} if k[0] == 'wait' else {}), 'action': v} for k, v in sorted(pol.items())]}
+    json.dump(allp, open(a.policy, 'w'), indent=1)
+    print(f'policy {a.market}: {len(pol)} states with an action -> {a.policy}')

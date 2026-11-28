@@ -3523,7 +3523,7 @@ int main(int argc, char** argv) {
         << ",\"ifFilled\":" << jnum(x.net) << ",\"gross\":" << jnum(x.gross) << ",\"fill\":" << jnum(std::isfinite(x.fill) ? x.fill : 0.0) << ",\"capital\":" << jnum(x.value, "%.2f")
         << ",\"maxCapital\":" << jnum(noVolume ? o.capital : o.advShare * d.value[L * N + x.i], "%.2f") << ",\"rebuy\":0,\"cost\":" << jnum(x.cost)
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
-        << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
+        << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"sigma\":" << jnum(d.sigma[L * N + x.i]) << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
     }
     f << "],\"technical\":" << techJson;
     // The day's top-ranked shares (the bridge's 5-minute bars and recordings follow them): the orders' rivals by score.
