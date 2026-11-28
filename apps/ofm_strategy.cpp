@@ -553,6 +553,174 @@ std::string jstr(const std::string& s) {
   return o + "\"";
 }
 
+// The composite strategy (--strategy composite): every registered strategy's signal and the technical signals
+// (strategy/signals.hpp) together, each share's next session (its open to its close, in its daily volatilities)
+// learnt from them walk-forward by a ridge regression on the outcomes known on the day (older days weighed less:
+// comphalflife sessions), refit every compfit sessions once compmin sessions are known. Its inputs for a share:
+// for each strategy, whether it scores the share and the share's place among the shares it scores (-1 the last,
+// +1 the first); each technical event (0 or 1); its last 5 sessions' move and its distance from its 20-session
+// mean (in daily volatilities, over 3, capped). The day's score: the expected move; NaN where no strategy and no
+// event says anything about the share, and before the model is learnt.
+class Composite : public strat::Strategy {
+ public:
+  const strat::Signals* tech = nullptr;
+  std::vector<std::string> names;
+  std::vector<std::unique_ptr<strat::Strategy>> subs;
+  std::vector<strat::Params> subP;
+  Composite() {
+    for (const auto& [name, make] : strat::registry()) {
+      names.push_back(name), subs.push_back(make()), subP.push_back(subs.back()->defaults());
+      subP.back()["invert"] = 0;
+    }
+  }
+  std::string about() const override { return "every strategy's signal and the technical signals, weighed by a ridge regression learnt walk-forward"; }
+  strat::Params defaults() const override {
+    return {{"rebalance", 1}, {"warmup", 260}, {"capsd", 1.5}, {"capmax", 0.03}, {"maxdays", 10}, {"comphalflife", 500}, {"compfit", 21}, {"compmin", 250}, {"compridge", 1e-3}};
+  }
+  std::size_t K() const { return 1 + 2 * subs.size() + std::size_t(strat::Signals::K) + 2; }
+  std::vector<std::string> featureNames() const {
+    std::vector<std::string> f{"constant"};
+    for (const auto& n : names) f.push_back(n + " scores it"), f.push_back(n + "'s rank");
+    for (int e = 0; e < strat::Signals::K; ++e) f.push_back(strat::Signals::name[std::size_t(e)]);
+    f.push_back("5-session run"), f.push_back("distance from the 20-session mean");
+    return f;
+  }
+
+  void score(const strat::View& v, const strat::Params& p, std::vector<double>& out) const override {
+    const std::size_t t = v.t(), N = v.N();
+    out.assign(N, strat::kNaN);
+    if (auto m = memo.find(t); m != memo.end()) { out = m->second; return; }
+    if (t < seen && seen != npos) return;  // a day before the latest learnt: its model is gone (never one learnt later)
+    // the outcomes known now: the pending days' next sessions (day s's shares, its next session s + 1 <= t)
+    const double decay = std::pow(0.5, 1.0 / std::max(1.0, p.at("comphalflife")));
+    const std::size_t k = K();
+    if (A.empty()) A.assign(k * k, 0.0), b.assign(k, 0.0), w.assign(k, 0.0);
+    for (auto it = pending.begin(); it != pending.end() && it->first < t;) {
+      const std::size_t s = it->first;
+      for (double& a : A) a *= decay;
+      for (double& x : b) x *= decay;
+      for (const auto& [i, x] : it->second) {
+        const double sg = v.sigma(s, i), o = v.open(s + 1, i), c = v.close(s + 1, i);
+        if (!(sg > 0 && o > 0 && c > 0) || !v.bar(s + 1, i)) continue;
+        const double y = std::max(-5.0, std::min(5.0, (c / o - 1) / sg));
+        for (std::size_t a = 0; a < k; ++a) {
+          if (x[a] == 0) continue;
+          b[a] += x[a] * y;
+          for (std::size_t c2 = 0; c2 < k; ++c2) A[a * k + c2] += x[a] * x[c2];
+        }
+      }
+      ++days;
+      it = pending.erase(it);
+    }
+    if (days >= std::size_t(p.at("compmin")) && (fitAt == npos || t >= fitAt + std::size_t(p.at("compfit")))) fit(p.at("compridge")), fitAt = t;
+    // the day's shares: their inputs (kept for their outcome) and, once learnt, their expected move
+    std::vector<std::vector<double>> sc(subs.size());
+    for (std::size_t q = 0; q < subs.size(); ++q) subs[q]->score(v, subP[q], sc[q]);
+    std::vector<std::vector<double>> pct(subs.size(), std::vector<double>(N, strat::kNaN));
+    for (std::size_t q = 0; q < subs.size(); ++q) {
+      std::vector<std::pair<double, std::size_t>> r;
+      for (std::size_t i = 0; i < N && i < sc[q].size(); ++i) if (v.tradable(i) && std::isfinite(sc[q][i])) r.emplace_back(sc[q][i], i);
+      std::sort(r.begin(), r.end());
+      for (std::size_t j = 0; j < r.size(); ++j) pct[q][r[j].second] = r.size() > 1 ? 2.0 * double(j) / double(r.size() - 1) - 1 : 1.0;
+    }
+    auto& day = pending[t];
+    std::vector<std::pair<std::size_t, std::vector<double>>> kept;
+    for (std::size_t i = 0; i < N; ++i) {
+      if (!v.tradable(i)) continue;
+      std::vector<double> x(k, 0.0);
+      x[0] = 1;
+      bool any = false;
+      for (std::size_t q = 0; q < subs.size(); ++q)
+        if (std::isfinite(pct[q][i])) x[1 + 2 * q] = 1, x[2 + 2 * q] = pct[q][i], any = true;
+      const std::size_t e0 = 1 + 2 * subs.size();
+      if (tech && t < tech->T) for (int e = 0; e < strat::Signals::K; ++e) if (tech->ev[t * N + i] >> e & 1u) x[e0 + std::size_t(e)] = 1, any = true;
+      if (!any) continue;
+      const double c = v.close(t, i), sg = v.sigma(t, i);
+      if (!(c > 0 && sg > 0) || t < 20) continue;
+      const double c5 = v.close(t - 5, i);
+      double m = 0, n = 0;
+      for (std::size_t q = t - 19; q <= t; ++q) if (v.close(q, i) > 0) m += v.close(q, i), n += 1;
+      x[k - 2] = c5 > 0 ? std::max(-2.0, std::min(2.0, (c / c5 - 1) / (sg * std::sqrt(5.0)) / 3)) : 0.0;
+      x[k - 1] = n > 0 ? std::max(-2.0, std::min(2.0, (c / (m / n) - 1) / sg / 3)) : 0.0;
+      if (fitAt != npos) {
+        double z = 0;
+        for (std::size_t a = 0; a < k; ++a) z += w[a] * x[a];
+        out[i] = z;
+      }
+      // learnt from: every share with a signal, at most 1500 a day (a fixed sample of the rest: the share's index)
+      kept.emplace_back(i, std::move(x));
+    }
+    if (kept.size() > 1500) {
+      std::vector<std::pair<std::size_t, std::vector<double>>> sub;
+      const std::size_t step = (kept.size() + 1499) / 1500;
+      for (std::size_t j = t % step; j < kept.size(); j += step) sub.push_back(std::move(kept[j]));
+      kept.swap(sub);
+    }
+    for (auto& kx : kept) last[kx.first] = kx.second, day.emplace_back(kx.first, std::move(kx.second));
+    lastT = t;
+    seen = t;
+    memo[t] = out;
+    if (memo.size() > 8) memo.erase(memo.begin());
+  }
+
+  std::string reason(const strat::View& v, const strat::Params&, std::size_t i) const override {
+    const auto it = last.find(i);
+    if (it == last.end() || fitAt == npos || v.t() != lastT) return "the composite: no signal on it";
+    const auto fn = featureNames();
+    std::vector<std::pair<double, std::size_t>> c;
+    double z = 0;
+    for (std::size_t a = 0; a < it->second.size(); ++a) {
+      z += w[a] * it->second[a];
+      if (a && it->second[a] != 0) c.emplace_back(w[a] * it->second[a], a);
+    }
+    std::sort(c.begin(), c.end(), [](const auto& x, const auto& y) { return std::fabs(x.first) > std::fabs(y.first); });
+    std::string s = "The composite expects " + jnum(z, "%+.3f") + " daily volatilities from the open to the close: ";
+    for (std::size_t j = 0; j < std::min<std::size_t>(4, c.size()); ++j) s += (j ? "; " : "") + fn[c[j].second] + " " + jnum(c[j].first, "%+.3f");
+    return s + ".";
+  }
+
+  // the learnt weights by input (the report)
+  std::vector<std::pair<std::string, double>> weights() const {
+    std::vector<std::pair<std::string, double>> r;
+    const auto fn = featureNames();
+    for (std::size_t a = 0; a < w.size() && a < fn.size(); ++a) r.emplace_back(fn[a], w[a]);
+    return r;
+  }
+  std::size_t learntDays() const { return days; }
+
+ private:
+  static constexpr std::size_t npos = std::size_t(-1);
+  mutable std::map<std::size_t, std::vector<std::pair<std::size_t, std::vector<double>>>> pending;
+  mutable std::map<std::size_t, std::vector<double>> memo;
+  mutable std::unordered_map<std::size_t, std::vector<double>> last;
+  mutable std::vector<double> A, b, w;
+  mutable std::size_t days = 0, fitAt = npos, seen = npos, lastT = npos;
+
+  void fit(double ridge) const {
+    const std::size_t k = K();
+    double tr = 0;
+    for (std::size_t a = 0; a < k; ++a) tr += A[a * k + a];
+    std::vector<double> M(A), y(b);
+    for (std::size_t a = 0; a < k; ++a) M[a * k + a] += ridge * tr / double(k) + 1e-9;
+    for (std::size_t c = 0; c < k; ++c) {  // Gauss-Jordan with partial pivoting
+      std::size_t piv = c;
+      for (std::size_t r = c + 1; r < k; ++r) if (std::fabs(M[r * k + c]) > std::fabs(M[piv * k + c])) piv = r;
+      for (std::size_t q = 0; q < k; ++q) std::swap(M[c * k + q], M[piv * k + q]);
+      std::swap(y[c], y[piv]);
+      const double dg = M[c * k + c];
+      if (std::fabs(dg) < 1e-15) continue;
+      for (std::size_t r = 0; r < k; ++r) {
+        if (r == c) continue;
+        const double f = M[r * k + c] / dg;
+        if (f == 0) continue;
+        for (std::size_t q = 0; q < k; ++q) M[r * k + q] -= f * M[c * k + q];
+        y[r] -= f * y[c];
+      }
+    }
+    for (std::size_t a = 0; a < k; ++a) w[a] = std::fabs(M[a * k + a]) > 1e-15 ? y[a] / M[a * k + a] : 0.0;
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -560,6 +728,7 @@ int main(int argc, char** argv) {
   if (o.list) {
     std::printf("strategies:\n");
     for (const auto& [name, f] : strat::registry()) std::printf("  %-10s %s\n", name.c_str(), f()->about().c_str());
+    std::printf("  %-10s %s\n", "composite", Composite().about().c_str());
     std::printf("back ends:\n");
     for (const auto& [name, f] : strat::backends()) std::printf("  %-10s %s\n", name.c_str(), f()->about().c_str());
     return 0;
@@ -611,9 +780,17 @@ int main(int argc, char** argv) {
     }
   }
 #endif
-  const auto sf = strat::registry().find(o.strategy);
-  if (sf == strat::registry().end()) usage(("no strategy '" + o.strategy + "' (see --list)").c_str());
-  const auto strategy = sf->second();
+  Composite* composite = nullptr;  // --strategy composite: every strategy and the technical signals, learnt together
+  std::unique_ptr<strat::Strategy> strategy;
+  if (o.strategy == "composite") {
+    auto cp = std::make_unique<Composite>();
+    composite = cp.get();
+    strategy = std::move(cp);
+  } else {
+    const auto sf = strat::registry().find(o.strategy);
+    if (sf == strat::registry().end()) usage(("no strategy '" + o.strategy + "' (see --list, or composite)").c_str());
+    strategy = sf->second();
+  }
 #ifdef __EMSCRIPTEN__
   const std::string backendName = o.backend.empty() ? "serial" : o.backend;
 #else
@@ -823,6 +1000,7 @@ int main(int argc, char** argv) {
   // been worth since (walk-forward): the chances' inputs and the screen's indicative points
   strat::Signals tech;
   tech.compute(d);
+  if (composite) composite->tech = &tech;
 
   Costs costs;
   costs.market = M, costs.tiered = o.tiered;
@@ -2067,6 +2245,28 @@ int main(int argc, char** argv) {
       }
       ++arms[pick].used;
       target = arms[pick].lists.back().second;
+    } else if (composite && tradeBr && !c.empty()) {
+      // The composite ranker's second step: each share the composite scores (its expected move from every strategy,
+      // the technical signals and its stretch) given its final chance, a fill times a gain over the costs once filled
+      // (its own bracket's replay, calibrated on the composite's earlier orders with the composite's expected move, its
+      // place among the day's shares and the technical chance); the orders the k best, the next k reserves
+      std::vector<std::pair<double, std::size_t>> pp;
+      for (std::size_t r = 0; r < c.size(); ++r) {
+        const std::size_t i = c[r].second;
+        Row q;
+        q.cost = costs.roundTrip(o.capital, d.tickers[i], d.Cf[t * N + i] / unit);
+        const auto pr = tradeProbs(t, i, q.cost);
+        q.pfB = pr[0] > 0 ? pr[1] / pr[0] : kNaN, q.pgB = pr[1] > 0 ? pr[7] / pr[1] : kNaN;
+        q.sigPct = c.size() > 1 ? double(r) / double(c.size() - 1) : 0.0;
+        q.sigZ = sigZof(t, i), q.pTech = tech.pUp(t, i);
+        calibrate(q);
+        const double fp = std::isfinite(q.pFill) && std::isfinite(q.pGain) ? q.pFill * q.pGain : -1.0;
+        pp.emplace_back(fp, i);
+      }
+      std::stable_sort(pp.begin(), pp.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (std::size_t r = 0; r < std::min(k, pp.size()); ++r) target.push_back(pp[r].second);
+      simReserve.clear();
+      for (std::size_t r = k; r < std::min(2 * k, pp.size()); ++r) simReserve.push_back(pp[r].second);
     } else {
       for (std::size_t r = 0; r < std::min(k, c.size()); ++r) target.push_back(c[r].second);
       simReserve.clear();
@@ -2957,6 +3157,13 @@ int main(int argc, char** argv) {
       return j + "]";
     };
     techJson += "],\"asOf\":" + jstr(d.days[Lx]) + ",\"screen\":{\"buy\":" + list(true) + ",\"sell\":" + list(false) + "}}";
+  }
+
+  if (composite) {  // what the composite learnt: each input's weight (the expected move in daily volatilities it adds)
+    auto ws = composite->weights();
+    std::sort(ws.begin() + 1, ws.end(), [](const auto& a, const auto& b) { return std::fabs(a.second) > std::fabs(b.second); });
+    std::printf("strategy: the composite, learnt on %zu sessions; its weights (daily volatilities, open to close), largest first:\n", composite->learntDays());
+    for (std::size_t a = 0; a < ws.size() && a < 14; ++a) std::printf("strategy:   %+.4f  %s\n", ws[a].second, ws[a].first.c_str());
   }
 
   if (const char* tl = std::getenv("X_TRADELOG")) {
