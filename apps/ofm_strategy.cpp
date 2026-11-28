@@ -564,6 +564,9 @@ std::string jstr(const std::string& s) {
 class Composite : public strat::Strategy {
  public:
   const strat::Signals* tech = nullptr;
+  // comptarget 1: what a trade bought at day s's decision made on day s + 1 under its own learnt buy and bracket, in
+  // daily volatilities (0 not bought); set by the engine
+  std::function<double(std::size_t, std::size_t)> tradeOutcome;
   std::vector<std::string> names;
   std::vector<std::unique_ptr<strat::Strategy>> subs;
   std::vector<strat::Params> subP;
@@ -575,7 +578,11 @@ class Composite : public strat::Strategy {
   }
   std::string about() const override { return "every strategy's signal and the technical signals, weighed by a ridge regression learnt walk-forward"; }
   strat::Params defaults() const override {
-    return {{"rebalance", 1}, {"warmup", 260}, {"capsd", 1.5}, {"capmax", 0.03}, {"maxdays", 10}, {"comphalflife", 500}, {"compfit", 21}, {"compmin", 250}, {"compridge", 1e-3}};
+    return {{"rebalance", 1}, {"warmup", 260}, {"capsd", 1.5}, {"capmax", 0.03}, {"maxdays", 10}, {"comphalflife", 500}, {"compfit", 21}, {"compmin", 250}, {"compridge", 1e-3},
+            // compsel: 1 the orders by their final chance (the composite's second step), 0 by its expected move;
+            // comptarget: 0 learns the next session's open to close, 1 the trade's own result under its bracket;
+            // compbase: -1 every share, else only the shares this strategy scores (its place in --list, from 0) re-ranked
+            {"compsel", 1}, {"comptarget", 0}, {"compbase", -1}};
   }
   std::size_t K() const { return 1 + 2 * subs.size() + std::size_t(strat::Signals::K) + 2; }
   std::vector<std::string> featureNames() const {
@@ -602,7 +609,9 @@ class Composite : public strat::Strategy {
       for (const auto& [i, x] : it->second) {
         const double sg = v.sigma(s, i), o = v.open(s + 1, i), c = v.close(s + 1, i);
         if (!(sg > 0 && o > 0 && c > 0) || !v.bar(s + 1, i)) continue;
-        const double y = std::max(-5.0, std::min(5.0, (c / o - 1) / sg));
+        const double yr = p.at("comptarget") > 0 && tradeOutcome ? tradeOutcome(s, i) : (c / o - 1) / sg;
+        if (!std::isfinite(yr)) continue;
+        const double y = std::max(-5.0, std::min(5.0, yr));
         for (std::size_t a = 0; a < k; ++a) {
           if (x[a] == 0) continue;
           b[a] += x[a] * y;
@@ -625,8 +634,10 @@ class Composite : public strat::Strategy {
     }
     auto& day = pending[t];
     std::vector<std::pair<std::size_t, std::vector<double>>> kept;
+    const long base = long(p.at("compbase"));
     for (std::size_t i = 0; i < N; ++i) {
       if (!v.tradable(i)) continue;
+      if (base >= 0 && std::size_t(base) < subs.size() && !std::isfinite(pct[std::size_t(base)][i])) continue;  // compbase: its candidates only
       std::vector<double> x(k, 0.0);
       x[0] = 1;
       bool any = false;
@@ -650,9 +661,10 @@ class Composite : public strat::Strategy {
       // learnt from: every share with a signal, at most 1500 a day (a fixed sample of the rest: the share's index)
       kept.emplace_back(i, std::move(x));
     }
-    if (kept.size() > 1500) {
+    const std::size_t cap = p.at("comptarget") > 0 ? 80 : 1500;  // a trade's result costs its bracket's learning: fewer a day
+    if (kept.size() > cap) {
       std::vector<std::pair<std::size_t, std::vector<double>>> sub;
-      const std::size_t step = (kept.size() + 1499) / 1500;
+      const std::size_t step = (kept.size() + cap - 1) / cap;
       for (std::size_t j = t % step; j < kept.size(); j += step) sub.push_back(std::move(kept[j]));
       kept.swap(sub);
     }
@@ -1813,6 +1825,18 @@ int main(int argc, char** argv) {
     const double X = stopped ? Xs : tH ? Xt : C;
     return {X / E - 1, std::log(std::max(1e-6, X / E))};
   };
+  if (composite && tradeBr)  // comptarget: the trade decided at s's close under its own buy and bracket, its result on s + 1 in daily volatilities
+    composite->tradeOutcome = [&](std::size_t s, std::size_t i) -> double {
+      if (s + 1 >= T) return kNaN;
+      const auto lv = tradeLv(s, i);
+      const double sg = d.sigma[s * N + i], O = d.O[(s + 1) * N + i], Lw = d.L[(s + 1) * N + i];
+      if (!(sg > 0 && O > 0 && Lw > 0)) return kNaN;
+      if (P["staleopen"] > 0 && O == d.C[s * N + i]) return kNaN;
+      const double lim = lv[4];
+      const double E = O <= lim ? O : lv[5] > 0 && Lw <= lim ? lim : 0.0;
+      if (!(E > 0)) return 0.0;  // not bought: nothing made
+      return dayOutcome(s, s + 1, i, E, lv[0], lv[1], o.capital, false, lv[2]).first / sg;
+    };
   // sizeadapt: the trade's risk to its stop (a fraction of the decision's close) and its size (a fraction of the slot)
   const bool sizeAdapt = flatDaily && P["sizeadapt"] > 0;
   const bool staleOpen = P["staleopen"] > 0;
@@ -2245,7 +2269,7 @@ int main(int argc, char** argv) {
       }
       ++arms[pick].used;
       target = arms[pick].lists.back().second;
-    } else if (composite && tradeBr && !c.empty()) {
+    } else if (composite && tradeBr && P["compsel"] > 0 && !c.empty()) {
       // The composite ranker's second step: each share the composite scores (its expected move from every strategy,
       // the technical signals and its stretch) given its final chance, a fill times a gain over the costs once filled
       // (its own bracket's replay, calibrated on the composite's earlier orders with the composite's expected move, its
