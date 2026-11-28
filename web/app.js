@@ -86,8 +86,34 @@ function brokerNote(r, source, isLive) {
 }
 
 // The plan in plain words, the orders, and the backtest (folded away).
+// The technical screen (apps/ofm_strategy, backtest.technical): every share's classic buy and sell signals at the last
+// close, before any filter, each signal's record since (walk-forward, the next session's open to close) and the shares
+// with the best and the worst chance of an up session: indicative points to look into, the strategy's picks or not.
+function techScreen(r) {
+  const t = r.backtest?.technical, box = $('tech');
+  box.hidden = !t;
+  if (!t) return;
+  const p0 = (x) => (x == null ? '–' : `${(100 * x).toFixed(1)}%`);
+  $('tech-note').textContent = `At the close of ${t.asOf}: each share's chance of an up session (open to close) from its signals, as each signal has done since on every share. The market's own: ${p0(t.events?.[0]?.marketUp)}.`;
+  const rows = [...(t.screen?.buy || []).map((x) => ['better', x]), ...(t.screen?.sell || []).map((x) => ['worse', x])];
+  table($('tech-screen'), [['Share and its signals'], ['P(up)', 'num'], ['vs market', 'num']],
+    rows.length ? rows.map(([k, x]) => [[x.ticker.split(':').pop()], [p0(x.pUp), 'num'], [k, `num ${k === 'better' ? 'pos' : 'neg'}`]]) : [{ gap: 'No tradable share with a signal that sets it apart.' }]);
+  // each share's signals on a line of their own under it (a phone has no room for a column of them)
+  [...$('tech-screen').tBodies[0].rows].forEach((tr, j) => {
+    const x = rows[j]?.[1];
+    if (!x) return;
+    const sm = document.createElement('small');
+    sm.className = 'muted tech-events', sm.textContent = x.events;
+    tr.cells[0].append(document.createElement('br'), sm);
+  });
+  table($('tech-events'), [['Signal'], ['As', ''], ['Days', 'num'], ['P(up)', 'num'], ['Market', 'num opt'], ['Mean move', 'num']],
+    (t.events || []).map((e) => [[e.name], [e.kind], [String(e.days), 'num'], [p0(e.pUp), `num ${e.pUp > e.marketUp ? 'pos' : 'neg'}`], [p0(e.marketUp), 'num opt'],
+      [`${e.meanSigma >= 0 ? '+' : ''}${(e.meanSigma ?? 0).toFixed(3)} σ ± ${(e.se ?? 0).toFixed(3)}`, `num ${e.meanSigma > 2 * e.se ? 'pos' : e.meanSigma < -2 * e.se ? 'neg' : ''}`]]));
+}
+
 function render(r, source) {
   shown = r;
+  techScreen(r);
   const where = places(r, source);
   const n = r.orders.length, c = r.costs;
   const isLive = live.has(source);

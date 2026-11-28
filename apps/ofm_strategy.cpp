@@ -56,6 +56,7 @@
 #include "strategy/montecarlo.hpp"
 #include "strategy/neural.hpp"
 #include "strategy/resample.hpp"
+#include "strategy/signals.hpp"
 #include "strategy/strategy.hpp"
 
 using strat::kNaN;
@@ -451,7 +452,7 @@ struct Row {  // an order of the backtest
   // tradebracket: the probabilities on the day it was decided: the replay's (the share's last sessions under this
   // bracket, every day, the signal or not) and, learnt on the strategy's own earlier orders (its signals), the
   // calibrated chance of a fill, of a gain over the costs once filled, and the signal's own chance of that gain
-  double cost = 0, pfB = kNaN, pgB = kNaN, sigPct = kNaN, sigZ = kNaN, sigRun = kNaN, sigDist = kNaN, pFill = kNaN, pGain = kNaN, pSig = kNaN;
+  double cost = 0, pfB = kNaN, pgB = kNaN, sigPct = kNaN, sigZ = kNaN, sigRun = kNaN, sigDist = kNaN, pTech = kNaN, pFill = kNaN, pGain = kNaN, pSig = kNaN;
   bool filled = false, closed = false, stopped = false;
   std::size_t since = 0, days = 0;
 };
@@ -810,6 +811,10 @@ int main(int argc, char** argv) {
   us.minPrice = minPrice, us.minValue = minValue, us.warmup = warm, us.needValue = !noVolume, us.top = noVolume ? 0 : top;
   std::vector<char> in;
   strat::prepare(d, ps, us, in, *backend);
+  // The technical signals first: every share's buy and sell events on every day, before any filter, and what each has
+  // been worth since (walk-forward): the chances' inputs and the screen's indicative points
+  strat::Signals tech;
+  tech.compute(d);
 
   Costs costs;
   costs.market = M, costs.tiered = o.tiered;
@@ -1522,10 +1527,10 @@ int main(int argc, char** argv) {
     std::vector<std::vector<double>> Xf, Xg, Xs;
     std::vector<double> yf, yg;
     for (const auto& r : rs) {
-      if (r.t >= t || !std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigPct) || !std::isfinite(r.sigZ)) continue;
+      if (r.t >= t || !std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigPct) || !std::isfinite(r.sigZ) || !std::isfinite(r.pTech)) continue;
       if (r.filled && !r.closed) continue;
       Xf.push_back({1.0, logitOf(r.pfB)}), yf.push_back(r.filled ? 1.0 : 0.0);
-      if (r.filled) Xg.push_back({1.0, logitOf(r.pgB), r.sigPct, r.sigZ}), Xs.push_back({1.0, r.sigPct, r.sigZ}), yg.push_back(r.ret > r.cost ? 1.0 : 0.0);
+      if (r.filled) Xg.push_back({1.0, logitOf(r.pgB), r.sigPct, r.sigZ, logitOf(r.pTech)}), Xs.push_back({1.0, r.sigPct, r.sigZ, logitOf(r.pTech)}), yg.push_back(r.ret > r.cost ? 1.0 : 0.0);
     }
     calibAt = t;
     if (Xf.size() < 200 || Xg.size() < 60) return;
@@ -1545,11 +1550,11 @@ int main(int argc, char** argv) {
     return {cap((c / c5 - 1) / (s * std::sqrt(5.0))), cap((c / (m / n) - 1) / s)};
   };
   const auto calibrate = [&](Row& r) {  // the row's chances from the latest fit (the replay's own until there is one)
-    if (!std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigZ)) return;
+    if (!std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigZ) || !std::isfinite(r.pTech)) return;
     if (!calibOk) { r.pFill = r.pfB, r.pGain = r.pgB, r.pSig = kNaN; return; }
     r.pFill = sigmoidOf(wFill, {1.0, logitOf(r.pfB)});
-    r.pGain = sigmoidOf(wGain, {1.0, logitOf(r.pgB), r.sigPct, r.sigZ});
-    r.pSig = sigmoidOf(wSig, {1.0, r.sigPct, r.sigZ});
+    r.pGain = sigmoidOf(wGain, {1.0, logitOf(r.pgB), r.sigPct, r.sigZ, logitOf(r.pTech)});
+    r.pSig = sigmoidOf(wSig, {1.0, r.sigPct, r.sigZ, logitOf(r.pTech)});
   };
   const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
     const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
@@ -2626,6 +2631,7 @@ int main(int argc, char** argv) {
         r.sigPct = of > 1 ? double(rank) / double(of - 1) : 0.0;
         r.sigZ = sigZof(t, i);
         std::tie(r.sigRun, r.sigDist) = stretchOf(t, i);
+        r.pTech = tech.pUp(t, i);
         if (t >= calibAt + 21) calibFit(t, rows);
         calibrate(r);
       }
@@ -2864,14 +2870,49 @@ int main(int argc, char** argv) {
     }
   }
 
+  // The technical signals' record (every share-day with its next session, before any filter) and the day's screen:
+  // the shares whose events give the best and the worst chance of an up session (indicative points to investigate,
+  // whether or not the strategy picks them)
+  std::string techJson;
+  {
+    const std::size_t Lx = T - 1;
+    std::printf("strategy: the technical signals on every share before any filter, the next session's open to close (walk-forward record to %s):\n", d.days[Lx].c_str());
+    techJson = "{\"events\":[";
+    for (int e = 0; e < strat::Signals::K; ++e) {
+      const auto rc = tech.record(T, e);
+      std::printf("strategy:   %-4s %-36s %7.0f days, up %.1f%% (all shares %.1f%%), mean %+.3f ± %.3f volatilities\n", strat::Signals::buy(e) ? "buy" : "sell",
+                  strat::Signals::name[std::size_t(e)], rc[0], 100 * rc[1], 100 * rc[2], rc[3], rc[4]);
+      techJson += std::string(e ? "," : "") + "{\"name\":" + jstr(strat::Signals::name[std::size_t(e)]) + ",\"kind\":\"" + (strat::Signals::buy(e) ? "buy" : "sell") + "\",\"days\":" + jnum(rc[0], "%.0f") +
+                  ",\"pUp\":" + jnum(rc[1]) + ",\"marketUp\":" + jnum(rc[2]) + ",\"meanSigma\":" + jnum(rc[3]) + ",\"se\":" + jnum(rc[4]) + "}";
+    }
+    std::vector<std::pair<double, std::size_t>> sc;
+    for (std::size_t i = 0; i < N; ++i) {
+      const double p = tech.ev[Lx * N + i] && in[Lx * N + i] ? tech.pUp(Lx, i) : kNaN;  // the tradable shares (before the strategy's own filters)
+      if (std::isfinite(p)) sc.emplace_back(p, i);
+    }
+    std::sort(sc.begin(), sc.end());
+    const auto list = [&](bool best) {
+      std::string j = "[";
+      std::size_t q = 0;
+      for (std::size_t k2 = 0; k2 < sc.size() && q < 15; ++k2) {
+        const auto& [p, i] = best ? sc[sc.size() - 1 - k2] : sc[k2];
+        if (best ? !(p > tech.record(T, 0)[2]) : !(p < tech.record(T, 0)[2])) break;
+        j += std::string(q++ ? "," : "") + "{\"ticker\":" + jstr(d.tickers[i]) + ",\"pUp\":" + jnum(p) + ",\"events\":" + jstr(tech.names(Lx, i)) + ",\"tradable\":" + (in[Lx * N + i] ? "true" : "false") + "}";
+        if (q <= 5) std::printf("strategy:   screen %s %-14s P(up) %.1f%%: %s\n", best ? "buy " : "sell", d.tickers[i].c_str(), 100 * p, tech.names(Lx, i).c_str());
+      }
+      return j + "]";
+    };
+    techJson += "],\"asOf\":" + jstr(d.days[Lx]) + ",\"screen\":{\"buy\":" + list(true) + ",\"sell\":" + list(false) + "}}";
+  }
+
   if (const char* tl = std::getenv("X_TRADELOG")) {
     std::ofstream f(tl);
-    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret,take,stop,rebuym,close,sigma,dayentry,cost,p_fill_replay,p_gain_replay,signal_pct,signal_z,run5,dist20,p_fill,p_gain,p_signal" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
+    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret,take,stop,rebuym,close,sigma,dayentry,cost,p_fill_replay,p_gain_replay,signal_pct,signal_z,run5,dist20,p_technical,technical_events,p_fill,p_gain,p_signal" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
     for (const auto& r : rows) {
       f << d.days[r.t + 1] << ',' << d.tickers[r.i] << ',' << r.rank << ',' << jnum(r.limit) << ',' << jnum(r.expected) << ',' << (r.filled ? 1 : 0) << ','
         << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0)
         << ',' << jnum(r.take) << ',' << jnum(r.stop) << ',' << jnum(r.rebuyM) << ',' << jnum(r.close) << ',' << jnum(r.sigma) << ',' << (r.dayEntry ? 1 : 0)
-        << ',' << jnum(r.cost) << ',' << jnum(r.pfB) << ',' << jnum(r.pgB) << ',' << jnum(r.sigPct) << ',' << jnum(r.sigZ) << ',' << jnum(r.sigRun) << ',' << jnum(r.sigDist) << ',' << jnum(r.pFill) << ',' << jnum(r.pGain) << ',' << jnum(r.pSig);
+        << ',' << jnum(r.cost) << ',' << jnum(r.pfB) << ',' << jnum(r.pgB) << ',' << jnum(r.sigPct) << ',' << jnum(r.sigZ) << ',' << jnum(r.sigRun) << ',' << jnum(r.sigDist) << ',' << jnum(r.pTech) << ',' << tech.ev[r.t * N + r.i] << ',' << jnum(r.pFill) << ',' << jnum(r.pGain) << ',' << jnum(r.pSig);
       if (regK) f << ',' << jnum(r.turbulence) << ',' << jnum(r.ahead) << ',' << jnum(r.marketVol) << ',' << jnum(r.shareVol);
       f << '\n';
     }
@@ -3008,6 +3049,7 @@ int main(int argc, char** argv) {
       q.sigPct = of > 1 ? double(x.rank) / double(of - 1) : 0.0;
       q.sigZ = sigZof(L, x.i);
       std::tie(q.sigRun, q.sigDist) = stretchOf(L, x.i);
+      q.pTech = tech.pUp(L, x.i);
       calibrate(q);
       x.cFill = q.pFill, x.cGain = q.pGain, x.cSig = q.pSig;
     }
@@ -3413,7 +3455,7 @@ int main(int argc, char** argv) {
       f << "]}";
     }
     if (mcOn) f << "}";
-    f << ",\"probCheck\":" << probJson;
+    f << ",\"probCheck\":" << probJson << ",\"technical\":" << techJson;
     f << "}";  // the backtest
     f << ",\"orders\":[";
     for (std::size_t q = 0; q < final.size(); ++q) {
@@ -3429,6 +3471,7 @@ int main(int argc, char** argv) {
         << ",\"takeRel\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"stopRel\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"probs\":" << (tradeBr && x.pr[1] > 0 ? "{\"days\":" + jnum(x.pr[0]) + ",\"fill\":" + jnum(x.cFill) + ",\"auction\":" + jnum(x.pr[2] / x.pr[1]) + ",\"take\":" + jnum(x.pr[3] / x.pr[1]) + ",\"stop\":" + jnum(x.pr[4] / x.pr[1]) + ",\"buyback\":" + (x.pr[4] > 0 ? jnum(x.pr[5] / x.pr[4]) : std::string("null")) + ",\"gain\":" + jnum(x.pr[6] / x.pr[1]) + ",\"netGain\":" + jnum(x.cGain) + ",\"meanIfFilled\":" + jnum(x.pr[8] / x.pr[1]) + ",\"fillReplay\":" + jnum(x.pr[1] / x.pr[0]) + ",\"netGainReplay\":" + jnum(x.pr[7] / x.pr[1]) + ",\"signal\":" + jnum(x.cSig) + ",\"final\":" + jnum(x.cFill * x.cGain) + "}" : std::string("null"))
+        << ",\"technical\":{\"pUp\":" << jnum(tech.pUp(L, x.i)) << ",\"events\":" << jstr(tech.names(L, x.i)) << "}"
         << ",\"rebuyRel\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i]) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
@@ -3482,8 +3525,9 @@ int main(int argc, char** argv) {
         << ",\"costAmount\":" << jnum(x.cost * x.value, "%.4g") << ",\"stampFree\":" << (costs.stampFree.count(d.tickers[x.i]) ? "true" : "false") << ",\"rank\":" << x.rank + 1
         << ",\"reserve\":" << (x.rank >= nBook ? "true" : "false") << ",\"vstop\":" << (vstop ? jnum(vOf(x.i)) : "null") << ",\"psarVol\":" << (psarVol ? jnum(vOf(x.i)) : "null") << "}";
     }
+    f << "],\"technical\":" << techJson;
     // The day's top-ranked shares (the bridge's 5-minute bars and recordings follow them): the orders' rivals by score.
-    f << "],\"candidates\":[";
+    f << ",\"candidates\":[";
     {
       std::vector<std::pair<double, std::size_t>> cand;
       ranked(*strategy, P, L, cand);

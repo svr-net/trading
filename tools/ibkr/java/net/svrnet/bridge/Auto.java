@@ -740,8 +740,8 @@ final class Auto {
     static final int INTRADAY_LINES = Integer.parseInt(env("INTRADAY_LINES", "40", false));
 
     /**
-     * The market's 5-minute bars from IBKR, kept in the store (Recordings.intraday): the day's orders and candidates
-     * (at most INTRADAY_LINES), the last `days` sessions; after each report the day's (1), on demand a backfill.
+     * The market's 5-minute bars from IBKR, kept in the store (Recordings.intraday): the day's orders, candidates and
+     * technical screen (at most INTRADAY_LINES), the last `days` sessions; after each report the day's (1), on demand a backfill.
      */
     @SuppressWarnings("unchecked")
     static Done fetchIntraday(String m, int days) {
@@ -754,6 +754,12 @@ final class Auto {
             Set<String> tickers = new LinkedHashSet<>();
             for (String k : List.of("orders", "candidates"))
                 if (book.get(k) instanceof List) for (Object o : (List<Object>) book.get(k)) if (o instanceof Map && ((Map<String, Object>) o).get("ticker") != null) tickers.add(String.valueOf(((Map<String, Object>) o).get("ticker")));
+            // the technical screen's shares (the engine's indicative points, best and worst), to look into intraday
+            if (book.get("technical") instanceof Map && ((Map<String, Object>) book.get("technical")).get("screen") instanceof Map) {
+                Map<String, Object> screen = (Map<String, Object>) ((Map<String, Object>) book.get("technical")).get("screen");
+                for (String k : List.of("buy", "sell"))
+                    if (screen.get(k) instanceof List) for (Object o : (List<Object>) screen.get(k)) if (o instanceof Map && ((Map<String, Object>) o).get("ticker") != null) tickers.add(String.valueOf(((Map<String, Object>) o).get("ticker")));
+            }
             List<String> list = new ArrayList<>(tickers).subList(0, Math.min(tickers.size(), INTRADAY_LINES));
             PAUSE.clearIfFree();
             Steps.Result r = Recordings.intraday(m, list, days, PAUSE, Auto::err);
