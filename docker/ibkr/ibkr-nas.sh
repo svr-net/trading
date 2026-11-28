@@ -9,8 +9,10 @@
 # It reads the answers setup-nas.sh saved in docker/ibkr/nas/.env (IBKR_ENV to use another file):
 # the IBKR login, TRADING_MODE, EOD_TOKEN, CAPITAL, AUTO_MARKETS, TZ, BRIDGE_KEY, HTTPS_MODE,
 # HTTPS_PORT and, for HTTPS_MODE=synology, CERT_DIR (DSM's certificate folder, read-only). The orders'
-# history stays in docker/ibkr/nas/history. Nothing is built here: the image comes from GitHub's
-# registry, else from the repository's nas-images release over IPv4.
+# history stays in docker/ibkr/nas/history. Nothing is compiled here: the image comes from GitHub's registry
+# (an update downloads only its changed layers), else from the repository's nas-images release over IPv4: its base
+# (the system and IB Gateway) only when it changed and the bridge's files, made into the image by copying
+# (Dockerfile.nas); the whole image in one file as the last resort.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -31,13 +33,44 @@ mkdir -p "$DIR/history"
 
 # --- The image ---------------------------------------------------------------------------------------
 ARCH=$(uname -m); case "$ARCH" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) die "processor $(uname -m) not supported" ;; esac
-say "Getting $IMG (at most 3 minutes from the registry)..."
-if ! timeout 180 docker pull -q "$IMG" >/dev/null 2>&1; then
-  url=https://github.com/svr-net/trading/releases/download/nas-images/$NAME-$ARCH.tar.gz
-  say "  the registry did not answer: downloading $url over IPv4"
-  curl -4 -fsSL --retry 3 --connect-timeout 20 --max-time 1800 "$url" -o "/tmp/$NAME.tar.gz" || die "could not download $url"
-  gunzip -c "/tmp/$NAME.tar.gz" | docker load -q >/dev/null || die "could not load the image"
-  rm -f "/tmp/$NAME.tar.gz"
+REL=https://github.com/svr-net/trading/releases/download/nas-images
+get() { curl -4 -fsSL --retry 3 --connect-timeout 20 --max-time 1800 "$1" -o "$2"; }
+# Without the registry: the release's two parts. The base (the system and IB Gateway, ~230 MB) only when this NAS
+# lacks it (its name is its layers'), the bridge's files (~5 MB) every time; the image made from them by copying.
+from_parts() {
+  key=$(curl -4 -fsS --retry 3 --connect-timeout 20 "$REL/$NAME-base-$ARCH.key") || return 1
+  key=$(printf '%s' "$key" | tr -cd '0-9a-f')
+  [ -n "$key" ] || return 1
+  if docker image inspect "$NAME-base:$key" >/dev/null 2>&1; then
+    say "  the base $key is here already: only the bridge is downloaded"
+  else
+    say "  downloading the base $key (the system and IB Gateway, once until they change)"
+    get "$REL/$NAME-base-$ARCH.tar.gz" "/tmp/$NAME-base.tar.gz" || return 1
+    gunzip -c "/tmp/$NAME-base.tar.gz" | docker load -q >/dev/null || { rm -f "/tmp/$NAME-base.tar.gz"; return 1; }
+    rm -f "/tmp/$NAME-base.tar.gz"
+  fi
+  t=$(mktemp -d)
+  get "$REL/$NAME-bridge.tar.gz" "$t/bridge.tar.gz" && tar xzf "$t/bridge.tar.gz" -C "$t" && rm -f "$t/bridge.tar.gz" \
+    && docker build -q --build-arg "BASE=$NAME-base:$key" --build-arg "VERSION=$(cat "$t/VERSION")" -t "$IMG" "$t" >/dev/null
+  rc=$?
+  rm -rf "$t"
+  [ $rc = 0 ] || return 1
+  # the older bases go (the container runs the new image)
+  for old in $(docker images --format '{{.Repository}}:{{.Tag}}' "$NAME-base" 2>/dev/null); do
+    [ "$old" = "$NAME-base:$key" ] || docker image rm "$old" >/dev/null 2>&1 || true
+  done
+}
+say "Getting $IMG (at most 5 minutes from the registry; an update downloads only the bridge's layers)..."
+if ! timeout 300 docker pull -q "$IMG" >/dev/null 2>&1; then
+  say "  the registry did not answer: the release's parts over IPv4"
+  if [ -n "${IBKR_TAG:-}" ] || ! from_parts; then
+    # an earlier image (IBKR_TAG) or the parts failing: the whole image in one file
+    url=$REL/$NAME-$ARCH.tar.gz
+    say "  downloading the whole image: $url"
+    get "$url" "/tmp/$NAME.tar.gz" || die "could not download $url"
+    gunzip -c "/tmp/$NAME.tar.gz" | docker load -q >/dev/null || die "could not load the image"
+    rm -f "/tmp/$NAME.tar.gz"
+  fi
 fi
 docker image inspect "$IMG" >/dev/null 2>&1 || die "$IMG is not there"
 

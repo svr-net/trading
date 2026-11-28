@@ -74,13 +74,12 @@ RUN set -e; bash /tmp/slim-rootfs.sh /rootfs; \
     j=$(cd /rootfs-gw && find home/ibgateway -path '*/jre/bin/java' -type f | head -1); test -n "$j"; ln -s "/$j" /rootfs-gw/app/java; \
     chroot /rootfs /bin/bash -c 'set -e; xkbcomp -version; envsubst --version | head -1; setpriv --version; openssl version; curl --version | head -1; pgrep --version; busybox true; command -v Xvfb'
 
-FROM scratch
+# The base: everything but the bridge (the system and IB Gateway, which change only with the gateway's image). The
+# nas-images release carries it on its own, so a NAS without the registry downloads it only when it changed and
+# makes the image from it and the bridge's few files (ibkr-nas.sh, Dockerfile.nas).
+FROM scratch AS base
 COPY --from=gateway /rootfs /
 COPY --from=gateway /rootfs-gw /
-COPY --from=java --chmod=644 /build/bridge.jar /app/bridge.jar
-COPY --chmod=755 docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
-COPY --chmod=755 docker/ibkr/gateway-run.sh /app/scripts/run.sh
-ARG VERSION=unknown
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/home/ibgateway \
     TWS_PATH=/home/ibgateway/Jts \
@@ -91,7 +90,6 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     IBC_INI_TMPL=/home/ibgateway/ibc/config.ini.tmpl \
     SCRIPT_PATH=/app/scripts \
     GATEWAY_OR_TWS=gateway \
-    BRIDGE_VERSION=$VERSION \
     GATEWAY_RESTART=local \
     IBC_COMMAND_PORT=7462 \
     IB_HOST=127.0.0.1 \
@@ -106,3 +104,11 @@ EXPOSE 8765
 HEALTHCHECK --interval=60s --timeout=20s --start-period=180s --retries=3 \
   CMD curl -skf --max-time 15 https://127.0.0.1:8765/live >/dev/null || curl -sf --max-time 15 http://127.0.0.1:8765/live >/dev/null || exit 1
 CMD ["/app/ibkr-start.sh"]
+
+# The image: the base and the bridge (its last, small layers: an update downloads only them).
+FROM base
+COPY --from=java --chmod=644 /build/bridge.jar /app/bridge.jar
+COPY --chmod=755 docker/ibkr/ibkr-start.sh /app/ibkr-start.sh
+COPY --chmod=755 docker/ibkr/gateway-run.sh /app/scripts/run.sh
+ARG VERSION=unknown
+ENV BRIDGE_VERSION=$VERSION
