@@ -46,9 +46,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include <filesystem>
 #ifndef __EMSCRIPTEN__
 #include <unistd.h>
-#include <filesystem>
 #endif
 
 #include "strategy/backend.hpp"
@@ -3567,7 +3567,7 @@ int main(int argc, char** argv) {
   }
   if (lcOn) {  // the learn cache: every trade learnt or read this run, for the next (a temporary file renamed: whole or not at all)
     std::filesystem::create_directories(lcDir);
-    const std::string tmp = lcPath + ".tmp" + std::to_string(::getpid());
+    const std::string tmp = lcPath + ".tmp" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
       bool ok = true;
       for (const auto& [ck, cv] : lcNew) ok = ok && std::fwrite(&ck, sizeof ck, 1, f) == 1 && std::fwrite(cv.data(), sizeof(double), 9, f) == 9;
