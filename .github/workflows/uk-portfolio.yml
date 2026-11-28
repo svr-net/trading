@@ -217,7 +217,13 @@ jobs:
           # the opening auction's price) in place of the store's where it has them: EODData's open for a thin
           # share is not the auction's (4 Nov HCM: the store's open 2.4% under the limit, IBKR filled at the
           # limit), so the model learns and backtests on prices that traded.
+          # Kept by month since 28 Nov (ibkr/MARKET/daily/yyyy-mm.csv: the whole file's uploads were refused with 401),
+          # put back together here; the older single file while the months are not there yet.
           IB="data/eoddata/ibkr/$MARKET/daily.csv"
+          if ls data/eoddata/ibkr/"$MARKET"/daily/*.csv >/dev/null 2>&1; then
+            IB="data/ibkr-$MARKET.csv"; first=1
+            for f in data/eoddata/ibkr/"$MARKET"/daily/*.csv; do if [ $first = 1 ]; then cat "$f"; first=0; else tail -n +2 "$f"; fi; done > "$IB"
+          fi
           if [ -s "$IB" ] && [ "$(wc -l < "$IB")" -gt 1 ]; then STAMP+=(--override "$IB"); echo "IBKR bars: $(($(wc -l < "$IB") - 1)) rows in place of the store's"; else echo "IBKR bars: none for $MARKET in the store; the store's bars are used"; fi
           # The amount a trade (IBKR's fixed pricing, the account's): GBP 5,000 in the UK (GBP 3 an order up
           # to GBP 6,000), USD 5,000 in the US, EUR 5,000 in Europe, 5,000 in Asia-Pacific (AUD, SGD; the

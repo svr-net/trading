@@ -11,6 +11,7 @@ const STRATEGIES = [
   ['hvp', 'High-volume return premium', 'days of extreme volume'],
   ['tom', 'Turn of the month', 'high betas, around the month end'],
   ['breakout', '20-day breakout', 'new highs in an uptrend'],
+  ['composite', 'Composite', 'every strategy and the technical signals, weighed as learnt'],
 ];
 const stored = (k, d = '') => { try { return localStorage.getItem(k) || d; } catch { return d; } };
 const store = (k, v) => { try { localStorage.setItem(k, v); } catch { /* not kept */ } };

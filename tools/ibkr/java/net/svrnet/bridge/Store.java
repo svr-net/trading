@@ -157,6 +157,76 @@ final class Store {
         }
     }
 
+    /** The names in a store folder (empty when it is not there). */
+    static java.util.List<String> list(String dir) throws IOException {
+        HttpURLConnection c = open(BASE + dir, "application/vnd.github+json", 60);
+        int code = c.getResponseCode();
+        if (code == 404) return java.util.List.of();
+        if (code != 200) throw new Http(code, why(c));
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try (InputStream in = c.getInputStream()) {
+            Object j = JsonParse.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            if (j instanceof java.util.List<?> l)
+                for (Object x : l) if (x instanceof Map<?, ?> m && m.get("name") != null) out.add(String.valueOf(m.get("name")));
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
+    /**
+     * IBKR's daily bars of a market in the store: one file a month (ibkr/MARKET/daily/yyyy-mm.csv, each with the
+     * header), so an upload is a month's few hundred kB, not the whole 6-12 MB file GitHub refused with 401 (23-28 Nov);
+     * only the months whose rows changed are written. rows: the header first, then the rows (date first), in order.
+     */
+    static int putDailyByMonth(String market, java.util.List<String[]> rows, String message) throws IOException {
+        int wrote = 0;
+        for (Map.Entry<String, byte[]> e : byMonth(rows).entrySet()) {
+            String path = "ibkr/" + market + "/daily/" + e.getKey() + ".csv";
+            byte[] was = get(path);
+            if (was != null && java.util.Arrays.equals(was, e.getValue())) continue;
+            put(path, e.getValue(), message + " " + e.getKey());
+            wrote++;
+        }
+        return wrote;
+    }
+
+    /** The rows (the header first) split by month (yyyy-mm, from the date's first 7 characters): each month's file, the header first. */
+    static java.util.TreeMap<String, byte[]> byMonth(java.util.List<String[]> rows) {
+        java.util.TreeMap<String, StringBuilder> m = new java.util.TreeMap<>();
+        java.util.TreeMap<String, byte[]> out = new java.util.TreeMap<>();
+        if (rows.size() < 2) return out;
+        String head = Csv.line(rows.get(0));
+        for (String[] r : rows.subList(1, rows.size())) {
+            if (r.length == 0 || r[0].length() < 7) continue;
+            m.computeIfAbsent(r[0].substring(0, 7), k -> new StringBuilder(head).append("\r\n")).append(Csv.line(r)).append("\r\n");
+        }
+        for (Map.Entry<String, StringBuilder> e : m.entrySet()) out.put(e.getKey(), e.getValue().toString().getBytes(StandardCharsets.UTF_8));
+        return out;
+    }
+
+    /** Month files back into one CSV: the first one whole, the others without their header line. */
+    static byte[] join(java.util.List<byte[]> months) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        boolean first = true;
+        for (byte[] b : months) {
+            if (b == null) continue;
+            String t = new String(b, StandardCharsets.UTF_8);
+            int nl = t.indexOf('\n');
+            out.writeBytes((first || nl < 0 ? t : t.substring(nl + 1)).getBytes(StandardCharsets.UTF_8));
+            first = false;
+        }
+        return out.size() > 0 ? out.toByteArray() : null;
+    }
+
+    /** A market's IBKR daily bars from the store as one CSV: its months put together, else the older single file (null: none). */
+    static byte[] getDaily(String market) throws IOException {
+        java.util.List<String> names = list("ibkr/" + market + "/daily");
+        if (names.isEmpty()) return get("ibkr/" + market + "/daily.csv");
+        java.util.List<byte[]> months = new java.util.ArrayList<>();
+        for (String n : names) if (n.endsWith(".csv")) months.add(get("ibkr/" + market + "/daily/" + n));
+        return join(months);
+    }
+
     static final class Http extends IOException {
         final int code;
 

@@ -45,14 +45,15 @@
           "--order-model",
           "tools/order-model.json"
         ],
-        "name": "breakout",
-        "strategy": "breakout",
+        "name": "composite",
+        "strategy": "composite",
         "params": {
           "intraday": 1,
           "stopslip": 0.1,
           "rebuyday": 1,
           "tradebracket": 1,
-          "staleopen": 1
+          "staleopen": 1,
+          "compsel": 0
         }
       },
       "shadows": [],
