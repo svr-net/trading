@@ -137,9 +137,11 @@ function render(r, source) {
   const states = r.orders.some((o) => o.state?.ahead != null);
   if (states) head.push(['Market', 'num opt']);
   head.push(['Expected', 'num']);
-  // tradebracket: each order's probabilities from its own replayed days; P(net gain) = P(fill) x P(gain over costs | fill)
+  // tradebracket: each order's probabilities: its own replayed days, calibrated on the strategy's earlier signals (learnt
+  // on its past orders only); P(net gain) = P(fill) x P(gain over costs | fill, the signal); P(signal): the signal's own
+  // chance of a gain over the costs once filled, from its strength alone
   const probs = r.orders.some((o) => o.probs);
-  if (probs) head.push(['P(net gain)', 'num'], ['P(fill)', 'num opt'], ['P(TP · SL | fill)', 'num opt']);
+  if (probs) head.push(['P(net gain)', 'num'], ['P(fill)', 'num opt'], ['P(signal)', 'num opt'], ['P(TP · SL | fill)', 'num opt']);
   table($('plan'), head,
     n ? r.orders.map((o) => {
       const row = [[o.ticker], [o.limit == null ? 'open' : o.entry === 'open' ? (atOpen ? `≤ ${pct(o.limit, 1)}` : `open, ≤ ${pct(o.limit, 1)}`) : pct(o.limit, 1), 'num']];
@@ -158,7 +160,7 @@ function render(r, source) {
       if (probs) {
         const pr = o.probs, p0 = (x) => (x == null ? '–' : `${Math.round(100 * x)}%`);
         row.push(pr ? [p0(pr.final), 'num'] : ['–', 'num'], pr ? [`${p0(pr.fill)}${pr.auction != null && pr.auction < 1 ? ` (${p0(pr.auction)} auction)` : ''}`, 'num opt'] : ['–', 'num opt'],
-          pr ? [`${p0(pr.take)} · ${p0(pr.stop)}`, 'num opt'] : ['–', 'num opt']);
+          pr ? [p0(pr.signal), 'num opt'] : ['–', 'num opt'], pr ? [`${p0(pr.take)} · ${p0(pr.stop)}`, 'num opt'] : ['–', 'num opt']);
       }
       return row;
     }) : [{ gap: full ? `No new orders: every one of the model's ${r.slots} slots is held, and no other share is expected to gain${c?.net === false && !c?.atEnd ? '' : ' after its costs'}.`

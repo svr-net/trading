@@ -448,6 +448,10 @@ struct Row {  // an order of the backtest
   double turbulence = kNaN, ahead = kNaN, marketVol = kNaN, shareVol = kNaN;  // mcregime: the market's state when it was decided (regimeState)
   double take = kNaN, stop = kNaN, rebuyM = kNaN, close = kNaN, sigma = kNaN;  // the trade's bracket as decided (X_TRADELOG: the intraday study)
   bool dayEntry = false;
+  // tradebracket: the probabilities on the day it was decided: the replay's (the share's last sessions under this
+  // bracket, every day, the signal or not) and, learnt on the strategy's own earlier orders (its signals), the
+  // calibrated chance of a fill, of a gain over the costs once filled, and the signal's own chance of that gain
+  double cost = 0, pfB = kNaN, pgB = kNaN, sigPct = kNaN, sigZ = kNaN, sigRun = kNaN, sigDist = kNaN, pFill = kNaN, pGain = kNaN, pSig = kNaN;
   bool filled = false, closed = false, stopped = false;
   std::size_t since = 0, days = 0;
 };
@@ -477,6 +481,51 @@ struct Learnt {  // the strategy's past trades by their place on the list, known
   }
   double holdDays(double fallback) const { return nDays > 0 ? days / nDays : fallback; }
 };
+
+// A logistic regression (ridge 1e-2, Newton's method): the chance of y given x (x's first column the constant).
+std::vector<double> fitLogit(const std::vector<std::vector<double>>& X, const std::vector<double>& y) {
+  const std::size_t m = X.empty() ? 0 : X[0].size();
+  std::vector<double> w(m, 0.0);
+  for (int it = 0; it < 25 && m; ++it) {
+    std::vector<double> g(m, 0.0), H(m * m, 0.0);
+    for (std::size_t r = 0; r < X.size(); ++r) {
+      double z = 0;
+      for (std::size_t a = 0; a < m; ++a) z += w[a] * X[r][a];
+      const double p = 1 / (1 + std::exp(-z)), v = std::max(1e-9, p * (1 - p));
+      for (std::size_t a = 0; a < m; ++a) {
+        g[a] += (y[r] - p) * X[r][a];
+        for (std::size_t b = 0; b < m; ++b) H[a * m + b] += v * X[r][a] * X[r][b];
+      }
+    }
+    for (std::size_t a = 0; a < m; ++a) g[a] -= 1e-2 * w[a], H[a * m + a] += 1e-2;
+    // solve H dw = g (Gauss-Jordan, m <= 4)
+    std::vector<double> A(H), b(g);
+    for (std::size_t c = 0; c < m; ++c) {
+      std::size_t piv = c;
+      for (std::size_t r = c + 1; r < m; ++r) if (std::fabs(A[r * m + c]) > std::fabs(A[piv * m + c])) piv = r;
+      for (std::size_t k = 0; k < m; ++k) std::swap(A[c * m + k], A[piv * m + k]);
+      std::swap(b[c], b[piv]);
+      const double dg = A[c * m + c];
+      if (std::fabs(dg) < 1e-12) return w;
+      for (std::size_t r = 0; r < m; ++r) {
+        if (r == c) continue;
+        const double f = A[r * m + c] / dg;
+        for (std::size_t k = 0; k < m; ++k) A[r * m + k] -= f * A[c * m + k];
+        b[r] -= f * b[c];
+      }
+    }
+    double step = 0;
+    for (std::size_t a = 0; a < m; ++a) { const double dw = b[a] / A[a * m + a]; w[a] += dw; step = std::max(step, std::fabs(dw)); }
+    if (step < 1e-7) break;
+  }
+  return w;
+}
+double logitOf(double p) { p = std::min(1 - 1e-4, std::max(1e-4, p)); return std::log(p / (1 - p)); }
+double sigmoidOf(const std::vector<double>& w, const std::vector<double>& x) {
+  double z = 0;
+  for (std::size_t a = 0; a < w.size() && a < x.size(); ++a) z += w[a] * x[a];
+  return 1 / (1 + std::exp(-z));
+}
 
 std::string jnum(double x, const char* f = "%.6g") {
   if (!std::isfinite(x)) return "null";
@@ -1461,6 +1510,47 @@ int main(int argc, char** argv) {
     }
     return r;
   };
+  // The signal's probabilities, learnt on the strategy's own earlier orders (the days its signal fired, not every
+  // day): a fill from the replay's fill chance; a gain over the costs once filled from the replay's chance of it and
+  // the signal's strength (its place among the day's scored shares); the signal's own chance of that gain from its
+  // strength alone. Refit every 21 sessions on the orders decided before (none of the day's own); until 200 orders
+  // (60 filled) the replay's chances stand.
+  std::vector<double> wFill, wGain, wSig;
+  std::size_t calibAt = 0;
+  bool calibOk = false;
+  const auto calibFit = [&](std::size_t t, const std::vector<Row>& rs) {
+    std::vector<std::vector<double>> Xf, Xg, Xs;
+    std::vector<double> yf, yg;
+    for (const auto& r : rs) {
+      if (r.t >= t || !std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigPct) || !std::isfinite(r.sigZ)) continue;
+      if (r.filled && !r.closed) continue;
+      Xf.push_back({1.0, logitOf(r.pfB)}), yf.push_back(r.filled ? 1.0 : 0.0);
+      if (r.filled) Xg.push_back({1.0, logitOf(r.pgB), r.sigPct, r.sigZ}), Xs.push_back({1.0, r.sigPct, r.sigZ}), yg.push_back(r.ret > r.cost ? 1.0 : 0.0);
+    }
+    calibAt = t;
+    if (Xf.size() < 200 || Xg.size() < 60) return;
+    wFill = fitLogit(Xf, yf), wGain = fitLogit(Xg, yg), wSig = fitLogit(Xs, yg), calibOk = true;
+  };
+  // how stretched the share is when the signal fires: its last 5 sessions' move and its distance from its 20-session
+  // mean, both in its daily volatilities (capped at 6), for the trade log's analysis (not in the chances: in the
+  // backtests to Nov 2026 they made the chance of a gain no better, though EU's breakouts gained more the more stretched)
+  const auto stretchOf = [&](std::size_t t, std::size_t i) -> std::pair<double, double> {
+    const double c = d.Cf[t * N + i], s = d.sigma[t * N + i];
+    if (t < 20 || !(c > 0) || !std::isfinite(s) || !(s > 0)) return {kNaN, kNaN};
+    const double c5 = d.Cf[(t - 5) * N + i];
+    double m = 0, n = 0;
+    for (std::size_t q = t - 19; q <= t; ++q) if (d.Cf[q * N + i] > 0) m += d.Cf[q * N + i], n += 1;
+    if (!(c5 > 0) || n < 15) return {kNaN, kNaN};
+    const auto cap = [](double x) { return std::max(-6.0, std::min(6.0, x)); };
+    return {cap((c / c5 - 1) / (s * std::sqrt(5.0))), cap((c / (m / n) - 1) / s)};
+  };
+  const auto calibrate = [&](Row& r) {  // the row's chances from the latest fit (the replay's own until there is one)
+    if (!std::isfinite(r.pfB) || !std::isfinite(r.pgB) || !std::isfinite(r.sigZ)) return;
+    if (!calibOk) { r.pFill = r.pfB, r.pGain = r.pgB, r.pSig = kNaN; return; }
+    r.pFill = sigmoidOf(wFill, {1.0, logitOf(r.pfB)});
+    r.pGain = sigmoidOf(wGain, {1.0, logitOf(r.pgB), r.sigPct, r.sigZ});
+    r.pSig = sigmoidOf(wSig, {1.0, r.sigPct, r.sigZ});
+  };
   const auto dayOutcome = [&](std::size_t t, std::size_t u, std::size_t i, double E, double tk, double sl, double value, bool count, double m, double* pFill = nullptr) -> std::pair<double, double> {
     const double O = d.O[u * N + i], Lw = d.L[u * N + i], C = d.Cf[u * N + i] > 0 ? d.Cf[u * N + i] : E;
     // a buy during the day (at a limit under the open): its take-profit counted only when the day closed at or over it
@@ -1652,6 +1742,20 @@ int main(int argc, char** argv) {
   std::vector<std::size_t> target, reserve;  // reserve (refill): the next shares for the slots stops free
   std::vector<std::size_t> simReserve;
   std::vector<double> score, daily, dailyNet;  // dailyNet: after the buy-backs' round trips
+  // the signal's strength: its score's distance from the day's scored shares' mean, in their standard deviations
+  // (capped at 4; the strategy's direction: invert flips it)
+  std::size_t zAt = std::size_t(-1);
+  double zMu = 0, zSd = 1;
+  const auto sigZof = [&](std::size_t t, std::size_t i) {
+    if (i >= score.size() || !std::isfinite(score[i])) return kNaN;
+    if (zAt != t) {
+      double n = 0, s1 = 0, s2 = 0;
+      for (double v : score) if (std::isfinite(v)) n += 1, s1 += v, s2 += v * v;
+      zMu = n > 0 ? s1 / n : 0, zSd = n > 1 ? std::sqrt(std::max(1e-18, s2 / n - zMu * zMu)) : 1, zAt = t;
+    }
+    const double z = (score[i] - zMu) / zSd * (P["invert"] > 0 ? -1 : 1);
+    return std::max(-4.0, std::min(4.0, z));
+  };
   std::vector<std::string> dailyDays;
   std::map<std::size_t, std::size_t> lastHeld;  // share -> the last day it was in the book
   Learnt learnt(k);
@@ -2515,6 +2619,16 @@ int main(int argc, char** argv) {
       r.limit = tradeBr ? tradeLv(t, i)[4] : d.Cf[t * N + i] * (1 + capOf(t, i));
       const bool dayEntry = tradeBr ? tradeLv(t, i)[5] > 0 : entryDay;
       if (flatDaily) r.take = takeOf(t, i), r.stop = stopOf(t, i), r.rebuyM = mOf(t, i), r.close = d.Cf[t * N + i], r.sigma = d.sigma[t * N + i], r.dayEntry = dayEntry;
+      if (tradeBr) {  // the order's chances as known on the day (the costs only here)
+        r.cost = costs.roundTrip(o.capital, d.tickers[i], d.Cf[t * N + i] / unit);
+        const auto pr = tradeProbs(t, i, r.cost);
+        r.pfB = pr[0] > 0 ? pr[1] / pr[0] : kNaN, r.pgB = pr[1] > 0 ? pr[7] / pr[1] : kNaN;
+        r.sigPct = of > 1 ? double(rank) / double(of - 1) : 0.0;
+        r.sigZ = sigZof(t, i);
+        std::tie(r.sigRun, r.sigDist) = stretchOf(t, i);
+        if (t >= calibAt + 21) calibFit(t, rows);
+        calibrate(r);
+      }
       stamp(r);
       if (trace) std::fprintf(trace, "%s,%s,%.6g,%.8g,%zu\n", d.days[t].c_str(), d.tickers[i].c_str(), r.limit / d.Cf[t * N + i] - 1, r.expected, rank);
       const double O = d.O[u * N + i], C = d.Cf[u * N + i], Lo = d.L[u * N + i];
@@ -2711,13 +2825,53 @@ int main(int argc, char** argv) {
   for (const auto& r : rows)
     if (r.filled) nFilled += 1, sumTrade += r.ret, nWin += r.ret > 0;
 
+  // tradebracket: the probabilities against what happened, on the orders decided once the signal's chances were
+  // learnt (each from a fit on earlier orders only): the Brier score of the final chance (a fill times a gain over
+  // the costs) from the replay alone and calibrated on the signals, and the orders in fifths of the calibrated chance
+  // (its mean, the share that did gain over the costs, the mean return after costs per order).
+  std::string probJson = "null";
+  if (tradeBr) {
+    std::vector<std::array<double, 4>> pc;  // calibrated final, replay final, outcome, net return
+    double nFl = 0, bGr = 0, bGc = 0, bS = 0;
+    for (const auto& r : rows) {
+      if (!std::isfinite(r.pSig) || (r.filled && !r.closed)) continue;
+      const double y = r.filled && r.ret > r.cost ? 1.0 : 0.0;
+      pc.push_back({r.pFill * r.pGain, r.pfB * r.pgB, y, r.filled ? r.ret - r.cost : 0.0});
+      if (r.filled) nFl += 1, bGr += (r.pgB - y) * (r.pgB - y), bGc += (r.pGain - y) * (r.pGain - y), bS += (r.pSig - y) * (r.pSig - y);
+    }
+    if (pc.size() >= 50) {
+      double br = 0, bc = 0, base = 0;
+      for (const auto& x : pc) bc += (x[0] - x[2]) * (x[0] - x[2]), br += (x[1] - x[2]) * (x[1] - x[2]), base += x[2];
+      const double n = double(pc.size());
+      base /= n;
+      std::sort(pc.begin(), pc.end(), [](const auto& a, const auto& b) { return a[0] < b[0]; });
+      std::printf("strategy: the probabilities against the outcome, %zu orders decided after the signal's chances were learnt (%.1f%% gained over their costs):\n"
+                  "strategy:   final chance (fill x gain over costs): Brier %.4f from the replay alone, %.4f calibrated on the signals (%.4f always the base rate)\n"
+                  "strategy:   once filled (%.0f): Brier %.4f the replay's chance of a gain, %.4f calibrated with the signal, %.4f the signal alone\n",
+                  pc.size(), 100 * base, br / n, bc / n, base * (1 - base), nFl, nFl ? bGr / nFl : 0.0, nFl ? bGc / nFl : 0.0, nFl ? bS / nFl : 0.0);
+      probJson = "{\"orders\":" + std::to_string(pc.size()) + ",\"baseRate\":" + jnum(base) + ",\"brierReplay\":" + jnum(br / n) + ",\"brierCalibrated\":" + jnum(bc / n) +
+                 ",\"brierBase\":" + jnum(base * (1 - base)) + ",\"filled\":" + jnum(nFl) + ",\"brierGainReplay\":" + jnum(nFl ? bGr / nFl : kNaN) + ",\"brierGainCalibrated\":" + jnum(nFl ? bGc / nFl : kNaN) +
+                 ",\"brierSignal\":" + jnum(nFl ? bS / nFl : kNaN) + ",\"fifths\":[";
+      for (int q = 0; q < 5; ++q) {
+        const std::size_t a0 = pc.size() * std::size_t(q) / 5, e0 = pc.size() * std::size_t(q + 1) / 5;
+        double mp = 0, my = 0, mr = 0;
+        for (std::size_t j = a0; j < e0; ++j) mp += pc[j][0], my += pc[j][2], mr += pc[j][3];
+        const double m = double(std::max<std::size_t>(1, e0 - a0));
+        std::printf("strategy:   fifth %d: chance %.1f%%, gained %.1f%%, %+.3f%% an order after costs (%zu orders)\n", q + 1, 100 * mp / m, 100 * my / m, 100 * mr / m, e0 - a0);
+        probJson += std::string(q ? "," : "") + "{\"chance\":" + jnum(mp / m) + ",\"gained\":" + jnum(my / m) + ",\"perOrder\":" + jnum(mr / m) + ",\"orders\":" + std::to_string(e0 - a0) + "}";
+      }
+      probJson += "]}";
+    }
+  }
+
   if (const char* tl = std::getenv("X_TRADELOG")) {
     std::ofstream f(tl);
-    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret,take,stop,rebuym,close,sigma,dayentry" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
+    f << "date,ticker,rank,limit,expected,filled,entry,exit,days,ret,take,stop,rebuym,close,sigma,dayentry,cost,p_fill_replay,p_gain_replay,signal_pct,signal_z,run5,dist20,p_fill,p_gain,p_signal" << (regK ? ",turbulence,turbulence_ahead,market_vol,share_vol" : "") << "\n";
     for (const auto& r : rows) {
       f << d.days[r.t + 1] << ',' << d.tickers[r.i] << ',' << r.rank << ',' << jnum(r.limit) << ',' << jnum(r.expected) << ',' << (r.filled ? 1 : 0) << ','
         << jnum(r.entry) << ',' << jnum(r.exit) << ',' << r.days << ',' << jnum(r.filled ? r.ret : 0.0)
-        << ',' << jnum(r.take) << ',' << jnum(r.stop) << ',' << jnum(r.rebuyM) << ',' << jnum(r.close) << ',' << jnum(r.sigma) << ',' << (r.dayEntry ? 1 : 0);
+        << ',' << jnum(r.take) << ',' << jnum(r.stop) << ',' << jnum(r.rebuyM) << ',' << jnum(r.close) << ',' << jnum(r.sigma) << ',' << (r.dayEntry ? 1 : 0)
+        << ',' << jnum(r.cost) << ',' << jnum(r.pfB) << ',' << jnum(r.pgB) << ',' << jnum(r.sigPct) << ',' << jnum(r.sigZ) << ',' << jnum(r.sigRun) << ',' << jnum(r.sigDist) << ',' << jnum(r.pFill) << ',' << jnum(r.pGain) << ',' << jnum(r.pSig);
       if (regK) f << ',' << jnum(r.turbulence) << ',' << jnum(r.ahead) << ',' << jnum(r.marketVol) << ',' << jnum(r.shareVol);
       f << '\n';
     }
@@ -2776,9 +2930,10 @@ int main(int argc, char** argv) {
                                  : kNaN;
 
   // ------------------------------------------------------------------ the next session's orders
-  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; double p5 = kNaN, p95 = kNaN, pLoss = kNaN, pStop = kNaN; std::array<double, 9> pr{}; };
+  struct Order { std::size_t i, rank; double close, limit, value, gross, fill, cost = 0, net = 0; bool held; double p5 = kNaN, p95 = kNaN, pLoss = kNaN, pStop = kNaN; std::array<double, 9> pr{}; double cFill = kNaN, cGain = kNaN, cSig = kNaN; };
   const std::size_t L = T - 1;
   std::vector<Order> orders;
+  if (tradeBr) calibFit(L, rows);  // the signal's chances on every order decided before the last close
   std::vector<std::size_t> targetAll(target);  // the book's shares, then (refill) the reserves for slots stops free
   if (refill) targetAll.insert(targetAll.end(), reserve.begin(), reserve.end());
   for (std::size_t rank = 0; rank < targetAll.size(); ++rank) {
@@ -2846,12 +3001,21 @@ int main(int argc, char** argv) {
   for (auto x : orders) {
     x.cost = costs.roundTrip(x.value, d.tickers[x.i], x.close / unit);
     x.net = x.gross - x.cost;
-    if (tradeBr) x.pr = tradeProbs(L, x.i, x.cost);
+    if (tradeBr) {
+      x.pr = tradeProbs(L, x.i, x.cost);
+      Row q;  // its chances calibrated on the strategy's earlier signals (refit on every order decided before)
+      q.pfB = x.pr[0] > 0 ? x.pr[1] / x.pr[0] : kNaN, q.pgB = x.pr[1] > 0 ? x.pr[7] / x.pr[1] : kNaN;
+      q.sigPct = of > 1 ? double(x.rank) / double(of - 1) : 0.0;
+      q.sigZ = sigZof(L, x.i);
+      std::tie(q.sigRun, q.sigDist) = stretchOf(L, x.i);
+      calibrate(q);
+      x.cFill = q.pFill, x.cGain = q.pGain, x.cSig = q.pSig;
+    }
     if (x.net > 0) final.push_back(x);
   }
   // tradebracket: the orders ranked by their final probability, the chance of a gain over the costs (the buy filling
   // times a gain over the costs once filled), the book's shares before the reserves
-  const auto finalP = [](const Order& x) { return x.pr[0] > 0 ? x.pr[7] / x.pr[0] : 0.0; };
+  const auto finalP = [](const Order& x) { return std::isfinite(x.cFill) && std::isfinite(x.cGain) ? x.cFill * x.cGain : 0.0; };
   if (tradeBr)
     std::stable_sort(final.begin(), final.end(), [&](const Order& a, const Order& b) {
       const bool ra = a.rank >= nBook, rb = b.rank >= nBook;
@@ -3249,6 +3413,7 @@ int main(int argc, char** argv) {
       f << "]}";
     }
     if (mcOn) f << "}";
+    f << ",\"probCheck\":" << probJson;
     f << "}";  // the backtest
     f << ",\"orders\":[";
     for (std::size_t q = 0; q < final.size(); ++q) {
@@ -3263,7 +3428,7 @@ int main(int argc, char** argv) {
         << ",\"intraday\":" << (flatDaily ? "true" : "false")
         << ",\"takeRel\":" << (flatDaily && takeOf(L, x.i) > 0 ? jnum(takeOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"stopRel\":" << (flatDaily && stopOf(L, x.i) > 0 ? jnum(stopOf(L, x.i) / d.Cf[L * N + x.i] - 1) : "null")
-        << ",\"probs\":" << (tradeBr && x.pr[1] > 0 ? "{\"days\":" + jnum(x.pr[0]) + ",\"fill\":" + jnum(x.pr[1] / x.pr[0]) + ",\"auction\":" + jnum(x.pr[2] / x.pr[1]) + ",\"take\":" + jnum(x.pr[3] / x.pr[1]) + ",\"stop\":" + jnum(x.pr[4] / x.pr[1]) + ",\"buyback\":" + (x.pr[4] > 0 ? jnum(x.pr[5] / x.pr[4]) : std::string("null")) + ",\"gain\":" + jnum(x.pr[6] / x.pr[1]) + ",\"netGain\":" + jnum(x.pr[7] / x.pr[1]) + ",\"meanIfFilled\":" + jnum(x.pr[8] / x.pr[1]) + ",\"final\":" + jnum(x.pr[7] / x.pr[0]) + "}" : std::string("null"))
+        << ",\"probs\":" << (tradeBr && x.pr[1] > 0 ? "{\"days\":" + jnum(x.pr[0]) + ",\"fill\":" + jnum(x.cFill) + ",\"auction\":" + jnum(x.pr[2] / x.pr[1]) + ",\"take\":" + jnum(x.pr[3] / x.pr[1]) + ",\"stop\":" + jnum(x.pr[4] / x.pr[1]) + ",\"buyback\":" + (x.pr[4] > 0 ? jnum(x.pr[5] / x.pr[4]) : std::string("null")) + ",\"gain\":" + jnum(x.pr[6] / x.pr[1]) + ",\"netGain\":" + jnum(x.cGain) + ",\"meanIfFilled\":" + jnum(x.pr[8] / x.pr[1]) + ",\"fillReplay\":" + jnum(x.pr[1] / x.pr[0]) + ",\"netGainReplay\":" + jnum(x.pr[7] / x.pr[1]) + ",\"signal\":" + jnum(x.cSig) + ",\"final\":" + jnum(x.cFill * x.cGain) + "}" : std::string("null"))
         << ",\"rebuyRel\":" << (rebuyDay && mOf(L, x.i) > kNoRb + 1 && stopOf(L, x.i) > 0 && std::isfinite(d.sigma[L * N + x.i]) ? jnum(stopOf(L, x.i) * (1 + mOf(L, x.i) * d.sigma[L * N + x.i]) / d.Cf[L * N + x.i] - 1) : "null")
         << ",\"gross\":" << jnum(x.gross)
         << ",\"cost\":" << jnum(x.cost) << ",\"ifFilled\":" << jnum(x.net) << ",\"fill\":" << jnum(x.fill) << ",\"expected\":" << jnum(fill * x.net)
