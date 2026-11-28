@@ -6,7 +6,7 @@
 set -e
 IMAGE="${OFM_IMAGE:-ofm-tools}"
 set -- docker run --rm --network host -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work \
-  -e EODDATA_API_KEY -e EODDATA_BASE -e EOD_TOKEN -e EOD_STORE -e MARKET \
+  -e EODDATA_API_KEY -e EODDATA_BASE -e EOD_TOKEN -e EOD_STORE -e MARKET -e OFM_LEARN_CACHE \
   -e SMTP_SERVER -e SMTP_PORT -e SMTP_USERNAME -e SMTP_PASSWORD -e MAIL_TO -e MAIL_FROM \
   $(env | sed -n 's/^\(X_[A-Z0-9_]*\)=.*/-e \1/p') "$IMAGE" "$@"
 exec "$@"

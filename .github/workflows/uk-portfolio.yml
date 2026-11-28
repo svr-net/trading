@@ -192,10 +192,22 @@ jobs:
       # config/markets.json) on the fused kernels of the chosen back end; learnt and backtested before any cost,
       # the broker's costs applied to the final order list only (by expected return; an order negative after
       # costs dropped). The scan (apps/ofm_scan) runs it for the budget and splits the account's money. Results only.
+      # The learn cache (OFM_LEARN_CACHE): each trade's learnt buy and bracket from the evenings before, under the
+      # fingerprint of all it is learnt from, so a scan learns only its new day (the same results: anything changed is
+      # learnt again). Kept in the runner's cache, one per market; the configurations no run used any more pruned.
+      - name: The learn cache from the evenings before
+        uses: actions/cache/restore@v4
+        with:
+          path: data/learn-cache
+          key: learn-${{ matrix.market }}-${{ github.run_id }}
+          restore-keys: learn-${{ matrix.market }}-
       - name: The model and the daily trades (results only)
+        env:
+          OFM_LEARN_CACHE: data/learn-cache
         run: |
           set -o pipefail
-          mkdir -p report
+          mkdir -p report data/learn-cache
+          touch data/learn-cache/.run-start
           PUBLISH=(); if [ "${{ github.ref }}" = "refs/heads/main" ]; then PUBLISH=(--publish-orders); fi
           # UK: AIM shares pay no stamp duty (the list refreshed from a public listing of the AIM market; the committed one if that fails).
           STAMP=(); if [ "$MARKET" = UK ]; then ofm ofm_eod aim tools/eoddata/aim.txt --cache data/eoddata/lists/aim.txt || true; STAMP=(--stamp-free tools/eoddata/aim.txt); fi
@@ -214,7 +226,15 @@ jobs:
           # The market's strategy (config/markets.json), run by the strategy engine: its orders are the ones the bridge places.
           ofm ofm_scan run --market "$MARKET" "${PUBLISH[@]}" -- --csv data/stocks.csv --costs "$MARKET" --pricing fixed --capital "$CAPITAL" "${STAMP[@]}" > report/strategies.log || { cat report/strategies.log; exit 1; }
           grep -E "^strategies|^budget|^strategy:" report/strategies.log || true  # the strategy's headline in the log
+          find data/learn-cache -name '*.bin' ! -newer data/learn-cache/.run-start -delete  # configurations no longer run
+          echo "learn cache: $(ls data/learn-cache | grep -c '\.bin$') files, $(du -sh data/learn-cache | cut -f1); $(grep -h 'learn cache' data/budget/report-*.txt report/ofm.txt 2>/dev/null | sed 's/ (.*//' | sort | uniq -c | tr '\n' ';')"
           { echo '```'; cat report/ofm.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the learn cache for the next evening
+        if: ${{ always() && hashFiles('data/learn-cache/*.bin') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/learn-cache
+          key: learn-${{ matrix.market }}-${{ github.run_id }}
       - name: The day's fundamentals (started above)
         if: ${{ always() }}
         continue-on-error: true

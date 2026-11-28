@@ -201,67 +201,74 @@ final class Recordings {
             sleep(2);
         }
         pause.ack(false);
-        int got = 0, none = 0, files = 0;
+        java.util.concurrent.atomic.AtomicInteger gotA = new java.util.concurrent.atomic.AtomicInteger(), noneA = new java.util.concurrent.atomic.AtomicInteger(),
+                filesA = new java.util.concurrent.atomic.AtomicInteger();
         Map<String, Integer> why = new LinkedHashMap<>();
         try (Ib ib = Ib.connect(clientId(market) + 9)) {
-            for (String t : tickers) {
-                while (pause.on()) {
-                    pause.ack(true);
-                    ib.sleep(2);
-                }
-                pause.ack(false);
+            parallel(tickers.size(), pause, k -> {
+                String t = tickers.get(k);
                 Broker.Share s = Holds.shareOf(t, market);
                 Broker.Share q = s == null ? null : ib.qualify(s);
                 if (q == null) {
-                    none++;
-                    why.merge("not found at IBKR", 1, Integer::sum);
-                    continue;
+                    noneA.incrementAndGet();
+                    synchronized (why) {
+                        why.merge("not found at IBKR", 1, Integer::sum);
+                    }
+                    return;
                 }
                 Map<String, List<Object>> byDay = new java.util.TreeMap<>();
                 for (int c = 0; c * 20 < days; c++) {
-                    long start = System.nanoTime();
                     String end = c == 0 ? "" : ZonedDateTime.now(ZoneOffset.UTC).minusDays(28L * c).format(DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss"));
                     int span = Math.min(20, days - c * 20);
-                    List<Bar> bars = ib.intradayBars(q, end, span + " D", 90);
-                    if (bars.isEmpty() && !ib.barsError.isEmpty()) why.merge(ib.barsError.length() > 60 ? ib.barsError.substring(0, 60) : ib.barsError, 1, Integer::sum);
+                    List<Bar> bars = pacedBars(() -> ib.intradayBars(q, end, span + " D", 90), ib);
+                    String err = ib.barsErr.get();
+                    if (bars.isEmpty() && !err.isEmpty()) {
+                        synchronized (why) {
+                            why.merge(err.length() > 60 ? err.substring(0, 60) : err, 1, Integer::sum);
+                        }
+                    }
                     for (Bar b : bars) {
                         String[] p = b.time().trim().split("\\s+");
                         if (p.length < 2 || p[0].length() != 8 || p[1].length() < 5) continue;
                         String day = p[0].substring(0, 4) + "-" + p[0].substring(4, 6) + "-" + p[0].substring(6, 8);
-                        byDay.computeIfAbsent(day, k -> new ArrayList<>()).add(List.of(p[1].substring(0, 5), b.high(), b.low(), b.close(), b.open(), b.volume() == null ? 0.0 : b.volume().value().doubleValue()));
+                        byDay.computeIfAbsent(day, kk -> new ArrayList<>()).add(List.of(p[1].substring(0, 5), b.high(), b.low(), b.close(), b.open(), b.volume() == null ? 0.0 : b.volume().value().doubleValue()));
                     }
-                    sleep(Math.max(0, 11 - (System.nanoTime() - start) / 1e9));
                 }
                 if (byDay.isEmpty()) {
-                    none++;
-                    continue;
+                    noneA.incrementAndGet();
+                    return;
                 }
-                got++;
+                int got = gotA.incrementAndGet();
                 String ex = t.contains(":") ? t.substring(0, t.indexOf(':')) : market.equals("UK") ? "LSE" : (q.primaryExchange() == null || q.primaryExchange().isEmpty() ? q.exchange() : q.primaryExchange());
                 String sym = (t.contains(":") ? t.substring(t.indexOf(':') + 1) : t).replace(' ', '.');
                 Map<String, Map<String, List<Object>>> byMonth = new java.util.TreeMap<>();
-                for (Map.Entry<String, List<Object>> e : byDay.entrySet()) byMonth.computeIfAbsent(e.getKey().substring(0, 7), k -> new java.util.TreeMap<>()).put(e.getKey(), e.getValue());
+                for (Map.Entry<String, List<Object>> e : byDay.entrySet()) byMonth.computeIfAbsent(e.getKey().substring(0, 7), kk -> new java.util.TreeMap<>()).put(e.getKey(), e.getValue());
                 for (Map.Entry<String, Map<String, List<Object>>> e : byMonth.entrySet()) {
                     String path = "intraday/" + ex + "/" + sym + "/" + e.getKey() + ".json";
                     try {
-                        byte[] old = Store.get(path);
-                        Map<String, Object> doc = old == null || old.length == 0 ? new LinkedHashMap<>() : JsonParse.object(new String(old, StandardCharsets.UTF_8));
-                        Map<String, Object> d = doc.get("days") instanceof Map ? new java.util.TreeMap<>((Map<String, Object>) doc.get("days")) : new java.util.TreeMap<>();
-                        d.putAll(e.getValue());
-                        doc.put("complete", Boolean.TRUE.equals(doc.get("complete")));
-                        doc.put("days", d);
-                        doc.put("source", "IBKR 5-minute TRADES bars, regular hours: [time, high, low, close, open, volume]");
-                        Store.put(path, Json.write(doc).getBytes(StandardCharsets.UTF_8), market + " 5-minute bars " + sym + " " + e.getKey());
-                        files++;
+                        synchronized (STORE_WRITES) {  // the store's files one at a time (its commits in order)
+                            byte[] old = Store.get(path);
+                            Map<String, Object> doc = old == null || old.length == 0 ? new LinkedHashMap<>() : JsonParse.object(new String(old, StandardCharsets.UTF_8));
+                            Map<String, Object> d = doc.get("days") instanceof Map ? new java.util.TreeMap<>((Map<String, Object>) doc.get("days")) : new java.util.TreeMap<>();
+                            d.putAll(e.getValue());
+                            doc.put("complete", Boolean.TRUE.equals(doc.get("complete")));
+                            doc.put("days", d);
+                            doc.put("source", "IBKR 5-minute TRADES bars, regular hours: [time, high, low, close, open, volume]");
+                            Store.put(path, Json.write(doc).getBytes(StandardCharsets.UTF_8), market + " 5-minute bars " + sym + " " + e.getKey());
+                        }
+                        filesA.incrementAndGet();
                     } catch (IOException | RuntimeException ex2) {
-                        why.merge("store: " + ex2.getMessage(), 1, Integer::sum);
+                        synchronized (why) {
+                            why.merge("store: " + ex2.getMessage(), 1, Integer::sum);
+                        }
                     }
                 }
                 if (progress != null && got % 10 == 0) progress.accept(market + " 5-minute bars: " + got + " of " + tickers.size() + " shares");
-            }
+            });
         } catch (RuntimeException e) {
             return new Steps.Result(1, List.of(), market + " 5-minute bars: " + e.getMessage());
         }
+        int got = gotA.get(), none = noneA.get(), files = filesA.get();
         String summary = market + " 5-minute bars: " + got + " of " + tickers.size() + " shares (" + days + " sessions), " + files + " month files kept" + (none > 0 ? "; none for " + none + (why.isEmpty() ? "" : " " + why) : "");
         return new Steps.Result(got > 0 || tickers.isEmpty() ? 0 : 1, List.of(), summary);
     }
@@ -312,7 +319,8 @@ final class Recordings {
     /**
      * IBKR's daily bars (trades, regular hours) for the file's pool into `out` (date,ticker,open,high,low,close,volume). A share its exchange
      * gives no bars for is asked again through SMART (the exchange as its primary); when the first 3 of an exchange get none that way either,
-     * the rest of it is not asked again. One share every 10.5 seconds (IBKR's pacing). The summary counts the shares without bars by IBKR's error.
+     * the rest of it is not asked again. BARS_PARALLEL shares at once, BARS_GAP seconds between two requests' starts (IBKR's hard pacing is for bars of
+     * 30 seconds or less; daily bars are only throttled, and a pacing error doubles the gap). The summary counts the shares without bars by IBKR's error.
      */
     @SuppressWarnings("unchecked")
     static Steps.Result bars(String market, Map<String, Object> book, String duration, Path out, Pause pause, Consumer<String> progress) {
@@ -331,56 +339,69 @@ final class Recordings {
         }
         pause.ack(false);
         try (Ib ib = Ib.connect(clientId(market) + 2); BufferedWriter w = Files.newBufferedWriter(out, StandardCharsets.UTF_8)) {
-            int got = 0, missing = 0, viaSmart = 0;
             Map<String, Integer> why = new LinkedHashMap<>();
             Map<String, Integer> smartTries = new HashMap<>();
             Set<String> smartWorks = new LinkedHashSet<>();
-            double pausedFor = 0;
             w.write("date,ticker,open,high,low,close,volume\r\n");
-            for (int k = 0; k < pool.size(); k++) {
+            java.util.concurrent.atomic.AtomicInteger gotA = new java.util.concurrent.atomic.AtomicInteger(), missingA = new java.util.concurrent.atomic.AtomicInteger(),
+                    smartA = new java.util.concurrent.atomic.AtomicInteger(), doneA = new java.util.concurrent.atomic.AtomicInteger();
+            double pausedFor = parallel(pool.size(), pause, k -> {
                 String t = pool.get(k);
-                if (pause.on()) {
-                    w.flush();
-                    long t0 = System.nanoTime();
-                    pause.ack(true);
-                    while (pause.on()) ib.sleep(2);
-                    pause.ack(false);
-                    pausedFor += (System.nanoTime() - t0) / 1e9;
-                }
-                long start = System.nanoTime();
                 Broker.Share s = Holds.shareOf(t, market);
                 Broker.Share q = s == null ? null : ib.qualify(s);
                 List<Bar> bars = List.of();
+                String err = "";
                 if (q != null) {
-                    bars = ib.bars(q, duration, 60);
+                    bars = pacedBars(() -> ib.bars(q, duration, 60), ib);
+                    err = ib.barsErr.get();
                     String ex = q.exchange();
-                    if (bars.isEmpty() && !ex.equals("SMART") && (smartWorks.contains(ex) || smartTries.getOrDefault(ex, 0) < 3)) {
-                        sleep(Math.max(0, 10.5 - (System.nanoTime() - start) / 1e9));
+                    boolean tryAlt;
+                    synchronized (smartTries) {
+                        tryAlt = bars.isEmpty() && !ex.equals("SMART") && (smartWorks.contains(ex) || smartTries.getOrDefault(ex, 0) < 3);
+                    }
+                    if (tryAlt) {
                         Broker.Share alt = ib.qualify(new Broker.Share(0, q.symbol(), "SMART", ex, q.currency()));
-                        if (alt != null) bars = ib.bars(alt, duration, 60);
-                        if (!bars.isEmpty()) {
-                            smartWorks.add(ex);
-                            viaSmart++;
-                        } else {
-                            smartTries.merge(ex, 1, Integer::sum);
+                        if (alt != null) {
+                            bars = pacedBars(() -> ib.bars(alt, duration, 60), ib);
+                            err = ib.barsErr.get();
+                        }
+                        synchronized (smartTries) {
+                            if (!bars.isEmpty()) {
+                                smartWorks.add(ex);
+                                smartA.incrementAndGet();
+                            } else {
+                                smartTries.merge(ex, 1, Integer::sum);
+                            }
                         }
                     }
-                    if (bars.isEmpty()) why.merge(ex + " " + (ib.barsError.isEmpty() ? "no error: no bars" : ib.barsError.length() > 90 ? ib.barsError.substring(0, 90) : ib.barsError), 1, Integer::sum);
+                    if (bars.isEmpty()) {
+                        String e = err.isEmpty() ? "no error: no bars" : err.length() > 90 ? err.substring(0, 90) : err;
+                        synchronized (why) {
+                            why.merge(ex + " " + e, 1, Integer::sum);
+                        }
+                    }
                 } else {
-                    why.merge("not found at IBKR", 1, Integer::sum);
+                    synchronized (why) {
+                        why.merge("not found at IBKR", 1, Integer::sum);
+                    }
                 }
-                for (Bar b : bars) {
-                    w.write(isoDay(b.time()) + "," + csv(t) + "," + py(b.open()) + "," + py(b.high()) + "," + py(b.low()) + "," + py(b.close()) + "," + vol(b) + "\r\n");
+                StringBuilder rows = new StringBuilder();
+                for (Bar b : bars) rows.append(isoDay(b.time())).append(',').append(csv(t)).append(',').append(py(b.open())).append(',').append(py(b.high())).append(',')
+                        .append(py(b.low())).append(',').append(py(b.close())).append(',').append(vol(b)).append("\r\n");
+                try {
+                    synchronized (w) {
+                        w.write(rows.toString());
+                    }
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
                 }
-                if (bars.isEmpty()) missing++;
-                else got++;
-                if ((k + 1) % 50 == 0) {
-                    progress.accept("  " + (k + 1) + " of " + pool.size());
-                    w.flush();
-                }
-                if (!ib.connected()) throw new IllegalStateException("IB Gateway closed the connection after " + (k + 1) + " of " + pool.size());
-                if (k + 1 < pool.size()) sleep(Math.max(0, 10.5 - (System.nanoTime() - start) / 1e9));
-            }
+                if (bars.isEmpty()) missingA.incrementAndGet();
+                else gotA.incrementAndGet();
+                int n = doneA.incrementAndGet();
+                if (n % 50 == 0) progress.accept("  " + n + " of " + pool.size());
+                if (!ib.connected()) throw new IllegalStateException("IB Gateway closed the connection after " + n + " of " + pool.size());
+            });
+            int got = gotA.get(), missing = missingA.get(), viaSmart = smartA.get();
             List<Map.Entry<String, Integer>> top = new ArrayList<>(why.entrySet());
             top.sort((a, b) -> b.getValue() - a.getValue());
             StringBuilder sb = new StringBuilder();
@@ -506,6 +527,93 @@ final class Recordings {
         } catch (RuntimeException e) {
             return "no answer: " + e.getMessage();
         }
+    }
+
+    // --- the bars fetches' pacing: BARS_PARALLEL requests at once, BARS_GAP seconds between two requests' starts (all
+    // fetches together); an IBKR pacing violation (162) doubles the gap (at most 12 seconds) and the request is asked once more
+    static final int BARS_PARALLEL = Math.max(1, Integer.parseInt(Bridge.env("BARS_PARALLEL", "4")));
+    static volatile double barsGap = Double.parseDouble(Bridge.env("BARS_GAP", "2.5"));
+    private static long nextStart;
+
+    static final Object STORE_WRITES = new Object();
+
+    static void pace() {
+        long wait;
+        synchronized (Recordings.class) {
+            long now = System.nanoTime(), at = Math.max(now, nextStart);
+            nextStart = at + (long) (barsGap * 1e9);
+            wait = at - now;
+        }
+        if (wait > 0) sleep(wait / 1e9);
+    }
+
+    static boolean pacingHit(String err) {
+        return err != null && err.contains("162") && err.toLowerCase(java.util.Locale.ROOT).contains("pacing");
+    }
+
+    /** A bars request at its turn; a pacing violation: the gap doubled, 30 seconds' rest and once more. */
+    static List<Bar> pacedBars(java.util.function.Supplier<List<Bar>> ask, Ib ib) {
+        pace();
+        List<Bar> b = ask.get();
+        if (b.isEmpty() && pacingHit(ib.barsErr.get())) {
+            barsGap = Math.min(12.0, barsGap * 2);
+            Auto.err("IBKR pacing violation: the bars requests now " + barsGap + " seconds apart");
+            sleep(30);
+            pace();
+            b = ask.get();
+        }
+        return b;
+    }
+
+    /**
+     * Items 0..n-1 by `work` on BARS_PARALLEL workers sharing one connection. The pause (a step needs the gateway): the
+     * workers start nothing new and it is acknowledged once none is busy; acknowledged off again when it ends. A worker's
+     * failure stops the others and is thrown. The seconds spent paused.
+     */
+    static double parallel(int n, Pause pause, java.util.function.IntConsumer work) {
+        java.util.concurrent.atomic.AtomicInteger next = new java.util.concurrent.atomic.AtomicInteger(), busy = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<RuntimeException> fail = new java.util.concurrent.atomic.AtomicReference<>();
+        List<Thread> ts = new ArrayList<>();
+        for (int k = 0; k < Math.min(BARS_PARALLEL, Math.max(1, n)); k++) {
+            Thread t = new Thread(() -> {
+                while (fail.get() == null) {
+                    busy.incrementAndGet();
+                    if (pause.on()) {  // nothing new while a step holds the gateway
+                        busy.decrementAndGet();
+                        sleep(1);
+                        continue;
+                    }
+                    int i = next.getAndIncrement();
+                    if (i >= n) {
+                        busy.decrementAndGet();
+                        return;
+                    }
+                    try {
+                        work.accept(i);
+                    } catch (RuntimeException e) {
+                        fail.compareAndSet(null, e);
+                    } finally {
+                        busy.decrementAndGet();
+                    }
+                }
+            }, "bars-" + k);
+            t.setDaemon(true);
+            t.start();
+            ts.add(t);
+        }
+        double paused = 0;
+        while (ts.stream().anyMatch(Thread::isAlive)) {
+            if (pause.on()) {
+                if (busy.get() == 0) pause.ack(true);
+                paused += 0.5;
+            } else {
+                pause.ack(false);
+            }
+            sleep(0.5);
+        }
+        pause.ack(false);
+        if (fail.get() != null) throw fail.get();
+        return paused;
     }
 
     static void sleep(double s) {
